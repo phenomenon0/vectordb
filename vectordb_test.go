@@ -81,7 +81,7 @@ func TestPersistenceSnapshotReload(t *testing.T) {
 
 	vs2, loaded := loadOrInitStore(path, 10, 3)
 	if !loaded {
-		t.Fatalf("expected to load snapshot")
+		t.Fatalf("expected to load snapshot (got new store)")
 	}
 	if vs2.Count != vs.Count {
 		t.Fatalf("count mismatch after load: %d vs %d", vs2.Count, vs.Count)

@@ -120,6 +120,10 @@ type QueryRequest struct {
 	Collection  string              `json:"collection,omitempty"`
 	Offset      int                 `json:"offset,omitempty"`
 	Limit       int                 `json:"limit,omitempty"`
+	MetaRanges  []RangeFilter       `json:"meta_ranges,omitempty"`
+	HybridAlpha float64             `json:"hybrid_alpha,omitempty"`
+	ScoreMode   string              `json:"score_mode,omitempty"` // "vector" (default), "hybrid", or "lexical"
+	EfSearch    int                 `json:"ef_search,omitempty"`
 }
 
 type QueryResponse struct {
@@ -128,6 +132,15 @@ type QueryResponse struct {
 	Scores []float32           `json:"scores"`
 	Stats  string              `json:"stats"`
 	Meta   []map[string]string `json:"meta,omitempty"`
+}
+
+// RangeFilter mirrors the server-side range filter.
+type RangeFilter struct {
+	Key     string   `json:"key"`
+	Min     *float64 `json:"min,omitempty"`
+	Max     *float64 `json:"max,omitempty"`
+	TimeMin string   `json:"time_min,omitempty"`
+	TimeMax string   `json:"time_max,omitempty"`
 }
 
 // DeleteRequest mirrors POST /delete.

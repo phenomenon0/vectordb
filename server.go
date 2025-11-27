@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -139,6 +140,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			Collection  string              `json:"collection"`
 			Offset      int                 `json:"offset"`
 			Limit       int                 `json:"limit"`
+			MetaRanges  []RangeFilter       `json:"meta_ranges"`
+			HybridAlpha float64             `json:"hybrid_alpha"`
+			ScoreMode   string              `json:"score_mode"` // "vector" (default), "hybrid", "lexical"
+			EfSearch    int                 `json:"ef_search"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -153,6 +158,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if req.Mode == "" {
 			req.Mode = "ann"
 		}
+		if req.HybridAlpha == 0 {
+			req.HybridAlpha = 0.5
+		}
+		if req.ScoreMode == "" {
+			req.ScoreMode = "vector"
+		}
 
 		qVec, err := embedder.Embed(req.Query)
 		if err != nil {
@@ -163,15 +174,32 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if req.Mode == "scan" {
 			ids = store.Search(qVec, req.TopK)
 		} else {
-			ids = store.SearchANN(qVec, req.TopK)
+			if req.EfSearch > 0 {
+				orig := store.hnsw.EfSearch
+				store.hnsw.EfSearch = req.EfSearch
+				ids = store.SearchANN(qVec, req.TopK)
+				store.hnsw.EfSearch = orig
+			} else {
+				ids = store.SearchANN(qVec, req.TopK)
+			}
 		}
+		qTokens := tokenize(req.Query)
 		docs := make([]string, 0, len(ids))
 		respIDs := make([]string, 0, len(ids))
 		respMeta := make([]map[string]string, 0, len(ids))
+		respScores := make([]float32, 0, len(ids))
+		type scored struct {
+			docIdx int
+			score  float64
+		}
+		hybridScores := make([]scored, 0, len(ids))
 		for _, idx := range ids {
 			hid := hashID(store.GetID(idx))
 			meta := store.Meta[hid]
 			if !matchesMeta(meta, req.Meta) {
+				continue
+			}
+			if !matchesRanges(meta, req.MetaRanges) {
 				continue
 			}
 			if len(req.MetaAny) > 0 && !matchesAny(meta, req.MetaAny) {
@@ -192,6 +220,48 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				}
 				respMeta = append(respMeta, cp)
 			}
+			switch req.ScoreMode {
+			case "hybrid":
+				respScores = append(respScores, float32(store.hybridScore(hid, qVec, qTokens, req.HybridAlpha)))
+			case "lexical":
+				respScores = append(respScores, float32(store.bm25(hid, qTokens)))
+			default: // vector
+				respScores = append(respScores, DotProduct(qVec, store.Data[idx*store.Dim:(idx+1)*store.Dim]))
+			}
+			if req.Mode == "hybrid" {
+				score := store.hybridScore(hid, qVec, qTokens, req.HybridAlpha)
+				hybridScores = append(hybridScores, scored{docIdx: len(docs) - 1, score: score})
+			}
+		}
+		if req.Mode == "hybrid" && len(hybridScores) > 0 {
+			sort.Slice(hybridScores, func(i, j int) bool { return hybridScores[i].score > hybridScores[j].score })
+			reDocs := make([]string, 0, len(hybridScores))
+			reIDs := make([]string, 0, len(hybridScores))
+			reScores := make([]float32, 0, len(hybridScores))
+			var reMeta []map[string]string
+			if req.IncludeMeta {
+				reMeta = make([]map[string]string, 0, len(hybridScores))
+			}
+			for _, s := range hybridScores {
+				reDocs = append(reDocs, docs[s.docIdx])
+				reIDs = append(reIDs, respIDs[s.docIdx])
+				if req.ScoreMode == "hybrid" {
+					reScores = append(reScores, float32(s.score))
+				} else if req.ScoreMode == "vector" {
+					reScores = append(reScores, respScores[s.docIdx])
+				}
+				if req.IncludeMeta {
+					reMeta = append(reMeta, respMeta[s.docIdx])
+				}
+			}
+			docs = reDocs
+			respIDs = reIDs
+			if req.ScoreMode == "hybrid" || req.ScoreMode == "vector" {
+				respScores = reScores
+			}
+			if req.IncludeMeta {
+				respMeta = reMeta
+			}
 		}
 		start := req.Offset
 		if start > len(docs) {
@@ -203,24 +273,33 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 		docs = docs[start:end]
 		respIDs = respIDs[start:end]
+		if len(respScores) > 0 {
+			respScores = respScores[start:end]
+		} else {
+			respScores = nil
+		}
 		if req.IncludeMeta && len(respMeta) > 0 {
 			respMeta = respMeta[start:end]
 		} else {
 			respMeta = nil
 		}
 
-		rDocs, scores, stats, err := reranker.Rerank(req.Query, docs, req.Limit)
+		rDocs, rerankScores, stats, err := reranker.Rerank(req.Query, docs, req.Limit)
 		if err != nil {
 			http.Error(w, "rerank error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if len(respScores) == 0 {
+			respScores = rerankScores
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ids":    respIDs,
 			"docs":   rDocs,
-			"scores": scores,
+			"scores": respScores,
 			"stats":  stats,
 			"meta":   respMeta,
 		})
+		return
 	})))
 
 	mux.HandleFunc("/delete", withMetrics("delete", guard(func(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +331,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		deleted := len(store.Deleted)
 		active := total - deleted
 		lastSaved := store.lastSaved
+		_, embedderIsONNX := embedder.(*OnnxEmbedder)
+		_, rerankerIsONNX := reranker.(*OnnxCrossEncoderReranker)
 		store.RUnlock()
 		snapAge := ageMillis(indexPath, lastSaved)
 		walAge := ageMillis(store.walPath, time.Time{})
@@ -267,6 +348,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"index_bytes":     fileSize(indexPath),
 			"snapshot_age_ms": snapAge,
 			"wal_age_ms":      walAge,
+			"embedder": map[string]any{
+				"type": map[bool]string{true: "onnx", false: "hash"}[embedderIsONNX],
+			},
+			"reranker": map[string]any{
+				"type": map[bool]string{true: "onnx", false: "simple"}[rerankerIsONNX],
+			},
 		})
 	})))
 

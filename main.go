@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"agentscope/core"
 	"agentscope/tools"
@@ -47,6 +48,11 @@ type VectorStore struct {
 	rl          *rateLimiter
 	checksum    string
 	lastSaved   time.Time
+	// Lexical stats for hybrid/BM25
+	lexTF   map[uint64]map[string]int
+	docLen  map[uint64]int
+	df      map[string]int
+	sumDocL int
 }
 
 func NewVectorStore(capacity int, dim int) *VectorStore {
@@ -68,6 +74,10 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		walMaxBytes: 0,
 		walMaxOps:   0,
 		apiToken:    os.Getenv("API_TOKEN"),
+		lexTF:       make(map[uint64]map[string]int),
+		docLen:      make(map[uint64]int),
+		df:          make(map[string]int),
+		sumDocL:     0,
 	}
 }
 
@@ -86,6 +96,9 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 	vs.Docs = append(vs.Docs, doc)
 	vs.IDs = append(vs.IDs, id)
 	vs.Count++
+
+	toks := tokenize(doc)
+	vs.ingestLex(hashID(id), toks)
 
 	hid := hashID(id)
 	vs.hnsw.Add(hnsw.MakeNode(hid, v))
@@ -114,8 +127,10 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	}
 	hid := hashID(id)
 	if ix, ok := vs.idToIx[hid]; ok && ix >= 0 && ix < len(vs.IDs) {
+		vs.ejectLex(hid)
 		copy(vs.Data[ix*vs.Dim:(ix+1)*vs.Dim], v)
 		vs.Docs[ix] = doc
+		vs.ingestLex(hid, tokenize(doc))
 		if meta != nil {
 			vs.Meta[hid] = meta
 		} else {
@@ -135,6 +150,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	vs.Count++
 	vs.hnsw.Add(hnsw.MakeNode(hid, v))
 	vs.idToIx[hid] = vs.Count - 1
+	vs.ingestLex(hid, tokenize(doc))
 	if meta != nil {
 		vs.Meta[hid] = meta
 	}
@@ -152,6 +168,7 @@ func (vs *VectorStore) Delete(id string) {
 	defer vs.Unlock()
 	hid := hashID(id)
 	vs.Deleted[hid] = true
+	vs.ejectLex(hid)
 	delete(vs.Meta, hid)
 	delete(vs.Coll, hid)
 	vs.appendWAL("delete", id, "", nil, nil)
@@ -228,6 +245,95 @@ func (vs *VectorStore) SearchANN(query []float32, k int) []int {
 	return ixs
 }
 
+// Hybrid score combines cosine and BM25-like lexical score.
+func (vs *VectorStore) hybridScore(hid uint64, qVec []float32, qTokens []string, alpha float64) float64 {
+	vecScore := float64(0)
+	if ix, ok := vs.idToIx[hid]; ok {
+		dVec := vs.Data[ix*vs.Dim : (ix+1)*vs.Dim]
+		vecScore = float64(DotProduct(qVec, dVec))
+	}
+	bm := vs.bm25(hid, qTokens)
+	return alpha*vecScore + (1-alpha)*bm
+}
+
+func (vs *VectorStore) ingestLex(hid uint64, toks []string) {
+	if len(toks) == 0 {
+		return
+	}
+	tf := make(map[string]int)
+	seen := make(map[string]bool)
+	for _, t := range toks {
+		if t == "" {
+			continue
+		}
+		tf[t]++
+		if !seen[t] {
+			vs.df[t]++
+			seen[t] = true
+		}
+	}
+	prevLen := vs.docLen[hid]
+	vs.sumDocL += len(toks) - prevLen
+	vs.docLen[hid] = len(toks)
+	vs.lexTF[hid] = tf
+}
+
+func (vs *VectorStore) ejectLex(hid uint64) {
+	tf, ok := vs.lexTF[hid]
+	if !ok {
+		return
+	}
+	for term := range tf {
+		if vs.df[term] > 0 {
+			vs.df[term]--
+		}
+	}
+	vs.sumDocL -= vs.docLen[hid]
+	delete(vs.lexTF, hid)
+	delete(vs.docLen, hid)
+}
+
+func (vs *VectorStore) bm25(hid uint64, qTokens []string) float64 {
+	activeDocs := vs.Count - len(vs.Deleted)
+	if activeDocs <= 0 {
+		return 0
+	}
+	tf := vs.lexTF[hid]
+	if tf == nil {
+		return 0
+	}
+	avgdl := float64(vs.sumDocL)
+	if avgdl == 0 {
+		avgdl = 1
+	} else {
+		avgdl = avgdl / float64(activeDocs)
+	}
+	// BM25 parameters
+	k1 := 1.2
+	b := 0.75
+	score := 0.0
+	seen := make(map[string]bool)
+	for _, qt := range qTokens {
+		if seen[qt] {
+			continue
+		}
+		seen[qt] = true
+		df := vs.df[qt]
+		if df == 0 {
+			continue
+		}
+		idf := math.Log((float64(activeDocs)-float64(df)+0.5)/(float64(df)+0.5) + 1)
+		tfDoc := float64(tf[qt])
+		if tfDoc == 0 {
+			continue
+		}
+		num := tfDoc * (k1 + 1)
+		den := tfDoc + k1*(1-b+b*float64(vs.docLen[hid])/avgdl)
+		score += idf * (num / den)
+	}
+	return score
+}
+
 // Persistence snapshot.
 func (vs *VectorStore) Save(path string) error {
 	vs.RLock()
@@ -264,6 +370,10 @@ func (vs *VectorStore) Save(path string) error {
 		HNSW      []byte
 		Checksum  string
 		LastSaved time.Time
+		LexTF     map[uint64]map[string]int
+		DocLen    map[uint64]int
+		DF        map[string]int
+		SumDocL   int
 	}{
 		Dim:       vs.Dim,
 		Data:      vs.Data,
@@ -277,6 +387,10 @@ func (vs *VectorStore) Save(path string) error {
 		HNSW:      hBuf,
 		Checksum:  vs.checksum,
 		LastSaved: time.Now(),
+		LexTF:     vs.lexTF,
+		DocLen:    vs.docLen,
+		DF:        vs.df,
+		SumDocL:   vs.sumDocL,
 	}
 	if err := gob.NewEncoder(f).Encode(payload); err != nil {
 		return err
@@ -284,7 +398,7 @@ func (vs *VectorStore) Save(path string) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	vs.checksum = fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", vs.Count, vs.next)))
+	vs.checksum = vs.computeChecksum()
 	vs.lastSaved = payload.LastSaved
 	if vs.walPath != "" {
 		_ = os.Remove(vs.walPath)
@@ -315,6 +429,10 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			HNSW      []byte
 			Checksum  string
 			LastSaved time.Time
+			LexTF     map[uint64]map[string]int
+			DocLen    map[uint64]int
+			DF        map[string]int
+			SumDocL   int
 		}
 		if err := gob.NewDecoder(f).Decode(&payload); err != nil {
 			fmt.Printf("warning: failed to decode index, rebuilding: %v\n", err)
@@ -339,9 +457,17 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			apiToken:    os.Getenv("API_TOKEN"),
 			checksum:    payload.Checksum,
 			lastSaved:   payload.LastSaved,
+			lexTF:       payload.LexTF,
+			docLen:      payload.DocLen,
+			df:          payload.DF,
+			sumDocL:     payload.SumDocL,
 		}
 		if vs.checksum == "" {
 			vs.checksum = fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
+		}
+		// Checksum is best-effort; warn but continue to allow recovery.
+		if !vs.validateChecksum() {
+			fmt.Printf("warning: checksum mismatch; continuing with loaded snapshot\n")
 		}
 		for i, idStr := range vs.IDs {
 			vs.idToIx[hashID(idStr)] = i
@@ -354,6 +480,15 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		}
 		if vs.Coll == nil {
 			vs.Coll = make(map[uint64]string)
+		}
+		if vs.lexTF == nil {
+			vs.lexTF = make(map[uint64]map[string]int)
+		}
+		if vs.docLen == nil {
+			vs.docLen = make(map[uint64]int)
+		}
+		if vs.df == nil {
+			vs.df = make(map[string]int)
 		}
 		if len(payload.HNSW) > 0 {
 			if err := vs.hnsw.Import(bytes.NewReader(payload.HNSW)); err != nil {
@@ -510,6 +645,15 @@ type RAGState struct {
 	Step    string
 	Query   string
 	Context string
+}
+
+// RangeFilter supports numeric or RFC3339 time comparisons.
+type RangeFilter struct {
+	Key     string   `json:"key"`
+	Min     *float64 `json:"min,omitempty"`
+	Max     *float64 `json:"max,omitempty"`
+	TimeMin string   `json:"time_min,omitempty"` // RFC3339
+	TimeMax string   `json:"time_max,omitempty"` // RFC3339
 }
 
 func NewRAGAgent(llmToolID core.ToolID, retrievalToolID core.ToolID, rerankToolID core.ToolID) *core.FuncAgent {
@@ -722,6 +866,84 @@ func matchesAny(meta map[string]string, any []map[string]string) bool {
 	return false
 }
 
+func matchesRanges(meta map[string]string, ranges []RangeFilter) bool {
+	if len(ranges) == 0 {
+		return true
+	}
+	for _, rf := range ranges {
+		val, ok := meta[rf.Key]
+		if !ok {
+			return false
+		}
+		// Try time bounds if provided.
+		if rf.TimeMin != "" || rf.TimeMax != "" {
+			mv, err := time.Parse(time.RFC3339, val)
+			if err != nil {
+				return false
+			}
+			if rf.TimeMin != "" {
+				minT, err := time.Parse(time.RFC3339, rf.TimeMin)
+				if err != nil || mv.Before(minT) {
+					return false
+				}
+			}
+			if rf.TimeMax != "" {
+				maxT, err := time.Parse(time.RFC3339, rf.TimeMax)
+				if err != nil || mv.After(maxT) {
+					return false
+				}
+			}
+			continue
+		}
+		// Numeric bounds if set.
+		if rf.Min != nil || rf.Max != nil {
+			fv, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				return false
+			}
+			if rf.Min != nil && fv < *rf.Min {
+				return false
+			}
+			if rf.Max != nil && fv > *rf.Max {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// tokenize is a simple Unicode-aware tokenizer used for metadata/text analysis.
+func tokenize(text string) []string {
+	tokens := make([]string, 0, len(text)/4+1)
+	var buf strings.Builder
+
+	flush := func() {
+		if buf.Len() == 0 {
+			return
+		}
+		tok := strings.ToLower(strings.TrimFunc(buf.String(), func(r rune) bool {
+			return unicode.IsPunct(r) || unicode.IsSymbol(r)
+		}))
+		buf.Reset()
+		if tok != "" {
+			tokens = append(tokens, tok)
+		}
+	}
+
+	for _, r := range text {
+		switch {
+		case unicode.IsSpace(r):
+			flush()
+		case unicode.IsPunct(r) || unicode.IsSymbol(r):
+			flush()
+		default:
+			buf.WriteRune(r)
+		}
+	}
+	flush()
+	return tokens
+}
+
 type walEntry struct {
 	Op   string
 	ID   string
@@ -768,7 +990,9 @@ func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec
 	if doSnapshot {
 		snapPath := strings.TrimSuffix(vs.walPath, ".wal")
 		go func() {
-			_ = vs.Save(snapPath)
+			if err := vs.Save(snapPath); err == nil {
+				_ = os.Truncate(vs.walPath, 0)
+			}
 		}()
 	}
 }
@@ -804,6 +1028,17 @@ func replayWAL(vs *VectorStore) {
 		}
 	}
 	_ = os.Remove(path)
+}
+
+func (vs *VectorStore) computeChecksum() string {
+	return fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d-%d", vs.Count, vs.next, len(vs.Docs))))
+}
+
+func (vs *VectorStore) validateChecksum() bool {
+	if vs.checksum == "" {
+		return true
+	}
+	return vs.checksum == vs.computeChecksum()
 }
 
 // ======================================================================================

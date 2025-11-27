@@ -24,17 +24,30 @@ func TestHTTPHandlersInsertQueryDelete(t *testing.T) {
 	cli := client.New(srv.URL)
 
 	// insert
-	if _, err := cli.Insert(context.Background(), client.InsertRequest{Doc: "hello world", Meta: map[string]string{"tag": "a"}}); err != nil {
+	if _, err := cli.Insert(context.Background(), client.InsertRequest{Doc: "hello world", Meta: map[string]string{"tag": "a", "score": "0.8", "ts": "2024-01-01T00:00:00Z"}}); err != nil {
 		t.Fatalf("insert failed: %v", err)
 	}
 
 	// query
-	qr, err := cli.Query(context.Background(), client.QueryRequest{Query: "hello", TopK: 1, IncludeMeta: true})
+	min := 0.5
+	qr, err := cli.Query(context.Background(), client.QueryRequest{
+		Query:       "hello",
+		TopK:        1,
+		IncludeMeta: true,
+		ScoreMode:   "hybrid",
+		MetaRanges: []client.RangeFilter{
+			{Key: "score", Min: &min},
+			{Key: "ts", TimeMin: "2023-12-31T00:00:00Z", TimeMax: "2024-12-31T00:00:00Z"},
+		},
+	})
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
 	if len(qr.IDs) != 1 || len(qr.Docs) != 1 {
 		t.Fatalf("unexpected query response: %+v", qr)
+	}
+	if len(qr.Scores) != 1 {
+		t.Fatalf("expected score in response")
 	}
 
 	// delete

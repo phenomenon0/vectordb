@@ -2,8 +2,10 @@ package client
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -47,13 +49,25 @@ func TestQueryParsesBody(t *testing.T) {
 		if r.URL.Path != "/query" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"meta_ranges"`) || !strings.Contains(string(body), `"score_mode"`) {
+			t.Fatalf("expected meta_ranges and score_mode in request, got %s", string(body))
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ids":["1"],"docs":["d"],"scores":[0.9],"stats":"ok"}`))
 	}))
 	defer ts.Close()
 
+	min := 0.1
+	max := 1.0
 	c := New(ts.URL)
-	resp, err := c.Query(context.Background(), QueryRequest{Query: "q"})
+	resp, err := c.Query(context.Background(), QueryRequest{
+		Query:     "q",
+		ScoreMode: "lexical",
+		MetaRanges: []RangeFilter{
+			{Key: "score", Min: &min, Max: &max},
+		},
+	})
 	if err != nil {
 		t.Fatalf("query error: %v", err)
 	}

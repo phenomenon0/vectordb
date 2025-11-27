@@ -14,6 +14,7 @@ var (
 	reqCounter     *prometheus.CounterVec
 	reqDuration    *prometheus.HistogramVec
 	obsGaugeActive prometheus.Gauge
+	latencyHist    *prometheus.HistogramVec
 )
 
 func initMetrics() {
@@ -33,11 +34,19 @@ func initMetrics() {
 			},
 			[]string{"path"},
 		)
+		latencyHist = prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "vectordb_http_latency_seconds",
+				Help:    "Latency per endpoint",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"endpoint"},
+		)
 		obsGaugeActive = prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "vectordb_active_docs",
 			Help: "Active documents (not tombstoned)",
 		})
-		prometheus.MustRegister(reqCounter, reqDuration, obsGaugeActive)
+		prometheus.MustRegister(reqCounter, reqDuration, latencyHist, obsGaugeActive)
 	})
 }
 
@@ -61,6 +70,9 @@ func withMetrics(path string, next http.HandlerFunc) http.HandlerFunc {
 		}
 		if reqDuration != nil {
 			reqDuration.WithLabelValues(path).Observe(time.Since(start).Seconds())
+		}
+		if latencyHist != nil {
+			latencyHist.WithLabelValues(path).Observe(time.Since(start).Seconds())
 		}
 	}
 }
