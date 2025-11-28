@@ -126,6 +126,14 @@ go run ./vectordb
   - Alternatives: MiniLM-L6-v2 or E5-small-v2 (384d) int8 (~15–25 MB) with slightly lower recall.
   - Keep tokenizer aligned with the model; only swap the ONNX file and env vars.
 
+### Export/Import & Compaction (replication basics)
+- Export snapshot: `GET /export` returns `index.gob` (HNSW + metadata). Import on another node: `POST /import` with the snapshot file. Integrity check: `GET /integrity`.
+- Compact: `POST /compact` rebuilds HNSW and drops tombstones, then saves a fresh snapshot. Enable periodic compaction with `COMPACT_INTERVAL_MIN` (env, minutes).
+- Suggested replication recipe:
+  1) On primary, `curl -o index.gob http://host:8080/export`
+  2) On secondary, `curl -X POST --data-binary @index.gob http://host:8080/import`
+  3) Warm compaction periodically on both nodes (`COMPACT_INTERVAL_MIN`), and monitor `/health` + `/integrity`.
+
 ## Runtime Notes
 - Warm the model at startup with a dummy call.
 - Ensure `VectorStore` capacity matches ingestion volume (`capacity * dim * 4 bytes`).
