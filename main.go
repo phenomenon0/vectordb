@@ -1540,10 +1540,156 @@ func runCoordinatorMode() {
 }
 
 // ======================================================================================
+// Shard Mode: runs as a shard server (primary or replica)
+// ======================================================================================
+
+func runShardMode() {
+	fmt.Println(">>> Starting Shard Server Mode...")
+
+	// Read shard configuration from environment
+	nodeID := os.Getenv("NODE_ID")
+	if nodeID == "" {
+		fmt.Println("ERROR: NODE_ID environment variable required for shard mode")
+		os.Exit(1)
+	}
+
+	shardID := envInt("SHARD_ID", -1)
+	if shardID < 0 {
+		fmt.Println("ERROR: SHARD_ID environment variable required for shard mode")
+		os.Exit(1)
+	}
+
+	roleStr := os.Getenv("ROLE")
+	if roleStr == "" {
+		fmt.Println("ERROR: ROLE environment variable required (primary or replica)")
+		os.Exit(1)
+	}
+	var role ReplicaRole
+	switch roleStr {
+	case "primary":
+		role = RolePrimary
+	case "replica":
+		role = RoleReplica
+	default:
+		fmt.Printf("ERROR: Invalid ROLE '%s' (must be 'primary' or 'replica')\n", roleStr)
+		os.Exit(1)
+	}
+
+	httpAddr := os.Getenv("HTTP_ADDR")
+	if httpAddr == "" {
+		fmt.Println("ERROR: HTTP_ADDR environment variable required (e.g., ':9000')")
+		os.Exit(1)
+	}
+
+	coordinatorAddr := os.Getenv("COORDINATOR_ADDR")
+	if coordinatorAddr == "" {
+		fmt.Println("WARNING: COORDINATOR_ADDR not set, will not register with coordinator")
+	}
+
+	// Optional: primary address for replicas
+	primaryAddr := os.Getenv("PRIMARY_ADDR")
+	if role == RoleReplica && primaryAddr == "" {
+		fmt.Println("WARNING: REPLICA without PRIMARY_ADDR set")
+	}
+
+	// Optional: replica addresses for primary
+	var replicas []string
+	if replicasStr := os.Getenv("REPLICAS"); replicasStr != "" {
+		replicas = strings.Split(replicasStr, ",")
+		for i := range replicas {
+			replicas[i] = strings.TrimSpace(replicas[i])
+		}
+	}
+
+	// Vector store config
+	capacity := envInt("CAPACITY", 100000)
+	dimension := envInt("DIMENSION", 384)
+	indexPath := os.Getenv("INDEX_PATH")
+	if indexPath == "" {
+		indexPath = fmt.Sprintf("vectordb/shard-%d-%s.gob", shardID, nodeID)
+	}
+
+	// Initialize embedder
+	embedder := initEmbedder(dimension)
+
+	// Create shard server config
+	cfg := ShardServerConfig{
+		NodeID:          nodeID,
+		ShardID:         shardID,
+		Role:            role,
+		HTTPAddr:        httpAddr,
+		PrimaryAddr:     primaryAddr,
+		Replicas:        replicas,
+		CoordinatorAddr: coordinatorAddr,
+		Capacity:        capacity,
+		Dimension:       dimension,
+		IndexPath:       indexPath,
+		Embedder:        embedder,
+	}
+
+	fmt.Printf(">>> Shard Configuration:\n")
+	fmt.Printf("    Node ID: %s\n", nodeID)
+	fmt.Printf("    Shard ID: %d\n", shardID)
+	fmt.Printf("    Role: %s\n", role)
+	fmt.Printf("    HTTP Address: %s\n", httpAddr)
+	if role == RoleReplica && primaryAddr != "" {
+		fmt.Printf("    Primary: %s\n", primaryAddr)
+	}
+	if role == RolePrimary && len(replicas) > 0 {
+		fmt.Printf("    Replicas: %v\n", replicas)
+	}
+	if coordinatorAddr != "" {
+		fmt.Printf("    Coordinator: %s\n", coordinatorAddr)
+	}
+	fmt.Printf("    Index Path: %s\n", indexPath)
+	fmt.Println()
+
+	// Create shard server
+	shard, err := NewShardServer(cfg)
+	if err != nil {
+		fmt.Printf("ERROR: Failed to create shard server: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Start shard server
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := shard.Start(ctx); err != nil {
+		fmt.Printf("ERROR: Failed to start shard server: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Shard server started. Press Ctrl+C to shutdown.")
+
+	// Wait for shutdown signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+
+	fmt.Println("\nShutdown signal received...")
+	cancel()
+
+	// Graceful shutdown
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+	if err := shard.Shutdown(shutdownCtx); err != nil {
+		fmt.Printf("ERROR: Shutdown failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// ======================================================================================
 // Main: bootstrap, HTTP API
 // ======================================================================================
 
 func main() {
+	// Check if running in shard mode
+	if os.Getenv("SHARD_MODE") == "1" {
+		runShardMode()
+		return
+	}
+
 	// Check if running in coordinator mode
 	if os.Getenv("COORDINATOR_MODE") == "1" {
 		runCoordinatorMode()
@@ -1734,7 +1880,7 @@ func main() {
 
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
 	}
