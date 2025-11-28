@@ -1314,6 +1314,23 @@ func initReranker(embedder Embedder) Reranker {
 	return &SimpleReranker{Embedder: embedder}
 }
 
+// warmupModels optionally runs a dummy embed/rerank to catch missing models early.
+func warmupModels(embedder Embedder, reranker Reranker) {
+	if os.Getenv("DISABLE_WARMUP") == "1" {
+		return
+	}
+	if embedder != nil {
+		if _, err := embedder.Embed("warmup"); err != nil {
+			fmt.Printf("embedder warmup warning: %v\n", err)
+		}
+	}
+	if reranker != nil {
+		if _, _, _, err := reranker.Rerank("warmup", []string{"warmup"}, 1); err != nil {
+			fmt.Printf("reranker warmup warning: %v\n", err)
+		}
+	}
+}
+
 // ======================================================================================
 // Main: bootstrap, HTTP API
 // ======================================================================================
@@ -1363,6 +1380,9 @@ func main() {
 		MaxRetries:     0,
 		DefaultTimeout: 200 * time.Millisecond,
 	}, nil)
+
+	// Model warmup (best-effort)
+	warmupModels(embedder, reranker)
 
 	router := tools.NewModelRouter()
 	llmCfg, err := router.FastestModel()
