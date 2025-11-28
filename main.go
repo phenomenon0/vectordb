@@ -46,6 +46,7 @@ type VectorStore struct {
 	walMaxBytes int64
 	walMaxOps   int
 	walOps      int
+	walRotate   int64
 	apiToken    string
 	rl          *rateLimiter
 	checksum    string
@@ -709,6 +710,7 @@ type RangeFilter struct {
 	Max     *float64 `json:"max,omitempty"`
 	TimeMin string   `json:"time_min,omitempty"` // RFC3339
 	TimeMax string   `json:"time_max,omitempty"` // RFC3339
+	LexOnly bool     `json:"lex_only,omitempty"` // force lexical mode on this field
 }
 
 func NewRAGAgent(llmToolID core.ToolID, retrievalToolID core.ToolID, rerankToolID core.ToolID) *core.FuncAgent {
@@ -977,6 +979,7 @@ func matchesRanges(meta map[string]string, num map[string]float64, times map[str
 
 // tokenize is a simple Unicode-aware tokenizer used for metadata/text analysis.
 func tokenize(text string) []string {
+	stop := loadStopwords()
 	tokens := make([]string, 0, len(text)/4+1)
 	var buf strings.Builder
 
@@ -988,7 +991,7 @@ func tokenize(text string) []string {
 			return unicode.IsPunct(r) || unicode.IsSymbol(r)
 		}))
 		buf.Reset()
-		if tok != "" {
+		if tok != "" && (!stopwordEnabled || !stop[tok]) {
 			tokens = append(tokens, tok)
 		}
 	}
@@ -1005,6 +1008,23 @@ func tokenize(text string) []string {
 	}
 	flush()
 	return tokens
+}
+
+var stopwords map[string]bool
+var stopOnce sync.Once
+var stopwordEnabled = true
+
+func loadStopwords() map[string]bool {
+	stopOnce.Do(func() {
+		stopwords = map[string]bool{
+			"the": true, "a": true, "an": true, "in": true, "on": true, "for": true,
+			"and": true, "or": true, "but": true, "of": true, "to": true, "is": true,
+		}
+		if os.Getenv("DISABLE_STOPWORDS") == "1" {
+			stopwordEnabled = false
+		}
+	})
+	return stopwords
 }
 
 type walEntry struct {

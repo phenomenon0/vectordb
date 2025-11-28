@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/coder/hnsw"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -382,6 +383,33 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	})))
 
 	mux.Handle("/metrics", promhttp.Handler())
+
+	mux.HandleFunc("/integrity", withMetrics("integrity", guard(func(w http.ResponseWriter, r *http.Request) {
+		store.RLock()
+		ck := store.validateChecksum()
+		hnswOK := true
+		if store.hnsw == nil {
+			hnswOK = false
+		}
+		store.RUnlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"checksum_ok": ck,
+			"hnsw_ok":     hnswOK,
+		})
+	})))
+
+	mux.HandleFunc("/compact", withMetrics("compact", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := store.Compact(indexPath); err != nil {
+			http.Error(w, fmt.Sprintf("compact failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})))
+
 	return mux
 }
 
@@ -441,4 +469,42 @@ func hashFilters(meta map[string]string, any []map[string]string, not map[string
 	sum := fnv.New64a()
 	_, _ = sum.Write(b)
 	return fmt.Sprintf("%x", sum.Sum64())
+}
+
+// Compact rebuilds the in-memory HNSW and purges tombstones, then saves a snapshot.
+func (vs *VectorStore) Compact(path string) error {
+	vs.Lock()
+	defer vs.Unlock()
+	g := hnsw.NewGraph[uint64]()
+	g.Distance = vs.hnsw.Distance
+	g.M = vs.hnsw.M
+	g.Ml = vs.hnsw.Ml
+	g.EfSearch = vs.hnsw.EfSearch
+
+	vs.idToIx = make(map[uint64]int)
+	newData := make([]float32, 0, len(vs.Data))
+	newDocs := make([]string, 0, len(vs.Docs))
+	newIDs := make([]string, 0, len(vs.IDs))
+	for i, id := range vs.IDs {
+		hid := hashID(id)
+		if vs.Deleted[hid] {
+			continue
+		}
+		vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
+		base := len(newDocs)
+		newData = append(newData, vec...)
+		newDocs = append(newDocs, vs.Docs[i])
+		newIDs = append(newIDs, id)
+		g.Add(hnsw.MakeNode(hid, vec))
+		vs.idToIx[hid] = base
+	}
+	vs.Data = newData
+	vs.Docs = newDocs
+	vs.IDs = newIDs
+	vs.Count = len(newDocs)
+	vs.hnsw = g
+	if err := vs.Save(path); err != nil {
+		return err
+	}
+	return nil
 }
