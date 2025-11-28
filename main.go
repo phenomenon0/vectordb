@@ -1241,12 +1241,14 @@ func loadStopwords() map[string]bool {
 }
 
 type walEntry struct {
+	Seq  uint64                 // Monotonic sequence number (for WAL streaming)
 	Op   string
 	ID   string
 	Doc  string
 	Meta map[string]string
 	Vec  []float32
 	Coll string
+	Time int64                  // Unix timestamp (for WAL streaming)
 }
 
 type numEntry struct {

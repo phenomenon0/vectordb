@@ -42,6 +42,10 @@ type ShardServer struct {
 	lastSyncSeq int          // Last synced sequence number
 	syncTicker  *time.Ticker // Periodic sync for replicas
 
+	// WAL Streaming (new)
+	walStream       *WALStream       // WAL stream buffer (for primaries)
+	walStreamClient *WALStreamClient // WAL stream client (for replicas)
+
 	// HTTP server
 	server *http.Server
 
@@ -107,6 +111,15 @@ func NewShardServer(cfg ShardServerConfig) (*ShardServer, error) {
 		replicas:        cfg.Replicas,
 		walLog:          make([]walEntry, 0),
 		coordinatorAddr: cfg.CoordinatorAddr,
+	}
+
+	// Initialize WAL streaming
+	if cfg.Role == RolePrimary {
+		s.walStream = NewWALStream()
+		fmt.Printf("✅ WAL streaming enabled (primary mode)\n")
+	} else if cfg.PrimaryAddr != "" {
+		s.walStreamClient = NewWALStreamClient(cfg.PrimaryAddr)
+		fmt.Printf("✅ WAL streaming client enabled (pulling from %s)\n", cfg.PrimaryAddr)
 	}
 
 	return s, nil
@@ -189,48 +202,95 @@ func (s *ShardServer) Shutdown(ctx context.Context) error {
 
 // newHTTPHandler creates the HTTP handler for this shard
 func (s *ShardServer) newHTTPHandler() http.Handler {
-	// Use existing HTTP handler from server.go
-	handler := newHTTPHandler(s.store, s.embedder, s.reranker, s.indexPath)
+	mux := http.NewServeMux()
 
-	// Wrap with replication middleware if primary
-	if s.role == RolePrimary && len(s.replicas) > 0 {
-		return s.replicationMiddleware(handler)
+	// Use existing HTTP handler from server.go as base
+	baseHandler := newHTTPHandler(s.store, s.embedder, s.reranker, s.indexPath)
+
+	// Add WAL streaming endpoint for primaries
+	if s.role == RolePrimary && s.walStream != nil {
+		mux.HandleFunc("/wal/stream", s.handleWALStream)
 	}
 
-	return handler
+	// Mount base handler on root
+	mux.Handle("/", baseHandler)
+
+	// Wrap with replication middleware if primary
+	if s.role == RolePrimary && s.walStream != nil {
+		return s.walStreamMiddleware(mux)
+	}
+
+	return mux
 }
 
-// replicationMiddleware wraps handlers to replicate writes to replicas
-func (s *ShardServer) replicationMiddleware(next http.Handler) http.Handler {
+// walStreamMiddleware wraps handlers to capture writes in WAL stream
+func (s *ShardServer) walStreamMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Capture the request body for replication
+		// Capture write operations in WAL stream
 		if r.Method == http.MethodPost && (r.URL.Path == "/insert" || r.URL.Path == "/batch_insert" || r.URL.Path == "/delete") {
-			// Read body
+			// Read and parse body
 			var buf bytes.Buffer
 			body := io.TeeReader(r.Body, &buf)
-			r.Body = ioutil.NopCloser(body)
+			bodyBytes, _ := ioutil.ReadAll(body)
+			r.Body = ioutil.NopCloser(bytes.NewReader(bodyBytes))
 
-			// Serve the request
+			// Parse request to extract WAL info
+			var req map[string]interface{}
+			json.Unmarshal(bodyBytes, &req)
+
+			// Serve the request first
 			next.ServeHTTP(w, r)
 
-			// Replicate to replicas asynchronously
-			go s.replicateToReplicas(r.URL.Path, buf.Bytes())
+			// After successful processing, append to WAL stream
+			go s.appendToWAL(r.URL.Path, req)
 		} else {
 			next.ServeHTTP(w, r)
 		}
 	})
 }
 
-// replicateToReplicas sends write operations to all replicas
-func (s *ShardServer) replicateToReplicas(path string, body []byte) {
-	for _, replicaAddr := range s.replicas {
-		go func(addr string) {
-			client := &http.Client{Timeout: 5 * time.Second}
-			_, err := client.Post(addr+path, "application/json", bytes.NewReader(body))
-			if err != nil {
-				fmt.Printf("Replication to %s failed: %v\n", addr, err)
+// appendToWAL adds a write operation to the WAL stream
+func (s *ShardServer) appendToWAL(path string, req map[string]interface{}) {
+	if s.walStream == nil {
+		return
+	}
+
+	op := "insert"
+	if path == "/delete" {
+		op = "delete"
+	}
+
+	// Extract fields from request
+	id, _ := req["id"].(string)
+	doc, _ := req["doc"].(string)
+	coll, _ := req["collection"].(string)
+	if coll == "" {
+		coll = "default"
+	}
+
+	// For insert/batch operations, we need to embed and get vectors
+	var vec []float32
+	if op == "insert" && doc != "" {
+		v, err := s.embedder.Embed(doc)
+		if err == nil {
+			vec = v
+		}
+	}
+
+	// Extract metadata
+	meta := make(map[string]string)
+	if m, ok := req["meta"].(map[string]interface{}); ok {
+		for k, v := range m {
+			if str, ok := v.(string); ok {
+				meta[k] = str
 			}
-		}(replicaAddr)
+		}
+	}
+
+	// Append to WAL
+	seq := s.walStream.Append(op, id, doc, coll, vec, meta)
+	if seq%100 == 0 {
+		fmt.Printf("📝 WAL: Appended operation (seq=%d, op=%s, id=%s)\n", seq, op, id)
 	}
 }
 
@@ -245,8 +305,29 @@ func (s *ShardServer) syncLoop() {
 
 // syncFromPrimary pulls latest WAL from primary and applies it
 func (s *ShardServer) syncFromPrimary() error {
-	// This is a simplified sync - in production, you'd use WAL streaming
-	// For now, we rely on the replication middleware for push-based sync
+	if s.walStreamClient == nil {
+		return nil
+	}
+
+	// Pull latest WAL entries from primary
+	entries, err := s.walStreamClient.PullLatest()
+	if err != nil {
+		return fmt.Errorf("failed to pull WAL: %w", err)
+	}
+
+	// No new entries
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// Apply entries to local store
+	if err := s.ApplyEntries(entries); err != nil {
+		return fmt.Errorf("failed to apply WAL entries: %w", err)
+	}
+
+	fmt.Printf("✅ Replica sync: Applied %d WAL entries (latest seq: %d)\n",
+		len(entries), entries[len(entries)-1].Seq)
+
 	return nil
 }
 
