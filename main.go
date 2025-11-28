@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -252,6 +253,43 @@ func (vs *VectorStore) SearchANN(query []float32, k int) []int {
 		if ix, ok := vs.idToIx[n.Key]; ok {
 			ixs = append(ixs, ix)
 		}
+	}
+	return ixs
+}
+
+// Lexical-only search using BM25 over all active docs.
+func (vs *VectorStore) SearchLex(qTokens []string, k int) []int {
+	vs.RLock()
+	defer vs.RUnlock()
+	type scored struct {
+		ix    int
+		score float64
+	}
+	best := make([]scored, 0, k)
+	for i, id := range vs.IDs {
+		hid := hashID(id)
+		if vs.Deleted[hid] {
+			continue
+		}
+		score := vs.bm25(hid, qTokens)
+		if len(best) < k {
+			best = append(best, scored{ix: i, score: score})
+			continue
+		}
+		minIdx := 0
+		for j := 1; j < len(best); j++ {
+			if best[j].score < best[minIdx].score {
+				minIdx = j
+			}
+		}
+		if score > best[minIdx].score {
+			best[minIdx] = scored{ix: i, score: score}
+		}
+	}
+	sort.Slice(best, func(i, j int) bool { return best[i].score > best[j].score })
+	ixs := make([]int, 0, len(best))
+	for _, b := range best {
+		ixs = append(ixs, b.ix)
 	}
 	return ixs
 }
@@ -1023,6 +1061,14 @@ func loadStopwords() map[string]bool {
 		if os.Getenv("DISABLE_STOPWORDS") == "1" {
 			stopwordEnabled = false
 		}
+		if extra := os.Getenv("STOPWORDS_EXTRA"); extra != "" {
+			for _, tok := range strings.Split(extra, ",") {
+				tok = strings.TrimSpace(strings.ToLower(tok))
+				if tok != "" {
+					stopwords[tok] = true
+				}
+			}
+		}
 	})
 	return stopwords
 }
@@ -1245,6 +1291,23 @@ func main() {
 		addr := ":8080"
 		fmt.Printf(">>> HTTP API listening on %s (POST /insert, POST /batch_insert, POST /query, POST /delete, GET /health, GET /metrics)\n", addr)
 		_ = http.ListenAndServe(addr, handler)
+	}()
+
+	// Background compaction/GC (optional)
+	go func() {
+		interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 0)) * time.Minute
+		if interval <= 0 {
+			return
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for range t.C {
+			if err := store.Compact(indexPath); err != nil {
+				fmt.Printf("compact error: %v\n", err)
+			} else {
+				fmt.Println("compact completed")
+			}
+		}
 	}()
 
 	fmt.Println(">>> Starting RAG Conversation...")
