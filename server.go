@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -405,6 +406,53 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 		if err := store.Compact(indexPath); err != nil {
 			http.Error(w, fmt.Sprintf("compact failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})))
+
+	// Export snapshot (read-only)
+	mux.HandleFunc("/export", withMetrics("export", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		store.RLock()
+		path := indexPath
+		store.RUnlock()
+		http.ServeFile(w, r, path)
+	})))
+
+	// Import snapshot (overwrites current index)
+	mux.HandleFunc("/import", withMetrics("import", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		tmp, err := os.CreateTemp("", "vectordb-import-*.gob")
+		if err != nil {
+			http.Error(w, "tmp file error", http.StatusInternalServerError)
+			return
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := io.Copy(tmp, r.Body); err != nil {
+			http.Error(w, "copy failed", http.StatusInternalServerError)
+			return
+		}
+		if err := tmp.Close(); err != nil {
+			http.Error(w, "close failed", http.StatusInternalServerError)
+			return
+		}
+		newStore, loaded := loadOrInitStore(tmp.Name(), store.Count+1, store.Dim)
+		if !loaded {
+			http.Error(w, "import failed", http.StatusBadRequest)
+			return
+		}
+		store.Lock()
+		*store = *newStore
+		store.Unlock()
+		if err := store.Save(indexPath); err != nil {
+			http.Error(w, "save failed", http.StatusInternalServerError)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
