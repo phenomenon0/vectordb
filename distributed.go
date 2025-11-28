@@ -65,6 +65,10 @@ type DistributedVectorDB struct {
 	// Health monitoring
 	healthCheckInterval time.Duration
 	stopHealthCheck     chan struct{}
+
+	// Quorum-based consensus for distributed decisions
+	quorum  *QuorumVoter
+	fencing *FencingManager
 }
 
 // DistributedConfig configures the distributed vectordb
@@ -73,6 +77,10 @@ type DistributedConfig struct {
 	ReplicationFactor   int          // Number of replicas per shard
 	ReadStrategy        ReadStrategy // How to route read queries
 	HealthCheckInterval time.Duration
+
+	// Quorum configuration
+	CoordinatorID   string   // This coordinator's unique ID
+	PeerCoordinators []string // HTTP addresses of other coordinators for voting
 }
 
 // NewDistributedVectorDB creates a new distributed vectordb coordinator
@@ -82,6 +90,9 @@ func NewDistributedVectorDB(cfg DistributedConfig) *DistributedVectorDB {
 	}
 	if cfg.ReadStrategy == "" {
 		cfg.ReadStrategy = ReadReplicaPrefer
+	}
+	if cfg.CoordinatorID == "" {
+		cfg.CoordinatorID = fmt.Sprintf("coordinator-%d", time.Now().Unix())
 	}
 
 	d := &DistributedVectorDB{
@@ -93,6 +104,16 @@ func NewDistributedVectorDB(cfg DistributedConfig) *DistributedVectorDB {
 		httpClient:          &http.Client{Timeout: 30 * time.Second},
 		healthCheckInterval: cfg.HealthCheckInterval,
 		stopHealthCheck:     make(chan struct{}),
+	}
+
+	// Initialize quorum voting if peers configured
+	if len(cfg.PeerCoordinators) > 0 {
+		d.quorum = NewQuorumVoter(cfg.CoordinatorID, cfg.PeerCoordinators)
+		d.fencing = NewFencingManager(d.quorum)
+		fmt.Printf("✅ Quorum voting enabled: coordinator=%s, peers=%d\n",
+			cfg.CoordinatorID, len(cfg.PeerCoordinators))
+	} else {
+		fmt.Printf("⚠️  Running in single-coordinator mode (no quorum)\n")
 	}
 
 	// Start health monitoring

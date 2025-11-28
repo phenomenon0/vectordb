@@ -39,6 +39,10 @@ type CoordinatorServerConfig struct {
 	ReplicationFactor int
 	ReadStrategy      ReadStrategy
 
+	// Quorum config
+	CoordinatorID    string   // This coordinator's unique ID
+	PeerCoordinators []string // Peer coordinator addresses for voting
+
 	// Production features
 	EnableFailover bool
 	FailoverConfig FailoverConfig
@@ -60,6 +64,8 @@ func NewCoordinatorServer(cfg CoordinatorServerConfig) *CoordinatorServer {
 		NumShards:         cfg.NumShards,
 		ReplicationFactor: cfg.ReplicationFactor,
 		ReadStrategy:      cfg.ReadStrategy,
+		CoordinatorID:     cfg.CoordinatorID,
+		PeerCoordinators:  cfg.PeerCoordinators,
 	})
 
 	c := &CoordinatorServer{
@@ -118,6 +124,9 @@ func NewCoordinatorServer(cfg CoordinatorServerConfig) *CoordinatorServer {
 	mux.HandleFunc("/admin/cluster_status", wrapAuth(c.handleClusterStatus, "admin"))
 	mux.HandleFunc("/admin/failover_stats", wrapAuth(c.handleFailoverStats, "admin"))
 	mux.HandleFunc("/admin/failover_trigger", wrapAuth(c.handleFailoverTrigger, "admin"))
+
+	// Internal coordinator-to-coordinator endpoints (no auth for inter-coordinator communication)
+	mux.HandleFunc("/internal/vote", c.handleVoteRequest)
 
 	// Wrap entire handler with metrics middleware if enabled
 	var handler http.Handler = mux
@@ -538,6 +547,36 @@ func (c *CoordinatorServer) handleFailoverTrigger(w http.ResponseWriter, r *http
 		"status":   "failover_triggered",
 		"shard_id": req.ShardID,
 	})
+}
+
+// ===========================================================================================
+// INTERNAL COORDINATOR ENDPOINTS
+// ===========================================================================================
+
+// handleVoteRequest handles POST /internal/vote - receives vote requests from peer coordinators
+func (c *CoordinatorServer) handleVoteRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if quorum is enabled
+	if c.distributed.quorum == nil {
+		http.Error(w, "quorum not enabled on this coordinator", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req VoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Process vote request
+	response := c.distributed.quorum.HandleVoteRequest(&req)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // RunCoordinator runs the coordinator server as a standalone process

@@ -218,16 +218,44 @@ func (fm *FailoverManager) performFailover(shardID int, oldPrimary *ShardNode, r
 	fmt.Printf("   → Selected replica %s for promotion (lag: %d ops)\n",
 		bestReplica.NodeID, bestReplica.ReplicationLag)
 
-	// Step 2: Promote replica to primary
+	// Step 2: Request quorum approval (if quorum enabled)
+	if fm.coordinator.quorum != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		req := &VoteRequest{
+			RequestID:    fmt.Sprintf("failover-%d-%d", shardID, time.Now().Unix()),
+			DecisionType: DecisionFailover,
+			ShardID:      shardID,
+			Payload: map[string]any{
+				"replica_id":       bestReplica.NodeID,
+				"replication_lag":  float64(bestReplica.ReplicationLag),
+				"old_primary":      oldPrimary.NodeID,
+				"unhealthy_since":  state.primaryUnhealthySince.Unix(),
+			},
+		}
+
+		fmt.Printf("   → Requesting quorum approval for failover...\n")
+		approved, err := fm.coordinator.quorum.RequestQuorum(ctx, req)
+		if err != nil || !approved {
+			fmt.Printf("❌ Shard %d: Failover REJECTED by quorum: %v\n", shardID, err)
+			return
+		}
+		fmt.Printf("   → Quorum APPROVED failover\n")
+	} else {
+		fmt.Printf("   → Quorum disabled, proceeding without vote\n")
+	}
+
+	// Step 3: Promote replica to primary
 	if err := fm.promoteReplica(bestReplica); err != nil {
 		fmt.Printf("❌ Shard %d: Failover FAILED - Could not promote replica: %v\n", shardID, err)
 		return
 	}
 
-	// Step 3: Update coordinator routing
+	// Step 4: Update coordinator routing
 	fm.updateCoordinatorRouting(shardID, oldPrimary, bestReplica)
 
-	// Step 4: Mark old primary as replica (or remove if permanently dead)
+	// Step 5: Mark old primary as replica (or remove if permanently dead)
 	fm.demotePrimary(oldPrimary)
 
 	fmt.Printf("✅ Shard %d: FAILOVER COMPLETE - New primary: %s (old: %s)\n",
@@ -239,23 +267,63 @@ func (fm *FailoverManager) performFailover(shardID int, oldPrimary *ShardNode, r
 	fm.mu.Unlock()
 }
 
-// selectBestReplica selects the best replica for promotion based on health and replication lag
+// selectBestReplica selects the best replica for promotion based on composite health scoring
+// Scoring factors:
+// - Health status (must be healthy)
+// - Replication lag (lower is better)
+// - Last seen time (more recent is better)
 func (fm *FailoverManager) selectBestReplica(replicas []*ShardNode) *ShardNode {
 	var best *ShardNode
-	minLag := int(1<<31 - 1) // Max int
+	bestScore := float64(-1)
 
+	now := time.Now()
 	for _, replica := range replicas {
 		if !replica.Healthy {
 			continue
 		}
 
-		if replica.ReplicationLag < minLag {
-			minLag = replica.ReplicationLag
+		// Calculate composite health score (0-100, higher is better)
+		score := fm.calculateReplicaScore(replica, now)
+
+		if score > bestScore {
+			bestScore = score
 			best = replica
 		}
 	}
 
 	return best
+}
+
+// calculateReplicaScore computes a composite health score for replica selection
+func (fm *FailoverManager) calculateReplicaScore(replica *ShardNode, now time.Time) float64 {
+	score := 100.0
+
+	// Factor 1: Replication lag penalty (-0 to -50 points)
+	// Lag > 1000 ops is very bad, lag < 10 ops is excellent
+	lagPenalty := float64(replica.ReplicationLag) / 20.0 // Each 20 ops = -1 point
+	if lagPenalty > 50 {
+		lagPenalty = 50 // Cap at -50 points
+	}
+	score -= lagPenalty
+
+	// Factor 2: Freshness penalty (-0 to -30 points)
+	// More than 60s since last seen is concerning
+	staleness := now.Sub(replica.LastSeen).Seconds()
+	if staleness > 60 {
+		score -= 30
+	} else if staleness > 30 {
+		score -= 15
+	} else if staleness > 10 {
+		score -= 5
+	}
+
+	// Factor 3: Role preference (+10 points if already marked as replica)
+	// This helps maintain stable topology
+	if replica.Role == RoleReplica {
+		score += 10
+	}
+
+	return score
 }
 
 // promoteReplica promotes a replica to primary
