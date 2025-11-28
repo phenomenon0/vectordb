@@ -1449,10 +1449,107 @@ func warmupModels(embedder Embedder, reranker Reranker) {
 }
 
 // ======================================================================================
+// Coordinator Mode: runs as distributed coordinator with quorum
+// ======================================================================================
+
+func runCoordinatorMode() {
+	fmt.Println(">>> Starting Distributed Coordinator Mode...")
+
+	// Read coordinator configuration from environment
+	coordinatorID := os.Getenv("COORDINATOR_ID")
+	if coordinatorID == "" {
+		coordinatorID = fmt.Sprintf("coordinator-%d", time.Now().Unix())
+	}
+
+	// Parse peer coordinators
+	peerCoordinators := []string{}
+	if peers := os.Getenv("PEER_COORDINATORS"); peers != "" {
+		peerCoordinators = strings.Split(peers, ",")
+		for i := range peerCoordinators {
+			peerCoordinators[i] = strings.TrimSpace(peerCoordinators[i])
+		}
+	}
+
+	// Get port
+	port := envInt("PORT", 8080)
+	listenAddr := fmt.Sprintf(":%d", port)
+
+	// Get number of shards and replication factor
+	numShards := envInt("NUM_SHARDS", 2)
+	replicationFactor := envInt("REPLICATION_FACTOR", 2)
+
+	// Determine read strategy
+	readStrategyStr := os.Getenv("READ_STRATEGY")
+	var readStrategy ReadStrategy
+	switch readStrategyStr {
+	case "primary-only":
+		readStrategy = ReadPrimaryOnly
+	case "replica-prefer":
+		readStrategy = ReadReplicaPrefer
+	case "balanced":
+		readStrategy = ReadBalanced
+	default:
+		readStrategy = ReadReplicaPrefer
+	}
+
+	// Initialize JWT manager if configured
+	var jwtMgr *JWTManager
+	if secret := os.Getenv("JWT_SECRET"); secret != "" {
+		issuer := os.Getenv("JWT_ISSUER")
+		if issuer == "" {
+			issuer = "vectordb"
+		}
+		jwtMgr = NewJWTManager(secret, issuer)
+	}
+
+	// Create coordinator config
+	cfg := CoordinatorServerConfig{
+		ListenAddr:        listenAddr,
+		NumShards:         numShards,
+		ReplicationFactor: replicationFactor,
+		ReadStrategy:      readStrategy,
+		CoordinatorID:     coordinatorID,
+		PeerCoordinators:  peerCoordinators,
+		EnableFailover:    os.Getenv("ENABLE_FAILOVER") == "1",
+		FailoverConfig: FailoverConfig{
+			UnhealthyThreshold: time.Duration(envInt("FAILOVER_THRESHOLD_SEC", 30)) * time.Second,
+			CheckInterval:      time.Duration(envInt("FAILOVER_CHECK_SEC", 5)) * time.Second,
+			EnableAutoFailover: os.Getenv("ENABLE_AUTO_FAILOVER") == "1",
+		},
+		EnableMetrics: os.Getenv("ENABLE_METRICS") != "0", // Enabled by default
+		EnableAuth:    jwtMgr != nil,
+		JWTMgr:        jwtMgr,
+	}
+
+	fmt.Printf(">>> Coordinator Configuration:\n")
+	fmt.Printf("    ID: %s\n", coordinatorID)
+	fmt.Printf("    Listen: %s\n", listenAddr)
+	fmt.Printf("    Shards: %d\n", numShards)
+	fmt.Printf("    Replication Factor: %d\n", replicationFactor)
+	fmt.Printf("    Read Strategy: %s\n", readStrategy)
+	if len(peerCoordinators) > 0 {
+		fmt.Printf("    Peer Coordinators: %v\n", peerCoordinators)
+	} else {
+		fmt.Printf("    Peer Coordinators: none (single-coordinator mode)\n")
+	}
+	fmt.Printf("    Failover: enabled=%v, auto=%v\n", cfg.EnableFailover, cfg.FailoverConfig.EnableAutoFailover)
+	fmt.Println()
+
+	// Run coordinator
+	RunCoordinator(cfg)
+}
+
+// ======================================================================================
 // Main: bootstrap, HTTP API
 // ======================================================================================
 
 func main() {
+	// Check if running in coordinator mode
+	if os.Getenv("COORDINATOR_MODE") == "1" {
+		runCoordinatorMode()
+		return
+	}
+
 	fmt.Println(">>> Initializing Flat Buffer Vector Engine...")
 	const indexPath = "vectordb/index.gob"
 	defaultDim := 384
