@@ -34,6 +34,7 @@ type VectorStore struct {
 	Count       int
 	Docs        []string
 	IDs         []string
+	Seqs        []uint64
 	next        int64
 	hnsw        *hnsw.Graph[uint64]
 	idToIx      map[uint64]int
@@ -75,6 +76,7 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		Meta:        make(map[uint64]map[string]string),
 		Deleted:     make(map[uint64]bool),
 		Coll:        make(map[uint64]string),
+		Seqs:        make([]uint64, 0, capacity),
 		NumMeta:     make(map[uint64]map[string]float64),
 		TimeMeta:    make(map[uint64]map[string]time.Time),
 		walMaxBytes: 0,
@@ -101,6 +103,7 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 	vs.Data = append(vs.Data, v...)
 	vs.Docs = append(vs.Docs, doc)
 	vs.IDs = append(vs.IDs, id)
+	vs.Seqs = append(vs.Seqs, uint64(vs.Count))
 	vs.Count++
 
 	toks := tokenize(doc)
@@ -157,6 +160,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	vs.Data = append(vs.Data, v...)
 	vs.Docs = append(vs.Docs, doc)
 	vs.IDs = append(vs.IDs, id)
+	vs.Seqs = append(vs.Seqs, uint64(vs.Count))
 	vs.Count++
 	vs.hnsw.Add(hnsw.MakeNode(hid, v))
 	vs.idToIx[hid] = vs.Count - 1

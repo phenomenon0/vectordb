@@ -185,14 +185,21 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			}
 		}
 
-		qVec, err := embedder.Embed(req.Query)
-		if err != nil {
-			http.Error(w, "embed error: "+err.Error(), http.StatusInternalServerError)
-			return
+		qTokens := tokenize(req.Query)
+		qVec := []float32{}
+		var err error
+		if req.Mode != "lex" {
+			qVec, err = embedder.Embed(req.Query)
+			if err != nil {
+				http.Error(w, "embed error: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		var ids []int
 		if req.Mode == "scan" {
 			ids = store.Search(qVec, req.TopK)
+		} else if req.Mode == "lex" {
+			ids = store.SearchLex(qTokens, req.TopK)
 		} else {
 			if req.EfSearch > 0 {
 				orig := store.hnsw.EfSearch
@@ -203,7 +210,6 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				ids = store.SearchANN(qVec, req.TopK)
 			}
 		}
-		qTokens := tokenize(req.Query)
 		docs := make([]string, 0, len(ids))
 		respIDs := make([]string, 0, len(ids))
 		respMeta := make([]map[string]string, 0, len(ids))
@@ -306,7 +312,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		nextPage := ""
 		if end < len(respIDs) {
-			nextPage = encodePageToken(offset+pageSize, hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode))
+			nextPage = encodePageToken(offset+pageSize, hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode), store.Seqs[ids[end-1]])
 		}
 
 		rDocs, rerankScores, stats, err := reranker.Rerank(req.Query, docs, req.Limit)
@@ -474,10 +480,11 @@ func ageMillis(path string, fallback time.Time) int64 {
 type pageCursor struct {
 	Offset     int    `json:"offset"`
 	FilterHash string `json:"filter_hash"`
+	LastSeq    uint64 `json:"last_seq"`
 }
 
-func encodePageToken(offset int, filterHash string) string {
-	cur := pageCursor{Offset: offset, FilterHash: filterHash}
+func encodePageToken(offset int, filterHash string, lastSeq uint64) string {
+	cur := pageCursor{Offset: offset, FilterHash: filterHash, LastSeq: lastSeq}
 	b, _ := json.Marshal(cur)
 	return base64.StdEncoding.EncodeToString(b)
 }
