@@ -1419,6 +1419,27 @@ func main() {
 		}
 	}()
 
+	// Optional snapshot export scheduler
+	go func() {
+		exportPath := os.Getenv("SNAPSHOT_EXPORT_PATH")
+		if exportPath == "" {
+			return
+		}
+		interval := time.Duration(envInt("EXPORT_INTERVAL_MIN", 0)) * time.Minute
+		if interval <= 0 {
+			return
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for range t.C {
+			if err := store.Save(exportPath); err != nil {
+				fmt.Printf("snapshot export error: %v\n", err)
+			} else {
+				fmt.Printf("snapshot exported to %s\n", exportPath)
+			}
+		}
+	}()
+
 	fmt.Println(">>> Starting RAG Conversation...")
 	convID := sched.StartConversation(agentID, "Why is memory locality important for vector search?")
 
