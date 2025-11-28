@@ -293,3 +293,29 @@ func (mc *MetricsCollector) RecordHTTPRequest(method, endpoint string, status in
 
 	mc.httpRequestDuration.WithLabelValues(method, endpoint).Observe(duration.Seconds())
 }
+
+// ===========================================================================================
+// GLOBAL METRICS INSTANCE
+// ===========================================================================================
+
+var globalMetrics *MetricsCollector
+
+// initMetrics initializes the global metrics collector
+func initMetrics() {
+	globalMetrics = NewMetricsCollector()
+}
+
+// withMetrics wraps an HTTP handler with metrics collection
+func withMetrics(endpoint string, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+		handler(rw, r)
+
+		duration := time.Since(start)
+		if globalMetrics != nil {
+			globalMetrics.RecordHTTPRequest(r.Method, endpoint, rw.statusCode, duration)
+		}
+	}
+}

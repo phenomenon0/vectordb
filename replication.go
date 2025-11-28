@@ -9,6 +9,20 @@ import (
 )
 
 // ===========================================================================================
+// WAL ENTRY TYPES
+// ===========================================================================================
+
+// WALEntry represents a write-ahead log entry for replication
+type WALEntry struct {
+	Op   string
+	ID   string
+	Doc  string
+	Meta map[string]string
+	Vec  []float32
+	Coll string
+}
+
+// ===========================================================================================
 // SYNCHRONOUS WAL REPLICATION
 // Quorum-based replication for zero data loss
 // ===========================================================================================
