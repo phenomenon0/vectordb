@@ -219,8 +219,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			score  float64
 		}
 		hybridScores := make([]scored, 0, len(ids))
+		rangeCandidates := store.candidateIDsForRange(req.MetaRanges)
+
 		for _, idx := range ids {
 			hid := hashID(store.GetID(idx))
+			if rangeCandidates != nil {
+				if _, ok := rangeCandidates[hid]; !ok {
+					continue
+				}
+			}
 			meta := store.Meta[hid]
 			if !matchesMeta(meta, req.Meta) {
 				continue

@@ -43,6 +43,8 @@ type VectorStore struct {
 	Coll        map[uint64]string
 	NumMeta     map[uint64]map[string]float64
 	TimeMeta    map[uint64]map[string]time.Time
+	numIndex    map[string][]numEntry
+	timeIndex   map[string][]timeEntry
 	walPath     string
 	walMu       sync.Mutex
 	walMaxBytes int64
@@ -79,6 +81,8 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		Seqs:        make([]uint64, 0, capacity),
 		NumMeta:     make(map[uint64]map[string]float64),
 		TimeMeta:    make(map[uint64]map[string]time.Time),
+		numIndex:    make(map[string][]numEntry),
+		timeIndex:   make(map[string][]timeEntry),
 		walMaxBytes: 0,
 		walMaxOps:   0,
 		apiToken:    os.Getenv("API_TOKEN"),
@@ -399,10 +403,12 @@ func (vs *VectorStore) ingestMeta(hid uint64, meta map[string]string) {
 		}
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			times[k] = t
+			vs.timeIndex[k] = append(vs.timeIndex[k], timeEntry{ID: hid, T: t})
 			continue
 		}
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			nums[k] = f
+			vs.numIndex[k] = append(vs.numIndex[k], numEntry{ID: hid, V: f})
 		}
 	}
 	if len(nums) > 0 {
@@ -416,6 +422,24 @@ func (vs *VectorStore) ingestMeta(hid uint64, meta map[string]string) {
 func (vs *VectorStore) ejectMeta(hid uint64) {
 	delete(vs.NumMeta, hid)
 	delete(vs.TimeMeta, hid)
+	for k, entries := range vs.numIndex {
+		filtered := entries[:0]
+		for _, e := range entries {
+			if e.ID != hid {
+				filtered = append(filtered, e)
+			}
+		}
+		vs.numIndex[k] = filtered
+	}
+	for k, entries := range vs.timeIndex {
+		filtered := entries[:0]
+		for _, e := range entries {
+			if e.ID != hid {
+				filtered = append(filtered, e)
+			}
+		}
+		vs.timeIndex[k] = filtered
+	}
 }
 
 // Persistence snapshot.
@@ -1019,6 +1043,57 @@ func matchesRanges(meta map[string]string, num map[string]float64, times map[str
 	return true
 }
 
+func (vs *VectorStore) candidateIDsForRange(ranges []RangeFilter) map[uint64]struct{} {
+	if len(ranges) == 0 {
+		return nil
+	}
+	candidates := make(map[uint64]struct{})
+	for idx, rf := range ranges {
+		local := make(map[uint64]struct{})
+		if rf.Min != nil || rf.Max != nil {
+			entries := vs.numIndex[rf.Key]
+			for _, e := range entries {
+				if rf.Min != nil && e.V < *rf.Min {
+					continue
+				}
+				if rf.Max != nil && e.V > *rf.Max {
+					continue
+				}
+				local[e.ID] = struct{}{}
+			}
+		} else if rf.TimeMin != "" || rf.TimeMax != "" {
+			entries := vs.timeIndex[rf.Key]
+			var minT, maxT time.Time
+			if rf.TimeMin != "" {
+				minT, _ = time.Parse(time.RFC3339, rf.TimeMin)
+			}
+			if rf.TimeMax != "" {
+				maxT, _ = time.Parse(time.RFC3339, rf.TimeMax)
+			}
+			for _, e := range entries {
+				if !minT.IsZero() && e.T.Before(minT) {
+					continue
+				}
+				if !maxT.IsZero() && e.T.After(maxT) {
+					continue
+				}
+				local[e.ID] = struct{}{}
+			}
+		}
+		if idx == 0 {
+			candidates = local
+		} else {
+			// intersect
+			for id := range candidates {
+				if _, ok := local[id]; !ok {
+					delete(candidates, id)
+				}
+			}
+		}
+	}
+	return candidates
+}
+
 // tokenize is a simple Unicode-aware tokenizer used for metadata/text analysis.
 func tokenize(text string) []string {
 	stop := loadStopwords()
@@ -1084,6 +1159,16 @@ type walEntry struct {
 	Meta map[string]string
 	Vec  []float32
 	Coll string
+}
+
+type numEntry struct {
+	ID uint64
+	V  float64
+}
+
+type timeEntry struct {
+	ID uint64
+	T  time.Time
 }
 
 func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec []float32) {
