@@ -120,6 +120,12 @@ go run ./vectordb
 # downloads model.onnx + tokenizer.json into vectordb/models/bge-small-en-v1.5/
 ```
 
+### Model size/quality notes
+- Current example: BGE-small-en-v1.5 ONNX (~100–130 MB FP32). For tighter footprints:
+  - Int8 quantize BGE-small with onnxruntime quantization (size ~20–30 MB, small quality hit).
+  - Alternatives: MiniLM-L6-v2 or E5-small-v2 (384d) int8 (~15–25 MB) with slightly lower recall.
+  - Keep tokenizer aligned with the model; only swap the ONNX file and env vars.
+
 ## Runtime Notes
 - Warm the model at startup with a dummy call.
 - Ensure `VectorStore` capacity matches ingestion volume (`capacity * dim * 4 bytes`).
