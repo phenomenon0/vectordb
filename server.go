@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/coder/hnsw"
@@ -35,9 +36,26 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				}
 			}
 			if store.rl != nil {
+				// Use IP address for anonymous users instead of shared "anon" key
 				key := token
 				if key == "" {
-					key = "anon"
+					// Extract client IP (handle X-Forwarded-For and X-Real-IP headers)
+					clientIP := r.Header.Get("X-Forwarded-For")
+					if clientIP == "" {
+						clientIP = r.Header.Get("X-Real-IP")
+					}
+					if clientIP == "" {
+						clientIP = r.RemoteAddr
+					}
+					// Use first IP in X-Forwarded-For chain
+					if idx := strings.Index(clientIP, ","); idx > 0 {
+						clientIP = clientIP[:idx]
+					}
+					// Strip port from RemoteAddr
+					if idx := strings.LastIndex(clientIP, ":"); idx > 0 {
+						clientIP = clientIP[:idx]
+					}
+					key = "ip:" + strings.TrimSpace(clientIP)
 				}
 				if !store.rl.allow(key) {
 					http.Error(w, "rate limited", http.StatusTooManyRequests)
@@ -53,6 +71,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+
+		// Add request size limit
+		r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10MB limit
+
 		var req struct {
 			ID         string            `json:"id"`
 			Doc        string            `json:"doc"`
@@ -61,28 +83,56 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			Collection string            `json:"collection"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
+
+		// Input validation
+		const (
+			MaxDocLength       = 1_000_000 // 1MB
+			MaxMetaKeys        = 100
+			MaxMetaValueLength = 10_000
+		)
+
 		if req.Doc == "" {
 			http.Error(w, "doc required", http.StatusBadRequest)
 			return
 		}
+		if len(req.Doc) > MaxDocLength {
+			http.Error(w, fmt.Sprintf("doc too large: max %d bytes", MaxDocLength), http.StatusBadRequest)
+			return
+		}
+		if len(req.Meta) > MaxMetaKeys {
+			http.Error(w, fmt.Sprintf("too many metadata keys: max %d", MaxMetaKeys), http.StatusBadRequest)
+			return
+		}
+		for k, v := range req.Meta {
+			if len(k) > MaxMetaValueLength || len(v) > MaxMetaValueLength {
+				http.Error(w, fmt.Sprintf("metadata key or value too large: max %d bytes", MaxMetaValueLength), http.StatusBadRequest)
+				return
+			}
+		}
+
 		vec, err := embedder.Embed(req.Doc)
 		if err != nil {
 			http.Error(w, "embed error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+
 		var id string
 		if req.Upsert {
-			id = store.Upsert(vec, req.Doc, req.ID, req.Meta, req.Collection)
+			id, err = store.Upsert(vec, req.Doc, req.ID, req.Meta, req.Collection)
 		} else {
-			id = store.Add(vec, req.Doc, req.ID, req.Meta, req.Collection)
+			id, err = store.Add(vec, req.Doc, req.ID, req.Meta, req.Collection)
 		}
-		if err := store.Save(indexPath); err != nil {
-			fmt.Printf("warning: save failed: %v\n", err)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to insert document: %v", err), http.StatusInternalServerError)
+			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
+
+		if err := json.NewEncoder(w).Encode(map[string]any{"id": id}); err != nil {
+			fmt.Printf("error encoding response: %v\n", err)
+		}
 	})))
 
 	mux.HandleFunc("/batch_insert", withMetrics("batch_insert", guard(func(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +140,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+
+		// Add request size limit
+		r.Body = http.MaxBytesReader(w, r.Body, 50*1024*1024) // 50MB limit for batch
+
 		var req struct {
 			Docs []struct {
 				ID         string            `json:"id"`
@@ -100,32 +154,71 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			Upsert bool `json:"upsert"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
+
+		const (
+			MaxDocLength       = 1_000_000 // 1MB
+			MaxMetaKeys        = 100
+			MaxMetaValueLength = 10_000
+			MaxBatchSize       = 10_000
+		)
+
 		if len(req.Docs) == 0 {
 			http.Error(w, "no docs provided", http.StatusBadRequest)
 			return
 		}
+		if len(req.Docs) > MaxBatchSize {
+			http.Error(w, fmt.Sprintf("batch too large: max %d docs", MaxBatchSize), http.StatusBadRequest)
+			return
+		}
+
 		ids := make([]string, 0, len(req.Docs))
-		for _, d := range req.Docs {
+		var errors []string
+
+		for i, d := range req.Docs {
 			if d.Doc == "" {
+				errors = append(errors, fmt.Sprintf("doc %d: empty document", i))
 				continue
 			}
+			if len(d.Doc) > MaxDocLength {
+				errors = append(errors, fmt.Sprintf("doc %d: too large", i))
+				continue
+			}
+			if len(d.Meta) > MaxMetaKeys {
+				errors = append(errors, fmt.Sprintf("doc %d: too many metadata keys", i))
+				continue
+			}
+
 			vec, err := embedder.Embed(d.Doc)
 			if err != nil {
+				errors = append(errors, fmt.Sprintf("doc %d: embed error: %v", i, err))
 				continue
 			}
+
+			var id string
 			if req.Upsert {
-				ids = append(ids, store.Upsert(vec, d.Doc, d.ID, d.Meta, d.Collection))
+				id, err = store.Upsert(vec, d.Doc, d.ID, d.Meta, d.Collection)
 			} else {
-				ids = append(ids, store.Add(vec, d.Doc, d.ID, d.Meta, d.Collection))
+				id, err = store.Add(vec, d.Doc, d.ID, d.Meta, d.Collection)
 			}
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("doc %d: insert error: %v", i, err))
+				continue
+			}
+			ids = append(ids, id)
 		}
-		if err := store.Save(indexPath); err != nil {
-			fmt.Printf("warning: save failed: %v\n", err)
+
+		// Removed synchronous save - rely on WAL + background snapshots
+		response := map[string]any{"ids": ids}
+		if len(errors) > 0 {
+			response["errors"] = errors
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ids": ids})
+
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			fmt.Printf("error encoding response: %v\n", err)
+		}
 	})))
 
 	mux.HandleFunc("/query", withMetrics("query", guard(func(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +226,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+
+		// Add request size limit
+		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024) // 1MB limit for query
+
 		var req struct {
 			Query       string              `json:"query"`
 			TopK        int                 `json:"top_k"`
@@ -152,11 +249,27 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			PageSize    int                 `json:"page_size"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
+
+		// Input validation
+		const (
+			MaxQueryLength = 10_000
+			MaxTopK        = 1000
+		)
+
+		if len(req.Query) > MaxQueryLength {
+			http.Error(w, fmt.Sprintf("query too long: max %d bytes", MaxQueryLength), http.StatusBadRequest)
+			return
+		}
+
 		if req.TopK == 0 {
 			req.TopK = 3
+		}
+		if req.TopK > MaxTopK {
+			http.Error(w, fmt.Sprintf("top_k too large: max %d", MaxTopK), http.StatusBadRequest)
+			return
 		}
 		if req.Limit == 0 || req.Limit > req.TopK {
 			req.Limit = req.TopK
@@ -343,22 +456,31 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024) // 1MB limit
+
 		var req struct {
 			ID string `json:"id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
 		if req.ID == "" {
 			http.Error(w, "id required", http.StatusBadRequest)
 			return
 		}
-		store.Delete(req.ID)
-		if err := store.Save(indexPath); err != nil {
-			fmt.Printf("warning: save failed: %v\n", err)
+
+		if err := store.Delete(req.ID); err != nil {
+			http.Error(w, fmt.Sprintf("failed to delete document: %v", err), http.StatusInternalServerError)
+			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"deleted": req.ID})
+
+		// Removed synchronous save - rely on WAL + background snapshots
+
+		if err := json.NewEncoder(w).Encode(map[string]any{"deleted": req.ID}); err != nil {
+			fmt.Printf("error encoding response: %v\n", err)
+		}
 	})))
 
 	mux.HandleFunc("/health", withMetrics("health", guard(func(w http.ResponseWriter, r *http.Request) {
@@ -433,39 +555,93 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		http.ServeFile(w, r, path)
 	})))
 
-	// Import snapshot (overwrites current index)
+	// Import snapshot (overwrites current index) - Two-phase commit with validation
 	mux.HandleFunc("/import", withMetrics("import", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+
+		// Add request size limit (max 1GB for snapshot)
+		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024*1024)
+
+		// Phase 1: Validate imported snapshot
 		tmp, err := os.CreateTemp("", "vectordb-import-*.gob")
 		if err != nil {
-			http.Error(w, "tmp file error", http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("failed to create temp file: %v", err), http.StatusInternalServerError)
 			return
 		}
 		defer os.Remove(tmp.Name())
+
 		if _, err := io.Copy(tmp, r.Body); err != nil {
-			http.Error(w, "copy failed", http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("failed to read snapshot: %v", err), http.StatusInternalServerError)
 			return
 		}
 		if err := tmp.Close(); err != nil {
-			http.Error(w, "close failed", http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("failed to close temp file: %v", err), http.StatusInternalServerError)
 			return
 		}
+
+		// Load and validate the new snapshot
 		newStore, loaded := loadOrInitStore(tmp.Name(), store.Count+1, store.Dim)
 		if !loaded {
-			http.Error(w, "import failed", http.StatusBadRequest)
+			http.Error(w, "import failed: unable to load snapshot", http.StatusBadRequest)
 			return
 		}
+
+		// Validate dimensions match
+		if newStore.Dim != store.Dim {
+			http.Error(w, fmt.Sprintf("dimension mismatch: current=%d, import=%d", store.Dim, newStore.Dim), http.StatusBadRequest)
+			return
+		}
+
+		// Validate checksum
+		if !newStore.validateChecksum() {
+			http.Error(w, "checksum validation failed", http.StatusBadRequest)
+			return
+		}
+
+		// Phase 2: Atomically replace store
+		// Create backup before replacement
+		backupPath := indexPath + ".backup"
+		store.RLock()
+		if err := store.Save(backupPath); err != nil {
+			store.RUnlock()
+			http.Error(w, fmt.Sprintf("failed to create backup: %v", err), http.StatusInternalServerError)
+			return
+		}
+		store.RUnlock()
+
+		// Replace store atomically
 		store.Lock()
+		oldStore := *store
 		*store = *newStore
+		store.walPath = oldStore.walPath
+		store.apiToken = oldStore.apiToken
+		store.rl = oldStore.rl
 		store.Unlock()
+
+		// Save new store
 		if err := store.Save(indexPath); err != nil {
-			http.Error(w, "save failed", http.StatusInternalServerError)
+			// Rollback on failure
+			store.Lock()
+			*store = oldStore
+			store.Unlock()
+			http.Error(w, fmt.Sprintf("import failed, rolled back: %v", err), http.StatusInternalServerError)
+			os.Remove(backupPath)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+
+		// Success - remove backup
+		os.Remove(backupPath)
+
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"count":   store.Count,
+			"deleted": len(store.Deleted),
+		}); err != nil {
+			fmt.Printf("error encoding response: %v\n", err)
+		}
 	})))
 
 	return mux

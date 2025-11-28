@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -10,11 +11,13 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -94,11 +97,11 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 }
 
 // Add appends a vector/doc/meta.
-func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]string, collection string) string {
+func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]string, collection string) (string, error) {
 	vs.Lock()
 	defer vs.Unlock()
 	if len(v) != vs.Dim {
-		panic("dimension mismatch")
+		return "", fmt.Errorf("dimension mismatch: expected %d, got %d", vs.Dim, len(v))
 	}
 	if id == "" {
 		id = fmt.Sprintf("doc-%d", vs.next)
@@ -125,19 +128,21 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 	}
 	vs.Coll[hid] = collection
 	delete(vs.Deleted, hid)
-	vs.appendWAL("insert", id, doc, meta, v)
-	return id
+	if err := vs.appendWAL("insert", id, doc, meta, v); err != nil {
+		return "", fmt.Errorf("failed to append to WAL: %w", err)
+	}
+	return id, nil
 }
 
 // Upsert replaces existing vector/doc/meta if ID exists; otherwise adds new.
-func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[string]string, collection string) string {
+func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[string]string, collection string) (string, error) {
 	if id == "" {
 		return vs.Add(v, doc, id, meta, collection)
 	}
 	vs.Lock()
 	defer vs.Unlock()
 	if len(v) != vs.Dim {
-		panic("dimension mismatch")
+		return "", fmt.Errorf("dimension mismatch: expected %d, got %d", vs.Dim, len(v))
 	}
 	hid := hashID(id)
 	if ix, ok := vs.idToIx[hid]; ok && ix >= 0 && ix < len(vs.IDs) {
@@ -157,8 +162,10 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 			vs.Coll[hid] = collection
 		}
 		delete(vs.Deleted, hid)
-		vs.appendWAL("upsert", id, doc, meta, v)
-		return id
+		if err := vs.appendWAL("upsert", id, doc, meta, v); err != nil {
+			return "", fmt.Errorf("failed to append to WAL: %w", err)
+		}
+		return id, nil
 	}
 
 	vs.Data = append(vs.Data, v...)
@@ -178,11 +185,13 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	}
 	vs.Coll[hid] = collection
 	delete(vs.Deleted, hid)
-	vs.appendWAL("insert", id, doc, meta, v)
-	return id
+	if err := vs.appendWAL("insert", id, doc, meta, v); err != nil {
+		return "", fmt.Errorf("failed to append to WAL: %w", err)
+	}
+	return id, nil
 }
 
-func (vs *VectorStore) Delete(id string) {
+func (vs *VectorStore) Delete(id string) error {
 	vs.Lock()
 	defer vs.Unlock()
 	hid := hashID(id)
@@ -191,7 +200,10 @@ func (vs *VectorStore) Delete(id string) {
 	vs.ejectMeta(hid)
 	delete(vs.Meta, hid)
 	delete(vs.Coll, hid)
-	vs.appendWAL("delete", id, "", nil, nil)
+	if err := vs.appendWAL("delete", id, "", nil, nil); err != nil {
+		return fmt.Errorf("failed to append to WAL: %w", err)
+	}
+	return nil
 }
 
 func (vs *VectorStore) Get(index int) []float32 {
@@ -621,7 +633,9 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		if vs.next == 0 {
 			vs.next = int64(len(vs.IDs))
 		}
-		replayWAL(vs)
+		if err := replayWAL(vs); err != nil {
+			fmt.Printf("warning: WAL replay failed: %v\n", err)
+		}
 		return vs, true
 	}
 	vs := NewVectorStore(capacity, dim)
@@ -1171,15 +1185,15 @@ type timeEntry struct {
 	T  time.Time
 }
 
-func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec []float32) {
+func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec []float32) error {
 	if vs.walPath == "" {
-		return
+		return nil
 	}
 	vs.walMu.Lock()
 	defer vs.walMu.Unlock()
 	f, err := os.OpenFile(vs.walPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return
+		return fmt.Errorf("failed to open WAL: %w", err)
 	}
 	defer f.Close()
 
@@ -1190,7 +1204,12 @@ func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec
 		return vs.Coll[hashID(id)]
 	}()}
 	if err := json.NewEncoder(f).Encode(&entry); err != nil {
-		return
+		return fmt.Errorf("failed to encode WAL entry: %w", err)
+	}
+
+	// Fsync to ensure durability
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("failed to sync WAL: %w", err)
 	}
 	vs.walOps++
 
@@ -1213,15 +1232,19 @@ func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec
 			}
 		}()
 	}
+	return nil
 }
 
-func replayWAL(vs *VectorStore) {
+func replayWAL(vs *VectorStore) error {
 	if vs.walPath == "" {
-		return
+		return nil
 	}
 	f, err := os.Open(vs.walPath)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil // No WAL to replay
+		}
+		return fmt.Errorf("failed to open WAL for replay: %w", err)
 	}
 	defer f.Close()
 
@@ -1231,21 +1254,41 @@ func replayWAL(vs *VectorStore) {
 	defer func() { vs.walPath = path }()
 
 	dec := json.NewDecoder(f)
+	var replayErrors []error
 	for {
 		var e walEntry
 		if err := dec.Decode(&e); err != nil {
+			if err.Error() != "EOF" {
+				replayErrors = append(replayErrors, fmt.Errorf("WAL decode error: %w", err))
+			}
 			break
 		}
 		switch e.Op {
 		case "insert":
-			vs.Add(e.Vec, e.Doc, e.ID, e.Meta, e.Coll)
+			if _, err := vs.Add(e.Vec, e.Doc, e.ID, e.Meta, e.Coll); err != nil {
+				replayErrors = append(replayErrors, fmt.Errorf("replay insert failed: %w", err))
+			}
 		case "upsert":
-			vs.Upsert(e.Vec, e.Doc, e.ID, e.Meta, e.Coll)
+			if _, err := vs.Upsert(e.Vec, e.Doc, e.ID, e.Meta, e.Coll); err != nil {
+				replayErrors = append(replayErrors, fmt.Errorf("replay upsert failed: %w", err))
+			}
 		case "delete":
-			vs.Delete(e.ID)
+			if err := vs.Delete(e.ID); err != nil {
+				replayErrors = append(replayErrors, fmt.Errorf("replay delete failed: %w", err))
+			}
 		}
 	}
+
+	if len(replayErrors) > 0 {
+		// Log errors but don't fail - partial replay is better than none
+		fmt.Printf("WAL replay completed with %d errors\n", len(replayErrors))
+		for _, e := range replayErrors {
+			fmt.Printf("  - %v\n", e)
+		}
+	}
+
 	_ = os.Remove(path)
+	return nil
 }
 
 func (vs *VectorStore) computeChecksum() string {
@@ -1356,7 +1399,9 @@ func main() {
 		fmt.Println(">>> Hydrating Index with 100k vectors...")
 		for i := 0; i < 100000; i++ {
 			vec, _ := embedder.Embed(fmt.Sprintf("doc-%d", i))
-			store.Add(vec, fmt.Sprintf("doc-%d content about memory locality and vector search.", i), "", nil, "default")
+			if _, err := store.Add(vec, fmt.Sprintf("doc-%d content about memory locality and vector search.", i), "", nil, "default"); err != nil {
+				fmt.Printf("warning: failed to add vector %d: %v\n", i, err)
+			}
 		}
 		if err := store.Save(indexPath); err != nil {
 			fmt.Printf("warning: failed to save index: %v\n", err)
@@ -1394,27 +1439,46 @@ func main() {
 	agent := NewRAGAgent(llmID, retrievalID, rerankID)
 	agentID := sched.Agents().Register(agent, nil)
 
-	// HTTP API
+	// HTTP API with graceful shutdown
+	handler := newHTTPHandler(store, embedder, reranker, indexPath)
+	addr := ":8080"
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
+
 	go func() {
-		handler := newHTTPHandler(store, embedder, reranker, indexPath)
-		addr := ":8080"
 		fmt.Printf(">>> HTTP API listening on %s (POST /insert, POST /batch_insert, POST /query, POST /delete, GET /health, GET /metrics)\n", addr)
-		_ = http.ListenAndServe(addr, handler)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("HTTP server error: %v\n", err)
+		}
 	}()
 
-	// Background compaction/GC (optional)
+	// Background compaction/GC with auto-triggering based on tombstone ratio
 	go func() {
-		interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 0)) * time.Minute
-		if interval <= 0 {
-			return
-		}
+		interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
+		tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0 // Default 10%
+
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for range t.C {
-			if err := store.Compact(indexPath); err != nil {
-				fmt.Printf("compact error: %v\n", err)
-			} else {
-				fmt.Println("compact completed")
+			store.RLock()
+			total := store.Count
+			deleted := len(store.Deleted)
+			store.RUnlock()
+
+			if total == 0 {
+				continue
+			}
+
+			deletedRatio := float64(deleted) / float64(total)
+			if deletedRatio >= tombstoneThreshold {
+				fmt.Printf("Auto-compaction triggered: %.1f%% deleted (%d/%d)\n", deletedRatio*100, deleted, total)
+				if err := store.Compact(indexPath); err != nil {
+					fmt.Printf("compact error: %v\n", err)
+				} else {
+					fmt.Printf("compact completed: purged %d tombstones\n", deleted)
+				}
 			}
 		}
 	}()
@@ -1440,23 +1504,51 @@ func main() {
 		}
 	}()
 
+	// Setup graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	// Start optional RAG conversation
 	fmt.Println(">>> Starting RAG Conversation...")
 	convID := sched.StartConversation(agentID, "Why is memory locality important for vector search?")
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	timeout := time.After(10 * time.Second)
-	for {
+	conversationDone := false
+
+	for !conversationDone {
 		select {
+		case sig := <-sigCh:
+			fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
+			conversationDone = true
 		case <-timeout:
 			fmt.Println("Timeout reached (Demo end)")
-			return
+			conversationDone = true
 		case <-ticker.C:
 			if conv, ok := sched.ConvMgr().Get(convID); ok && conv.State == core.ConvComplete {
 				fmt.Println(">>> Conversation Marked Complete by Agent.")
-				return
+				conversationDone = true
 			}
 		}
 	}
+
+	// Graceful shutdown sequence
+	fmt.Println(">>> Shutting down HTTP server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		fmt.Printf("HTTP server shutdown error: %v\n", err)
+	}
+
+	fmt.Println(">>> Saving final snapshot...")
+	if err := store.Save(indexPath); err != nil {
+		fmt.Printf("Failed to save final snapshot: %v\n", err)
+	} else {
+		fmt.Println(">>> Final snapshot saved successfully")
+	}
+
+	fmt.Println(">>> Shutdown complete")
 }
 
 func envInt(key string, def int) int {
