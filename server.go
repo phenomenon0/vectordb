@@ -217,8 +217,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		type scored struct {
 			docIdx int
 			score  float64
+			seq    uint64
 		}
-		hybridScores := make([]scored, 0, len(ids))
+		scoresOrdered := make([]scored, 0, len(ids))
 		rangeCandidates := store.candidateIDsForRange(req.MetaRanges)
 
 		for _, idx := range ids {
@@ -261,37 +262,33 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			default: // vector
 				respScores = append(respScores, DotProduct(qVec, store.Data[idx*store.Dim:(idx+1)*store.Dim]))
 			}
-			if req.Mode == "hybrid" {
-				score := store.hybridScore(hid, qVec, qTokens, req.HybridAlpha)
-				hybridScores = append(hybridScores, scored{docIdx: len(docs) - 1, score: score})
-			}
+			scoresOrdered = append(scoresOrdered, scored{docIdx: len(docs) - 1, score: float64(respScores[len(respScores)-1]), seq: store.Seqs[idx]})
 		}
-		if req.Mode == "hybrid" && len(hybridScores) > 0 {
-			sort.Slice(hybridScores, func(i, j int) bool { return hybridScores[i].score > hybridScores[j].score })
-			reDocs := make([]string, 0, len(hybridScores))
-			reIDs := make([]string, 0, len(hybridScores))
-			reScores := make([]float32, 0, len(hybridScores))
+		if len(scoresOrdered) > 0 {
+			sort.Slice(scoresOrdered, func(i, j int) bool {
+				if scoresOrdered[i].score == scoresOrdered[j].score {
+					return scoresOrdered[i].seq < scoresOrdered[j].seq
+				}
+				return scoresOrdered[i].score > scoresOrdered[j].score
+			})
+			reDocs := make([]string, 0, len(scoresOrdered))
+			reIDs := make([]string, 0, len(scoresOrdered))
+			reScores := make([]float32, 0, len(scoresOrdered))
 			var reMeta []map[string]string
 			if req.IncludeMeta {
-				reMeta = make([]map[string]string, 0, len(hybridScores))
+				reMeta = make([]map[string]string, 0, len(scoresOrdered))
 			}
-			for _, s := range hybridScores {
+			for _, s := range scoresOrdered {
 				reDocs = append(reDocs, docs[s.docIdx])
 				reIDs = append(reIDs, respIDs[s.docIdx])
-				if req.ScoreMode == "hybrid" {
-					reScores = append(reScores, float32(s.score))
-				} else if req.ScoreMode == "vector" {
-					reScores = append(reScores, respScores[s.docIdx])
-				}
+				reScores = append(reScores, float32(s.score))
 				if req.IncludeMeta {
 					reMeta = append(reMeta, respMeta[s.docIdx])
 				}
 			}
 			docs = reDocs
 			respIDs = reIDs
-			if req.ScoreMode == "hybrid" || req.ScoreMode == "vector" {
-				respScores = reScores
-			}
+			respScores = reScores
 			if req.IncludeMeta {
 				respMeta = reMeta
 			}
