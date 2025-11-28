@@ -16,7 +16,7 @@ import (
 
 // DistributedDemo runs a demonstration of the distributed vectordb
 func DistributedDemo() {
-	fmt.Println("===== Distributed VectorDB Demo =====\n")
+	fmt.Println("===== Distributed VectorDB Demo =====")
 
 	// Wait for all services to be ready
 	fmt.Println("Waiting for services to start...")
