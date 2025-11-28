@@ -63,6 +63,12 @@ type VectorStore struct {
 	docLen  map[uint64]int
 	df      map[string]int
 	sumDocL int
+	// Multi-tenancy support
+	TenantID  map[uint64]string  // vector hash -> tenant ID
+	acl       *ACL               // access control lists
+	quotas    *TenantQuota       // storage quotas per tenant
+	tenantRL  *tenantRateLimiter // per-tenant rate limiting
+	jwtMgr    *JWTManager        // JWT token manager
 }
 
 func NewVectorStore(capacity int, dim int) *VectorStore {
@@ -72,6 +78,17 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 	g.M = cfg.M
 	g.Ml = cfg.Ml
 	g.EfSearch = cfg.EfSearch
+
+	// Initialize JWT manager if configured
+	var jwtMgr *JWTManager
+	if secret := os.Getenv("JWT_SECRET"); secret != "" {
+		issuer := os.Getenv("JWT_ISSUER")
+		if issuer == "" {
+			issuer = "vectordb"
+		}
+		jwtMgr = NewJWTManager(secret, issuer)
+	}
+
 	return &VectorStore{
 		Data:        make([]float32, 0, capacity*dim),
 		Dim:         dim,
@@ -93,11 +110,17 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		docLen:      make(map[uint64]int),
 		df:          make(map[string]int),
 		sumDocL:     0,
+		// Multi-tenancy
+		TenantID: make(map[uint64]string),
+		acl:      NewACL(),
+		quotas:   NewTenantQuota(),
+		tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), time.Minute),
+		jwtMgr:   jwtMgr,
 	}
 }
 
-// Add appends a vector/doc/meta.
-func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]string, collection string) (string, error) {
+// Add appends a vector/doc/meta with tenant ownership.
+func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]string, collection string, tenantID string) (string, error) {
 	vs.Lock()
 	defer vs.Unlock()
 	if len(v) != vs.Dim {
@@ -107,6 +130,18 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 		id = fmt.Sprintf("doc-%d", vs.next)
 		vs.next++
 	}
+	if tenantID == "" {
+		tenantID = "default" // Default tenant for backward compatibility
+	}
+
+	// Check quota before adding
+	vectorBytes := int64(len(v) * 4) // 4 bytes per float32
+	docBytes := int64(len(doc))
+	totalBytes := vectorBytes + docBytes
+	if err := vs.quotas.AddUsage(tenantID, totalBytes, 1); err != nil {
+		return "", fmt.Errorf("quota check failed: %w", err)
+	}
+
 	vs.Data = append(vs.Data, v...)
 	vs.Docs = append(vs.Docs, doc)
 	vs.IDs = append(vs.IDs, id)
@@ -127,25 +162,37 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 		collection = "default"
 	}
 	vs.Coll[hid] = collection
+	vs.TenantID[hid] = tenantID // Store tenant ownership
 	delete(vs.Deleted, hid)
 	if err := vs.appendWAL("insert", id, doc, meta, v); err != nil {
+		// Rollback quota on WAL failure
+		vs.quotas.RemoveUsage(tenantID, totalBytes, 1)
 		return "", fmt.Errorf("failed to append to WAL: %w", err)
 	}
 	return id, nil
 }
 
-// Upsert replaces existing vector/doc/meta if ID exists; otherwise adds new.
-func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[string]string, collection string) (string, error) {
+// Upsert replaces existing vector/doc/meta if ID exists; otherwise adds new with tenant ownership.
+func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[string]string, collection string, tenantID string) (string, error) {
 	if id == "" {
-		return vs.Add(v, doc, id, meta, collection)
+		return vs.Add(v, doc, id, meta, collection, tenantID)
 	}
 	vs.Lock()
 	defer vs.Unlock()
 	if len(v) != vs.Dim {
 		return "", fmt.Errorf("dimension mismatch: expected %d, got %d", vs.Dim, len(v))
 	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
 	hid := hashID(id)
 	if ix, ok := vs.idToIx[hid]; ok && ix >= 0 && ix < len(vs.IDs) {
+		// Verify tenant ownership for updates
+		if existingTenant := vs.TenantID[hid]; existingTenant != "" && existingTenant != tenantID {
+			return "", fmt.Errorf("access denied: vector belongs to different tenant")
+		}
+
 		vs.ejectLex(hid)
 		vs.ejectMeta(hid)
 		copy(vs.Data[ix*vs.Dim:(ix+1)*vs.Dim], v)
@@ -168,6 +215,14 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 		return id, nil
 	}
 
+	// Adding new vector - check quota
+	vectorBytes := int64(len(v) * 4)
+	docBytes := int64(len(doc))
+	totalBytes := vectorBytes + docBytes
+	if err := vs.quotas.AddUsage(tenantID, totalBytes, 1); err != nil {
+		return "", fmt.Errorf("quota check failed: %w", err)
+	}
+
 	vs.Data = append(vs.Data, v...)
 	vs.Docs = append(vs.Docs, doc)
 	vs.IDs = append(vs.IDs, id)
@@ -184,8 +239,11 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 		collection = "default"
 	}
 	vs.Coll[hid] = collection
+	vs.TenantID[hid] = tenantID // Store tenant ownership
 	delete(vs.Deleted, hid)
 	if err := vs.appendWAL("insert", id, doc, meta, v); err != nil {
+		// Rollback quota on WAL failure
+		vs.quotas.RemoveUsage(tenantID, totalBytes, 1)
 		return "", fmt.Errorf("failed to append to WAL: %w", err)
 	}
 	return id, nil
@@ -564,6 +622,16 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			fmt.Printf("warning: failed to decode index, rebuilding: %v\n", err)
 			return NewVectorStore(capacity, dim), false
 		}
+		// Initialize JWT manager if configured
+		var jwtMgr *JWTManager
+		if secret := os.Getenv("JWT_SECRET"); secret != "" {
+			issuer := os.Getenv("JWT_ISSUER")
+			if issuer == "" {
+				issuer = "vectordb"
+			}
+			jwtMgr = NewJWTManager(secret, issuer)
+		}
+
 		vs := &VectorStore{
 			Data:        payload.Data,
 			Dim:         payload.Dim,
@@ -589,6 +657,12 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			sumDocL:     payload.SumDocL,
 			NumMeta:     payload.NumMeta,
 			TimeMeta:    payload.TimeMeta,
+			// Multi-tenancy support
+			TenantID: make(map[uint64]string),
+			acl:      NewACL(),
+			quotas:   NewTenantQuota(),
+			tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), time.Minute),
+			jwtMgr:   jwtMgr,
 		}
 		if vs.checksum == "" {
 			vs.checksum = fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
@@ -1265,11 +1339,11 @@ func replayWAL(vs *VectorStore) error {
 		}
 		switch e.Op {
 		case "insert":
-			if _, err := vs.Add(e.Vec, e.Doc, e.ID, e.Meta, e.Coll); err != nil {
+			if _, err := vs.Add(e.Vec, e.Doc, e.ID, e.Meta, e.Coll, ""); err != nil {
 				replayErrors = append(replayErrors, fmt.Errorf("replay insert failed: %w", err))
 			}
 		case "upsert":
-			if _, err := vs.Upsert(e.Vec, e.Doc, e.ID, e.Meta, e.Coll); err != nil {
+			if _, err := vs.Upsert(e.Vec, e.Doc, e.ID, e.Meta, e.Coll, ""); err != nil {
 				replayErrors = append(replayErrors, fmt.Errorf("replay upsert failed: %w", err))
 			}
 		case "delete":
@@ -1399,7 +1473,7 @@ func main() {
 		fmt.Println(">>> Hydrating Index with 100k vectors...")
 		for i := 0; i < 100000; i++ {
 			vec, _ := embedder.Embed(fmt.Sprintf("doc-%d", i))
-			if _, err := store.Add(vec, fmt.Sprintf("doc-%d content about memory locality and vector search.", i), "", nil, "default"); err != nil {
+			if _, err := store.Add(vec, fmt.Sprintf("doc-%d content about memory locality and vector search.", i), "", nil, "default", ""); err != nil {
 				fmt.Printf("warning: failed to add vector %d: %v\n", i, err)
 			}
 		}
@@ -1508,28 +1582,38 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	// Start optional RAG conversation
-	fmt.Println(">>> Starting RAG Conversation...")
-	convID := sched.StartConversation(agentID, "Why is memory locality important for vector search?")
+	// Check if server should run indefinitely (no demo)
+	serverOnly := os.Getenv("SERVER_ONLY") == "1"
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	timeout := time.After(10 * time.Second)
-	conversationDone := false
+	if !serverOnly {
+		// Start optional RAG conversation (demo mode)
+		fmt.Println(">>> Starting RAG Conversation...")
+		convID := sched.StartConversation(agentID, "Why is memory locality important for vector search?")
 
-	for !conversationDone {
-		select {
-		case sig := <-sigCh:
-			fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
-			conversationDone = true
-		case <-timeout:
-			fmt.Println("Timeout reached (Demo end)")
-			conversationDone = true
-		case <-ticker.C:
-			if conv, ok := sched.ConvMgr().Get(convID); ok && conv.State == core.ConvComplete {
-				fmt.Println(">>> Conversation Marked Complete by Agent.")
+		ticker := time.NewTicker(500 * time.Millisecond)
+		timeout := time.After(10 * time.Second)
+		conversationDone := false
+
+		for !conversationDone {
+			select {
+			case sig := <-sigCh:
+				fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
 				conversationDone = true
+			case <-timeout:
+				fmt.Println("Timeout reached (Demo end)")
+				conversationDone = true
+			case <-ticker.C:
+				if conv, ok := sched.ConvMgr().Get(convID); ok && conv.State == core.ConvComplete {
+					fmt.Println(">>> Conversation Marked Complete by Agent.")
+					conversationDone = true
+				}
 			}
 		}
+	} else {
+		// Server-only mode: wait for signal indefinitely
+		fmt.Println(">>> Server running in HTTP-only mode. Press Ctrl+C to stop.")
+		sig := <-sigCh
+		fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
 	}
 
 	// Graceful shutdown sequence

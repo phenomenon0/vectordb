@@ -72,6 +72,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
+		// Extract tenant context
+		tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+		tenantID := tenantCtx.TenantID
+
+		// Check write permission
+		if !tenantCtx.Permissions["write"] && !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: write permission required", http.StatusForbidden)
+			return
+		}
+
+		// Per-tenant rate limiting
+		if store.tenantRL != nil && !store.tenantRL.allow(tenantID) {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+
 		// Add request size limit
 		r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10MB limit
 
@@ -113,6 +129,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			}
 		}
 
+		// Check collection access via ACL
+		if req.Collection == "" {
+			req.Collection = "default"
+		}
+		if !tenantCtx.IsAdmin && len(tenantCtx.Collections) > 0 && !tenantCtx.Collections[req.Collection] {
+			http.Error(w, fmt.Sprintf("forbidden: no access to collection '%s'", req.Collection), http.StatusForbidden)
+			return
+		}
+
 		vec, err := embedder.Embed(req.Doc)
 		if err != nil {
 			http.Error(w, "embed error: "+err.Error(), http.StatusInternalServerError)
@@ -121,9 +146,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		var id string
 		if req.Upsert {
-			id, err = store.Upsert(vec, req.Doc, req.ID, req.Meta, req.Collection)
+			id, err = store.Upsert(vec, req.Doc, req.ID, req.Meta, req.Collection, tenantID)
 		} else {
-			id, err = store.Add(vec, req.Doc, req.ID, req.Meta, req.Collection)
+			id, err = store.Add(vec, req.Doc, req.ID, req.Meta, req.Collection, tenantID)
 		}
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to insert document: %v", err), http.StatusInternalServerError)
@@ -138,6 +163,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	mux.HandleFunc("/batch_insert", withMetrics("batch_insert", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Extract tenant context
+		tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+		tenantID := tenantCtx.TenantID
+
+		// Check write permission
+		if !tenantCtx.Permissions["write"] && !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: write permission required", http.StatusForbidden)
+			return
+		}
+
+		// Per-tenant rate limiting
+		if store.tenantRL != nil && !store.tenantRL.allow(tenantID) {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}
 
@@ -191,6 +232,16 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				continue
 			}
 
+			// Check collection access
+			collection := d.Collection
+			if collection == "" {
+				collection = "default"
+			}
+			if !tenantCtx.IsAdmin && len(tenantCtx.Collections) > 0 && !tenantCtx.Collections[collection] {
+				errors = append(errors, fmt.Sprintf("doc %d: no access to collection '%s'", i, collection))
+				continue
+			}
+
 			vec, err := embedder.Embed(d.Doc)
 			if err != nil {
 				errors = append(errors, fmt.Sprintf("doc %d: embed error: %v", i, err))
@@ -199,9 +250,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 			var id string
 			if req.Upsert {
-				id, err = store.Upsert(vec, d.Doc, d.ID, d.Meta, d.Collection)
+				id, err = store.Upsert(vec, d.Doc, d.ID, d.Meta, collection, tenantID)
 			} else {
-				id, err = store.Add(vec, d.Doc, d.ID, d.Meta, d.Collection)
+				id, err = store.Add(vec, d.Doc, d.ID, d.Meta, collection, tenantID)
 			}
 			if err != nil {
 				errors = append(errors, fmt.Sprintf("doc %d: insert error: %v", i, err))
@@ -224,6 +275,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	mux.HandleFunc("/query", withMetrics("query", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Extract tenant context
+		tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+		tenantID := tenantCtx.TenantID
+
+		// Check read permission
+		if !tenantCtx.Permissions["read"] && !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: read permission required", http.StatusForbidden)
+			return
+		}
+
+		// Per-tenant rate limiting
+		if store.tenantRL != nil && !store.tenantRL.allow(tenantID) {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}
 
@@ -337,6 +404,26 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		for _, idx := range ids {
 			hid := hashID(store.GetID(idx))
+
+			// Tenant filtering: Only return vectors owned by requesting tenant
+			// Admin can see all tenants, or if tenant is "default"
+			vectorTenant := store.TenantID[hid]
+			if vectorTenant == "" {
+				vectorTenant = "default" // Backward compatibility
+			}
+			if !tenantCtx.IsAdmin && vectorTenant != tenantID {
+				continue
+			}
+
+			// Collection ACL check
+			collection := store.Coll[hid]
+			if collection == "" {
+				collection = "default"
+			}
+			if !tenantCtx.IsAdmin && len(tenantCtx.Collections) > 0 && !tenantCtx.Collections[collection] {
+				continue
+			}
+
 			if rangeCandidates != nil {
 				if _, ok := rangeCandidates[hid]; !ok {
 					continue
@@ -457,6 +544,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
+		// Extract tenant context
+		tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+		tenantID := tenantCtx.TenantID
+
+		// Check write permission
+		if !tenantCtx.Permissions["write"] && !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: write permission required", http.StatusForbidden)
+			return
+		}
+
+		// Per-tenant rate limiting
+		if store.tenantRL != nil && !store.tenantRL.allow(tenantID) {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+
 		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024) // 1MB limit
 
 		var req struct {
@@ -471,6 +574,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
+		// TODO: Add tenant ownership verification to Delete method
 		if err := store.Delete(req.ID); err != nil {
 			http.Error(w, fmt.Sprintf("failed to delete document: %v", err), http.StatusInternalServerError)
 			return
@@ -643,6 +747,261 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			fmt.Printf("error encoding response: %v\n", err)
 		}
 	})))
+
+	// ==================================================================================
+	// ADMIN API ENDPOINTS - ACL & Quota Management
+	// ==================================================================================
+
+	// Admin middleware - requires admin permission
+	adminGuard := func(next http.HandlerFunc) http.HandlerFunc {
+		return guard(func(w http.ResponseWriter, r *http.Request) {
+			tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+			if !tenantCtx.IsAdmin {
+				http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
+				return
+			}
+			next(w, r)
+		})
+	}
+
+	// Grant collection access to a tenant
+	mux.HandleFunc("/admin/acl/grant", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			TenantID   string `json:"tenant_id"`
+			Collection string `json:"collection"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if req.TenantID == "" || req.Collection == "" {
+			http.Error(w, "tenant_id and collection required", http.StatusBadRequest)
+			return
+		}
+
+		store.acl.GrantCollectionAccess(req.TenantID, req.Collection)
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"tenant_id":  req.TenantID,
+			"collection": req.Collection,
+			"action":     "granted",
+		})
+	}))
+
+	// Revoke collection access from a tenant
+	mux.HandleFunc("/admin/acl/revoke", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			TenantID   string `json:"tenant_id"`
+			Collection string `json:"collection"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if req.TenantID == "" || req.Collection == "" {
+			http.Error(w, "tenant_id and collection required", http.StatusBadRequest)
+			return
+		}
+
+		store.acl.RevokeCollectionAccess(req.TenantID, req.Collection)
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"tenant_id":  req.TenantID,
+			"collection": req.Collection,
+			"action":     "revoked",
+		})
+	}))
+
+	// Grant permission to a tenant
+	mux.HandleFunc("/admin/permission/grant", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			TenantID   string `json:"tenant_id"`
+			Permission string `json:"permission"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if req.TenantID == "" || req.Permission == "" {
+			http.Error(w, "tenant_id and permission required", http.StatusBadRequest)
+			return
+		}
+
+		// Validate permission
+		validPerms := map[string]bool{"read": true, "write": true, "admin": true}
+		if !validPerms[req.Permission] {
+			http.Error(w, "invalid permission: must be read, write, or admin", http.StatusBadRequest)
+			return
+		}
+
+		store.acl.GrantPermission(req.TenantID, req.Permission)
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"tenant_id":  req.TenantID,
+			"permission": req.Permission,
+			"action":     "granted",
+		})
+	}))
+
+	// Revoke permission from a tenant
+	mux.HandleFunc("/admin/permission/revoke", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			TenantID   string `json:"tenant_id"`
+			Permission string `json:"permission"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if req.TenantID == "" || req.Permission == "" {
+			http.Error(w, "tenant_id and permission required", http.StatusBadRequest)
+			return
+		}
+
+		store.acl.RevokePermission(req.TenantID, req.Permission)
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"tenant_id":  req.TenantID,
+			"permission": req.Permission,
+			"action":     "revoked",
+		})
+	}))
+
+	// Set storage quota for a tenant
+	mux.HandleFunc("/admin/quota/set", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			TenantID string `json:"tenant_id"`
+			MaxBytes int64  `json:"max_bytes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if req.TenantID == "" {
+			http.Error(w, "tenant_id required", http.StatusBadRequest)
+			return
+		}
+
+		if req.MaxBytes <= 0 {
+			http.Error(w, "max_bytes must be positive", http.StatusBadRequest)
+			return
+		}
+
+		store.quotas.SetQuota(req.TenantID, req.MaxBytes)
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"tenant_id": req.TenantID,
+			"max_bytes": req.MaxBytes,
+		})
+	}))
+
+	// Get tenant quota and usage
+	mux.HandleFunc("/admin/quota/", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Extract tenantID from URL path
+		path := strings.TrimPrefix(r.URL.Path, "/admin/quota/")
+		tenantID := strings.TrimSpace(path)
+
+		if tenantID == "" {
+			http.Error(w, "tenant_id required in URL path", http.StatusBadRequest)
+			return
+		}
+
+		usedBytes, vectorCount := store.quotas.GetUsage(tenantID)
+		maxBytes := store.quotas.GetQuota(tenantID)
+
+		var utilizationPct float64
+		if maxBytes > 0 {
+			utilizationPct = float64(usedBytes) / float64(maxBytes) * 100
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tenant_id":        tenantID,
+			"used_bytes":       usedBytes,
+			"max_bytes":        maxBytes,
+			"vector_count":     vectorCount,
+			"utilization_pct":  utilizationPct,
+			"has_quota_limit":  maxBytes > 0,
+		})
+	}))
+
+	// Set per-tenant rate limit
+	mux.HandleFunc("/admin/ratelimit/set", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			TenantID string `json:"tenant_id"`
+			RPS      int    `json:"rps"`
+			Burst    int    `json:"burst"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if req.TenantID == "" {
+			http.Error(w, "tenant_id required", http.StatusBadRequest)
+			return
+		}
+
+		if req.RPS <= 0 || req.Burst <= 0 {
+			http.Error(w, "rps and burst must be positive", http.StatusBadRequest)
+			return
+		}
+
+		if store.tenantRL != nil {
+			store.tenantRL.setLimit(req.TenantID, req.RPS, req.Burst)
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"tenant_id": req.TenantID,
+			"rps":       req.RPS,
+			"burst":     req.Burst,
+		})
+	}))
 
 	return mux
 }

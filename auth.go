@@ -194,8 +194,24 @@ func (am *APIKeyManager) LoadFromFile(path string) error {
 }
 
 // ===========================================================================================
-// JWT TOKEN SUPPORT
+// JWT TOKEN SUPPORT WITH MULTI-TENANCY
 // ===========================================================================================
+
+// TenantClaims represents JWT claims with tenant information
+type TenantClaims struct {
+	TenantID    string   `json:"tenant_id"`
+	Permissions []string `json:"permissions"`  // e.g., ["read", "write", "admin"]
+	Collections []string `json:"collections"`  // allowed collections (empty = all)
+	jwt.RegisteredClaims
+}
+
+// TenantContext holds tenant information for a request
+type TenantContext struct {
+	TenantID    string
+	Permissions map[string]bool // permission -> true
+	Collections map[string]bool // collection -> true (empty = all allowed)
+	IsAdmin     bool
+}
 
 // JWTManager manages JWT tokens
 type JWTManager struct {
@@ -211,7 +227,7 @@ func NewJWTManager(secretKey, issuer string) *JWTManager {
 	}
 }
 
-// GenerateToken generates a JWT token
+// GenerateToken generates a JWT token (legacy - use GenerateTenantToken for multi-tenancy)
 func (jm *JWTManager) GenerateToken(userID string, permissions []string, expiresIn time.Duration) (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
@@ -226,6 +242,23 @@ func (jm *JWTManager) GenerateToken(userID string, permissions []string, expires
 	return token.SignedString(jm.secretKey)
 }
 
+// GenerateTenantToken generates a JWT token with tenant claims
+func (jm *JWTManager) GenerateTenantToken(tenantID string, permissions []string, collections []string, expiresIn time.Duration) (string, error) {
+	claims := &TenantClaims{
+		TenantID:    tenantID,
+		Permissions: permissions,
+		Collections: collections,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    jm.issuer,
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jm.secretKey)
+}
+
 // ValidateToken validates a JWT token
 func (jm *JWTManager) ValidateToken(tokenString string) (*jwt.Token, error) {
 	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
@@ -234,6 +267,265 @@ func (jm *JWTManager) ValidateToken(tokenString string) (*jwt.Token, error) {
 		}
 		return jm.secretKey, nil
 	})
+}
+
+// ValidateTenantToken validates a JWT token and returns tenant context
+func (jm *JWTManager) ValidateTenantToken(tokenString string) (*TenantContext, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &TenantClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return jm.secretKey, nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("invalid token: %w", err)
+	}
+
+	claims, ok := token.Claims.(*TenantClaims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("invalid token claims")
+	}
+
+	// Validate issuer
+	if jm.issuer != "" && claims.Issuer != jm.issuer {
+		return nil, fmt.Errorf("invalid issuer: %s", claims.Issuer)
+	}
+
+	// Build tenant context
+	ctx := &TenantContext{
+		TenantID:    claims.TenantID,
+		Permissions: make(map[string]bool),
+		Collections: make(map[string]bool),
+	}
+
+	for _, perm := range claims.Permissions {
+		ctx.Permissions[perm] = true
+		if perm == "admin" {
+			ctx.IsAdmin = true
+		}
+	}
+
+	for _, coll := range claims.Collections {
+		ctx.Collections[coll] = true
+	}
+
+	return ctx, nil
+}
+
+// ===========================================================================================
+// ACCESS CONTROL LISTS (ACLs)
+// ===========================================================================================
+
+// ACL represents access control for collections per tenant
+type ACL struct {
+	mu          sync.RWMutex
+	permissions map[string]map[string]bool // tenantID -> collection -> can access
+	tenantPerms map[string]map[string]bool // tenantID -> permission (read/write/admin)
+}
+
+// NewACL creates a new ACL manager
+func NewACL() *ACL {
+	return &ACL{
+		permissions: make(map[string]map[string]bool),
+		tenantPerms: make(map[string]map[string]bool),
+	}
+}
+
+// GrantCollectionAccess grants a tenant access to a collection
+func (acl *ACL) GrantCollectionAccess(tenantID, collection string) {
+	acl.mu.Lock()
+	defer acl.mu.Unlock()
+	if acl.permissions[tenantID] == nil {
+		acl.permissions[tenantID] = make(map[string]bool)
+	}
+	acl.permissions[tenantID][collection] = true
+}
+
+// RevokeCollectionAccess revokes a tenant's access to a collection
+func (acl *ACL) RevokeCollectionAccess(tenantID, collection string) {
+	acl.mu.Lock()
+	defer acl.mu.Unlock()
+	if acl.permissions[tenantID] != nil {
+		delete(acl.permissions[tenantID], collection)
+	}
+}
+
+// HasCollectionAccess checks if a tenant can access a collection
+func (acl *ACL) HasCollectionAccess(tenantID, collection string) bool {
+	acl.mu.RLock()
+	defer acl.mu.RUnlock()
+
+	// Admin has access to all collections
+	if acl.hasPermission(tenantID, "admin") {
+		return true
+	}
+
+	// Check if tenant has explicit access
+	if colls, ok := acl.permissions[tenantID]; ok {
+		if len(colls) == 0 {
+			// Empty map means access to all collections
+			return true
+		}
+		return colls[collection]
+	}
+	return false
+}
+
+// GrantPermission grants a permission to a tenant (read/write/admin)
+func (acl *ACL) GrantPermission(tenantID, permission string) {
+	acl.mu.Lock()
+	defer acl.mu.Unlock()
+	if acl.tenantPerms[tenantID] == nil {
+		acl.tenantPerms[tenantID] = make(map[string]bool)
+	}
+	acl.tenantPerms[tenantID][permission] = true
+}
+
+// RevokePermission revokes a permission from a tenant
+func (acl *ACL) RevokePermission(tenantID, permission string) {
+	acl.mu.Lock()
+	defer acl.mu.Unlock()
+	if acl.tenantPerms[tenantID] != nil {
+		delete(acl.tenantPerms[tenantID], permission)
+	}
+}
+
+// HasPermission checks if a tenant has a specific permission
+func (acl *ACL) HasPermission(tenantID, permission string) bool {
+	acl.mu.RLock()
+	defer acl.mu.RUnlock()
+	return acl.hasPermission(tenantID, permission)
+}
+
+func (acl *ACL) hasPermission(tenantID, permission string) bool {
+	if perms, ok := acl.tenantPerms[tenantID]; ok {
+		// Admin implies all permissions
+		if perms["admin"] {
+			return true
+		}
+		return perms[permission]
+	}
+	return false
+}
+
+// ===========================================================================================
+// TENANT STORAGE QUOTAS
+// ===========================================================================================
+
+// TenantQuota tracks storage quotas per tenant
+type TenantQuota struct {
+	mu          sync.RWMutex
+	quotas      map[string]int64 // tenantID -> max bytes
+	usage       map[string]int64 // tenantID -> current bytes
+	vectorCount map[string]int   // tenantID -> vector count
+}
+
+// NewTenantQuota creates a new quota manager
+func NewTenantQuota() *TenantQuota {
+	return &TenantQuota{
+		quotas:      make(map[string]int64),
+		usage:       make(map[string]int64),
+		vectorCount: make(map[string]int),
+	}
+}
+
+// SetQuota sets the storage quota for a tenant (in bytes)
+func (tq *TenantQuota) SetQuota(tenantID string, maxBytes int64) {
+	tq.mu.Lock()
+	defer tq.mu.Unlock()
+	tq.quotas[tenantID] = maxBytes
+}
+
+// AddUsage adds to a tenant's storage usage
+func (tq *TenantQuota) AddUsage(tenantID string, bytes int64, vectors int) error {
+	tq.mu.Lock()
+	defer tq.mu.Unlock()
+
+	newUsage := tq.usage[tenantID] + bytes
+	if quota, ok := tq.quotas[tenantID]; ok && newUsage > quota {
+		return fmt.Errorf("quota exceeded: %d/%d bytes used", newUsage, quota)
+	}
+
+	tq.usage[tenantID] = newUsage
+	tq.vectorCount[tenantID] += vectors
+	return nil
+}
+
+// RemoveUsage removes from a tenant's storage usage
+func (tq *TenantQuota) RemoveUsage(tenantID string, bytes int64, vectors int) {
+	tq.mu.Lock()
+	defer tq.mu.Unlock()
+
+	tq.usage[tenantID] -= bytes
+	if tq.usage[tenantID] < 0 {
+		tq.usage[tenantID] = 0
+	}
+
+	tq.vectorCount[tenantID] -= vectors
+	if tq.vectorCount[tenantID] < 0 {
+		tq.vectorCount[tenantID] = 0
+	}
+}
+
+// GetUsage returns current usage for a tenant
+func (tq *TenantQuota) GetUsage(tenantID string) (bytes int64, vectors int) {
+	tq.mu.RLock()
+	defer tq.mu.RUnlock()
+	return tq.usage[tenantID], tq.vectorCount[tenantID]
+}
+
+// GetQuota returns the quota for a tenant
+func (tq *TenantQuota) GetQuota(tenantID string) int64 {
+	tq.mu.RLock()
+	defer tq.mu.RUnlock()
+	return tq.quotas[tenantID]
+}
+
+// ===========================================================================================
+// PER-TENANT RATE LIMITING
+// ===========================================================================================
+
+type tenantRateLimiter struct {
+	mu       sync.RWMutex
+	limiters map[string]*rateLimiter // tenantID -> rate limiter
+	rps      int
+	burst    int
+	window   time.Duration
+}
+
+func newTenantRateLimiter(rps, burst int, window time.Duration) *tenantRateLimiter {
+	return &tenantRateLimiter{
+		limiters: make(map[string]*rateLimiter),
+		rps:      rps,
+		burst:    burst,
+		window:   window,
+	}
+}
+
+func (trl *tenantRateLimiter) allow(tenantID string) bool {
+	trl.mu.RLock()
+	limiter, ok := trl.limiters[tenantID]
+	trl.mu.RUnlock()
+
+	if !ok {
+		trl.mu.Lock()
+		// Double-check after acquiring write lock
+		limiter, ok = trl.limiters[tenantID]
+		if !ok {
+			limiter = newRateLimiter(trl.rps, trl.burst, trl.window)
+			trl.limiters[tenantID] = limiter
+		}
+		trl.mu.Unlock()
+	}
+
+	return limiter.allow(tenantID)
+}
+
+func (trl *tenantRateLimiter) setLimit(tenantID string, rps, burst int) {
+	trl.mu.Lock()
+	defer trl.mu.Unlock()
+	trl.limiters[tenantID] = newRateLimiter(rps, burst, trl.window)
 }
 
 // ===========================================================================================
@@ -372,4 +664,64 @@ func hasPermissions(userPerms, requiredPerms []string) bool {
 // SecureCompare performs constant-time comparison of two strings
 func SecureCompare(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// ===========================================================================================
+// CONTEXT EXTRACTION HELPERS
+// ===========================================================================================
+
+// GetTenantFromRequest extracts tenant ID from JWT token in HTTP request
+// Returns "default" if no JWT is present or JWT is not enabled
+func GetTenantFromRequest(r *http.Request, jwtMgr *JWTManager) string {
+	if jwtMgr == nil {
+		return "default"
+	}
+
+	token := extractToken(r)
+	if token == "" {
+		return "default"
+	}
+
+	// Try to validate as tenant token
+	tenantCtx, err := jwtMgr.ValidateTenantToken(token)
+	if err != nil {
+		return "default"
+	}
+
+	return tenantCtx.TenantID
+}
+
+// GetTenantContextFromRequest extracts full tenant context from JWT token
+// Returns default context if no JWT is present or invalid
+func GetTenantContextFromRequest(r *http.Request, jwtMgr *JWTManager) *TenantContext {
+	if jwtMgr == nil {
+		return &TenantContext{
+			TenantID:    "default",
+			Permissions: map[string]bool{"read": true, "write": true, "admin": true},
+			Collections: make(map[string]bool),
+			IsAdmin:     true,
+		}
+	}
+
+	token := extractToken(r)
+	if token == "" {
+		return &TenantContext{
+			TenantID:    "default",
+			Permissions: map[string]bool{"read": true},
+			Collections: make(map[string]bool),
+			IsAdmin:     false,
+		}
+	}
+
+	tenantCtx, err := jwtMgr.ValidateTenantToken(token)
+	if err != nil {
+		return &TenantContext{
+			TenantID:    "default",
+			Permissions: map[string]bool{"read": true},
+			Collections: make(map[string]bool),
+			IsAdmin:     false,
+		}
+	}
+
+	return tenantCtx
 }
