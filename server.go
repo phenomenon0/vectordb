@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"os"
 	"sort"
@@ -144,6 +146,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			HybridAlpha float64             `json:"hybrid_alpha"`
 			ScoreMode   string              `json:"score_mode"` // "vector" (default), "hybrid", "lexical"
 			EfSearch    int                 `json:"ef_search"`
+			PageToken   string              `json:"page_token"`
+			PageSize    int                 `json:"page_size"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -163,6 +167,20 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 		if req.ScoreMode == "" {
 			req.ScoreMode = "vector"
+		}
+		pageSize := req.Limit
+		if req.PageSize > 0 {
+			pageSize = req.PageSize
+		}
+		offset := req.Offset
+		if req.PageToken != "" {
+			if v, err := decodePageToken(req.PageToken); err == nil {
+				offset = v.Offset
+				if v.FilterHash != hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode) {
+					http.Error(w, "page token invalid for current query", http.StatusBadRequest)
+					return
+				}
+			}
 		}
 
 		qVec, err := embedder.Embed(req.Query)
@@ -199,7 +217,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			if !matchesMeta(meta, req.Meta) {
 				continue
 			}
-			if !matchesRanges(meta, req.MetaRanges) {
+			if !matchesRanges(meta, store.NumMeta[hid], store.TimeMeta[hid], req.MetaRanges) {
 				continue
 			}
 			if len(req.MetaAny) > 0 && !matchesAny(meta, req.MetaAny) {
@@ -267,7 +285,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if start > len(docs) {
 			start = len(docs)
 		}
-		end := start + req.Limit
+		end := start + pageSize
 		if end > len(docs) {
 			end = len(docs)
 		}
@@ -284,6 +302,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			respMeta = nil
 		}
 
+		nextPage := ""
+		if end < len(respIDs) {
+			nextPage = encodePageToken(offset+pageSize, hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode))
+		}
+
 		rDocs, rerankScores, stats, err := reranker.Rerank(req.Query, docs, req.Limit)
 		if err != nil {
 			http.Error(w, "rerank error: "+err.Error(), http.StatusInternalServerError)
@@ -298,6 +321,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"scores": respScores,
 			"stats":  stats,
 			"meta":   respMeta,
+			"next":   nextPage,
 		})
 		return
 	})))
@@ -369,4 +393,52 @@ func ageMillis(path string, fallback time.Time) int64 {
 		return int64(time.Since(fallback).Milliseconds())
 	}
 	return 0
+}
+
+type pageCursor struct {
+	Offset     int    `json:"offset"`
+	FilterHash string `json:"filter_hash"`
+}
+
+func encodePageToken(offset int, filterHash string) string {
+	cur := pageCursor{Offset: offset, FilterHash: filterHash}
+	b, _ := json.Marshal(cur)
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+func decodePageToken(tok string) (pageCursor, error) {
+	var cur pageCursor
+	data, err := base64.StdEncoding.DecodeString(tok)
+	if err != nil {
+		return cur, err
+	}
+	if err := json.Unmarshal(data, &cur); err != nil {
+		return cur, err
+	}
+	return cur, nil
+}
+
+func hashFilters(meta map[string]string, any []map[string]string, not map[string]string, ranges []RangeFilter, coll string, mode string, scoreMode string) string {
+	type filterHash struct {
+		Meta      map[string]string   `json:"meta"`
+		Any       []map[string]string `json:"any"`
+		Not       map[string]string   `json:"not"`
+		Ranges    []RangeFilter       `json:"ranges"`
+		Coll      string              `json:"coll"`
+		Mode      string              `json:"mode"`
+		ScoreMode string              `json:"score_mode"`
+	}
+	payload := filterHash{
+		Meta:      meta,
+		Any:       any,
+		Not:       not,
+		Ranges:    ranges,
+		Coll:      coll,
+		Mode:      mode,
+		ScoreMode: scoreMode,
+	}
+	b, _ := json.Marshal(payload)
+	sum := fnv.New64a()
+	_, _ = sum.Write(b)
+	return fmt.Sprintf("%x", sum.Sum64())
 }

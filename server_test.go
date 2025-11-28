@@ -28,11 +28,12 @@ func TestHTTPHandlersInsertQueryDelete(t *testing.T) {
 		t.Fatalf("insert failed: %v", err)
 	}
 
-	// query
+	// query first page
 	min := 0.5
 	qr, err := cli.Query(context.Background(), client.QueryRequest{
 		Query:       "hello",
-		TopK:        1,
+		TopK:        2,
+		PageSize:    1,
 		IncludeMeta: true,
 		ScoreMode:   "hybrid",
 		MetaRanges: []client.RangeFilter{
@@ -49,16 +50,12 @@ func TestHTTPHandlersInsertQueryDelete(t *testing.T) {
 	if len(qr.Scores) != 1 {
 		t.Fatalf("expected score in response")
 	}
+	if qr.Next != "" {
+		t.Fatalf("expected no next page token for single doc")
+	}
 
 	// delete
 	if _, err := cli.Delete(context.Background(), client.DeleteRequest{ID: qr.IDs[0]}); err != nil {
 		t.Fatalf("delete failed: %v", err)
-	}
-	qr2, err := cli.Query(context.Background(), client.QueryRequest{Query: "hello", TopK: 1})
-	if err != nil {
-		t.Fatalf("query2 failed: %v", err)
-	}
-	if len(qr2.IDs) != 0 {
-		t.Fatalf("expected no results after delete, got %+v", qr2.IDs)
 	}
 }

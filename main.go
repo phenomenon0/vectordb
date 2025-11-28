@@ -39,6 +39,8 @@ type VectorStore struct {
 	Meta        map[uint64]map[string]string
 	Deleted     map[uint64]bool
 	Coll        map[uint64]string
+	NumMeta     map[uint64]map[string]float64
+	TimeMeta    map[uint64]map[string]time.Time
 	walPath     string
 	walMu       sync.Mutex
 	walMaxBytes int64
@@ -71,6 +73,8 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		Meta:        make(map[uint64]map[string]string),
 		Deleted:     make(map[uint64]bool),
 		Coll:        make(map[uint64]string),
+		NumMeta:     make(map[uint64]map[string]float64),
+		TimeMeta:    make(map[uint64]map[string]time.Time),
 		walMaxBytes: 0,
 		walMaxOps:   0,
 		apiToken:    os.Getenv("API_TOKEN"),
@@ -105,6 +109,7 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 	vs.idToIx[hid] = vs.Count - 1
 	if meta != nil {
 		vs.Meta[hid] = meta
+		vs.ingestMeta(hid, meta)
 	}
 	if collection == "" {
 		collection = "default"
@@ -128,13 +133,16 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	hid := hashID(id)
 	if ix, ok := vs.idToIx[hid]; ok && ix >= 0 && ix < len(vs.IDs) {
 		vs.ejectLex(hid)
+		vs.ejectMeta(hid)
 		copy(vs.Data[ix*vs.Dim:(ix+1)*vs.Dim], v)
 		vs.Docs[ix] = doc
 		vs.ingestLex(hid, tokenize(doc))
 		if meta != nil {
 			vs.Meta[hid] = meta
+			vs.ingestMeta(hid, meta)
 		} else {
 			delete(vs.Meta, hid)
+			vs.ejectMeta(hid)
 		}
 		if collection != "" {
 			vs.Coll[hid] = collection
@@ -153,6 +161,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	vs.ingestLex(hid, tokenize(doc))
 	if meta != nil {
 		vs.Meta[hid] = meta
+		vs.ingestMeta(hid, meta)
 	}
 	if collection == "" {
 		collection = "default"
@@ -169,6 +178,7 @@ func (vs *VectorStore) Delete(id string) {
 	hid := hashID(id)
 	vs.Deleted[hid] = true
 	vs.ejectLex(hid)
+	vs.ejectMeta(hid)
 	delete(vs.Meta, hid)
 	delete(vs.Coll, hid)
 	vs.appendWAL("delete", id, "", nil, nil)
@@ -334,6 +344,37 @@ func (vs *VectorStore) bm25(hid uint64, qTokens []string) float64 {
 	return score
 }
 
+func (vs *VectorStore) ingestMeta(hid uint64, meta map[string]string) {
+	if meta == nil {
+		return
+	}
+	nums := make(map[string]float64)
+	times := make(map[string]time.Time)
+	for k, v := range meta {
+		if v == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			times[k] = t
+			continue
+		}
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			nums[k] = f
+		}
+	}
+	if len(nums) > 0 {
+		vs.NumMeta[hid] = nums
+	}
+	if len(times) > 0 {
+		vs.TimeMeta[hid] = times
+	}
+}
+
+func (vs *VectorStore) ejectMeta(hid uint64) {
+	delete(vs.NumMeta, hid)
+	delete(vs.TimeMeta, hid)
+}
+
 // Persistence snapshot.
 func (vs *VectorStore) Save(path string) error {
 	vs.RLock()
@@ -374,6 +415,8 @@ func (vs *VectorStore) Save(path string) error {
 		DocLen    map[uint64]int
 		DF        map[string]int
 		SumDocL   int
+		NumMeta   map[uint64]map[string]float64
+		TimeMeta  map[uint64]map[string]time.Time
 	}{
 		Dim:       vs.Dim,
 		Data:      vs.Data,
@@ -391,6 +434,8 @@ func (vs *VectorStore) Save(path string) error {
 		DocLen:    vs.docLen,
 		DF:        vs.df,
 		SumDocL:   vs.sumDocL,
+		NumMeta:   vs.NumMeta,
+		TimeMeta:  vs.TimeMeta,
 	}
 	if err := gob.NewEncoder(f).Encode(payload); err != nil {
 		return err
@@ -433,6 +478,8 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			DocLen    map[uint64]int
 			DF        map[string]int
 			SumDocL   int
+			NumMeta   map[uint64]map[string]float64
+			TimeMeta  map[uint64]map[string]time.Time
 		}
 		if err := gob.NewDecoder(f).Decode(&payload); err != nil {
 			fmt.Printf("warning: failed to decode index, rebuilding: %v\n", err)
@@ -461,6 +508,8 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			docLen:      payload.DocLen,
 			df:          payload.DF,
 			sumDocL:     payload.SumDocL,
+			NumMeta:     payload.NumMeta,
+			TimeMeta:    payload.TimeMeta,
 		}
 		if vs.checksum == "" {
 			vs.checksum = fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
@@ -480,6 +529,12 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		}
 		if vs.Coll == nil {
 			vs.Coll = make(map[uint64]string)
+		}
+		if vs.NumMeta == nil {
+			vs.NumMeta = make(map[uint64]map[string]float64)
+		}
+		if vs.TimeMeta == nil {
+			vs.TimeMeta = make(map[uint64]map[string]time.Time)
 		}
 		if vs.lexTF == nil {
 			vs.lexTF = make(map[uint64]map[string]int)
@@ -866,7 +921,7 @@ func matchesAny(meta map[string]string, any []map[string]string) bool {
 	return false
 }
 
-func matchesRanges(meta map[string]string, ranges []RangeFilter) bool {
+func matchesRanges(meta map[string]string, num map[string]float64, times map[string]time.Time, ranges []RangeFilter) bool {
 	if len(ranges) == 0 {
 		return true
 	}
@@ -877,9 +932,13 @@ func matchesRanges(meta map[string]string, ranges []RangeFilter) bool {
 		}
 		// Try time bounds if provided.
 		if rf.TimeMin != "" || rf.TimeMax != "" {
-			mv, err := time.Parse(time.RFC3339, val)
-			if err != nil {
-				return false
+			mv, okT := times[rf.Key]
+			if !okT {
+				var err error
+				mv, err = time.Parse(time.RFC3339, val)
+				if err != nil {
+					return false
+				}
 			}
 			if rf.TimeMin != "" {
 				minT, err := time.Parse(time.RFC3339, rf.TimeMin)
@@ -897,9 +956,13 @@ func matchesRanges(meta map[string]string, ranges []RangeFilter) bool {
 		}
 		// Numeric bounds if set.
 		if rf.Min != nil || rf.Max != nil {
-			fv, err := strconv.ParseFloat(val, 64)
-			if err != nil {
-				return false
+			fv, okN := num[rf.Key]
+			if !okN {
+				var err error
+				fv, err = strconv.ParseFloat(val, 64)
+				if err != nil {
+					return false
+				}
 			}
 			if rf.Min != nil && fv < *rf.Min {
 				return false

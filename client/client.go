@@ -124,6 +124,8 @@ type QueryRequest struct {
 	HybridAlpha float64             `json:"hybrid_alpha,omitempty"`
 	ScoreMode   string              `json:"score_mode,omitempty"` // "vector" (default), "hybrid", or "lexical"
 	EfSearch    int                 `json:"ef_search,omitempty"`
+	PageToken   string              `json:"page_token,omitempty"`
+	PageSize    int                 `json:"page_size,omitempty"`
 }
 
 type QueryResponse struct {
@@ -132,6 +134,7 @@ type QueryResponse struct {
 	Scores []float32           `json:"scores"`
 	Stats  string              `json:"stats"`
 	Meta   []map[string]string `json:"meta,omitempty"`
+	Next   string              `json:"next,omitempty"`
 }
 
 // RangeFilter mirrors the server-side range filter.

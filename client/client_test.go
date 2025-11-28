@@ -64,6 +64,8 @@ func TestQueryParsesBody(t *testing.T) {
 	resp, err := c.Query(context.Background(), QueryRequest{
 		Query:     "q",
 		ScoreMode: "lexical",
+		PageSize:  10,
+		PageToken: "0",
 		MetaRanges: []RangeFilter{
 			{Key: "score", Min: &min, Max: &max},
 		},
