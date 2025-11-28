@@ -133,6 +133,7 @@ go run ./vectordb
   1) On primary, `curl -o index.gob http://host:8080/export`
   2) On secondary, `curl -X POST --data-binary @index.gob http://host:8080/import`
   3) Warm compaction periodically on both nodes (`COMPACT_INTERVAL_MIN`), and monitor `/health` + `/integrity`.
+- Helper script: `vectordb/scripts/pull_snapshot.sh` pulls from `LEADER_URL` and imports to `FOLLOWER_URL` (defaults to localhost). Set envs `LEADER_URL`, `FOLLOWER_URL`, `SNAPSHOT_PATH`.
 
 ## Runtime Notes
 - Warm the model at startup with a dummy call.
