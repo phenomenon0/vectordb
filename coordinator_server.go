@@ -22,6 +22,11 @@ type CoordinatorServer struct {
 	embedder    Embedder
 	server      *http.Server
 	addr        string
+
+	// Production features
+	failoverMgr *FailoverManager
+	metrics     *MetricsCollector
+	authMw      *AuthMiddleware
 }
 
 // CoordinatorServerConfig configures the coordinator server
@@ -33,6 +38,14 @@ type CoordinatorServerConfig struct {
 	NumShards         int
 	ReplicationFactor int
 	ReadStrategy      ReadStrategy
+
+	// Production features
+	EnableFailover bool
+	FailoverConfig FailoverConfig
+	EnableMetrics  bool
+	EnableAuth     bool
+	APIKeyMgr      *APIKeyManager
+	JWTMgr         *JWTManager
 }
 
 // NewCoordinatorServer creates a new coordinator server
@@ -55,25 +68,66 @@ func NewCoordinatorServer(cfg CoordinatorServerConfig) *CoordinatorServer {
 		addr:        cfg.ListenAddr,
 	}
 
+	// Initialize production features
+	if cfg.EnableMetrics {
+		c.metrics = NewMetricsCollector()
+		fmt.Println("✅ Prometheus metrics enabled at /metrics")
+	}
+
+	if cfg.EnableAuth {
+		// Create default API key manager if not provided
+		if cfg.APIKeyMgr == nil {
+			cfg.APIKeyMgr = NewAPIKeyManager()
+		}
+		c.authMw = NewAuthMiddleware(cfg.APIKeyMgr, cfg.JWTMgr)
+		fmt.Println("✅ Authentication enabled (API keys + JWT)")
+	}
+
+	if cfg.EnableFailover {
+		c.failoverMgr = NewFailoverManager(distributed, cfg.FailoverConfig)
+		fmt.Printf("✅ Automatic failover configured (threshold: %v)\n", cfg.FailoverConfig.UnhealthyThreshold)
+	}
+
 	// Setup HTTP routes
 	mux := http.NewServeMux()
 
-	// Client API endpoints
-	mux.HandleFunc("/insert", c.handleInsert)
-	mux.HandleFunc("/batch_insert", c.handleBatchInsert)
-	mux.HandleFunc("/query", c.handleQuery)
-	mux.HandleFunc("/delete", c.handleDelete)
-	mux.HandleFunc("/health", c.handleHealth)
+	// Metrics endpoint (no auth required for monitoring)
+	if c.metrics != nil {
+		mux.Handle("/metrics", c.metrics.Handler())
+	}
 
-	// Admin API endpoints
-	mux.HandleFunc("/admin/register_shard", c.handleRegisterShard)
-	mux.HandleFunc("/admin/unregister_shard", c.handleUnregisterShard)
-	mux.HandleFunc("/admin/heartbeat", c.handleHeartbeat)
-	mux.HandleFunc("/admin/cluster_status", c.handleClusterStatus)
+	// Helper to wrap handlers with auth if enabled
+	wrapAuth := func(handler http.HandlerFunc, permissions ...string) http.HandlerFunc {
+		if c.authMw != nil {
+			return c.authMw.Middleware(permissions...)(handler)
+		}
+		return handler
+	}
+
+	// Client API endpoints (require "read" or "write" permissions)
+	mux.HandleFunc("/insert", wrapAuth(c.handleInsert, "write"))
+	mux.HandleFunc("/batch_insert", wrapAuth(c.handleBatchInsert, "write"))
+	mux.HandleFunc("/query", wrapAuth(c.handleQuery, "read"))
+	mux.HandleFunc("/delete", wrapAuth(c.handleDelete, "write"))
+	mux.HandleFunc("/health", c.handleHealth) // No auth for health checks
+
+	// Admin API endpoints (require "admin" permission)
+	mux.HandleFunc("/admin/register_shard", wrapAuth(c.handleRegisterShard, "admin"))
+	mux.HandleFunc("/admin/unregister_shard", wrapAuth(c.handleUnregisterShard, "admin"))
+	mux.HandleFunc("/admin/heartbeat", c.handleHeartbeat) // No auth for heartbeats from shards
+	mux.HandleFunc("/admin/cluster_status", wrapAuth(c.handleClusterStatus, "admin"))
+	mux.HandleFunc("/admin/failover_stats", wrapAuth(c.handleFailoverStats, "admin"))
+	mux.HandleFunc("/admin/failover_trigger", wrapAuth(c.handleFailoverTrigger, "admin"))
+
+	// Wrap entire handler with metrics middleware if enabled
+	var handler http.Handler = mux
+	if c.metrics != nil {
+		handler = c.metrics.HTTPMiddleware(handler)
+	}
 
 	c.server = &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
@@ -83,8 +137,15 @@ func NewCoordinatorServer(cfg CoordinatorServerConfig) *CoordinatorServer {
 
 // Start starts the coordinator server
 func (c *CoordinatorServer) Start(ctx context.Context) error {
+	// Start failover manager if enabled
+	if c.failoverMgr != nil {
+		if err := c.failoverMgr.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start failover manager: %w", err)
+		}
+	}
+
 	go func() {
-		fmt.Printf("Coordinator HTTP API listening on %s\n", c.addr)
+		fmt.Printf("🚀 Coordinator HTTP API listening on %s\n", c.addr)
 		if err := c.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("Coordinator server error: %v\n", err)
 		}
@@ -102,6 +163,11 @@ func (c *CoordinatorServer) Start(ctx context.Context) error {
 // Shutdown gracefully shuts down the coordinator
 func (c *CoordinatorServer) Shutdown(ctx context.Context) error {
 	fmt.Println("Shutting down coordinator...")
+
+	// Stop failover manager
+	if c.failoverMgr != nil {
+		c.failoverMgr.Stop()
+	}
 
 	// Shutdown distributed vectordb
 	c.distributed.Shutdown()
@@ -421,6 +487,57 @@ func (c *CoordinatorServer) handleClusterStatus(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+// handleFailoverStats handles GET /admin/failover_stats
+func (c *CoordinatorServer) handleFailoverStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if c.failoverMgr == nil {
+		http.Error(w, "failover manager not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	stats := c.failoverMgr.GetFailoverStats()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+// handleFailoverTrigger handles POST /admin/failover_trigger
+func (c *CoordinatorServer) handleFailoverTrigger(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if c.failoverMgr == nil {
+		http.Error(w, "failover manager not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		ShardID int `json:"shard_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if err := c.failoverMgr.ManualFailover(req.ShardID); err != nil {
+		http.Error(w, fmt.Sprintf("failover failed: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":   "failover_triggered",
+		"shard_id": req.ShardID,
+	})
 }
 
 // RunCoordinator runs the coordinator server as a standalone process

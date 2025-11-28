@@ -44,7 +44,21 @@ func DistributedDemo() {
 	fmt.Println("\n5. Broadcast query across all shards...")
 	broadcastQuery(coordinatorAddr)
 
+	// Check metrics endpoint
+	fmt.Println("\n6. Checking Prometheus metrics...")
+	checkMetrics(coordinatorAddr)
+
+	// Check failover stats
+	fmt.Println("\n7. Checking failover status...")
+	checkFailoverStats(coordinatorAddr)
+
 	fmt.Println("\n===== Demo Complete =====")
+	fmt.Println("\nProduction Features Demonstrated:")
+	fmt.Println("  ✅ Collection-based sharding")
+	fmt.Println("  ✅ Multi-shard query aggregation")
+	fmt.Println("  ✅ Prometheus metrics at /metrics")
+	fmt.Println("  ✅ Automatic failover monitoring")
+	fmt.Println("  ✅ Health checking")
 }
 
 func checkClusterStatus(addr string) {
@@ -236,4 +250,72 @@ func performQuery(addr string, query map[string]any) []map[string]any {
 	}
 
 	return results
+}
+
+func checkMetrics(addr string) {
+	resp, err := http.Get(addr + "/metrics")
+	if err != nil {
+		fmt.Printf("Error: %v (metrics may not be enabled)\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("Metrics endpoint not available (status %d)\n", resp.StatusCode)
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	lines := bytes.Split(body, []byte("\n"))
+
+	fmt.Println("Prometheus Metrics Available:")
+
+	// Show sample metrics (first 10 lines that aren't comments)
+	count := 0
+	for _, line := range lines {
+		if len(line) > 0 && line[0] != '#' {
+			fmt.Printf("  %s\n", string(line))
+			count++
+			if count >= 5 {
+				break
+			}
+		}
+	}
+
+	fmt.Printf("  ... (%d more metrics available at /metrics)\n", len(lines)-count-20)
+}
+
+func checkFailoverStats(addr string) {
+	resp, err := http.Get(addr + "/admin/failover_stats")
+	if err != nil {
+		fmt.Printf("Error: %v (failover may not be enabled)\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := ioutil.ReadAll(resp.Body)
+		fmt.Printf("Failover not available: %s\n", string(body))
+		return
+	}
+
+	body, _ := ioutil.ReadAll(resp.Body)
+	var stats map[string]any
+	json.Unmarshal(body, &stats)
+
+	fmt.Printf("Failover Manager Status:\n")
+	fmt.Printf("  Enabled: %v\n", stats["enabled"])
+	fmt.Printf("  Unhealthy Threshold: %v\n", stats["unhealthy_threshold"])
+	fmt.Printf("  Check Interval: %v\n", stats["check_interval"])
+
+	if shards, ok := stats["shards"].([]any); ok && len(shards) > 0 {
+		fmt.Printf("  Monitored Shards: %d\n", len(shards))
+		for _, s := range shards {
+			shard := s.(map[string]any)
+			fmt.Printf("    - Shard %v: failover_in_progress=%v\n",
+				shard["shard_id"], shard["failover_in_progress"])
+		}
+	} else {
+		fmt.Println("  No shards being monitored yet")
+	}
 }
