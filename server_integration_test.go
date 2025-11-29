@@ -146,7 +146,7 @@ func TestHTTPQueryEndpoint(t *testing.T) {
 	// Insert some documents first
 	for i := 0; i < 10; i++ {
 		vec, _ := emb.Embed(fmt.Sprintf("doc-%d", i))
-		store.Add(vec, fmt.Sprintf("content-%d", i), "", map[string]string{"tag": "test"}, "default")
+		store.Add(vec, fmt.Sprintf("content-%d", i), "", map[string]string{"tag": "test"}, "default", "")
 	}
 
 	reqBody := map[string]any{
@@ -228,7 +228,7 @@ func TestHTTPDeleteEndpoint(t *testing.T) {
 
 	// Insert a document
 	vec, _ := emb.Embed("test doc")
-	id, _ := store.Add(vec, "test content", "test-id", nil, "default")
+	id, _ := store.Add(vec, "test content", "test-id", nil, "default", "")
 
 	reqBody := map[string]any{"id": id}
 	body, _ := json.Marshal(reqBody)
@@ -258,7 +258,7 @@ func TestHTTPHealthEndpoint(t *testing.T) {
 	// Add some documents
 	for i := 0; i < 5; i++ {
 		vec, _ := emb.Embed(fmt.Sprintf("doc-%d", i))
-		store.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default")
+		store.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default", "")
 	}
 
 	req := httptest.NewRequest("GET", "/health", nil)
