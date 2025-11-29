@@ -48,6 +48,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			if token == "" {
 				token = r.URL.Query().Get("token")
 			}
+
+			// JWT authentication (when enabled)
+			if store.requireAuth && store.jwtMgr != nil {
+				if token == "" {
+					http.Error(w, "unauthorized: missing token", http.StatusUnauthorized)
+					return
+				}
+				// Extract Bearer token
+				jwtToken := strings.TrimPrefix(token, "Bearer ")
+				if _, err := store.jwtMgr.ValidateTenantToken(jwtToken); err != nil {
+					http.Error(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+					return
+				}
+			}
+
+			// Simple API token authentication (legacy)
 			if store.apiToken != "" {
 				if token != "Bearer "+store.apiToken && token != store.apiToken {
 					http.Error(w, "unauthorized", http.StatusUnauthorized)

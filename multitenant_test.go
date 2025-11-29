@@ -29,6 +29,7 @@ func setupMultiTenantTest(t *testing.T) (*VectorStore, *JWTManager, http.Handler
 
 	// Set JWT manager on store (used by HTTP handlers)
 	store.jwtMgr = jwtMgr
+	store.requireAuth = true // Enable JWT authentication enforcement
 
 	handler := newHTTPHandler(store, emb, reranker, "")
 
