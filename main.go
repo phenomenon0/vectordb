@@ -68,7 +68,8 @@ type VectorStore struct {
 	acl       *ACL               // access control lists
 	quotas    *TenantQuota       // storage quotas per tenant
 	tenantRL  *tenantRateLimiter // per-tenant rate limiting
-	jwtMgr    *JWTManager        // JWT token manager
+	jwtMgr      *JWTManager        // JWT token manager
+	requireAuth bool               // Require JWT authentication
 	// Storage format (gob, sjson, sjson-zstd)
 	storageFormat storage.Format
 }
