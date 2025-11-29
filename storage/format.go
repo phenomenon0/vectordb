@@ -58,8 +58,16 @@ func Get(name string) Format {
 	return registry[name]
 }
 
-// Default returns the default storage format (gob for backward compatibility)
+// Default returns the default storage format (sjson with compression for efficiency).
+// For backward compatibility with existing gob files, use Get("gob").
 func Default() Format {
+	if f := registry["sjson-zstd"]; f != nil {
+		return f
+	}
+	// Fallback to uncompressed sjson, then gob
+	if f := registry["sjson"]; f != nil {
+		return f
+	}
 	return registry["gob"]
 }
 

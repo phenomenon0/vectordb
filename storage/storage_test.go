@@ -194,12 +194,12 @@ func TestFormatRegistry(t *testing.T) {
 		t.Errorf("Expected at least 3 formats (gob, sjson, sjson-zstd), got %d", len(formats))
 	}
 
-	// Check gob is default
+	// Check sjson-zstd is default (optimized for embeddings)
 	if Default() == nil {
 		t.Error("Default format should not be nil")
 	}
-	if Default().Name() != "gob" {
-		t.Errorf("Default format should be gob, got %s", Default().Name())
+	if Default().Name() != "sjson-zstd" {
+		t.Errorf("Default format should be sjson-zstd, got %s", Default().Name())
 	}
 
 	// Check Get works
