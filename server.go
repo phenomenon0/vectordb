@@ -12,9 +12,21 @@ import (
 	"strings"
 	"time"
 
+	"agentscope/sjson/codec"
+
 	"github.com/coder/hnsw"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// encodeResponse encodes v using the codec preferred by the client (Accept header).
+// SJSON is used when Accept: application/sjson is present, JSON otherwise.
+// For small responses, both formats are similar; for responses with []float32 arrays
+// (like query scores), SJSON provides ~48% size reduction.
+func encodeResponse(w http.ResponseWriter, r *http.Request, v any) error {
+	responseCodec := codec.FromRequest(r)
+	w.Header().Set("Content-Type", responseCodec.ContentType())
+	return responseCodec.Encode(w, v)
+}
 
 // newHTTPHandler builds the HTTP mux for insert/query/delete/health/metrics.
 func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) http.Handler {
@@ -155,7 +167,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		if err := json.NewEncoder(w).Encode(map[string]any{"id": id}); err != nil {
+		if err := encodeResponse(w, r, map[string]any{"id": id}); err != nil {
 			fmt.Printf("error encoding response: %v\n", err)
 		}
 	})))
@@ -267,7 +279,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			response["errors"] = errors
 		}
 
-		if err := json.NewEncoder(w).Encode(response); err != nil {
+		if err := encodeResponse(w, r, response); err != nil {
 			fmt.Printf("error encoding response: %v\n", err)
 		}
 	})))
@@ -527,14 +539,23 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if len(respScores) == 0 {
 			respScores = rerankScores
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		// Select codec based on Accept header (JSON default, SJSON opt-in)
+		responseCodec := codec.FromRequest(r)
+		w.Header().Set("Content-Type", responseCodec.ContentType())
+
+		response := map[string]any{
 			"ids":    respIDs,
 			"docs":   rDocs,
 			"scores": respScores,
 			"stats":  stats,
 			"meta":   respMeta,
 			"next":   nextPage,
-		})
+		}
+
+		if err := responseCodec.Encode(w, response); err != nil {
+			// Log error but don't change response (already started writing)
+			fmt.Printf("error encoding response: %v\n", err)
+		}
 		return
 	})))
 
@@ -582,7 +603,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		// Removed synchronous save - rely on WAL + background snapshots
 
-		if err := json.NewEncoder(w).Encode(map[string]any{"deleted": req.ID}); err != nil {
+		if err := encodeResponse(w, r, map[string]any{"deleted": req.ID}); err != nil {
 			fmt.Printf("error encoding response: %v\n", err)
 		}
 	})))
@@ -599,7 +620,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		snapAge := ageMillis(indexPath, lastSaved)
 		walAge := ageMillis(store.walPath, time.Time{})
 
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = encodeResponse(w, r, map[string]any{
 			"ok":              true,
 			"total":           total,
 			"active":          active,
@@ -629,7 +650,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			hnswOK = false
 		}
 		store.RUnlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = encodeResponse(w, r, map[string]any{
 			"checksum_ok": ck,
 			"hnsw_ok":     hnswOK,
 		})
@@ -644,7 +665,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			http.Error(w, fmt.Sprintf("compact failed: %v", err), http.StatusInternalServerError)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = encodeResponse(w, r, map[string]any{"ok": true})
 	})))
 
 	// Export snapshot (read-only)
@@ -739,7 +760,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		// Success - remove backup
 		os.Remove(backupPath)
 
-		if err := json.NewEncoder(w).Encode(map[string]any{
+		if err := encodeResponse(w, r, map[string]any{
 			"ok":      true,
 			"count":   store.Count,
 			"deleted": len(store.Deleted),
@@ -787,7 +808,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.acl.GrantCollectionAccess(req.TenantID, req.Collection)
 
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = encodeResponse(w, r, map[string]any{
 			"ok":         true,
 			"tenant_id":  req.TenantID,
 			"collection": req.Collection,
@@ -818,7 +839,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.acl.RevokeCollectionAccess(req.TenantID, req.Collection)
 
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = encodeResponse(w, r, map[string]any{
 			"ok":         true,
 			"tenant_id":  req.TenantID,
 			"collection": req.Collection,
@@ -856,7 +877,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.acl.GrantPermission(req.TenantID, req.Permission)
 
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = encodeResponse(w, r, map[string]any{
 			"ok":         true,
 			"tenant_id":  req.TenantID,
 			"permission": req.Permission,
@@ -887,7 +908,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.acl.RevokePermission(req.TenantID, req.Permission)
 
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = encodeResponse(w, r, map[string]any{
 			"ok":         true,
 			"tenant_id":  req.TenantID,
 			"permission": req.Permission,
@@ -923,7 +944,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.quotas.SetQuota(req.TenantID, req.MaxBytes)
 
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = encodeResponse(w, r, map[string]any{
 			"ok":        true,
 			"tenant_id": req.TenantID,
 			"max_bytes": req.MaxBytes,
@@ -954,7 +975,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			utilizationPct = float64(usedBytes) / float64(maxBytes) * 100
 		}
 
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = encodeResponse(w, r, map[string]any{
 			"tenant_id":        tenantID,
 			"used_bytes":       usedBytes,
 			"max_bytes":        maxBytes,
@@ -995,7 +1016,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			store.tenantRL.setLimit(req.TenantID, req.RPS, req.Burst)
 		}
 
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = encodeResponse(w, r, map[string]any{
 			"ok":        true,
 			"tenant_id": req.TenantID,
 			"rps":       req.RPS,
