@@ -14,11 +14,11 @@ import (
 func TestStoreAddSearchMetaAndDelete(t *testing.T) {
 	vs := NewVectorStore(10, 3)
 
-	id1, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", map[string]string{"tag": "a"}, "c1")
+	id1, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", map[string]string{"tag": "a"}, "c1", "")
 	if err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
-	id2, err := vs.Add([]float32{0, 1, 0}, "doc-2", "id2", map[string]string{"tag": "b"}, "c2")
+	id2, err := vs.Add([]float32{0, 1, 0}, "doc-2", "id2", map[string]string{"tag": "b"}, "c2", "")
 	if err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestStoreAddSearchMetaAndDelete(t *testing.T) {
 	}
 
 	// Upsert should overwrite doc/meta/collection
-	_, err = vs.Upsert([]float32{1, 0, 0}, "doc-1b", "id1", map[string]string{"tag": "a2"}, "c3")
+	_, err = vs.Upsert([]float32{1, 0, 0}, "doc-1b", "id1", map[string]string{"tag": "a2"}, "c3", "")
 	if err != nil {
 		t.Fatalf("failed to upsert: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestPersistenceSnapshotReload(t *testing.T) {
 	path := filepath.Join(dir, "index.gob")
 
 	vs := NewVectorStore(10, 3)
-	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", map[string]string{"tag": "a"}, "c1"); err != nil {
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", map[string]string{"tag": "a"}, "c1", ""); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
 	if err := vs.Delete("id1"); err != nil {
@@ -122,10 +122,10 @@ func TestWALReplay(t *testing.T) {
 
 	vs := NewVectorStore(10, 3)
 	vs.walPath = wal
-	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", nil, ""); err != nil {
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", nil, "", ""); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
-	if _, err := vs.Add([]float32{0, 1, 0}, "doc-2", "id2", nil, ""); err != nil {
+	if _, err := vs.Add([]float32{0, 1, 0}, "doc-2", "id2", nil, "", ""); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
 	if err := vs.Delete("id2"); err != nil {
@@ -186,7 +186,7 @@ func TestWALAutoSnapshot(t *testing.T) {
 	vs.walPath = wal
 	vs.walMaxOps = 1 // trigger snapshot after first op
 
-	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", nil, ""); err != nil {
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", nil, "", ""); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
 
@@ -225,7 +225,7 @@ func TestEmbedderAndANNFlow(t *testing.T) {
 	}
 
 	vs := NewVectorStore(10, emb.Dim())
-	if _, err := vs.Add(vec, "doc-hello", "id-hello", nil, "c1"); err != nil {
+	if _, err := vs.Add(vec, "doc-hello", "id-hello", nil, "c1", ""); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
 
@@ -241,10 +241,10 @@ func TestEmbedderAndANNFlow(t *testing.T) {
 
 func TestQueryFilterLogic(t *testing.T) {
 	vs := NewVectorStore(10, 3)
-	if _, err := vs.Add([]float32{1, 0, 0}, "doc-a", "a", map[string]string{"tag": "x", "env": "prod"}, "c1"); err != nil {
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-a", "a", map[string]string{"tag": "x", "env": "prod"}, "c1", ""); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
-	if _, err := vs.Add([]float32{0, 1, 0}, "doc-b", "b", map[string]string{"tag": "y", "env": "dev"}, "c2"); err != nil {
+	if _, err := vs.Add([]float32{0, 1, 0}, "doc-b", "b", map[string]string{"tag": "y", "env": "dev"}, "c2", ""); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestConcurrentAddAndSearch(t *testing.T) {
 		go func(id int) {
 			for j := 0; j < 100; j++ {
 				vec, _ := emb.Embed(fmt.Sprintf("doc-%d-%d", id, j))
-				if _, err := vs.Add(vec, fmt.Sprintf("content-%d-%d", id, j), "", nil, "default"); err != nil {
+				if _, err := vs.Add(vec, fmt.Sprintf("content-%d-%d", id, j), "", nil, "default", ""); err != nil {
 					errors <- err
 				}
 			}
@@ -340,7 +340,7 @@ func TestConcurrentUpsertAndDelete(t *testing.T) {
 			for j := 0; j < 100; j++ {
 				vec, _ := emb.Embed(fmt.Sprintf("doc-%d", j))
 				docID := fmt.Sprintf("id-%d", j%50) // Reuse 50 IDs
-				if _, err := vs.Upsert(vec, fmt.Sprintf("content-%d", j), docID, nil, "default"); err != nil {
+				if _, err := vs.Upsert(vec, fmt.Sprintf("content-%d", j), docID, nil, "default", ""); err != nil {
 					errors <- err
 				}
 			}
@@ -380,7 +380,7 @@ func TestDimensionMismatchError(t *testing.T) {
 	vs := NewVectorStore(10, 3)
 
 	// Test Add with wrong dimension
-	_, err := vs.Add([]float32{1, 0}, "doc", "id1", nil, "default")
+	_, err := vs.Add([]float32{1, 0}, "doc", "id1", nil, "default", "")
 	if err == nil {
 		t.Fatal("expected error for dimension mismatch in Add")
 	}
@@ -389,7 +389,7 @@ func TestDimensionMismatchError(t *testing.T) {
 	}
 
 	// Test Upsert with wrong dimension
-	_, err = vs.Upsert([]float32{1, 0, 0, 0}, "doc", "id2", nil, "default")
+	_, err = vs.Upsert([]float32{1, 0, 0, 0}, "doc", "id2", nil, "default", "")
 	if err == nil {
 		t.Fatal("expected error for dimension mismatch in Upsert")
 	}
@@ -406,7 +406,7 @@ func TestWALErrorPropagation(t *testing.T) {
 	vs.walPath = "/invalid/path/wal.log"
 
 	// This should fail with WAL error
-	_, err := vs.Add([]float32{1, 0, 0}, "doc", "id1", nil, "default")
+	_, err := vs.Add([]float32{1, 0, 0}, "doc", "id1", nil, "default", "")
 	if err == nil {
 		t.Fatal("expected error when WAL write fails")
 	}
@@ -418,7 +418,7 @@ func TestWALErrorPropagation(t *testing.T) {
 	vs.walPath = filepath.Join(dir, "test.wal")
 
 	// Now it should succeed
-	_, err = vs.Add([]float32{1, 0, 0}, "doc", "id2", nil, "default")
+	_, err = vs.Add([]float32{1, 0, 0}, "doc", "id2", nil, "default", "")
 	if err != nil {
 		t.Fatalf("unexpected error with valid WAL: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestEmptyStoreOperations(t *testing.T) {
 	}
 
 	// Upsert with empty ID should generate one
-	id, err := vs.Add([]float32{1, 0, 0}, "doc", "", nil, "default")
+	id, err := vs.Add([]float32{1, 0, 0}, "doc", "", nil, "default", "")
 	if err != nil {
 		t.Fatalf("add with empty ID failed: %v", err)
 	}
@@ -456,7 +456,7 @@ func TestLargeBatchOperations(t *testing.T) {
 	// Add 5000 documents
 	for i := 0; i < 5000; i++ {
 		vec, _ := emb.Embed(fmt.Sprintf("doc-%d", i))
-		if _, err := vs.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default"); err != nil {
+		if _, err := vs.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default", ""); err != nil {
 			t.Fatalf("failed to add doc %d: %v", i, err)
 		}
 	}
@@ -497,19 +497,19 @@ func TestMetadataEdgeCases(t *testing.T) {
 		largeMeta[fmt.Sprintf("key%d", i)] = strings.Repeat("x", 100)
 	}
 
-	_, err := vs.Add([]float32{1, 0, 0}, "doc", "id1", largeMeta, "default")
+	_, err := vs.Add([]float32{1, 0, 0}, "doc", "id1", largeMeta, "default", "")
 	if err != nil {
 		t.Fatalf("failed to add doc with large metadata: %v", err)
 	}
 
 	// Nil metadata
-	_, err = vs.Add([]float32{0, 1, 0}, "doc2", "id2", nil, "default")
+	_, err = vs.Add([]float32{0, 1, 0}, "doc2", "id2", nil, "default", "")
 	if err != nil {
 		t.Fatalf("failed to add doc with nil metadata: %v", err)
 	}
 
 	// Empty metadata
-	_, err = vs.Add([]float32{0, 0, 1}, "doc3", "id3", map[string]string{}, "default")
+	_, err = vs.Add([]float32{0, 0, 1}, "doc3", "id3", map[string]string{}, "default", "")
 	if err != nil {
 		t.Fatalf("failed to add doc with empty metadata: %v", err)
 	}
@@ -526,7 +526,7 @@ func BenchmarkInsert(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vs.Add(vec, "benchmark doc content", "", nil, "default")
+		vs.Add(vec, "benchmark doc content", "", nil, "default", "")
 	}
 }
 
@@ -537,7 +537,7 @@ func BenchmarkSearchANN(b *testing.B) {
 	// Pre-populate with 10k vectors
 	for i := 0; i < 10000; i++ {
 		vec, _ := emb.Embed(fmt.Sprintf("doc-%d", i))
-		vs.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default")
+		vs.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default", "")
 	}
 
 	query, _ := emb.Embed("query")
@@ -555,7 +555,7 @@ func BenchmarkSearchScan(b *testing.B) {
 	// Pre-populate with 10k vectors
 	for i := 0; i < 10000; i++ {
 		vec, _ := emb.Embed(fmt.Sprintf("doc-%d", i))
-		vs.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default")
+		vs.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default", "")
 	}
 
 	query, _ := emb.Embed("query")
@@ -573,7 +573,7 @@ func BenchmarkConcurrentReads(b *testing.B) {
 	// Pre-populate
 	for i := 0; i < 1000; i++ {
 		vec, _ := emb.Embed(fmt.Sprintf("doc-%d", i))
-		vs.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default")
+		vs.Add(vec, fmt.Sprintf("content-%d", i), "", nil, "default", "")
 	}
 
 	query, _ := emb.Embed("query")
@@ -598,7 +598,7 @@ func BenchmarkCompaction(b *testing.B) {
 		// Add 1000 docs and delete 500
 		for j := 0; j < 1000; j++ {
 			vec, _ := emb.Embed(fmt.Sprintf("doc-%d", j))
-			vs.Add(vec, fmt.Sprintf("content-%d", j), fmt.Sprintf("id-%d", j), nil, "default")
+			vs.Add(vec, fmt.Sprintf("content-%d", j), fmt.Sprintf("id-%d", j), nil, "default", "")
 		}
 		for j := 0; j < 500; j++ {
 			vs.Delete(fmt.Sprintf("id-%d", j))

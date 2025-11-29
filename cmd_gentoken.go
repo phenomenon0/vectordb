@@ -111,7 +111,7 @@ func generatePresetTokens() {
 
 	jwtMgr := NewJWTManager(secret, "vectordb")
 
-	fmt.Println("=== Preset JWT Tokens for Development ===\n")
+	fmt.Println("=== Preset JWT Tokens for Development ===")
 
 	// Admin token
 	adminToken, _ := jwtMgr.GenerateTenantToken("admin", []string{"admin"}, []string{}, 24*365*time.Hour)
