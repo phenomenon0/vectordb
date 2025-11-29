@@ -28,6 +28,13 @@ func encodeResponse(w http.ResponseWriter, r *http.Request, v any) error {
 	return responseCodec.Encode(w, v)
 }
 
+// decodeRequest decodes the request body using the appropriate codec based on Content-Type.
+// Supports both JSON (default) and SJSON (Content-Type: application/sjson).
+func decodeRequest(r *http.Request, v any) error {
+	requestCodec := codec.FromContentType(r.Header.Get("Content-Type"))
+	return requestCodec.Decode(r.Body, v)
+}
+
 // newHTTPHandler builds the HTTP mux for insert/query/delete/health/metrics.
 func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) http.Handler {
 	mux := http.NewServeMux()
@@ -110,7 +117,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			Upsert     bool              `json:"upsert"`
 			Collection string            `json:"collection"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -206,7 +213,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			} `json:"docs"`
 			Upsert bool `json:"upsert"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -327,7 +334,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			PageToken   string              `json:"page_token"`
 			PageSize    int                 `json:"page_size"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -586,7 +593,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		var req struct {
 			ID string `json:"id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -796,7 +803,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			TenantID   string `json:"tenant_id"`
 			Collection string `json:"collection"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -827,7 +834,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			TenantID   string `json:"tenant_id"`
 			Collection string `json:"collection"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -858,7 +865,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			TenantID   string `json:"tenant_id"`
 			Permission string `json:"permission"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -896,7 +903,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			TenantID   string `json:"tenant_id"`
 			Permission string `json:"permission"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -927,7 +934,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			TenantID string `json:"tenant_id"`
 			MaxBytes int64  `json:"max_bytes"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
@@ -997,7 +1004,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			RPS      int    `json:"rps"`
 			Burst    int    `json:"burst"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
 			return
 		}
