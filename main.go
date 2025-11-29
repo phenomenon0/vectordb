@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -23,6 +22,7 @@ import (
 
 	"agentscope/core"
 	"agentscope/tools"
+	"agentscope/vectordb/storage"
 	"github.com/coder/hnsw"
 )
 
@@ -69,6 +69,8 @@ type VectorStore struct {
 	quotas    *TenantQuota       // storage quotas per tenant
 	tenantRL  *tenantRateLimiter // per-tenant rate limiting
 	jwtMgr    *JWTManager        // JWT token manager
+	// Storage format (gob, sjson, sjson-zstd)
+	storageFormat storage.Format
 }
 
 func NewVectorStore(capacity int, dim int) *VectorStore {
@@ -87,6 +89,15 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 			issuer = "vectordb"
 		}
 		jwtMgr = NewJWTManager(secret, issuer)
+	}
+
+	// Select storage format (default: gob for backward compatibility)
+	// Options: "gob", "sjson", "sjson-zstd"
+	storageFormat := storage.Default()
+	if formatName := os.Getenv("STORAGE_FORMAT"); formatName != "" {
+		if f := storage.Get(formatName); f != nil {
+			storageFormat = f
+		}
 	}
 
 	return &VectorStore{
@@ -116,6 +127,8 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		quotas:   NewTenantQuota(),
 		tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), time.Minute),
 		jwtMgr:   jwtMgr,
+		// Storage
+		storageFormat: storageFormat,
 	}
 }
 
@@ -535,26 +548,7 @@ func (vs *VectorStore) Save(path string) error {
 		}
 	}
 
-	payload := struct {
-		Dim       int
-		Data      []float32
-		Docs      []string
-		IDs       []string
-		Meta      map[uint64]map[string]string
-		Deleted   map[uint64]bool
-		Coll      map[uint64]string
-		Next      int64
-		Count     int
-		HNSW      []byte
-		Checksum  string
-		LastSaved time.Time
-		LexTF     map[uint64]map[string]int
-		DocLen    map[uint64]int
-		DF        map[string]int
-		SumDocL   int
-		NumMeta   map[uint64]map[string]float64
-		TimeMeta  map[uint64]map[string]time.Time
-	}{
+	payload := &storage.Payload{
 		Dim:       vs.Dim,
 		Data:      vs.Data,
 		Docs:      vs.Docs,
@@ -574,7 +568,14 @@ func (vs *VectorStore) Save(path string) error {
 		NumMeta:   vs.NumMeta,
 		TimeMeta:  vs.TimeMeta,
 	}
-	if err := gob.NewEncoder(f).Encode(payload); err != nil {
+
+	// Use configured storage format (default: gob for backward compatibility)
+	format := vs.storageFormat
+	if format == nil {
+		format = storage.Default()
+	}
+
+	if err := format.Save(f, payload); err != nil {
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -588,40 +589,65 @@ func (vs *VectorStore) Save(path string) error {
 	return os.Rename(tmp, path)
 }
 
+// getStorageFormat returns the configured storage format from env var.
+func getStorageFormat() storage.Format {
+	if formatName := os.Getenv("STORAGE_FORMAT"); formatName != "" {
+		if f := storage.Get(formatName); f != nil {
+			return f
+		}
+	}
+	return storage.Default()
+}
+
+// tryLoadPayload attempts to load a payload from path using multiple formats.
+// Returns the payload and the format used, or nil if all formats fail.
+func tryLoadPayload(path string) (*storage.Payload, storage.Format) {
+	// Try gob first (most common, backward compatible)
+	if payload := tryLoadWithFormat(path, storage.Get("gob")); payload != nil {
+		return payload, storage.Get("gob")
+	}
+
+	// Try sjson formats
+	for _, formatName := range []string{"sjson", "sjson-zstd"} {
+		if f := storage.Get(formatName); f != nil {
+			if payload := tryLoadWithFormat(path, f); payload != nil {
+				return payload, f
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+// tryLoadWithFormat attempts to load a payload using a specific format.
+func tryLoadWithFormat(path string, format storage.Format) *storage.Payload {
+	if format == nil {
+		return nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	payload, err := format.Load(f)
+	if err != nil {
+		return nil
+	}
+	return payload
+}
+
 // Load snapshot or init new store.
 func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 	if _, err := os.Stat(path); err == nil {
-		f, err := os.Open(path)
-		if err != nil {
-			fmt.Printf("warning: failed to open index, rebuilding: %v\n", err)
+		// Try to load with configured format, fall back to gob for backward compatibility
+		payload, loadedFormat := tryLoadPayload(path)
+		if payload == nil {
+			fmt.Printf("warning: failed to load index with any format, rebuilding\n")
 			return NewVectorStore(capacity, dim), false
 		}
-		defer f.Close()
-
-		var payload struct {
-			Dim       int
-			Data      []float32
-			Docs      []string
-			IDs       []string
-			Meta      map[uint64]map[string]string
-			Deleted   map[uint64]bool
-			Coll      map[uint64]string
-			Next      int64
-			Count     int
-			HNSW      []byte
-			Checksum  string
-			LastSaved time.Time
-			LexTF     map[uint64]map[string]int
-			DocLen    map[uint64]int
-			DF        map[string]int
-			SumDocL   int
-			NumMeta   map[uint64]map[string]float64
-			TimeMeta  map[uint64]map[string]time.Time
-		}
-		if err := gob.NewDecoder(f).Decode(&payload); err != nil {
-			fmt.Printf("warning: failed to decode index, rebuilding: %v\n", err)
-			return NewVectorStore(capacity, dim), false
-		}
+		_ = loadedFormat // format used for loading (for logging if needed)
 		// Initialize JWT manager if configured
 		var jwtMgr *JWTManager
 		if secret := os.Getenv("JWT_SECRET"); secret != "" {
@@ -663,6 +689,8 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			quotas:   NewTenantQuota(),
 			tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), time.Minute),
 			jwtMgr:   jwtMgr,
+			// Storage format
+			storageFormat: getStorageFormat(),
 		}
 		if vs.checksum == "" {
 			vs.checksum = fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
