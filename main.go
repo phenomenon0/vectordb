@@ -72,6 +72,8 @@ type VectorStore struct {
 	requireAuth bool               // Require JWT authentication
 	// Storage format (gob, sjson, sjson-zstd)
 	storageFormat storage.Format
+	// Metadata bitmap index for fast pre-filtering
+	metaIndex *MetadataIndex
 }
 
 func NewVectorStore(capacity int, dim int) *VectorStore {
@@ -130,6 +132,8 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		jwtMgr:   jwtMgr,
 		// Storage
 		storageFormat: storageFormat,
+		// Metadata index for fast pre-filtering
+		metaIndex: NewMetadataIndex(),
 	}
 }
 
@@ -481,6 +485,7 @@ func (vs *VectorStore) ingestMeta(hid uint64, meta map[string]string) {
 	}
 	nums := make(map[string]float64)
 	times := make(map[string]time.Time)
+	stringMeta := make(map[string]string)
 	for k, v := range meta {
 		if v == "" {
 			continue
@@ -493,13 +498,20 @@ func (vs *VectorStore) ingestMeta(hid uint64, meta map[string]string) {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			nums[k] = f
 			vs.numIndex[k] = append(vs.numIndex[k], numEntry{ID: hid, V: f})
+			continue
 		}
+		// String metadata - add to bitmap index
+		stringMeta[k] = v
 	}
 	if len(nums) > 0 {
 		vs.NumMeta[hid] = nums
 	}
 	if len(times) > 0 {
 		vs.TimeMeta[hid] = times
+	}
+	// Add to metadata bitmap index for fast pre-filtering
+	if vs.metaIndex != nil && len(stringMeta) > 0 {
+		vs.metaIndex.AddDocument(hid, stringMeta)
 	}
 }
 
