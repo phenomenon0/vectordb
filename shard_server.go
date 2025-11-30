@@ -212,6 +212,9 @@ func (s *ShardServer) newHTTPHandler() http.Handler {
 		mux.HandleFunc("/wal/stream", s.handleWALStream)
 	}
 
+	// Register migration handlers for shard rebalancing
+	registerMigrationHandlers(mux, s.store)
+
 	// Mount base handler on root
 	mux.Handle("/", baseHandler)
 
