@@ -74,6 +74,9 @@ type RebalanceCoordinator struct {
 	migrations  map[string]*Migration // migration ID -> migration
 	active      bool
 
+	// HTTP client for shard communication
+	migrationClient *MigrationClient
+
 	// Control channels
 	stopCh   chan struct{}
 	pauseCh  chan struct{}
@@ -86,12 +89,13 @@ type RebalanceCoordinator struct {
 // NewRebalanceCoordinator creates a new rebalance coordinator
 func NewRebalanceCoordinator(distributed *DistributedVectorDB) *RebalanceCoordinator {
 	return &RebalanceCoordinator{
-		distributed: distributed,
-		migrations:  make(map[string]*Migration),
-		stopCh:      make(chan struct{}),
-		pauseCh:     make(chan struct{}),
-		resumeCh:    make(chan struct{}),
-		stats:       NewRebalanceStats(),
+		distributed:     distributed,
+		migrations:      make(map[string]*Migration),
+		migrationClient: NewMigrationClient(),
+		stopCh:          make(chan struct{}),
+		pauseCh:         make(chan struct{}),
+		resumeCh:        make(chan struct{}),
+		stats:           NewRebalanceStats(),
 	}
 }
 
@@ -255,39 +259,85 @@ func (rc *RebalanceCoordinator) executeMigration(m *Migration) {
 func (rc *RebalanceCoordinator) phase1CopyData(m *Migration) error {
 	fmt.Printf("   Phase 1: Copying data from shard %d to shard %d...\n", m.FromShardID, m.ToShardID)
 
-	// In production, this would:
-	// 1. Query source shard for all vectors in collection
-	// 2. Batch insert to destination shard
-	// 3. Update progress (m.CopiedVectors)
-
-	// Simulated implementation
-	m.TotalVectors = 10000 // Placeholder
-	batchSize := 1000
-
-	for i := 0; i < m.TotalVectors; i += batchSize {
-		// Check for pause/stop
-		select {
-		case <-rc.pauseCh:
-			<-rc.resumeCh // Wait for resume
-		case <-rc.stopCh:
-			return fmt.Errorf("migration stopped")
-		default:
-		}
-
-		// Copy batch
-		// TODO: Actual HTTP call to source/destination shards
-
-		m.CopiedVectors += batchSize
-		if m.CopiedVectors > m.TotalVectors {
-			m.CopiedVectors = m.TotalVectors
-		}
-
-		// Throttle to avoid overwhelming destination
-		time.Sleep(10 * time.Millisecond)
+	// Get shard addresses
+	srcAddr, dstAddr, err := rc.getShardAddresses(m.FromShardID, m.ToShardID)
+	if err != nil {
+		return fmt.Errorf("failed to get shard addresses: %w", err)
 	}
 
+	// Check for pause/stop before starting
+	select {
+	case <-rc.stopCh:
+		return fmt.Errorf("migration stopped")
+	default:
+	}
+
+	// Get collection stats first
+	stats, err := rc.migrationClient.GetCollectionStats(srcAddr, m.Collection)
+	if err != nil {
+		return fmt.Errorf("failed to get collection stats: %w", err)
+	}
+	if active, ok := stats["active"].(float64); ok {
+		m.TotalVectors = int(active)
+	}
+
+	// Export collection from source shard
+	fmt.Printf("   Exporting collection '%s' from shard %d (%s)...\n", m.Collection, m.FromShardID, srcAddr)
+	export, err := rc.migrationClient.ExportFromShard(srcAddr, m.Collection)
+	if err != nil {
+		return fmt.Errorf("failed to export from source: %w", err)
+	}
+
+	m.TotalVectors = export.Count
+	fmt.Printf("   Exported %d vectors from source shard\n", m.TotalVectors)
+
+	// Check for pause/stop
+	select {
+	case <-rc.pauseCh:
+		<-rc.resumeCh // Wait for resume
+	case <-rc.stopCh:
+		return fmt.Errorf("migration stopped")
+	default:
+	}
+
+	// Import collection to destination shard
+	fmt.Printf("   Importing collection '%s' to shard %d (%s)...\n", m.Collection, m.ToShardID, dstAddr)
+	if err := rc.migrationClient.ImportToShard(dstAddr, export); err != nil {
+		return fmt.Errorf("failed to import to destination: %w", err)
+	}
+
+	m.CopiedVectors = export.Count
 	fmt.Printf("   Phase 1 complete: %d vectors copied\n", m.TotalVectors)
 	return nil
+}
+
+// getShardAddresses retrieves HTTP addresses for source and destination shards
+func (rc *RebalanceCoordinator) getShardAddresses(fromShardID, toShardID int) (string, string, error) {
+	rc.distributed.mu.RLock()
+	defer rc.distributed.mu.RUnlock()
+
+	var srcAddr, dstAddr string
+
+	// shards is map[int][]*ShardNode - iterate over shard ID -> nodes
+	for shardID, nodes := range rc.distributed.shards {
+		for _, node := range nodes {
+			if shardID == fromShardID && node.Role == RolePrimary {
+				srcAddr = node.HTTPAddr
+			}
+			if shardID == toShardID && node.Role == RolePrimary {
+				dstAddr = node.HTTPAddr
+			}
+		}
+	}
+
+	if srcAddr == "" {
+		return "", "", fmt.Errorf("source shard %d not found or has no primary", fromShardID)
+	}
+	if dstAddr == "" {
+		return "", "", fmt.Errorf("destination shard %d not found or has no primary", toShardID)
+	}
+
+	return srcAddr, dstAddr, nil
 }
 
 // phase2EnableDualWrite enables dual-write mode (writes go to both shards)
@@ -326,8 +376,16 @@ func (rc *RebalanceCoordinator) phase3AtomicSwitch(m *Migration) error {
 func (rc *RebalanceCoordinator) phase4Cleanup(m *Migration) error {
 	fmt.Printf("   Phase 4: Cleaning up source shard...\n")
 
-	// In production, this would:
-	// DELETE /collection/{m.Collection} on source shard
+	// Get source shard address
+	srcAddr, _, err := rc.getShardAddresses(m.FromShardID, m.ToShardID)
+	if err != nil {
+		return fmt.Errorf("failed to get source shard address: %w", err)
+	}
+
+	// Delete collection from source shard
+	if err := rc.migrationClient.DeleteFromShard(srcAddr, m.Collection); err != nil {
+		return fmt.Errorf("failed to delete from source: %w", err)
+	}
 
 	m.cleanupDone = true
 
@@ -374,8 +432,17 @@ func (rc *RebalanceCoordinator) rollbackMigration(m *Migration) error {
 		rc.distributed.mu.Unlock()
 	}
 
-	// Delete from destination
-	// TODO: Actual HTTP call
+	// Delete from destination shard if any data was copied
+	if m.CopiedVectors > 0 {
+		_, dstAddr, err := rc.getShardAddresses(m.FromShardID, m.ToShardID)
+		if err == nil && dstAddr != "" {
+			if err := rc.migrationClient.DeleteFromShard(dstAddr, m.Collection); err != nil {
+				fmt.Printf("   ⚠️  Failed to cleanup destination during rollback: %v\n", err)
+			} else {
+				fmt.Printf("   ✓ Deleted %d vectors from destination shard during rollback\n", m.CopiedVectors)
+			}
+		}
+	}
 
 	return nil
 }
