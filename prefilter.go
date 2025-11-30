@@ -13,28 +13,28 @@ import (
 // SimpleBitmap represents a simple bitmap for document IDs
 // In production, use github.com/RoaringBitmap/roaring for efficiency
 type SimpleBitmap struct {
-	bits map[int]bool
+	bits map[uint64]bool
 }
 
 // NewSimpleBitmap creates a new bitmap
 func NewSimpleBitmap() *SimpleBitmap {
 	return &SimpleBitmap{
-		bits: make(map[int]bool),
+		bits: make(map[uint64]bool),
 	}
 }
 
 // Add adds a document ID to the bitmap
-func (sb *SimpleBitmap) Add(docID int) {
+func (sb *SimpleBitmap) Add(docID uint64) {
 	sb.bits[docID] = true
 }
 
 // Remove removes a document ID from the bitmap
-func (sb *SimpleBitmap) Remove(docID int) {
+func (sb *SimpleBitmap) Remove(docID uint64) {
 	delete(sb.bits, docID)
 }
 
 // Contains checks if a document ID is in the bitmap
-func (sb *SimpleBitmap) Contains(docID int) bool {
+func (sb *SimpleBitmap) Contains(docID uint64) bool {
 	return sb.bits[docID]
 }
 
@@ -67,8 +67,8 @@ func (sb *SimpleBitmap) Count() int {
 }
 
 // ToSlice returns a slice of document IDs
-func (sb *SimpleBitmap) ToSlice() []int {
-	ids := make([]int, 0, len(sb.bits))
+func (sb *SimpleBitmap) ToSlice() []uint64 {
+	ids := make([]uint64, 0, len(sb.bits))
 	for id := range sb.bits {
 		ids = append(ids, id)
 	}
@@ -97,7 +97,7 @@ type MetadataIndex struct {
 	index map[string]map[string]*SimpleBitmap
 
 	// Reverse index: doc_ID -> metadata (for updates)
-	docMeta map[int]map[string]string
+	docMeta map[uint64]map[string]string
 
 	// All document IDs (for "no filter" case)
 	allDocs *SimpleBitmap
@@ -110,14 +110,14 @@ type MetadataIndex struct {
 func NewMetadataIndex() *MetadataIndex {
 	return &MetadataIndex{
 		index:   make(map[string]map[string]*SimpleBitmap),
-		docMeta: make(map[int]map[string]string),
+		docMeta: make(map[uint64]map[string]string),
 		allDocs: NewSimpleBitmap(),
 		stats:   NewPreFilterStats(),
 	}
 }
 
 // AddDocument adds a document with metadata to the index
-func (mi *MetadataIndex) AddDocument(docID int, metadata map[string]string) {
+func (mi *MetadataIndex) AddDocument(docID uint64, metadata map[string]string) {
 	mi.mu.Lock()
 	defer mi.mu.Unlock()
 
@@ -147,7 +147,7 @@ func (mi *MetadataIndex) AddDocument(docID int, metadata map[string]string) {
 }
 
 // RemoveDocument removes a document from the index
-func (mi *MetadataIndex) RemoveDocument(docID int) {
+func (mi *MetadataIndex) RemoveDocument(docID uint64) {
 	mi.mu.Lock()
 	defer mi.mu.Unlock()
 
@@ -186,7 +186,7 @@ func (mi *MetadataIndex) RemoveDocument(docID int) {
 }
 
 // UpdateDocument updates a document's metadata
-func (mi *MetadataIndex) UpdateDocument(docID int, newMetadata map[string]string) {
+func (mi *MetadataIndex) UpdateDocument(docID uint64, newMetadata map[string]string) {
 	mi.RemoveDocument(docID)
 	mi.AddDocument(docID, newMetadata)
 }
