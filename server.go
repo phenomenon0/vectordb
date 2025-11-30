@@ -618,7 +618,27 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		// TODO: Add tenant ownership verification to Delete method
+		// SECURITY: Verify tenant ownership before deletion
+		// This prevents cross-tenant data deletion attacks
+		hid := hashID(req.ID)
+		store.RLock()
+		existingTenant := store.TenantID[hid]
+		_, exists := store.idToIx[hid]
+		isDeleted := store.Deleted[hid]
+		store.RUnlock()
+
+		// Check if document exists
+		if !exists || isDeleted {
+			http.Error(w, "document not found", http.StatusNotFound)
+			return
+		}
+
+		// Verify ownership (admins can delete any document)
+		if !tenantCtx.IsAdmin && existingTenant != "" && existingTenant != tenantID {
+			http.Error(w, "forbidden: document belongs to different tenant", http.StatusForbidden)
+			return
+		}
+
 		if err := store.Delete(req.ID); err != nil {
 			http.Error(w, fmt.Sprintf("failed to delete document: %v", err), http.StatusInternalServerError)
 			return
