@@ -390,6 +390,31 @@ func (vs *VectorStore) SearchLex(qTokens []string, k int) []int {
 	return ixs
 }
 
+// GetPreFilteredIDs returns document IDs matching the metadata filter.
+// Use this to get candidates before searching.
+func (vs *VectorStore) GetPreFilteredIDs(filter map[string]string) []uint64 {
+	if vs.metaIndex == nil || len(filter) == 0 {
+		return nil
+	}
+	return vs.metaIndex.GetMatchingDocs(filter).ToSlice()
+}
+
+// GetMetadataIndexStats returns statistics about the metadata index.
+func (vs *VectorStore) GetMetadataIndexStats() map[string]any {
+	if vs.metaIndex == nil {
+		return nil
+	}
+	return vs.metaIndex.GetStats()
+}
+
+// AnalyzeMetadataFilter analyzes a metadata filter and returns optimization info.
+func (vs *VectorStore) AnalyzeMetadataFilter(filter map[string]string) map[string]any {
+	if vs.metaIndex == nil {
+		return nil
+	}
+	return vs.metaIndex.AnalyzeFilter(filter)
+}
+
 // Hybrid score combines cosine and BM25-like lexical score.
 func (vs *VectorStore) hybridScore(hid uint64, qVec []float32, qTokens []string, alpha float64) float64 {
 	vecScore := float64(0)
@@ -535,6 +560,10 @@ func (vs *VectorStore) ejectMeta(hid uint64) {
 			}
 		}
 		vs.timeIndex[k] = filtered
+	}
+	// Remove from metadata bitmap index
+	if vs.metaIndex != nil {
+		vs.metaIndex.RemoveDocument(hid)
 	}
 }
 
@@ -704,6 +733,8 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			jwtMgr:   jwtMgr,
 			// Storage format
 			storageFormat: getStorageFormat(),
+			// Metadata index (rebuilt below)
+			metaIndex: NewMetadataIndex(),
 		}
 		if vs.checksum == "" {
 			vs.checksum = fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
@@ -747,6 +778,11 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		}
 		if vs.next == 0 {
 			vs.next = int64(len(vs.IDs))
+		}
+		// Rebuild metadata bitmap index from persisted Meta
+		if vs.metaIndex != nil && len(vs.Meta) > 0 {
+			vs.metaIndex.RebuildFromMeta(vs.Meta, vs.Deleted)
+			fmt.Printf("Rebuilt metadata index: %d documents indexed\n", vs.metaIndex.GetDocumentCount())
 		}
 		if err := replayWAL(vs); err != nil {
 			fmt.Printf("warning: WAL replay failed: %v\n", err)

@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
+	"time"
 )
 
 // ===========================================================================================
@@ -189,6 +191,66 @@ func (mi *MetadataIndex) RemoveDocument(docID uint64) {
 func (mi *MetadataIndex) UpdateDocument(docID uint64, newMetadata map[string]string) {
 	mi.RemoveDocument(docID)
 	mi.AddDocument(docID, newMetadata)
+}
+
+// RebuildFromMeta rebuilds the index from persisted metadata map.
+// This is called on load to restore the index from VectorStore.Meta.
+// It filters out numeric and time values, only indexing string metadata.
+func (mi *MetadataIndex) RebuildFromMeta(meta map[uint64]map[string]string, deleted map[uint64]bool) {
+	mi.mu.Lock()
+	defer mi.mu.Unlock()
+
+	// Clear existing index
+	mi.index = make(map[string]map[string]*SimpleBitmap)
+	mi.docMeta = make(map[uint64]map[string]string)
+	mi.allDocs = NewSimpleBitmap()
+
+	for hid, docMeta := range meta {
+		// Skip deleted documents
+		if deleted[hid] {
+			continue
+		}
+
+		// Filter out numeric and time values
+		stringMeta := make(map[string]string)
+		for k, v := range docMeta {
+			if v == "" {
+				continue
+			}
+			// Skip if it parses as time
+			if _, err := time.Parse(time.RFC3339, v); err == nil {
+				continue
+			}
+			// Skip if it parses as float
+			if _, err := strconv.ParseFloat(v, 64); err == nil {
+				continue
+			}
+			stringMeta[k] = v
+		}
+
+		if len(stringMeta) == 0 {
+			continue
+		}
+
+		// Add to all docs
+		mi.allDocs.Add(hid)
+
+		// Store document metadata
+		mi.docMeta[hid] = stringMeta
+
+		// Add to inverted index
+		for key, value := range stringMeta {
+			if _, ok := mi.index[key]; !ok {
+				mi.index[key] = make(map[string]*SimpleBitmap)
+			}
+			if _, ok := mi.index[key][value]; !ok {
+				mi.index[key][value] = NewSimpleBitmap()
+			}
+			mi.index[key][value].Add(hid)
+		}
+	}
+
+	mi.stats.RecordIndexSize(mi.getIndexSize())
 }
 
 // GetMatchingDocs returns document IDs matching ALL filter conditions
