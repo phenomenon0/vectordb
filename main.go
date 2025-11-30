@@ -1727,6 +1727,12 @@ func main() {
 		return
 	}
 
+	// Check if running in multi-protocol transport mode
+	if os.Getenv("TRANSPORT_MODE") == "1" {
+		runWithTransport()
+		return
+	}
+
 	fmt.Println(">>> Initializing Flat Buffer Vector Engine...")
 	const indexPath = "vectordb/index.gob"
 	defaultDim := 384
