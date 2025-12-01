@@ -1,5 +1,7 @@
 # vectordb — Local/Hcloud Design (CPU Fast Path)
 
+> **📚 Comprehensive Guide:** For operations, multi-tenancy, and distributed architecture, see [docs/guides/vectordb-ops.md](../docs/guides/vectordb-ops.md)
+
 Goal: run embeddings locally (Hetzner/local CPU) with ONNXRuntime-Go, feed the flat-buffer store, and serve RAG without external APIs.
 
 ## Choices
