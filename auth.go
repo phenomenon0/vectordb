@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -15,6 +17,40 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// ===========================================================================================
+// CONTEXT KEYS FOR AUTH DATA PROPAGATION
+// ===========================================================================================
+
+// contextKey is a private type for context keys to avoid collisions
+type contextKey int
+
+const (
+	// APIKeyContextKey is the context key for API key data
+	APIKeyContextKey contextKey = iota
+	// JWTClaimsContextKey is the context key for JWT claims
+	JWTClaimsContextKey
+	// TenantContextKey is the context key for tenant context
+	TenantContextKey
+)
+
+// GetAPIKeyFromContext retrieves the API key from request context
+func GetAPIKeyFromContext(ctx context.Context) (*APIKey, bool) {
+	apiKey, ok := ctx.Value(APIKeyContextKey).(*APIKey)
+	return apiKey, ok
+}
+
+// GetJWTClaimsFromContext retrieves JWT claims from request context
+func GetJWTClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
+	claims, ok := ctx.Value(JWTClaimsContextKey).(jwt.MapClaims)
+	return claims, ok
+}
+
+// GetTenantContextFromContext retrieves tenant context from request context
+func GetTenantContextFromContext(ctx context.Context) (*TenantContext, bool) {
+	tc, ok := ctx.Value(TenantContextKey).(*TenantContext)
+	return tc, ok
+}
 
 // ===========================================================================================
 // TLS & AUTHENTICATION
@@ -51,10 +87,21 @@ func LoadTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 		},
 	}
 
-	// TODO: Load client CA for mTLS if provided
-	// if cfg.ClientCA != "" {
-	//     ... load and configure client CA
-	// }
+	// Load client CA for mTLS if provided
+	if cfg.ClientCA != "" {
+		caCert, err := os.ReadFile(cfg.ClientCA)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read client CA: %w", err)
+		}
+
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse client CA certificate")
+		}
+
+		tlsConfig.ClientCAs = caCertPool
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
 
 	return tlsConfig, nil
 }
@@ -578,8 +625,9 @@ func (am *AuthMiddleware) Middleware(requiredPermissions ...string) func(http.Ha
 					return
 				}
 
-				// TODO: Add API key to context for downstream handlers
-				next(w, r)
+				// Add API key to context for downstream handlers
+				ctx := context.WithValue(r.Context(), APIKeyContextKey, apiKey)
+				next(w, r.WithContext(ctx))
 				return
 			}
 
@@ -605,8 +653,9 @@ func (am *AuthMiddleware) Middleware(requiredPermissions ...string) func(http.Ha
 					return
 				}
 
-				// TODO: Add JWT claims to context for downstream handlers
-				next(w, r)
+				// Add JWT claims to context for downstream handlers
+				ctx := context.WithValue(r.Context(), JWTClaimsContextKey, claims)
+				next(w, r.WithContext(ctx))
 				return
 			}
 
