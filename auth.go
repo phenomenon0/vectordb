@@ -112,12 +112,12 @@ func LoadTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 
 // APIKey represents an API key with metadata
 type APIKey struct {
-	Key         string    `json:"key"`
-	Name        string    `json:"name"`
-	CreatedAt   time.Time `json:"created_at"`
+	Key         string     `json:"key"`
+	Name        string     `json:"name"`
+	CreatedAt   time.Time  `json:"created_at"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	Permissions []string  `json:"permissions"` // e.g., ["read", "write", "admin"]
-	RateLimit   int       `json:"rate_limit"`  // requests per minute
+	Permissions []string   `json:"permissions"` // e.g., ["read", "write", "admin"]
+	RateLimit   int        `json:"rate_limit"`  // requests per minute
 }
 
 // APIKeyManager manages API keys
@@ -247,8 +247,8 @@ func (am *APIKeyManager) LoadFromFile(path string) error {
 // TenantClaims represents JWT claims with tenant information
 type TenantClaims struct {
 	TenantID    string   `json:"tenant_id"`
-	Permissions []string `json:"permissions"`  // e.g., ["read", "write", "admin"]
-	Collections []string `json:"collections"`  // allowed collections (empty = all)
+	Permissions []string `json:"permissions"` // e.g., ["read", "write", "admin"]
+	Collections []string `json:"collections"` // allowed collections (empty = all)
 	jwt.RegisteredClaims
 }
 
@@ -741,14 +741,15 @@ func GetTenantFromRequest(r *http.Request, jwtMgr *JWTManager) string {
 }
 
 // GetTenantContextFromRequest extracts full tenant context from JWT token
-// Returns default context if no JWT is present or invalid
+// DEPRECATED: Use ValidateTenantContextFromRequest for secure authentication
+// Returns default context if no JWT is present or invalid (INSECURE - only for backward compatibility)
 func GetTenantContextFromRequest(r *http.Request, jwtMgr *JWTManager) *TenantContext {
 	if jwtMgr == nil {
 		return &TenantContext{
 			TenantID:    "default",
-			Permissions: map[string]bool{"read": true, "write": true, "admin": true},
+			Permissions: map[string]bool{"read": true, "write": true},
 			Collections: make(map[string]bool),
-			IsAdmin:     true,
+			IsAdmin:     false,
 		}
 	}
 
@@ -756,7 +757,7 @@ func GetTenantContextFromRequest(r *http.Request, jwtMgr *JWTManager) *TenantCon
 	if token == "" {
 		return &TenantContext{
 			TenantID:    "default",
-			Permissions: map[string]bool{"read": true},
+			Permissions: map[string]bool{"read": true, "write": true},
 			Collections: make(map[string]bool),
 			IsAdmin:     false,
 		}
@@ -766,11 +767,90 @@ func GetTenantContextFromRequest(r *http.Request, jwtMgr *JWTManager) *TenantCon
 	if err != nil {
 		return &TenantContext{
 			TenantID:    "default",
-			Permissions: map[string]bool{"read": true},
+			Permissions: map[string]bool{"read": true, "write": true},
 			Collections: make(map[string]bool),
 			IsAdmin:     false,
 		}
 	}
 
 	return tenantCtx
+}
+
+// ValidateTenantContextFromRequest securely extracts and validates tenant context from JWT token
+// Returns error if JWT is missing, invalid, expired, or has invalid signature
+// This is the SECURE version that should be used by all protected endpoints
+func ValidateTenantContextFromRequest(r *http.Request, jwtMgr *JWTManager) (*TenantContext, error) {
+	if jwtMgr == nil {
+		return nil, fmt.Errorf("JWT authentication not configured")
+	}
+
+	token := extractToken(r)
+	if token == "" {
+		return nil, fmt.Errorf("missing authentication token")
+	}
+
+	tenantCtx, err := jwtMgr.ValidateTenantToken(token)
+	if err != nil {
+		return nil, fmt.Errorf("invalid authentication token: %w", err)
+	}
+
+	return tenantCtx, nil
+}
+
+// RequireJWT is a middleware that requires valid JWT authentication
+// Returns 401 if JWT is missing or invalid
+func RequireJWT(jwtMgr *JWTManager, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantCtx, err := ValidateTenantContextFromRequest(r, jwtMgr)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("unauthorized: %v", err), http.StatusUnauthorized)
+			return
+		}
+
+		// Add tenant context to request context for downstream handlers
+		ctx := context.WithValue(r.Context(), TenantContextKey, tenantCtx)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// RequirePermission creates a middleware that requires specific permission
+// Returns 403 if permission is not granted
+func RequirePermission(jwtMgr *JWTManager, permission string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return RequireJWT(jwtMgr, func(w http.ResponseWriter, r *http.Request) {
+			tenantCtx, ok := GetTenantContextFromContext(r.Context())
+			if !ok {
+				http.Error(w, "forbidden: missing tenant context", http.StatusForbidden)
+				return
+			}
+
+			if !tenantCtx.Permissions[permission] && !tenantCtx.IsAdmin {
+				http.Error(w, fmt.Sprintf("forbidden: %s permission required", permission), http.StatusForbidden)
+				return
+			}
+
+			next(w, r)
+		})
+	}
+}
+
+// RequireAdmin creates a middleware that requires admin permission
+// Returns 403 if user is not admin
+func RequireAdmin(jwtMgr *JWTManager) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return RequireJWT(jwtMgr, func(w http.ResponseWriter, r *http.Request) {
+			tenantCtx, ok := GetTenantContextFromContext(r.Context())
+			if !ok {
+				http.Error(w, "forbidden: missing tenant context", http.StatusForbidden)
+				return
+			}
+
+			if !tenantCtx.IsAdmin {
+				http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
+				return
+			}
+
+			next(w, r)
+		})
+	}
 }

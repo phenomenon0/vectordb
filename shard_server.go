@@ -116,9 +116,14 @@ func NewShardServer(cfg ShardServerConfig) (*ShardServer, error) {
 	// Initialize WAL streaming
 	if cfg.Role == RolePrimary {
 		s.walStream = NewWALStream()
+		s.store.SetWALHook(func(entry walEntry) {
+			if s.walStream != nil {
+				s.walStream.Append(entry)
+			}
+		})
 		fmt.Printf("✅ WAL streaming enabled (primary mode)\n")
 	} else if cfg.PrimaryAddr != "" {
-		s.walStreamClient = NewWALStreamClient(cfg.PrimaryAddr)
+		s.walStreamClient = NewWALStreamClient(cfg.PrimaryAddr, cfg.APIToken)
 		fmt.Printf("✅ WAL streaming client enabled (pulling from %s)\n", cfg.PrimaryAddr)
 	}
 
@@ -218,11 +223,6 @@ func (s *ShardServer) newHTTPHandler() http.Handler {
 	// Mount base handler on root
 	mux.Handle("/", baseHandler)
 
-	// Wrap with replication middleware if primary
-	if s.role == RolePrimary && s.walStream != nil {
-		return s.walStreamMiddleware(mux)
-	}
-
 	return mux
 }
 
@@ -291,7 +291,16 @@ func (s *ShardServer) appendToWAL(path string, req map[string]interface{}) {
 	}
 
 	// Append to WAL
-	seq := s.walStream.Append(op, id, doc, coll, vec, meta)
+	entry := walEntry{
+		Op:     op,
+		ID:     id,
+		Doc:    doc,
+		Coll:   coll,
+		Vec:    vec,
+		Meta:   meta,
+		Tenant: "",
+	}
+	seq := s.walStream.Append(entry)
 	if seq%100 == 0 {
 		fmt.Printf("📝 WAL: Appended operation (seq=%d, op=%s, id=%s)\n", seq, op, id)
 	}

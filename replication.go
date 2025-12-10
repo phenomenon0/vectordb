@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -309,9 +313,6 @@ func (rm *ReplicationManager) sendToReplica(
 	entry *WALEntry,
 	shardID int,
 ) error {
-	// In a real implementation, this would make an HTTP/gRPC call to replica
-	// For now, we'll simulate the behavior
-
 	if replica == nil {
 		return errors.New("nil replica")
 	}
@@ -320,11 +321,47 @@ func (rm *ReplicationManager) sendToReplica(
 		return fmt.Errorf("replica %s is unhealthy", replica.NodeID)
 	}
 
-	// TODO: Actual HTTP call to replica's /replicate endpoint
-	// POST {replica.BaseURL}/replicate
-	// Body: WAL entry
+	// Build replication endpoint URL
+	endpoint := fmt.Sprintf("%s/replicate", replica.BaseURL)
 
-	// Simulated success for now
+	// Serialize WAL entry to JSON
+	payload, err := json.Marshal(struct {
+		ShardID int       `json:"shard_id"`
+		Entry   *WALEntry `json:"entry"`
+	}{
+		ShardID: shardID,
+		Entry:   entry,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal WAL entry: %w", err)
+	}
+
+	// Create HTTP request with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), rm.config.ReplicaTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send request
+	client := &http.Client{
+		Timeout: rm.config.ReplicaTimeout,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send to replica %s: %w", replica.NodeID, err)
+	}
+	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("replica %s returned status %d: %s", replica.NodeID, resp.StatusCode, string(body))
+	}
+
 	return nil
 }
 
