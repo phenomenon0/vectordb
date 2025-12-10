@@ -460,7 +460,9 @@ func runWithTransport() {
 	}
 
 	embedder := initEmbedder(defaultDim)
-	store, loaded := loadOrInitStore(indexPath, 100000, embedder.Dim())
+	// Make capacity configurable for low-memory deployments
+	initialCapacity := envInt("VECTOR_CAPACITY", 1000) // Reduced from 100000
+	store, loaded := loadOrInitStore(indexPath, initialCapacity, embedder.Dim())
 	store.walMaxBytes = envInt64("WAL_MAX_BYTES", 5*1024*1024)
 	store.walMaxOps = envInt("WAL_MAX_OPS", 1000)
 

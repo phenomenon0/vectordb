@@ -529,7 +529,7 @@ type FilterConfig struct {
 	Mode FilterMode // Filter mode (pre/post/none)
 
 	// Pre-filter optimization settings
-	MaxCandidates  int     // Max candidates to consider (default: 100k)
+	MaxCandidates  int     // Max candidates to consider (default: 10k)
 	MinSelectivity float64 // Min selectivity to use pre-filter (default: 0.01 = 1%)
 
 	// If filter selectivity < MinSelectivity, fall back to no filter
@@ -540,8 +540,8 @@ type FilterConfig struct {
 func DefaultFilterConfig() FilterConfig {
 	return FilterConfig{
 		Mode:           PreFilter,
-		MaxCandidates:  100000,
-		MinSelectivity: 0.01, // 1%
+		MaxCandidates:  10000, // Reduced from 100000 for low-memory deployment
+		MinSelectivity: 0.01,  // 1%
 	}
 }
 

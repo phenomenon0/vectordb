@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -42,6 +43,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		rps := envInt("API_RPS", 100)
 		store.rl = newRateLimiter(rps, rps, time.Minute)
 	}
+	trustProxy := os.Getenv("TRUST_PROXY") == "1"
+
+	// SECURITY FIX: Proper JWT validation guard
+	// When JWT_SECRET is configured, all requests MUST have valid JWT tokens
 	guard := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			token := r.Header.Get("Authorization")
@@ -49,35 +54,75 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				token = r.URL.Query().Get("token")
 			}
 
-			// JWT authentication (when enabled)
-			if store.requireAuth && store.jwtMgr != nil {
-				if token == "" {
-					http.Error(w, "unauthorized: missing token", http.StatusUnauthorized)
-					return
-				}
-				// Extract Bearer token
-				jwtToken := strings.TrimPrefix(token, "Bearer ")
-				if _, err := store.jwtMgr.ValidateTenantToken(jwtToken); err != nil {
-					http.Error(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
-					return
-				}
-			}
+			authenticated := false
+			var tenantCtx *TenantContext
 
-			// Simple API token authentication (legacy)
-			if store.apiToken != "" {
-				if token != "Bearer "+store.apiToken && token != store.apiToken {
+			// JWT authentication (when enabled) - SECURE VERSION
+			if store.jwtMgr != nil {
+				if token == "" {
+					// No token provided, but JWT is configured
+					if store.requireAuth {
+						http.Error(w, "unauthorized: missing authentication token", http.StatusUnauthorized)
+						return
+					}
+					// If not required, use default context (backward compatibility)
+					tenantCtx = &TenantContext{
+						TenantID:    "default",
+						Permissions: map[string]bool{"read": true, "write": true},
+						Collections: make(map[string]bool),
+						IsAdmin:     false,
+					}
+				} else {
+					// Token provided - MUST be valid
+					jwtToken := strings.TrimPrefix(token, "Bearer ")
+					var err error
+					tenantCtx, err = store.jwtMgr.ValidateTenantToken(jwtToken)
+					if err != nil {
+						http.Error(w, "unauthorized: invalid token: "+err.Error(), http.StatusUnauthorized)
+						return
+					}
+					authenticated = true
+				}
+			} else {
+				// No JWT manager configured - fallback to legacy API token auth
+				// Simple API token authentication (legacy)
+				if store.apiToken != "" {
+					if token == "Bearer "+store.apiToken || token == store.apiToken {
+						authenticated = true
+					} else if token != "" {
+						http.Error(w, "unauthorized", http.StatusUnauthorized)
+						return
+					}
+				}
+
+				if store.requireAuth && !authenticated {
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
 				}
+
+				// Use default tenant context for non-JWT mode
+				if tenantCtx == nil {
+					tenantCtx = &TenantContext{
+						TenantID:    "default",
+						Permissions: map[string]bool{"read": true, "write": true},
+						Collections: make(map[string]bool),
+						IsAdmin:     false,
+					}
+				}
 			}
+
+			// Global rate limiting (per-IP or per-token)
 			if store.rl != nil {
 				// Use IP address for anonymous users instead of shared "anon" key
 				key := token
 				if key == "" {
 					// Extract client IP (handle X-Forwarded-For and X-Real-IP headers)
-					clientIP := r.Header.Get("X-Forwarded-For")
-					if clientIP == "" {
-						clientIP = r.Header.Get("X-Real-IP")
+					clientIP := ""
+					if trustProxy {
+						clientIP = r.Header.Get("X-Forwarded-For")
+						if clientIP == "" {
+							clientIP = r.Header.Get("X-Real-IP")
+						}
 					}
 					if clientIP == "" {
 						clientIP = r.RemoteAddr
@@ -97,6 +142,14 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 					return
 				}
 			}
+
+			// Add tenant context to request context for handlers to use
+			if tenantCtx != nil {
+				ctx := r.Context()
+				ctx = context.WithValue(ctx, TenantContextKey, tenantCtx)
+				r = r.WithContext(ctx)
+			}
+
 			next(w, r)
 		}
 	}
@@ -107,8 +160,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		// Extract tenant context
-		tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+		// Extract tenant context from request context (set by guard middleware)
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
 		tenantID := tenantCtx.TenantID
 
 		// Check write permission
@@ -201,8 +258,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		// Extract tenant context
-		tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+		// Extract tenant context from request context (set by guard middleware)
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
 		tenantID := tenantCtx.TenantID
 
 		// Check write permission
@@ -307,14 +368,116 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 	})))
 
+	// Sparse vector insert endpoint - accepts pre-computed sparse vectors
+	mux.HandleFunc("/insert/sparse", withMetrics("insert_sparse", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		tenantID := tenantCtx.TenantID
+
+		if !tenantCtx.Permissions["write"] && !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: write permission required", http.StatusForbidden)
+			return
+		}
+
+		if store.tenantRL != nil && !store.tenantRL.allow(tenantID) {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10MB limit
+
+		var req struct {
+			ID         string            `json:"id"`
+			Doc        string            `json:"doc"`
+			Indices    []uint32          `json:"indices"`    // Sparse vector indices
+			Values     []float32         `json:"values"`     // Sparse vector values
+			Dimension  int               `json:"dimension"`  // Total dimension
+			Meta       map[string]string `json:"meta"`
+			Upsert     bool              `json:"upsert"`
+			Collection string            `json:"collection"`
+		}
+		if err := decodeRequest(r, &req); err != nil {
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Validate sparse vector
+		if len(req.Indices) == 0 || len(req.Values) == 0 {
+			http.Error(w, "sparse vector indices and values required", http.StatusBadRequest)
+			return
+		}
+		if len(req.Indices) != len(req.Values) {
+			http.Error(w, "indices and values length mismatch", http.StatusBadRequest)
+			return
+		}
+		if req.Dimension <= 0 {
+			http.Error(w, "dimension must be positive", http.StatusBadRequest)
+			return
+		}
+
+		// Check collection access
+		if req.Collection == "" {
+			req.Collection = "default"
+		}
+		if !tenantCtx.IsAdmin && len(tenantCtx.Collections) > 0 && !tenantCtx.Collections[req.Collection] {
+			http.Error(w, fmt.Sprintf("forbidden: no access to collection '%s'", req.Collection), http.StatusForbidden)
+			return
+		}
+
+		// Create sparse vector
+		sparseVec := &SparseCoO{
+			Indices: req.Indices,
+			Values:  req.Values,
+			Dim:     req.Dimension,
+		}
+
+		// Validate and normalize if needed
+		if err := sparseVec.Validate(); err != nil {
+			http.Error(w, fmt.Sprintf("invalid sparse vector: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Convert to dense for storage (temporary until VectorData integration)
+		// TODO: Store as VectorData with sparse type
+		vec := sparseVec.ToDense()
+
+		var id string
+		var err error
+		if req.Upsert {
+			id, err = store.Upsert(vec, req.Doc, req.ID, req.Meta, req.Collection, tenantID)
+		} else {
+			id, err = store.Add(vec, req.Doc, req.ID, req.Meta, req.Collection, tenantID)
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to insert sparse vector: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		if err := encodeResponse(w, r, map[string]any{"id": id}); err != nil {
+			fmt.Printf("error encoding response: %v\n", err)
+		}
+	})))
+
 	mux.HandleFunc("/query", withMetrics("query", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
-		// Extract tenant context
-		tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+		// Extract tenant context from request context (set by guard middleware)
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
 		tenantID := tenantCtx.TenantID
 
 		// Check read permission
@@ -582,14 +745,175 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		return
 	})))
 
+	// Sparse vector query endpoint - accepts sparse query vectors
+	mux.HandleFunc("/query/sparse", withMetrics("query_sparse", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		tenantID := tenantCtx.TenantID
+
+		if !tenantCtx.Permissions["read"] && !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: read permission required", http.StatusForbidden)
+			return
+		}
+
+		if store.tenantRL != nil && !store.tenantRL.allow(tenantID) {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10MB limit
+
+		var req struct {
+			Indices     []uint32          `json:"indices"`    // Sparse query indices
+			Values      []float32         `json:"values"`     // Sparse query values
+			Dimension   int               `json:"dimension"`  // Total dimension
+			TopK        int               `json:"top_k"`
+			Collection  string            `json:"collection"`
+			Meta        map[string]string `json:"meta,omitempty"`
+			MetaAny     map[string]string `json:"meta_any,omitempty"`
+			MetaNot     map[string]string `json:"meta_not,omitempty"`
+			IncludeMeta bool              `json:"include_meta"`
+		}
+		if err := decodeRequest(r, &req); err != nil {
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Validate sparse query vector
+		if len(req.Indices) == 0 || len(req.Values) == 0 {
+			http.Error(w, "sparse query indices and values required", http.StatusBadRequest)
+			return
+		}
+		if len(req.Indices) != len(req.Values) {
+			http.Error(w, "indices and values length mismatch", http.StatusBadRequest)
+			return
+		}
+		if req.Dimension <= 0 {
+			http.Error(w, "dimension must be positive", http.StatusBadRequest)
+			return
+		}
+		if req.TopK <= 0 {
+			req.TopK = 10
+		}
+
+		// Check collection access
+		if req.Collection == "" {
+			req.Collection = "default"
+		}
+		if !tenantCtx.IsAdmin && len(tenantCtx.Collections) > 0 && !tenantCtx.Collections[req.Collection] {
+			http.Error(w, fmt.Sprintf("forbidden: no access to collection '%s'", req.Collection), http.StatusForbidden)
+			return
+		}
+
+		// Create sparse query vector
+		sparseQuery := &SparseCoO{
+			Indices: req.Indices,
+			Values:  req.Values,
+			Dim:     req.Dimension,
+		}
+
+		if err := sparseQuery.Validate(); err != nil {
+			http.Error(w, fmt.Sprintf("invalid sparse query: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Convert to dense for search (temporary until sparse index integration)
+		// TODO: Use sparse index directly
+		qVec := sparseQuery.ToDense()
+
+		// Search using ANN
+		ids := store.SearchANN(qVec, req.TopK)
+
+		// Collect results with filtering
+		docs := make([]string, 0, len(ids))
+		respIDs := make([]string, 0, len(ids))
+		respMeta := make([]map[string]string, 0, len(ids))
+		respScores := make([]float32, 0, len(ids))
+
+		for _, idx := range ids {
+			hid := hashID(store.GetID(idx))
+
+			// Tenant filtering
+			vectorTenant := store.TenantID[hid]
+			if vectorTenant == "" {
+				vectorTenant = "default"
+			}
+			if !tenantCtx.IsAdmin && vectorTenant != tenantID {
+				continue
+			}
+
+			// Collection ACL check
+			collection := store.Coll[hid]
+			if collection == "" {
+				collection = "default"
+			}
+			if !tenantCtx.IsAdmin && len(tenantCtx.Collections) > 0 && !tenantCtx.Collections[collection] {
+				continue
+			}
+
+			// Metadata filtering
+			meta := store.Meta[hid]
+			if !matchesMeta(meta, req.Meta) {
+				continue
+			}
+			if len(req.MetaAny) > 0 && !matchesAny(meta, req.MetaAny) {
+				continue
+			}
+			if len(req.MetaNot) > 0 && matchesMeta(meta, req.MetaNot) {
+				continue
+			}
+			if req.Collection != "" && store.Coll[hid] != req.Collection {
+				continue
+			}
+
+			docs = append(docs, store.GetDoc(idx))
+			respIDs = append(respIDs, store.GetID(idx))
+			if req.IncludeMeta {
+				cp := make(map[string]string, len(meta))
+				for k, v := range meta {
+					cp[k] = v
+				}
+				respMeta = append(respMeta, cp)
+			}
+
+			// Compute sparse similarity score
+			// TODO: Get vector from store and compute sparse distance
+			// For now, use placeholder score
+			respScores = append(respScores, float32(0.5))
+		}
+
+		response := map[string]any{
+			"ids":    respIDs,
+			"docs":   docs,
+			"scores": respScores,
+			"meta":   respMeta,
+		}
+
+		if err := encodeResponse(w, r, response); err != nil {
+			fmt.Printf("error encoding response: %v\n", err)
+		}
+	})))
+
 	mux.HandleFunc("/delete", withMetrics("delete", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
-		// Extract tenant context
-		tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+		// Extract tenant context from request context (set by guard middleware)
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
 		tenantID := tenantCtx.TenantID
 
 		// Check write permission
@@ -704,6 +1028,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		if !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
+			return
+		}
 		if err := store.Compact(indexPath); err != nil {
 			http.Error(w, fmt.Sprintf("compact failed: %v", err), http.StatusInternalServerError)
 			return
@@ -717,6 +1050,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		if !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
+			return
+		}
 		store.RLock()
 		path := indexPath
 		store.RUnlock()
@@ -727,6 +1069,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	mux.HandleFunc("/import", withMetrics("import", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		if !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
 			return
 		}
 
@@ -1019,12 +1370,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		_ = encodeResponse(w, r, map[string]any{
-			"tenant_id":        tenantID,
-			"used_bytes":       usedBytes,
-			"max_bytes":        maxBytes,
-			"vector_count":     vectorCount,
-			"utilization_pct":  utilizationPct,
-			"has_quota_limit":  maxBytes > 0,
+			"tenant_id":       tenantID,
+			"used_bytes":      usedBytes,
+			"max_bytes":       maxBytes,
+			"vector_count":    vectorCount,
+			"utilization_pct": utilizationPct,
+			"has_quota_limit": maxBytes > 0,
 		})
 	}))
 
@@ -1066,6 +1417,65 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"burst":     req.Burst,
 		})
 	}))
+
+	// Legacy Collection Management API endpoints (v1 - single-index collections)
+	// NOTE: These are kept for backward compatibility. Use /v2/collections for multi-vector support.
+	mux.HandleFunc("/admin/collection/create", withMetrics("collection_create", adminGuard(handleCollectionCreate(store))))
+	mux.HandleFunc("/admin/collection/list", withMetrics("collection_list", adminGuard(handleCollectionList(store))))
+	mux.HandleFunc("/admin/collection/stats", withMetrics("collection_stats_all", adminGuard(handleAllCollectionStats(store))))
+
+	// Pattern-based routes for specific collection operations
+	// Note: These handlers parse the collection name from the URL path
+	mux.HandleFunc("/admin/collection/", withMetrics("collection_ops", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/admin/collection/")
+		parts := strings.Split(path, "/")
+
+		if len(parts) == 0 || parts[0] == "" {
+			http.Error(w, "collection name required", http.StatusBadRequest)
+			return
+		}
+
+		collectionName := parts[0]
+
+		// Route based on path structure and HTTP method
+		if len(parts) == 1 {
+			// /admin/collection/{name}
+			switch r.Method {
+			case http.MethodGet:
+				handleCollectionGet(store)(w, r)
+			case http.MethodDelete:
+				handleCollectionDelete(store)(w, r)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		} else if len(parts) == 2 {
+			// /admin/collection/{name}/stats or /admin/collection/{name}/config
+			operation := parts[1]
+			switch operation {
+			case "stats":
+				if r.Method == http.MethodGet {
+					handleCollectionStats(store)(w, r)
+				} else {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
+			case "config":
+				if r.Method == http.MethodPut {
+					handleCollectionUpdate(store)(w, r)
+				} else {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				}
+			default:
+				http.Error(w, "unknown operation", http.StatusNotFound)
+			}
+		} else {
+			http.Error(w, "invalid URL format", http.StatusBadRequest)
+		}
+	})))
+
+	// NEW Multi-Vector Collection API (v2) - supports hybrid search with dense + sparse vectors
+	// Initialize collection HTTP server for multi-vector support
+	collectionHTTP := NewCollectionHTTPServer(indexPath + ".collections")
+	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
 
 	return mux
 }

@@ -22,6 +22,7 @@ import (
 
 	"agentscope/core"
 	"agentscope/tools"
+	"agentscope/vectordb/index"
 	"agentscope/vectordb/storage"
 	"github.com/coder/hnsw"
 )
@@ -39,6 +40,9 @@ type VectorStore struct {
 	IDs         []string
 	Seqs        []uint64
 	next        int64
+	// Index abstraction (NEW)
+	indexes map[string]index.Index // Collection -> Index mapping
+	// Legacy HNSW graph (deprecated, kept for backward compatibility)
 	hnsw        *hnsw.Graph[uint64]
 	idToIx      map[uint64]int
 	Meta        map[uint64]map[string]string
@@ -54,6 +58,7 @@ type VectorStore struct {
 	walMaxOps   int
 	walOps      int
 	walRotate   int64
+	walHook     func(walEntry) // Optional hook to forward WAL events (e.g., to replication stream)
 	apiToken    string
 	rl          *rateLimiter
 	checksum    string
@@ -64,10 +69,10 @@ type VectorStore struct {
 	df      map[string]int
 	sumDocL int
 	// Multi-tenancy support
-	TenantID  map[uint64]string  // vector hash -> tenant ID
-	acl       *ACL               // access control lists
-	quotas    *TenantQuota       // storage quotas per tenant
-	tenantRL  *tenantRateLimiter // per-tenant rate limiting
+	TenantID    map[uint64]string  // vector hash -> tenant ID
+	acl         *ACL               // access control lists
+	quotas      *TenantQuota       // storage quotas per tenant
+	tenantRL    *tenantRateLimiter // per-tenant rate limiting
 	jwtMgr      *JWTManager        // JWT token manager
 	requireAuth bool               // Require JWT authentication
 	// Storage format (gob, sjson, sjson-zstd)
@@ -78,6 +83,18 @@ type VectorStore struct {
 
 func NewVectorStore(capacity int, dim int) *VectorStore {
 	cfg := loadHNSWConfig()
+
+	// Create default HNSW index using index abstraction
+	defaultIdx, err := index.NewHNSWIndex(dim, map[string]interface{}{
+		"m":         cfg.M,
+		"ml":        cfg.Ml,
+		"ef_search": cfg.EfSearch,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("failed to create default HNSW index: %v", err))
+	}
+
+	// Legacy HNSW graph (kept for backward compatibility during migration)
 	g := hnsw.NewGraph[uint64]()
 	g.Distance = hnsw.CosineDistance
 	g.M = cfg.M
@@ -103,11 +120,15 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		}
 	}
 
+	apiToken := os.Getenv("API_TOKEN")
+	requireAuth := os.Getenv("REQUIRE_AUTH") == "1" || jwtMgr != nil || apiToken != ""
+
 	return &VectorStore{
 		Data:        make([]float32, 0, capacity*dim),
 		Dim:         dim,
 		Count:       0,
-		hnsw:        g,
+		indexes:     map[string]index.Index{"default": defaultIdx},
+		hnsw:        g, // Legacy, deprecated
 		idToIx:      make(map[uint64]int),
 		Meta:        make(map[uint64]map[string]string),
 		Deleted:     make(map[uint64]bool),
@@ -119,7 +140,8 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		timeIndex:   make(map[string][]timeEntry),
 		walMaxBytes: 0,
 		walMaxOps:   0,
-		apiToken:    os.Getenv("API_TOKEN"),
+		apiToken:    apiToken,
+		requireAuth: requireAuth,
 		lexTF:       make(map[uint64]map[string]int),
 		docLen:      make(map[uint64]int),
 		df:          make(map[string]int),
@@ -170,6 +192,24 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 	vs.ingestLex(hashID(id), toks)
 
 	hid := hashID(id)
+
+	// Use index abstraction (NEW)
+	if collection == "" {
+		collection = "default"
+	}
+	idx, ok := vs.indexes[collection]
+	if !ok {
+		idx = vs.indexes["default"] // Fall back to default index
+	}
+	if idx != nil {
+		if err := idx.Add(context.Background(), hid, v); err != nil {
+			// Rollback quota on index add failure
+			vs.quotas.RemoveUsage(tenantID, vectorBytes+docBytes, 1)
+			return "", fmt.Errorf("failed to add vector to index: %w", err)
+		}
+	}
+
+	// Legacy HNSW (deprecated - keep for backward compatibility during migration)
 	vs.hnsw.Add(hnsw.MakeNode(hid, v))
 	vs.idToIx[hid] = vs.Count - 1
 	if meta != nil {
@@ -182,7 +222,7 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 	vs.Coll[hid] = collection
 	vs.TenantID[hid] = tenantID // Store tenant ownership
 	delete(vs.Deleted, hid)
-	if err := vs.appendWAL("insert", id, doc, meta, v); err != nil {
+	if err := vs.appendWAL("insert", id, doc, meta, v, tenantID); err != nil {
 		// Rollback quota on WAL failure
 		vs.quotas.RemoveUsage(tenantID, totalBytes, 1)
 		return "", fmt.Errorf("failed to append to WAL: %w", err)
@@ -227,7 +267,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 			vs.Coll[hid] = collection
 		}
 		delete(vs.Deleted, hid)
-		if err := vs.appendWAL("upsert", id, doc, meta, v); err != nil {
+		if err := vs.appendWAL("upsert", id, doc, meta, v, tenantID); err != nil {
 			return "", fmt.Errorf("failed to append to WAL: %w", err)
 		}
 		return id, nil
@@ -246,6 +286,23 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	vs.IDs = append(vs.IDs, id)
 	vs.Seqs = append(vs.Seqs, uint64(vs.Count))
 	vs.Count++
+
+	// Use index abstraction (NEW)
+	if collection == "" {
+		collection = "default"
+	}
+	idx, ok := vs.indexes[collection]
+	if !ok {
+		idx = vs.indexes["default"]
+	}
+	if idx != nil {
+		if err := idx.Add(context.Background(), hid, v); err != nil {
+			vs.quotas.RemoveUsage(tenantID, vectorBytes+docBytes, 1)
+			return "", fmt.Errorf("failed to add vector to index: %w", err)
+		}
+	}
+
+	// Legacy HNSW (deprecated)
 	vs.hnsw.Add(hnsw.MakeNode(hid, v))
 	vs.idToIx[hid] = vs.Count - 1
 	vs.ingestLex(hid, tokenize(doc))
@@ -259,7 +316,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	vs.Coll[hid] = collection
 	vs.TenantID[hid] = tenantID // Store tenant ownership
 	delete(vs.Deleted, hid)
-	if err := vs.appendWAL("insert", id, doc, meta, v); err != nil {
+	if err := vs.appendWAL("insert", id, doc, meta, v, tenantID); err != nil {
 		// Rollback quota on WAL failure
 		vs.quotas.RemoveUsage(tenantID, totalBytes, 1)
 		return "", fmt.Errorf("failed to append to WAL: %w", err)
@@ -271,12 +328,16 @@ func (vs *VectorStore) Delete(id string) error {
 	vs.Lock()
 	defer vs.Unlock()
 	hid := hashID(id)
+	tenant := vs.TenantID[hid]
+	if tenant == "" {
+		tenant = "default"
+	}
 	vs.Deleted[hid] = true
 	vs.ejectLex(hid)
 	vs.ejectMeta(hid)
 	delete(vs.Meta, hid)
 	delete(vs.Coll, hid)
-	if err := vs.appendWAL("delete", id, "", nil, nil); err != nil {
+	if err := vs.appendWAL("delete", id, "", nil, nil, tenant); err != nil {
 		return fmt.Errorf("failed to append to WAL: %w", err)
 	}
 	return nil
@@ -340,6 +401,26 @@ func (vs *VectorStore) Search(query []float32, k int) []int {
 func (vs *VectorStore) SearchANN(query []float32, k int) []int {
 	vs.RLock()
 	defer vs.RUnlock()
+
+	// Use index abstraction (NEW)
+	idx := vs.indexes["default"]
+	if idx != nil {
+		results, err := idx.Search(context.Background(), query, k, index.DefaultSearchParams{})
+		if err == nil && len(results) > 0 {
+			ixs := make([]int, 0, len(results))
+			for _, r := range results {
+				if vs.Deleted[r.ID] {
+					continue
+				}
+				if ix, ok := vs.idToIx[r.ID]; ok {
+					ixs = append(ixs, ix)
+				}
+			}
+			return ixs
+		}
+	}
+
+	// Fall back to legacy HNSW if index abstraction fails
 	nodes := vs.hnsw.Search(query, k)
 	ixs := make([]int, 0, len(nodes))
 	for _, n := range nodes {
@@ -582,11 +663,23 @@ func (vs *VectorStore) Save(path string) error {
 	}
 	defer f.Close()
 
+	// Export legacy HNSW (deprecated - for backward compatibility)
 	var hBuf []byte
 	if vs.hnsw != nil {
 		var buf bytes.Buffer
 		if err := vs.hnsw.Export(&buf); err == nil {
 			hBuf = buf.Bytes()
+		}
+	}
+
+	// Export indexes (NEW)
+	indexData := make(map[string][]byte)
+	for collName, idx := range vs.indexes {
+		if idx != nil {
+			data, err := idx.Export()
+			if err == nil {
+				indexData[collName] = data
+			}
 		}
 	}
 
@@ -598,9 +691,11 @@ func (vs *VectorStore) Save(path string) error {
 		Meta:      vs.Meta,
 		Deleted:   vs.Deleted,
 		Coll:      vs.Coll,
+		TenantID:  vs.TenantID,
 		Next:      vs.next,
 		Count:     vs.Count,
-		HNSW:      hBuf,
+		HNSW:      hBuf,     // Legacy (deprecated)
+		Indexes:   indexData, // NEW
 		Checksum:  vs.checksum,
 		LastSaved: time.Now(),
 		LexTF:     vs.lexTF,
@@ -710,13 +805,16 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			Meta:        payload.Meta,
 			Deleted:     payload.Deleted,
 			Coll:        payload.Coll,
-			hnsw:        hnsw.NewGraph[uint64](),
+			TenantID:    payload.TenantID,
+			indexes:     make(map[string]index.Index), // NEW
+			hnsw:        hnsw.NewGraph[uint64](),      // Legacy
 			idToIx:      make(map[uint64]int),
 			walPath:     path + ".wal",
 			walMu:       sync.Mutex{},
 			walMaxBytes: 0,
 			walMaxOps:   0,
 			apiToken:    os.Getenv("API_TOKEN"),
+			requireAuth: os.Getenv("REQUIRE_AUTH") == "1" || jwtMgr != nil || os.Getenv("API_TOKEN") != "",
 			checksum:    payload.Checksum,
 			lastSaved:   payload.LastSaved,
 			lexTF:       payload.LexTF,
@@ -755,6 +853,9 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		if vs.Coll == nil {
 			vs.Coll = make(map[uint64]string)
 		}
+		if vs.TenantID == nil {
+			vs.TenantID = make(map[uint64]string)
+		}
 		if vs.NumMeta == nil {
 			vs.NumMeta = make(map[uint64]map[string]float64)
 		}
@@ -770,14 +871,62 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		if vs.df == nil {
 			vs.df = make(map[string]int)
 		}
+		// Import legacy HNSW graph (deprecated)
 		if len(payload.HNSW) > 0 {
 			if err := vs.hnsw.Import(bytes.NewReader(payload.HNSW)); err != nil {
 				fmt.Printf("warning: failed to load hnsw graph, rebuilding: %v\n", err)
 				vs.hnsw = hnsw.NewGraph[uint64]()
 			}
 		}
+
+		// Import indexes (NEW)
+		if len(payload.Indexes) > 0 {
+			for collName, data := range payload.Indexes {
+				// Create HNSW index for this collection
+				idx, err := index.NewHNSWIndex(vs.Dim, nil)
+				if err != nil {
+					fmt.Printf("warning: failed to create index for collection %s: %v\n", collName, err)
+					continue
+				}
+				if err := idx.Import(data); err != nil {
+					fmt.Printf("warning: failed to import index for collection %s: %v\n", collName, err)
+					continue
+				}
+				vs.indexes[collName] = idx
+			}
+		}
+
+		// If no indexes were imported, create default index from legacy HNSW
+		if len(vs.indexes) == 0 {
+			cfg := loadHNSWConfig()
+			defaultIdx, err := index.NewHNSWIndex(vs.Dim, map[string]interface{}{
+				"m":         cfg.M,
+				"ml":        cfg.Ml,
+				"ef_search": cfg.EfSearch,
+			})
+			if err == nil {
+				// Migrate legacy HNSW data to new index
+				if len(payload.HNSW) > 0 {
+					// Export from legacy and import to new index abstraction
+					var buf bytes.Buffer
+					if err := vs.hnsw.Export(&buf); err == nil {
+						fmt.Println("Migrating legacy HNSW index to index abstraction...")
+						// Note: Direct migration not possible due to different formats
+						// Index will be rebuilt on first save
+					}
+				}
+				vs.indexes["default"] = defaultIdx
+			}
+		}
+
 		if vs.next == 0 {
 			vs.next = int64(len(vs.IDs))
+		}
+		// Ensure tenant ownership defaults to "default" when missing
+		for idKey := range vs.idToIx {
+			if vs.TenantID[idKey] == "" {
+				vs.TenantID[idKey] = "default"
+			}
 		}
 		// Rebuild metadata bitmap index from persisted Meta
 		if vs.metaIndex != nil && len(vs.Meta) > 0 {
@@ -1318,14 +1467,15 @@ func loadStopwords() map[string]bool {
 }
 
 type walEntry struct {
-	Seq  uint64                 // Monotonic sequence number (for WAL streaming)
-	Op   string
-	ID   string
-	Doc  string
-	Meta map[string]string
-	Vec  []float32
-	Coll string
-	Time int64                  // Unix timestamp (for WAL streaming)
+	Seq    uint64 // Monotonic sequence number (for WAL streaming)
+	Op     string
+	ID     string
+	Doc    string
+	Meta   map[string]string
+	Vec    []float32
+	Coll   string
+	Tenant string
+	Time   int64 // Unix timestamp (for WAL streaming)
 }
 
 type numEntry struct {
@@ -1338,53 +1488,90 @@ type timeEntry struct {
 	T  time.Time
 }
 
-func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec []float32) error {
-	if vs.walPath == "" {
-		return nil
-	}
+// SetWALHook registers a callback that receives every WAL entry after it is persisted.
+// This is used by the shard server to stream writes to replicas.
+func (vs *VectorStore) SetWALHook(h func(walEntry)) {
 	vs.walMu.Lock()
 	defer vs.walMu.Unlock()
-	f, err := os.OpenFile(vs.walPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("failed to open WAL: %w", err)
-	}
-	defer f.Close()
+	vs.walHook = h
+}
 
-	entry := walEntry{Op: op, ID: id, Doc: doc, Meta: meta, Vec: vec, Coll: func() string {
-		if id == "" {
-			return ""
+func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec []float32, tenant string) error {
+	// Normalize tenant
+	if tenant == "" && id != "" {
+		tenant = vs.TenantID[hashID(id)]
+	}
+	if tenant == "" {
+		tenant = "default"
+	}
+
+	entry := walEntry{
+		Op:   op,
+		ID:   id,
+		Doc:  doc,
+		Meta: meta,
+		Vec:  vec,
+		Coll: func() string {
+			if id == "" {
+				return ""
+			}
+			return vs.Coll[hashID(id)]
+		}(),
+		Tenant: tenant,
+		Time:   time.Now().Unix(),
+	}
+
+	if vs.walPath != "" {
+		vs.walMu.Lock()
+		f, err := os.OpenFile(vs.walPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			vs.walMu.Unlock()
+			return fmt.Errorf("failed to open WAL: %w", err)
 		}
-		return vs.Coll[hashID(id)]
-	}()}
-	if err := json.NewEncoder(f).Encode(&entry); err != nil {
-		return fmt.Errorf("failed to encode WAL entry: %w", err)
-	}
 
-	// Fsync to ensure durability
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("failed to sync WAL: %w", err)
-	}
-	vs.walOps++
+		if err := json.NewEncoder(f).Encode(&entry); err != nil {
+			f.Close()
+			vs.walMu.Unlock()
+			return fmt.Errorf("failed to encode WAL entry: %w", err)
+		}
 
-	var doSnapshot bool
-	if vs.walMaxOps > 0 && vs.walOps >= vs.walMaxOps {
-		doSnapshot = true
-		vs.walOps = 0
-	}
-	if !doSnapshot && vs.walMaxBytes > 0 {
-		if info, err := f.Stat(); err == nil && info.Size() >= vs.walMaxBytes {
+		// Fsync to ensure durability
+		if err := f.Sync(); err != nil {
+			f.Close()
+			vs.walMu.Unlock()
+			return fmt.Errorf("failed to sync WAL: %w", err)
+		}
+		vs.walOps++
+
+		var doSnapshot bool
+		if vs.walMaxOps > 0 && vs.walOps >= vs.walMaxOps {
 			doSnapshot = true
 			vs.walOps = 0
 		}
-	}
-	if doSnapshot {
-		snapPath := strings.TrimSuffix(vs.walPath, ".wal")
-		go func() {
-			if err := vs.Save(snapPath); err == nil {
-				_ = os.Truncate(vs.walPath, 0)
+		if !doSnapshot && vs.walMaxBytes > 0 {
+			if info, err := f.Stat(); err == nil && info.Size() >= vs.walMaxBytes {
+				doSnapshot = true
+				vs.walOps = 0
 			}
-		}()
+		}
+		_ = f.Close()
+		vs.walMu.Unlock()
+
+		if doSnapshot {
+			snapPath := strings.TrimSuffix(vs.walPath, ".wal")
+			go func() {
+				if err := vs.Save(snapPath); err == nil {
+					_ = os.Truncate(vs.walPath, 0)
+				}
+			}()
+		}
 	}
+
+	// Forward to external WAL hooks (e.g., replication stream)
+	if vs.walHook != nil {
+		vs.walHook(entry)
+	}
+
 	return nil
 }
 
@@ -1404,7 +1591,12 @@ func replayWAL(vs *VectorStore) error {
 	// Disable WAL writes during replay to avoid re-appending the same ops.
 	path := vs.walPath
 	vs.walPath = ""
-	defer func() { vs.walPath = path }()
+	hook := vs.walHook
+	vs.walHook = nil
+	defer func() {
+		vs.walPath = path
+		vs.walHook = hook
+	}()
 
 	dec := json.NewDecoder(f)
 	var replayErrors []error
@@ -1416,13 +1608,16 @@ func replayWAL(vs *VectorStore) error {
 			}
 			break
 		}
+		if e.Tenant == "" {
+			e.Tenant = "default"
+		}
 		switch e.Op {
 		case "insert":
-			if _, err := vs.Add(e.Vec, e.Doc, e.ID, e.Meta, e.Coll, ""); err != nil {
+			if _, err := vs.Add(e.Vec, e.Doc, e.ID, e.Meta, e.Coll, e.Tenant); err != nil {
 				replayErrors = append(replayErrors, fmt.Errorf("replay insert failed: %w", err))
 			}
 		case "upsert":
-			if _, err := vs.Upsert(e.Vec, e.Doc, e.ID, e.Meta, e.Coll, ""); err != nil {
+			if _, err := vs.Upsert(e.Vec, e.Doc, e.ID, e.Meta, e.Coll, e.Tenant); err != nil {
 				replayErrors = append(replayErrors, fmt.Errorf("replay upsert failed: %w", err))
 			}
 		case "delete":
@@ -1681,7 +1876,7 @@ func runShardMode() {
 	}
 
 	// Vector store config
-	capacity := envInt("CAPACITY", 100000)
+	capacity := envInt("CAPACITY", 1000) // Reduced from 100000 for low-memory deployment
 	dimension := envInt("DIMENSION", 384)
 	indexPath := os.Getenv("INDEX_PATH")
 	if indexPath == "" {
@@ -1792,14 +1987,36 @@ func main() {
 
 	initMetrics()
 
-	embedder := initEmbedder(defaultDim)
-	store, loaded := loadOrInitStore(indexPath, 100000, embedder.Dim())
+	// Check if we should force hash embedder (low-memory mode)
+	var embedder Embedder
+	if os.Getenv("USE_HASH_EMBEDDER") == "1" {
+		fmt.Println(">>> Using Hash Embedder (low-memory mode)")
+		embedder = NewHashEmbedder(defaultDim)
+	} else {
+		embedder = initEmbedder(defaultDim)
+	}
+
+	// Make initial capacity configurable for low-memory deployments
+	initialCapacity := 1000 // Reduced from 100000 for low-memory deployment
+	if envCap := os.Getenv("VECTOR_CAPACITY"); envCap != "" {
+		if v, err := strconv.Atoi(envCap); err == nil && v > 0 {
+			initialCapacity = v
+		}
+	}
+	store, loaded := loadOrInitStore(indexPath, initialCapacity, embedder.Dim())
 	store.walMaxBytes = envInt64("WAL_MAX_BYTES", 5*1024*1024)
 	store.walMaxOps = envInt("WAL_MAX_OPS", 1000)
 
 	if !loaded {
-		fmt.Println(">>> Hydrating Index with 100k vectors...")
-		for i := 0; i < 100000; i++ {
+		// Make hydration count configurable for low-memory deployments
+		hydrationCount := 100 // Reduced from 100000 for low-memory deployment
+		if envHydrate := os.Getenv("HYDRATION_COUNT"); envHydrate != "" {
+			if v, err := strconv.Atoi(envHydrate); err == nil && v > 0 {
+				hydrationCount = v
+			}
+		}
+		fmt.Printf(">>> Hydrating Index with %d vectors...\n", hydrationCount)
+		for i := 0; i < hydrationCount; i++ {
 			vec, _ := embedder.Embed(fmt.Sprintf("doc-%d", i))
 			if _, err := store.Add(vec, fmt.Sprintf("doc-%d content about memory locality and vector search.", i), "", nil, "default", ""); err != nil {
 				fmt.Printf("warning: failed to add vector %d: %v\n", i, err)

@@ -10,24 +10,29 @@ import (
 // Payload is the serializable snapshot of a VectorStore.
 // This struct is shared by all storage formats for consistency.
 type Payload struct {
-	Dim       int
-	Data      []float32 // Main embedding data - biggest optimization target
-	Docs      []string
-	IDs       []string
-	Meta      map[uint64]map[string]string
-	Deleted   map[uint64]bool
-	Coll      map[uint64]string
-	Next      int64
-	Count     int
-	HNSW      []byte // Serialized HNSW graph
-	Checksum  string
-	LastSaved time.Time
-	LexTF     map[uint64]map[string]int
-	DocLen    map[uint64]int
-	DF        map[string]int
-	SumDocL   int
-	NumMeta   map[uint64]map[string]float64
-	TimeMeta  map[uint64]map[string]time.Time
+	FormatVersion int                          // NEW: Format version for backward compatibility (0=legacy, 2=with vector types)
+	Dim           int
+	Data          []float32                    // Main embedding data - biggest optimization target (LEGACY - use VectorData)
+	VectorType    int                          // NEW: Default vector type for this collection (0=float32, 1=float16, 2=uint8, 3=sparse_coo)
+	VectorData    map[uint64][]byte            // NEW: Per-vector encoded data (serialized VectorData)
+	Docs          []string
+	IDs           []string
+	Meta          map[uint64]map[string]string
+	Deleted       map[uint64]bool
+	Coll          map[uint64]string
+	TenantID      map[uint64]string
+	Next          int64
+	Count         int
+	HNSW          []byte                       // Legacy serialized HNSW graph (deprecated)
+	Indexes       map[string][]byte            // Index abstraction - collection -> serialized index
+	Checksum      string
+	LastSaved     time.Time
+	LexTF         map[uint64]map[string]int
+	DocLen        map[uint64]int
+	DF            map[string]int
+	SumDocL       int
+	NumMeta       map[uint64]map[string]float64
+	TimeMeta      map[uint64]map[string]time.Time
 }
 
 // Format defines the interface for storage format implementations.
