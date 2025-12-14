@@ -19,20 +19,23 @@ import (
 type QuorumDecision string
 
 const (
-	DecisionFailover   QuorumDecision = "failover"
-	DecisionMigration  QuorumDecision = "migration"
-	DecisionFencing    QuorumDecision = "fencing"
-	DecisionRebalance  QuorumDecision = "rebalance"
+	DecisionFailover       QuorumDecision = "failover"
+	DecisionMigration      QuorumDecision = "migration"
+	DecisionFencing        QuorumDecision = "fencing"
+	DecisionRebalance      QuorumDecision = "rebalance"
+	DecisionLeaderElection QuorumDecision = "leader_election"
+	DecisionLeaderRenewal  QuorumDecision = "leader_renewal"
+	DecisionLeaderTransfer QuorumDecision = "leader_transfer"
 )
 
 // VoteRequest represents a vote request sent to peer coordinators
 type VoteRequest struct {
-	RequestID   string         `json:"request_id"`    // Unique request ID
+	RequestID    string         `json:"request_id"`    // Unique request ID
 	DecisionType QuorumDecision `json:"decision_type"` // Type of decision
-	ShardID     int            `json:"shard_id"`
-	Payload     map[string]any `json:"payload"`      // Decision-specific data
-	RequestedBy string         `json:"requested_by"` // Coordinator who initiated
-	Timestamp   time.Time      `json:"timestamp"`
+	ShardID      int            `json:"shard_id"`
+	Payload      map[string]any `json:"payload"`      // Decision-specific data
+	RequestedBy  string         `json:"requested_by"` // Coordinator who initiated
+	Timestamp    time.Time      `json:"timestamp"`
 }
 
 // VoteResponse represents a coordinator's vote
@@ -60,14 +63,14 @@ type QuorumVoter struct {
 
 // voteState tracks an ongoing vote
 type voteState struct {
-	request      *VoteRequest
-	votes        map[string]bool // coordinatorID -> approve
-	totalVoters  int
-	quorumSize   int // Votes needed for approval (majority)
-	startedAt    time.Time
-	decidedAt    *time.Time
-	approved     bool
-	mu           sync.RWMutex
+	request     *VoteRequest
+	votes       map[string]bool // coordinatorID -> approve
+	totalVoters int
+	quorumSize  int // Votes needed for approval (majority)
+	startedAt   time.Time
+	decidedAt   *time.Time
+	approved    bool
+	mu          sync.RWMutex
 }
 
 // NewQuorumVoter creates a new quorum voter
@@ -92,7 +95,7 @@ func (qv *QuorumVoter) RequestQuorum(ctx context.Context, req *VoteRequest) (boo
 	req.Timestamp = time.Now()
 
 	totalVoters := len(qv.peerCoordinators) + 1 // Peers + self
-	quorumSize := (totalVoters / 2) + 1          // Simple majority
+	quorumSize := (totalVoters / 2) + 1         // Simple majority
 
 	// Create vote state
 	state := &voteState{
@@ -238,6 +241,12 @@ func (qv *QuorumVoter) evaluateVote(req *VoteRequest) bool {
 		return qv.evaluateFencingVote(req)
 	case DecisionRebalance:
 		return qv.evaluateRebalanceVote(req)
+	case DecisionLeaderElection:
+		return qv.evaluateLeaderElectionVote(req)
+	case DecisionLeaderRenewal:
+		return qv.evaluateLeaderRenewalVote(req)
+	case DecisionLeaderTransfer:
+		return qv.evaluateLeaderTransferVote(req)
 	default:
 		return false
 	}
@@ -283,6 +292,72 @@ func (qv *QuorumVoter) evaluateFencingVote(req *VoteRequest) bool {
 func (qv *QuorumVoter) evaluateRebalanceVote(req *VoteRequest) bool {
 	// Check if cluster is stable
 	// Check if load imbalance justifies rebalance
+	return true
+}
+
+// evaluateLeaderElectionVote checks if leader election should be approved
+func (qv *QuorumVoter) evaluateLeaderElectionVote(req *VoteRequest) bool {
+	// Check if candidate is valid
+	candidateID, ok := req.Payload["candidate_id"].(string)
+	if !ok || candidateID == "" {
+		return false
+	}
+
+	// Check epoch (higher epochs always win)
+	epoch, ok := req.Payload["epoch"].(float64)
+	if !ok || epoch <= 0 {
+		return false
+	}
+
+	// TODO: Check if candidate is healthy
+	// TODO: Check if no other election in progress with higher epoch
+
+	return true
+}
+
+// evaluateLeaderRenewalVote checks if leader lease renewal should be approved
+func (qv *QuorumVoter) evaluateLeaderRenewalVote(req *VoteRequest) bool {
+	// Check leader ID
+	leaderID, ok := req.Payload["leader_id"].(string)
+	if !ok || leaderID == "" {
+		return false
+	}
+
+	// Check epoch
+	epoch, ok := req.Payload["epoch"].(float64)
+	if !ok || epoch <= 0 {
+		return false
+	}
+
+	// TODO: Verify leader is still the current leader
+	// TODO: Check leader health
+
+	return true
+}
+
+// evaluateLeaderTransferVote checks if leadership transfer should be approved
+func (qv *QuorumVoter) evaluateLeaderTransferVote(req *VoteRequest) bool {
+	// Check old leader
+	oldLeaderID, ok := req.Payload["old_leader_id"].(string)
+	if !ok || oldLeaderID == "" {
+		return false
+	}
+
+	// Check new leader
+	newLeaderID, ok := req.Payload["new_leader_id"].(string)
+	if !ok || newLeaderID == "" {
+		return false
+	}
+
+	// Check new epoch
+	epoch, ok := req.Payload["epoch"].(float64)
+	if !ok || epoch <= 0 {
+		return false
+	}
+
+	// TODO: Verify old leader is actually current leader
+	// TODO: Verify new leader is healthy and eligible
+
 	return true
 }
 
@@ -368,10 +443,10 @@ type FencingManager struct {
 // FencingState tracks fencing for a shard
 type FencingState struct {
 	ShardID      int
-	CurrentEpoch uint64      // Monotonic counter
-	CurrentOwner string      // Node ID that holds write permission
+	CurrentEpoch uint64 // Monotonic counter
+	CurrentOwner string // Node ID that holds write permission
 	IssuedAt     time.Time
-	ExpiresAt    time.Time   // 10s TTL
+	ExpiresAt    time.Time // 10s TTL
 	mu           sync.RWMutex
 }
 

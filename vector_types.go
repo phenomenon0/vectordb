@@ -42,13 +42,13 @@ func (vt VectorType) String() string {
 
 // VectorData is a unified structure that can hold any vector type
 type VectorData struct {
-	Type      VectorType  // Type of encoding
-	Dimension int         // Vector dimension
-	F32Data   []float32   // Dense float32 data
-	F16Data   []uint16    // Dense float16 data (as uint16 bits)
-	U8Data    []uint8     // Dense uint8 quantized data
-	SparseCoO *SparseCoO  // Sparse CoO format
-	SparseCSR *SparseCSR  // Sparse CSR format
+	Type      VectorType // Type of encoding
+	Dimension int        // Vector dimension
+	F32Data   []float32  // Dense float32 data
+	F16Data   []uint16   // Dense float16 data (as uint16 bits)
+	U8Data    []uint8    // Dense uint8 quantized data
+	SparseCoO *SparseCoO // Sparse CoO format
+	SparseCSR *SparseCSR // Sparse CSR format
 }
 
 // SparseCoO represents a sparse vector in Coordinate format
@@ -97,7 +97,7 @@ func NewUint8Vector(data []float32, min, max float32) *VectorData {
 	scale := 255.0 / (max - min)
 	for i, v := range data {
 		normalized := (v - min) * scale
-		u8Data[i] = uint8(math.Max(0, math.Min(255, normalized)))
+		u8Data[i] = uint8(math.Max(0, math.Min(255, float64(normalized))))
 	}
 	return &VectorData{
 		Type:      VectorTypeUint8,
@@ -308,7 +308,7 @@ func float32ToFloat16(f float32) uint16 {
 	// Convert mantissa (23 bits -> 10 bits)
 	newMant := mant >> 13
 
-	return uint16((sign << 15) | (uint16(newExp) << 10) | uint16(newMant))
+	return (uint16(sign) << 15) | (uint16(newExp) << 10) | uint16(newMant)
 }
 
 // float16ToFloat32 converts float16 (stored as uint16) to float32

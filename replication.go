@@ -18,12 +18,14 @@ import (
 
 // WALEntry represents a write-ahead log entry for replication
 type WALEntry struct {
-	Op   string
-	ID   string
-	Doc  string
-	Meta map[string]string
-	Vec  []float32
-	Coll string
+	Op     string
+	ID     string
+	Doc    string
+	Meta   map[string]string
+	Vec    []float32
+	Coll   string
+	Tenant string
+	Time   int64
 }
 
 // ===========================================================================================
@@ -60,11 +62,11 @@ func (rm ReplicationMode) String() string {
 
 // ReplicationConfig configures replication behavior
 type ReplicationConfig struct {
-	Mode           ReplicationMode   // Replication consistency mode
-	QuorumSize     int               // Required ACKs (default: majority for sync mode)
-	ReplicaTimeout time.Duration     // Timeout waiting for replica ACKs (default: 100ms)
-	RetryAttempts  int               // Number of retry attempts on failure (default: 3)
-	RetryDelay     time.Duration     // Delay between retries (default: 10ms)
+	Mode           ReplicationMode // Replication consistency mode
+	QuorumSize     int             // Required ACKs (default: majority for sync mode)
+	ReplicaTimeout time.Duration   // Timeout waiting for replica ACKs (default: 100ms)
+	RetryAttempts  int             // Number of retry attempts on failure (default: 3)
+	RetryDelay     time.Duration   // Delay between retries (default: 10ms)
 }
 
 // DefaultReplicationConfig returns default replication configuration
@@ -401,14 +403,14 @@ func CalculateStrongConsistency(replicaCount int) int {
 type ReplicationStats struct {
 	mu sync.RWMutex
 
-	TotalReplications   int64
-	SuccessfulQuorums   int64
-	FailedQuorums       int64
-	Timeouts            int64
-	ReplicaFailures     map[string]int64 // replica ID -> failure count
-	AverageLatencyMs    float64
-	TotalLatencyMs      int64
-	LatencyCount        int64
+	TotalReplications int64
+	SuccessfulQuorums int64
+	FailedQuorums     int64
+	Timeouts          int64
+	ReplicaFailures   map[string]int64 // replica ID -> failure count
+	AverageLatencyMs  float64
+	TotalLatencyMs    int64
+	LatencyCount      int64
 }
 
 // NewReplicationStats creates new replication statistics tracker
@@ -453,13 +455,13 @@ func (rs *ReplicationStats) GetStats() map[string]any {
 	defer rs.mu.RUnlock()
 
 	return map[string]any{
-		"total_replications":  rs.TotalReplications,
-		"successful_quorums":  rs.SuccessfulQuorums,
-		"failed_quorums":      rs.FailedQuorums,
-		"timeouts":            rs.Timeouts,
-		"average_latency_ms":  rs.AverageLatencyMs,
-		"replica_failures":    rs.ReplicaFailures,
-		"success_rate":        float64(rs.SuccessfulQuorums) / float64(rs.TotalReplications),
+		"total_replications": rs.TotalReplications,
+		"successful_quorums": rs.SuccessfulQuorums,
+		"failed_quorums":     rs.FailedQuorums,
+		"timeouts":           rs.Timeouts,
+		"average_latency_ms": rs.AverageLatencyMs,
+		"replica_failures":   rs.ReplicaFailures,
+		"success_rate":       float64(rs.SuccessfulQuorums) / float64(rs.TotalReplications),
 	}
 }
 

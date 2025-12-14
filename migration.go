@@ -18,23 +18,23 @@ import (
 
 // CollectionExport represents exportable collection data
 type CollectionExport struct {
-	Collection string              `json:"collection"`
-	Vectors    []VectorRecord      `json:"vectors"`
-	Count      int                 `json:"count"`
-	Dimension  int                 `json:"dimension"`
-	ExportTime time.Time           `json:"export_time"`
-	Checksum   string              `json:"checksum"`
+	Collection string         `json:"collection"`
+	Vectors    []VectorRecord `json:"vectors"`
+	Count      int            `json:"count"`
+	Dimension  int            `json:"dimension"`
+	ExportTime time.Time      `json:"export_time"`
+	Checksum   string         `json:"checksum"`
 }
 
 // VectorRecord is a single exportable vector with all metadata
 type VectorRecord struct {
-	ID       string            `json:"id"`
-	Vector   []float32         `json:"vector"`
-	Doc      string            `json:"doc"`
-	Meta     map[string]string `json:"meta,omitempty"`
-	TenantID string            `json:"tenant_id,omitempty"`
-	NumMeta  map[string]float64    `json:"num_meta,omitempty"`
-	TimeMeta map[string]time.Time  `json:"time_meta,omitempty"`
+	ID       string               `json:"id"`
+	Vector   []float32            `json:"vector"`
+	Doc      string               `json:"doc"`
+	Meta     map[string]string    `json:"meta,omitempty"`
+	TenantID string               `json:"tenant_id,omitempty"`
+	NumMeta  map[string]float64   `json:"num_meta,omitempty"`
+	TimeMeta map[string]time.Time `json:"time_meta,omitempty"`
 }
 
 // ExportCollection exports all vectors for a collection
@@ -197,8 +197,9 @@ func (vs *VectorStore) ImportCollection(export *CollectionExport) error {
 	return nil
 }
 
-// DeleteCollection removes all vectors for a collection
-func (vs *VectorStore) DeleteCollection(collection string) (int, error) {
+// DeleteCollectionVectors removes all vectors for a collection (without removing the index)
+// Use DeleteCollection in collection.go for full collection deletion including index
+func (vs *VectorStore) DeleteCollectionVectors(collection string) (int, error) {
 	vs.Lock()
 	defer vs.Unlock()
 
@@ -452,7 +453,7 @@ func registerMigrationHandlers(mux *http.ServeMux, store *VectorStore) {
 			return
 		}
 
-		deleted, err := store.DeleteCollection(collection)
+		deleted, err := store.DeleteCollectionVectors(collection)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("delete failed: %v", err), http.StatusInternalServerError)
 			return
