@@ -57,8 +57,8 @@ func isSentencePunct(r rune) bool {
 	}
 }
 
-// tokenize splits on Unicode whitespace, peels punctuation into its own tokens, normalizes.
-func tokenize(text string) []string {
+// onnxTokenize splits on Unicode whitespace, peels punctuation into its own tokens, normalizes.
+func onnxTokenize(text string) []string {
 	tokens := make([]string, 0, len(text)/4+1)
 	var buf strings.Builder
 

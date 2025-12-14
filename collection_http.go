@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -171,10 +170,10 @@ func (s *CollectionHTTPServer) handleCollectionStats(w http.ResponseWriter, r *h
 
 // InsertRequest for multi-vector documents
 type InsertRequest struct {
-	CollectionName string                            `json:"collection"`
-	Doc            string                            `json:"doc"`
-	Vectors        map[string]interface{}            `json:"vectors"` // field name -> vector data
-	Metadata       map[string]interface{}            `json:"metadata,omitempty"`
+	CollectionName string                 `json:"collection"`
+	Doc            string                 `json:"doc"`
+	Vectors        map[string]interface{} `json:"vectors"` // field name -> vector data
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // handleInsert adds a document with multiple vectors to a collection
@@ -277,11 +276,11 @@ func (s *CollectionHTTPServer) handleInsert(w http.ResponseWriter, r *http.Reque
 
 // SearchRequest for hybrid search
 type SearchRequest struct {
-	CollectionName string                            `json:"collection"`
-	Queries        map[string]interface{}            `json:"queries"` // field name -> query vector
-	TopK           int                               `json:"top_k"`
-	Filters        map[string]interface{}            `json:"filters,omitempty"`
-	HybridParams   *vcollection.HybridSearchParams   `json:"hybrid_params,omitempty"`
+	CollectionName string                          `json:"collection"`
+	Queries        map[string]interface{}          `json:"queries"` // field name -> query vector
+	TopK           int                             `json:"top_k"`
+	Filters        map[string]interface{}          `json:"filters,omitempty"`
+	HybridParams   *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
 }
 
 // handleSearch performs search (dense, sparse, or hybrid)

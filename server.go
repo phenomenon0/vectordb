@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"sort"
@@ -14,10 +16,15 @@ import (
 	"time"
 
 	"agentscope/sjson/codec"
+	"agentscope/vectordb/logging"
+	"agentscope/vectordb/telemetry"
 
 	"github.com/coder/hnsw"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+//go:embed web-ui/dist
+var webUIFS embed.FS
 
 // encodeResponse encodes v using the codec preferred by the client (Accept header).
 // SJSON is used when Accept: application/sjson is present, JSON otherwise.
@@ -230,12 +237,18 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
+		// Start telemetry span for insert operation
+		_, span := telemetry.StartInsert(r.Context(), req.Collection, req.ID)
+		defer span.End()
+
 		vec, err := embedder.Embed(req.Doc)
 		if err != nil {
+			telemetry.RecordError(span, err)
 			http.Error(w, "embed error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
+		start := time.Now()
 		var id string
 		if req.Upsert {
 			id, err = store.Upsert(vec, req.Doc, req.ID, req.Meta, req.Collection, tenantID)
@@ -243,12 +256,16 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			id, err = store.Add(vec, req.Doc, req.ID, req.Meta, req.Collection, tenantID)
 		}
 		if err != nil {
+			telemetry.RecordError(span, err)
+			logging.Default().LogError(r.Context(), "insert", err, "collection", req.Collection, "tenant_id", tenantID)
 			http.Error(w, fmt.Sprintf("failed to insert document: %v", err), http.StatusInternalServerError)
 			return
 		}
 
+		logging.Default().Insert(r.Context(), id, req.Collection, len(vec), time.Since(start))
+		telemetry.RecordOK(span)
 		if err := encodeResponse(w, r, map[string]any{"id": id}); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -314,6 +331,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		ids := make([]string, 0, len(req.Docs))
 		var errors []string
 
+		start := time.Now()
+
 		for i, d := range req.Docs {
 			if d.Doc == "" {
 				errors = append(errors, fmt.Sprintf("doc %d: empty document", i))
@@ -361,10 +380,13 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		response := map[string]any{"ids": ids}
 		if len(errors) > 0 {
 			response["errors"] = errors
+			logging.Default().FromContext(r.Context()).Warn("batch insert partial failure", "errors", len(errors), "success", len(ids))
+		} else {
+			logging.Default().BatchInsert(r.Context(), req.Docs[0].Collection, len(ids), time.Since(start))
 		}
 
 		if err := encodeResponse(w, r, response); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -397,9 +419,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		var req struct {
 			ID         string            `json:"id"`
 			Doc        string            `json:"doc"`
-			Indices    []uint32          `json:"indices"`    // Sparse vector indices
-			Values     []float32         `json:"values"`     // Sparse vector values
-			Dimension  int               `json:"dimension"`  // Total dimension
+			Indices    []uint32          `json:"indices"`   // Sparse vector indices
+			Values     []float32         `json:"values"`    // Sparse vector values
+			Dimension  int               `json:"dimension"` // Total dimension
 			Meta       map[string]string `json:"meta"`
 			Upsert     bool              `json:"upsert"`
 			Collection string            `json:"collection"`
@@ -528,6 +550,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			http.Error(w, fmt.Sprintf("query too long: max %d bytes", MaxQueryLength), http.StatusBadRequest)
 			return
 		}
+
+		// Start telemetry span for search operation
+		_, span := telemetry.StartSearch(r.Context(), req.Collection, req.TopK, req.Mode)
+		defer span.End()
+		searchStart := time.Now()
 
 		if req.TopK == 0 {
 			req.TopK = 3
@@ -719,12 +746,19 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		rDocs, rerankScores, stats, err := reranker.Rerank(req.Query, docs, req.Limit)
 		if err != nil {
+			telemetry.RecordError(span, err)
 			http.Error(w, "rerank error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if len(respScores) == 0 {
 			respScores = rerankScores
 		}
+
+		// Record search results in span
+		telemetry.RecordSearchResults(span, len(respIDs), 0) // latency tracked by HTTP middleware
+		telemetry.RecordOK(span)
+		logging.Default().Search(r.Context(), req.Collection, req.TopK, len(respIDs), time.Since(searchStart))
+
 		// Select codec based on Accept header (JSON default, SJSON opt-in)
 		responseCodec := codec.FromRequest(r)
 		w.Header().Set("Content-Type", responseCodec.ContentType())
@@ -740,7 +774,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		if err := responseCodec.Encode(w, response); err != nil {
 			// Log error but don't change response (already started writing)
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 		return
 	})))
@@ -772,15 +806,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10MB limit
 
 		var req struct {
-			Indices     []uint32          `json:"indices"`    // Sparse query indices
-			Values      []float32         `json:"values"`     // Sparse query values
-			Dimension   int               `json:"dimension"`  // Total dimension
-			TopK        int               `json:"top_k"`
-			Collection  string            `json:"collection"`
-			Meta        map[string]string `json:"meta,omitempty"`
-			MetaAny     map[string]string `json:"meta_any,omitempty"`
-			MetaNot     map[string]string `json:"meta_not,omitempty"`
-			IncludeMeta bool              `json:"include_meta"`
+			Indices     []uint32            `json:"indices"`   // Sparse query indices
+			Values      []float32           `json:"values"`    // Sparse query values
+			Dimension   int                 `json:"dimension"` // Total dimension
+			TopK        int                 `json:"top_k"`
+			Collection  string              `json:"collection"`
+			Meta        map[string]string   `json:"meta,omitempty"`
+			MetaAny     []map[string]string `json:"meta_any,omitempty"`
+			MetaNot     map[string]string   `json:"meta_not,omitempty"`
+			IncludeMeta bool                `json:"include_meta"`
 		}
 		if err := decodeRequest(r, &req); err != nil {
 			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
@@ -942,6 +976,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
+		// Start telemetry span for delete operation
+		_, span := telemetry.StartDelete(r.Context(), "default", req.ID)
+		defer span.End()
+
 		// SECURITY: Verify tenant ownership before deletion
 		// This prevents cross-tenant data deletion attacks
 		hid := hashID(req.ID)
@@ -964,11 +1002,13 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		if err := store.Delete(req.ID); err != nil {
+			telemetry.RecordError(span, err)
 			http.Error(w, fmt.Sprintf("failed to delete document: %v", err), http.StatusInternalServerError)
 			return
 		}
 
 		// Removed synchronous save - rely on WAL + background snapshots
+		telemetry.RecordOK(span)
 
 		if err := encodeResponse(w, r, map[string]any{"deleted": req.ID}); err != nil {
 			fmt.Printf("error encoding response: %v\n", err)
@@ -1008,6 +1048,92 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	})))
 
 	mux.Handle("/metrics", promhttp.Handler())
+
+	// Kubernetes-style health probes
+	// /healthz - Liveness probe: Is the process alive and not deadlocked?
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		// Liveness check: verify we can acquire locks (not deadlocked)
+		done := make(chan bool, 1)
+		go func() {
+			store.RLock()
+			store.RUnlock()
+			done <- true
+		}()
+
+		select {
+		case <-done:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ok"))
+		case <-time.After(5 * time.Second):
+			// Deadlock detected - process should be restarted
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("deadlock detected"))
+		}
+	})
+
+	// /readyz - Readiness probe: Is the service ready to accept traffic?
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		issues := []string{}
+
+		// Check 1: Store is initialized
+		store.RLock()
+		storeReady := store.Count >= 0 && store.Dim > 0
+		indexCount := len(store.indexes)
+		hnswReady := store.hnsw != nil
+		store.RUnlock()
+
+		if !storeReady {
+			issues = append(issues, "store not initialized")
+		}
+		if !hnswReady && indexCount == 0 {
+			issues = append(issues, "no index available")
+		}
+
+		// Check 2: Embedder is functional (quick test)
+		if embedder != nil {
+			_, err := embedder.Embed("health check")
+			if err != nil {
+				issues = append(issues, fmt.Sprintf("embedder error: %v", err))
+			}
+		} else {
+			issues = append(issues, "embedder not initialized")
+		}
+
+		// Return result
+		if len(issues) == 0 {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ready":   true,
+				"checks":  []string{"store", "index", "embedder"},
+				"version": "1.0.0",
+			})
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ready":  false,
+				"issues": issues,
+			})
+		}
+	})
+
+	// Serve Web UI Dashboard
+	webUISubFS, err := fs.Sub(webUIFS, "web-ui/dist")
+	if err != nil {
+		fmt.Printf("Warning: failed to create web UI sub-filesystem: %v\n", err)
+	} else {
+		// Serve dashboard at /dashboard/
+		mux.Handle("/dashboard/", http.StripPrefix("/dashboard/", http.FileServer(http.FS(webUISubFS))))
+
+		// Redirect root to dashboard
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/" {
+				http.Redirect(w, r, "/dashboard/", http.StatusFound)
+				return
+			}
+			// Let other handlers take precedence
+			http.NotFound(w, r)
+		})
+	}
 
 	mux.HandleFunc("/integrity", withMetrics("integrity", guard(func(w http.ResponseWriter, r *http.Request) {
 		store.RLock()
@@ -1435,7 +1561,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		collectionName := parts[0]
+		_ = parts[0] // collectionName used in handlers via path parsing
 
 		// Route based on path structure and HTTP method
 		if len(parts) == 1 {
@@ -1477,7 +1603,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	collectionHTTP := NewCollectionHTTPServer(indexPath + ".collections")
 	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
 
-	return mux
+	// Wrap with OTel HTTP middleware for request tracing
+	// This adds automatic span creation for all HTTP requests
+	otelMiddleware := telemetry.HTTPMiddleware()
+	return otelMiddleware(mux)
 }
 
 func ageMillis(path string, fallback time.Time) int64 {

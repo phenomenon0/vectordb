@@ -23,7 +23,10 @@ import (
 	"agentscope/core"
 	"agentscope/tools"
 	"agentscope/vectordb/index"
+	"agentscope/vectordb/logging"
 	"agentscope/vectordb/storage"
+	"agentscope/vectordb/telemetry"
+
 	"github.com/coder/hnsw"
 )
 
@@ -33,13 +36,13 @@ import (
 
 type VectorStore struct {
 	sync.RWMutex
-	Data        []float32
-	Dim         int
-	Count       int
-	Docs        []string
-	IDs         []string
-	Seqs        []uint64
-	next        int64
+	Data  []float32
+	Dim   int
+	Count int
+	Docs  []string
+	IDs   []string
+	Seqs  []uint64
+	next  int64
 	// Index abstraction (NEW)
 	indexes map[string]index.Index // Collection -> Index mapping
 	// Legacy HNSW graph (deprecated, kept for backward compatibility)
@@ -78,7 +81,12 @@ type VectorStore struct {
 	// Storage format (gob, sjson, sjson-zstd)
 	storageFormat storage.Format
 	// Metadata bitmap index for fast pre-filtering
+	// Metadata bitmap index for fast pre-filtering
 	metaIndex *MetadataIndex
+
+	// Replication
+	replicationMgr *ReplicationManager
+	replicas       []*ReplicaNode
 }
 
 func NewVectorStore(capacity int, dim int) *VectorStore {
@@ -694,7 +702,7 @@ func (vs *VectorStore) Save(path string) error {
 		TenantID:  vs.TenantID,
 		Next:      vs.next,
 		Count:     vs.Count,
-		HNSW:      hBuf,     // Legacy (deprecated)
+		HNSW:      hBuf,      // Legacy (deprecated)
 		Indexes:   indexData, // NEW
 		Checksum:  vs.checksum,
 		LastSaved: time.Now(),
@@ -823,8 +831,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			sumDocL:     payload.SumDocL,
 			NumMeta:     payload.NumMeta,
 			TimeMeta:    payload.TimeMeta,
-			// Multi-tenancy support
-			TenantID: make(map[uint64]string),
+			// Multi-tenancy support (TenantID already set from payload above)
 			acl:      NewACL(),
 			quotas:   NewTenantQuota(),
 			tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), time.Minute),
@@ -1218,6 +1225,165 @@ func (e *HashEmbedder) Embed(text string) ([]float32, error) {
 	for i := range vec {
 		vec[i] /= float32(norm)
 	}
+	return vec, nil
+}
+
+// OpenAIEmbedder uses OpenAI's text-embedding-3-small model
+type OpenAIEmbedder struct {
+	apiKey string
+	model  string
+	dim    int
+	client *http.Client
+}
+
+func NewOpenAIEmbedder(apiKey string) *OpenAIEmbedder {
+	return &OpenAIEmbedder{
+		apiKey: apiKey,
+		model:  "text-embedding-3-small",
+		dim:    1536,
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+func (e *OpenAIEmbedder) Dim() int { return e.dim }
+
+func (e *OpenAIEmbedder) Embed(text string) ([]float32, error) {
+	if text == "" {
+		text = "empty"
+	}
+
+	reqBody := map[string]interface{}{
+		"input": text,
+		"model": e.model,
+	}
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal error: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/embeddings", bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("request error: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("API error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		return nil, fmt.Errorf("OpenAI API error %d: %s", resp.StatusCode, errResp.Error.Message)
+	}
+
+	var result struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode error: %w", err)
+	}
+
+	if len(result.Data) == 0 || len(result.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("no embedding returned")
+	}
+
+	// Convert float64 to float32
+	vec := make([]float32, len(result.Data[0].Embedding))
+	for i, v := range result.Data[0].Embedding {
+		vec[i] = float32(v)
+	}
+	return vec, nil
+}
+
+// OllamaEmbedder uses Ollama's local embedding models
+type OllamaEmbedder struct {
+	baseURL string
+	model   string
+	dim     int
+	client  *http.Client
+}
+
+func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
+	// nomic-embed-text produces 768-dim vectors
+	dim := 768
+	if model == "granite-embedding" {
+		dim = 384
+	}
+	return &OllamaEmbedder{
+		baseURL: baseURL,
+		model:   model,
+		dim:     dim,
+		client:  &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+func (e *OllamaEmbedder) Dim() int { return e.dim }
+
+func (e *OllamaEmbedder) Embed(text string) ([]float32, error) {
+	if text == "" {
+		text = "empty"
+	}
+
+	reqBody := map[string]interface{}{
+		"model":  e.model,
+		"prompt": text,
+	}
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal error: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", e.baseURL+"/api/embeddings", bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("request error: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Ollama API error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Ollama API error %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Embedding []float64 `json:"embedding"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode error: %w", err)
+	}
+
+	if len(result.Embedding) == 0 {
+		return nil, fmt.Errorf("no embedding returned")
+	}
+
+	// Convert float64 to float32 and L2 normalize
+	vec := make([]float32, len(result.Embedding))
+	var norm float64
+	for i, v := range result.Embedding {
+		vec[i] = float32(v)
+		norm += v * v
+	}
+	norm = math.Sqrt(norm)
+	if norm > 0 {
+		for i := range vec {
+			vec[i] /= float32(norm)
+		}
+	}
+	e.dim = len(vec) // Update dim based on actual response
 	return vec, nil
 }
 
@@ -1655,6 +1821,32 @@ func (vs *VectorStore) validateChecksum() bool {
 // ======================================================================================
 
 func initEmbedder(defaultDim int) Embedder {
+	// Priority 1: OpenAI embeddings (highest quality, requires API key)
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		fmt.Println(">>> Using OpenAI embedder (text-embedding-3-small)")
+		return NewOpenAIEmbedder(apiKey)
+	}
+
+	// Priority 2: Ollama embeddings (local, good quality)
+	ollamaURL := os.Getenv("OLLAMA_URL")
+	if ollamaURL == "" {
+		ollamaURL = "http://localhost:11434"
+	}
+	ollamaModel := os.Getenv("OLLAMA_EMBED_MODEL")
+	if ollamaModel == "" {
+		ollamaModel = "nomic-embed-text" // Default to nomic-embed-text
+	}
+	// Test if Ollama is available
+	client := &http.Client{Timeout: 5 * time.Second}
+	if resp, err := client.Get(ollamaURL + "/api/tags"); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			fmt.Printf(">>> Using Ollama embedder (%s)\n", ollamaModel)
+			return NewOllamaEmbedder(ollamaURL, ollamaModel)
+		}
+	}
+
+	// Priority 3: ONNX embeddings (local, good quality, requires onnxruntime)
 	defaultModel := "vectordb/models/bge-small-en-v1.5/model.onnx"
 	defaultTok := "vectordb/models/bge-small-en-v1.5/tokenizer.json"
 
@@ -1672,17 +1864,20 @@ func initEmbedder(defaultDim int) Embedder {
 	}
 	maxLen := 512
 	if env := os.Getenv("ONNX_EMBED_MAX_LEN"); env != "" {
-		if v, err := strconv.Atoi(env); err == nil && v > 0 {
+		if v, err := strconv.Atoi(env); err == nil && v >= 0 {
 			maxLen = v
 		}
 	}
 	if modelPath != "" && tokPath != "" {
 		if emb, err := NewOnnxEmbedder(modelPath, tokPath, defaultDim, maxLen); err == nil {
-			fmt.Println("Using ONNX embedder:", modelPath)
+			fmt.Println(">>> Using ONNX embedder:", modelPath)
 			return emb
 		}
-		fmt.Println("Falling back to hash embedder (ONNX init failed)")
+		fmt.Println(">>> ONNX init failed")
 	}
+
+	// Priority 4: Hash embedder (fallback, low quality)
+	fmt.Println(">>> Using hash embedder (set OPENAI_API_KEY or start Ollama for better quality)")
 	return NewHashEmbedder(defaultDim)
 }
 
@@ -1691,7 +1886,7 @@ func initReranker(embedder Embedder) Reranker {
 	tokPath := os.Getenv("ONNX_RERANK_TOKENIZER")
 	maxLen := 512
 	if env := os.Getenv("ONNX_RERANK_MAX_LEN"); env != "" {
-		if v, err := strconv.Atoi(env); err == nil && v > 0 {
+		if v, err := strconv.Atoi(env); err == nil && v >= 0 {
 			maxLen = v
 		}
 	}
@@ -1976,21 +2171,50 @@ func main() {
 		return
 	}
 
-	fmt.Println(">>> Initializing Flat Buffer Vector Engine...")
+	// Initialize structured logging
+	logConfig := logging.DefaultConfig()
+	if os.Getenv("LOG_FORMAT") == "text" {
+		logConfig.Format = "text"
+	}
+	if os.Getenv("LOG_LEVEL") == "debug" {
+		logConfig.Level = logging.LevelDebug
+	}
+	logger := logging.Init(logConfig)
+	logger.Info("initializing vector engine")
+
 	const indexPath = "vectordb/index.gob"
 	defaultDim := 384
 	if envDim := os.Getenv("EMBED_DIM"); envDim != "" {
-		if v, err := strconv.Atoi(envDim); err == nil && v > 0 {
+		if v, err := strconv.Atoi(envDim); err == nil && v >= 0 {
 			defaultDim = v
 		}
 	}
 
 	initMetrics()
 
+	// Initialize OpenTelemetry tracing
+	// Configured via environment variables:
+	//   OTEL_SERVICE_NAME - service name (default: "vectordb")
+	//   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP endpoint (optional)
+	//   OTEL_TRACE_SAMPLE_RATE - sampling rate (default: 1.0)
+	//   OTEL_ENABLE_CONSOLE - enable console exporter (default: false)
+	if err := telemetry.SetupSimple(); err != nil {
+		logger.Warn("telemetry setup failed", "error", err)
+	} else {
+		logger.Info("opentelemetry tracing initialized")
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := telemetry.Shutdown(ctx); err != nil {
+				logger.Warn("telemetry shutdown failed", "error", err)
+			}
+		}()
+	}
+
 	// Check if we should force hash embedder (low-memory mode)
 	var embedder Embedder
 	if os.Getenv("USE_HASH_EMBEDDER") == "1" {
-		fmt.Println(">>> Using Hash Embedder (low-memory mode)")
+		logger.Info("using hash embedder (low-memory mode)")
 		embedder = NewHashEmbedder(defaultDim)
 	} else {
 		embedder = initEmbedder(defaultDim)
@@ -1999,7 +2223,7 @@ func main() {
 	// Make initial capacity configurable for low-memory deployments
 	initialCapacity := 1000 // Reduced from 100000 for low-memory deployment
 	if envCap := os.Getenv("VECTOR_CAPACITY"); envCap != "" {
-		if v, err := strconv.Atoi(envCap); err == nil && v > 0 {
+		if v, err := strconv.Atoi(envCap); err == nil && v >= 0 {
 			initialCapacity = v
 		}
 	}
@@ -2007,26 +2231,92 @@ func main() {
 	store.walMaxBytes = envInt64("WAL_MAX_BYTES", 5*1024*1024)
 	store.walMaxOps = envInt("WAL_MAX_OPS", 1000)
 
+	// Setup replication if enabled
+	if os.Getenv("ENABLE_REPLICATION") == "1" {
+		logger.Info("replication enabled")
+
+		// Parse replicas
+		var replicas []*ReplicaNode
+		if replicasStr := os.Getenv("REPLICAS"); replicasStr != "" {
+			for i, addr := range strings.Split(replicasStr, ",") {
+				addr = strings.TrimSpace(addr)
+				if addr != "" {
+					replicas = append(replicas, &ReplicaNode{
+						NodeID:   fmt.Sprintf("replica-%d", i),
+						BaseURL:  addr,
+						Healthy:  true,
+						Priority: i,
+					})
+				}
+			}
+		}
+
+		if len(replicas) > 0 {
+			logger.Info("configured replicas", "count", len(replicas))
+			store.replicas = replicas
+
+			// Create replication manager
+			replConfig := DefaultReplicationConfig()
+			if mode := os.Getenv("REPLICATION_MODE"); mode != "" {
+				switch mode {
+				case "sync":
+					replConfig.Mode = SyncReplication
+				case "strong":
+					replConfig.Mode = StrongConsistency
+				default:
+					replConfig.Mode = AsyncReplication
+				}
+			}
+
+			// Initialize metrics collector (nil for now, could be added later)
+			store.replicationMgr = NewReplicationManager(replConfig, nil)
+			logger.Info("replication manager initialized", "mode", replConfig.Mode.String())
+
+			// Setup replication hook
+			store.SetWALHook(func(e walEntry) {
+				// Convert to replication WALEntry
+				replEntry := &WALEntry{
+					Op:     e.Op,
+					ID:     e.ID,
+					Doc:    e.Doc,
+					Meta:   e.Meta,
+					Vec:    e.Vec,
+					Coll:   e.Coll,
+					Tenant: e.Tenant,
+					Time:   e.Time,
+				}
+
+				// Replicate (use shardID=0 for standalone)
+				if err := store.replicationMgr.ReplicateEntry(replEntry, store.replicas, 0); err != nil {
+					logger.Error("replication failed", "error", err, "op", e.Op, "id", e.ID)
+				}
+			})
+		} else {
+			logger.Warn("replication enabled but no replicas configured")
+		}
+	}
+
 	if !loaded {
 		// Make hydration count configurable for low-memory deployments
 		hydrationCount := 100 // Reduced from 100000 for low-memory deployment
 		if envHydrate := os.Getenv("HYDRATION_COUNT"); envHydrate != "" {
-			if v, err := strconv.Atoi(envHydrate); err == nil && v > 0 {
+			if v, err := strconv.Atoi(envHydrate); err == nil && v >= 0 {
 				hydrationCount = v
 			}
 		}
-		fmt.Printf(">>> Hydrating Index with %d vectors...\n", hydrationCount)
+
+		logger.Info("hydrating index", "count", hydrationCount)
 		for i := 0; i < hydrationCount; i++ {
 			vec, _ := embedder.Embed(fmt.Sprintf("doc-%d", i))
 			if _, err := store.Add(vec, fmt.Sprintf("doc-%d content about memory locality and vector search.", i), "", nil, "default", ""); err != nil {
-				fmt.Printf("warning: failed to add vector %d: %v\n", i, err)
+				logger.Warn("failed to add vector", "index", i, "error", err)
 			}
 		}
 		if err := store.Save(indexPath); err != nil {
-			fmt.Printf("warning: failed to save index: %v\n", err)
+			logger.Warn("failed to save index", "error", err)
 		}
 	}
-	fmt.Printf(">>> Index Ready. %d Vectors in Contiguous RAM.\n", store.Count)
+	logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
 
 	sched := core.NewScheduler(core.DefaultSchedulerConfig)
 	defer sched.Shutdown()
@@ -2051,7 +2341,7 @@ func main() {
 	router := tools.NewModelRouter()
 	llmCfg, err := router.FastestModel()
 	if err != nil {
-		fmt.Println("Warning: No API key found, LLM calls may fail.")
+		logger.Warn("no api key found, llm calls may fail")
 	}
 	llmID := sched.Tools().Register(tools.NewLLMTool(llmCfg), core.DefaultToolPolicy, nil)
 
@@ -2067,9 +2357,9 @@ func main() {
 	}
 
 	go func() {
-		fmt.Printf(">>> HTTP API listening on %s (POST /insert, POST /batch_insert, POST /query, POST /delete, GET /health, GET /metrics)\n", addr)
+		logger.Info("http api listening", "addr", addr, "endpoints", "POST /insert, POST /batch_insert, POST /query, POST /delete, GET /health, GET /metrics")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("HTTP server error: %v\n", err)
+			logger.Error("http server error", "error", err)
 		}
 	}()
 
@@ -2092,11 +2382,11 @@ func main() {
 
 			deletedRatio := float64(deleted) / float64(total)
 			if deletedRatio >= tombstoneThreshold {
-				fmt.Printf("Auto-compaction triggered: %.1f%% deleted (%d/%d)\n", deletedRatio*100, deleted, total)
+				logger.Info("auto-compaction triggered", "deleted_ratio", deletedRatio, "deleted", deleted, "total", total)
 				if err := store.Compact(indexPath); err != nil {
-					fmt.Printf("compact error: %v\n", err)
+					logger.Error("compact error", "error", err)
 				} else {
-					fmt.Printf("compact completed: purged %d tombstones\n", deleted)
+					logger.Info("compact completed", "purged", deleted)
 				}
 			}
 		}
@@ -2116,9 +2406,9 @@ func main() {
 		defer t.Stop()
 		for range t.C {
 			if err := store.Save(exportPath); err != nil {
-				fmt.Printf("snapshot export error: %v\n", err)
+				logger.Error("snapshot export error", "error", err)
 			} else {
-				fmt.Printf("snapshot exported to %s\n", exportPath)
+				logger.Info("snapshot exported", "path", exportPath)
 			}
 		}
 	}()
@@ -2172,12 +2462,12 @@ func main() {
 
 	fmt.Println(">>> Saving final snapshot...")
 	if err := store.Save(indexPath); err != nil {
-		fmt.Printf("Failed to save final snapshot: %v\n", err)
+		logger.Error("failed to save final snapshot", "error", err)
 	} else {
-		fmt.Println(">>> Final snapshot saved successfully")
+		logger.Info("final snapshot saved successfully")
 	}
 
-	fmt.Println(">>> Shutdown complete")
+	logger.Info("shutdown complete")
 }
 
 func envInt(key string, def int) int {
