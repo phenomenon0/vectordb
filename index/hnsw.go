@@ -368,12 +368,17 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, params S
 	} else {
 		// UNFILTERED SEARCH: Standard HNSW search
 		// Account for deletions by fetching extra candidates
-		deletionRatio := float64(len(h.deleted)) / float64(h.count)
 		fetchK := k
-		if deletionRatio > 0.1 {
-			fetchK = int(float64(k) / (1.0 - deletionRatio))
-			if fetchK > h.count {
-				fetchK = h.count
+		if h.count > 0 {
+			deletionRatio := float64(len(h.deleted)) / float64(h.count)
+			if deletionRatio > 0.1 {
+				fetchK = int(float64(k) / (1.0 - deletionRatio))
+				if fetchK > h.count {
+					fetchK = h.count
+				}
+				if fetchK < k {
+					fetchK = k // Never fetch less than requested
+				}
 			}
 		}
 		nodes = h.graph.Search(query, fetchK)

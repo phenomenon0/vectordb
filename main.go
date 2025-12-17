@@ -28,8 +28,6 @@ import (
 	"agentscope/vectordb/logging"
 	"agentscope/vectordb/storage"
 	"agentscope/vectordb/telemetry"
-
-	"github.com/coder/hnsw"
 )
 
 // ======================================================================================
@@ -45,10 +43,8 @@ type VectorStore struct {
 	IDs   []string
 	Seqs  []uint64
 	next  int64
-	// Index abstraction (NEW)
-	indexes map[string]index.Index // Collection -> Index mapping
-	// Legacy HNSW graph (deprecated, kept for backward compatibility)
-	hnsw        *hnsw.Graph[uint64]
+	// Index abstraction - the single source of truth for vector search
+	indexes     map[string]index.Index // Collection -> Index mapping
 	idToIx      map[uint64]int
 	Meta        map[uint64]map[string]string
 	Deleted     map[uint64]bool
@@ -104,13 +100,6 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		log.Fatalf("failed to create default HNSW index: %v", err)
 	}
 
-	// Legacy HNSW graph (kept for backward compatibility during migration)
-	g := hnsw.NewGraph[uint64]()
-	g.Distance = hnsw.CosineDistance
-	g.M = cfg.M
-	g.Ml = cfg.Ml
-	g.EfSearch = cfg.EfSearch
-
 	// Initialize JWT manager if configured
 	var jwtMgr *JWTManager
 	if secret := os.Getenv("JWT_SECRET"); secret != "" {
@@ -138,7 +127,6 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		Dim:         dim,
 		Count:       0,
 		indexes:     map[string]index.Index{"default": defaultIdx},
-		hnsw:        g, // Legacy, deprecated
 		idToIx:      make(map[uint64]int),
 		Meta:        make(map[uint64]map[string]string),
 		Deleted:     make(map[uint64]bool),
@@ -219,8 +207,6 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 		}
 	}
 
-	// Legacy HNSW (deprecated - keep for backward compatibility during migration)
-	vs.hnsw.Add(hnsw.MakeNode(hid, v))
 	vs.idToIx[hid] = vs.Count - 1
 	if meta != nil {
 		vs.Meta[hid] = meta
@@ -266,6 +252,26 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 		copy(vs.Data[ix*vs.Dim:(ix+1)*vs.Dim], v)
 		vs.Docs[ix] = doc
 		vs.ingestLex(hid, tokenize(doc))
+
+		// Update index abstraction - HNSW uses tombstones so delete then add
+		updateCollection := collection
+		if updateCollection == "" {
+			updateCollection = vs.Coll[hid]
+			if updateCollection == "" {
+				updateCollection = "default"
+			}
+		}
+		if idx, ok := vs.indexes[updateCollection]; ok && idx != nil {
+			_ = idx.Delete(context.Background(), hid) // Ignore error if not exists
+			if err := idx.Add(context.Background(), hid, v); err != nil {
+				// Log but continue - data is already updated in flat arrays
+				fmt.Printf("warning: failed to update index for %s: %v\n", id, err)
+			}
+		} else if idx := vs.indexes["default"]; idx != nil {
+			_ = idx.Delete(context.Background(), hid)
+			_ = idx.Add(context.Background(), hid, v)
+		}
+
 		if meta != nil {
 			vs.Meta[hid] = meta
 			vs.ingestMeta(hid, meta)
@@ -312,8 +318,6 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 		}
 	}
 
-	// Legacy HNSW (deprecated)
-	vs.hnsw.Add(hnsw.MakeNode(hid, v))
 	vs.idToIx[hid] = vs.Count - 1
 	vs.ingestLex(hid, tokenize(doc))
 	if meta != nil {
@@ -342,6 +346,18 @@ func (vs *VectorStore) Delete(id string) error {
 	if tenant == "" {
 		tenant = "default"
 	}
+
+	// Delete from index abstraction
+	delCollection := vs.Coll[hid]
+	if delCollection == "" {
+		delCollection = "default"
+	}
+	if idx, ok := vs.indexes[delCollection]; ok && idx != nil {
+		_ = idx.Delete(context.Background(), hid)
+	} else if idx := vs.indexes["default"]; idx != nil {
+		_ = idx.Delete(context.Background(), hid)
+	}
+
 	vs.Deleted[hid] = true
 	vs.ejectLex(hid)
 	vs.ejectMeta(hid)
@@ -407,37 +423,49 @@ func (vs *VectorStore) Search(query []float32, k int) []int {
 	return bestIDs
 }
 
-// ANN search via HNSW.
+// SearchANN performs ANN search via the index abstraction.
+// For backward compatibility, searches the "default" collection with default params.
 func (vs *VectorStore) SearchANN(query []float32, k int) []int {
+	return vs.SearchANNWithParams(query, k, "", 0)
+}
+
+// SearchANNWithParams performs ANN search with collection and efSearch parameters.
+// If collection is empty, searches the "default" collection.
+// If efSearch is 0, uses the index's default ef_search value.
+func (vs *VectorStore) SearchANNWithParams(query []float32, k int, collection string, efSearch int) []int {
 	vs.RLock()
 	defer vs.RUnlock()
 
-	// Use index abstraction (NEW)
-	idx := vs.indexes["default"]
-	if idx != nil {
-		results, err := idx.Search(context.Background(), query, k, index.DefaultSearchParams{})
-		if err == nil && len(results) > 0 {
-			ixs := make([]int, 0, len(results))
-			for _, r := range results {
-				if vs.Deleted[r.ID] {
-					continue
-				}
-				if ix, ok := vs.idToIx[r.ID]; ok {
-					ixs = append(ixs, ix)
-				}
-			}
-			return ixs
-		}
+	if collection == "" {
+		collection = "default"
 	}
 
-	// Fall back to legacy HNSW if index abstraction fails
-	nodes := vs.hnsw.Search(query, k)
-	ixs := make([]int, 0, len(nodes))
-	for _, n := range nodes {
-		if vs.Deleted[n.Key] {
+	// Find the appropriate index
+	idx, ok := vs.indexes[collection]
+	if !ok {
+		idx = vs.indexes["default"]
+	}
+	if idx == nil {
+		return nil
+	}
+
+	// Build search params
+	var params index.SearchParams = index.DefaultSearchParams{}
+	if efSearch > 0 {
+		params = index.HNSWSearchParams{EfSearch: efSearch}
+	}
+
+	results, err := idx.Search(context.Background(), query, k, params)
+	if err != nil {
+		return nil
+	}
+
+	ixs := make([]int, 0, len(results))
+	for _, r := range results {
+		if vs.Deleted[r.ID] {
 			continue
 		}
-		if ix, ok := vs.idToIx[n.Key]; ok {
+		if ix, ok := vs.idToIx[r.ID]; ok {
 			ixs = append(ixs, ix)
 		}
 	}
@@ -673,16 +701,7 @@ func (vs *VectorStore) Save(path string) error {
 	}
 	defer f.Close()
 
-	// Export legacy HNSW (deprecated - for backward compatibility)
-	var hBuf []byte
-	if vs.hnsw != nil {
-		var buf bytes.Buffer
-		if err := vs.hnsw.Export(&buf); err == nil {
-			hBuf = buf.Bytes()
-		}
-	}
-
-	// Export indexes (NEW)
+	// Export indexes
 	indexData := make(map[string][]byte)
 	for collName, idx := range vs.indexes {
 		if idx != nil {
@@ -704,8 +723,8 @@ func (vs *VectorStore) Save(path string) error {
 		TenantID:  vs.TenantID,
 		Next:      vs.next,
 		Count:     vs.Count,
-		HNSW:      hBuf,      // Legacy (deprecated)
-		Indexes:   indexData, // NEW
+		HNSW:      nil,       // Legacy field - no longer written
+		Indexes:   indexData, // Primary index storage
 		Checksum:  vs.checksum,
 		LastSaved: time.Now(),
 		LexTF:     vs.lexTF,
@@ -816,8 +835,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			Deleted:     payload.Deleted,
 			Coll:        payload.Coll,
 			TenantID:    payload.TenantID,
-			indexes:     make(map[string]index.Index), // NEW
-			hnsw:        hnsw.NewGraph[uint64](),      // Legacy
+			indexes:     make(map[string]index.Index),
 			idToIx:      make(map[uint64]int),
 			walPath:     path + ".wal",
 			walMu:       sync.Mutex{},
@@ -883,15 +901,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		if vs.df == nil {
 			vs.df = make(map[string]int)
 		}
-		// Import legacy HNSW graph (deprecated)
-		if len(payload.HNSW) > 0 {
-			if err := vs.hnsw.Import(bytes.NewReader(payload.HNSW)); err != nil {
-				fmt.Printf("warning: failed to load hnsw graph, rebuilding: %v\n", err)
-				vs.hnsw = hnsw.NewGraph[uint64]()
-			}
-		}
-
-		// Import indexes (NEW)
+		// Import indexes from snapshot
 		if len(payload.Indexes) > 0 {
 			for collName, data := range payload.Indexes {
 				// Create HNSW index for this collection
@@ -908,7 +918,8 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			}
 		}
 
-		// If no indexes were imported, create default index from legacy HNSW
+		// If no indexes were imported, create default index and populate from Data
+		// This handles migration from legacy snapshots that only had HNSW data
 		if len(vs.indexes) == 0 {
 			cfg := loadHNSWConfig()
 			defaultIdx, err := index.NewHNSWIndex(vs.Dim, map[string]interface{}{
@@ -916,18 +927,27 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 				"ml":        cfg.Ml,
 				"ef_search": cfg.EfSearch,
 			})
-			if err == nil {
-				// Migrate legacy HNSW data to new index
-				if len(payload.HNSW) > 0 {
-					// Export from legacy and import to new index abstraction
-					var buf bytes.Buffer
-					if err := vs.hnsw.Export(&buf); err == nil {
-						fmt.Println("Migrating legacy HNSW index to index abstraction...")
-						// Note: Direct migration not possible due to different formats
-						// Index will be rebuilt on first save
-					}
+			if err != nil {
+				return nil, false
+			}
+
+			// Migrate all non-deleted vectors to new index
+			migrated := 0
+			for i, idStr := range vs.IDs {
+				hid := hashID(idStr)
+				if vs.Deleted[hid] {
+					continue
 				}
-				vs.indexes["default"] = defaultIdx
+				vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
+				if err := defaultIdx.Add(context.Background(), hid, vec); err != nil {
+					fmt.Printf("warning: failed to migrate vector %s: %v\n", idStr, err)
+					continue
+				}
+				migrated++
+			}
+			vs.indexes["default"] = defaultIdx
+			if migrated > 0 {
+				fmt.Printf("Migrated %d vectors to index abstraction\n", migrated)
 			}
 		}
 
