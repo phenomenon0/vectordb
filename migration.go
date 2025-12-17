@@ -2,13 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
-
-	"github.com/coder/hnsw"
 )
 
 // ===========================================================================================
@@ -173,8 +172,13 @@ func (vs *VectorStore) ImportCollection(export *CollectionExport) error {
 			vs.TimeMeta[hid] = rec.TimeMeta
 		}
 
-		// Add to HNSW
-		vs.hnsw.Add(hnsw.MakeNode(hid, rec.Vector))
+		// Add to index abstraction
+		if idx := vs.indexes["default"]; idx != nil {
+			if err := idx.Add(context.Background(), hid, rec.Vector); err != nil {
+				// Log warning but continue
+				fmt.Printf("warning: failed to add vector to index: %v\n", err)
+			}
+		}
 
 		// Update lexical index
 		tokens := tokenize(rec.Doc)

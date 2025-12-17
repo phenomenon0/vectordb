@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"agentscope/vectordb/index"
-
-	"github.com/coder/hnsw"
 )
 
 // =============================================================================
@@ -819,13 +817,19 @@ func TestScaleLargeWithQuantization(t *testing.T) {
 // =============================================================================
 
 func newTestStore(dim int) *VectorStore {
+	// Create default index
+	defaultIdx, _ := index.NewHNSWIndex(dim, map[string]interface{}{
+		"m":         16,
+		"ml":        0.25,
+		"ef_search": 64,
+	})
 	return &VectorStore{
 		Data:     make([]float32, 0, 1000*dim),
 		Dim:      dim,
 		Docs:     make([]string, 0, 1000),
 		IDs:      make([]string, 0, 1000),
 		Seqs:     make([]uint64, 0, 1000),
-		hnsw:     hnsw.NewGraph[uint64](),
+		indexes:  map[string]index.Index{"default": defaultIdx},
 		idToIx:   make(map[uint64]int),
 		Meta:     make(map[uint64]map[string]string),
 		Deleted:  make(map[uint64]bool),
@@ -836,7 +840,6 @@ func newTestStore(dim int) *VectorStore {
 		docLen:   make(map[uint64]int),
 		df:       make(map[string]int),
 		TenantID: make(map[uint64]string),
-		indexes:  make(map[string]index.Index),
 		quotas:   NewTenantQuota(),
 	}
 }

@@ -20,7 +20,6 @@ import (
 	"agentscope/vectordb/logging"
 	"agentscope/vectordb/telemetry"
 
-	"github.com/coder/hnsw"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -615,14 +614,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		} else if req.Mode == "lex" {
 			ids = store.SearchLex(qTokens, req.TopK)
 		} else {
-			if req.EfSearch > 0 {
-				orig := store.hnsw.EfSearch
-				store.hnsw.EfSearch = req.EfSearch
-				ids = store.SearchANN(qVec, req.TopK)
-				store.hnsw.EfSearch = orig
-			} else {
-				ids = store.SearchANN(qVec, req.TopK)
-			}
+			ids = store.SearchANNWithParams(qVec, req.TopK, req.Collection, req.EfSearch)
 		}
 		docs := make([]string, 0, len(ids))
 		respIDs := make([]string, 0, len(ids))
@@ -1145,13 +1137,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		store.RLock()
 		storeReady := store.Count >= 0 && store.Dim > 0
 		indexCount := len(store.indexes)
-		hnswReady := store.hnsw != nil
 		store.RUnlock()
 
 		if !storeReady {
 			issues = append(issues, "store not initialized")
 		}
-		if !hnswReady && indexCount == 0 {
+		if indexCount == 0 {
 			issues = append(issues, "no index available")
 		}
 
@@ -1204,14 +1195,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	mux.HandleFunc("/integrity", withMetrics("integrity", guard(func(w http.ResponseWriter, r *http.Request) {
 		store.RLock()
 		ck := store.validateChecksum()
-		hnswOK := true
-		if store.hnsw == nil {
-			hnswOK = false
-		}
+		indexOK := len(store.indexes) > 0
 		store.RUnlock()
 		sendResponse(w, r, map[string]any{
 			"checksum_ok": ck,
-			"hnsw_ok":     hnswOK,
+			"index_ok":    indexOK,
 		})
 	})))
 
@@ -2085,15 +2073,20 @@ func hashFilters(meta map[string]string, any []map[string]string, not map[string
 	return fmt.Sprintf("%x", sum.Sum64())
 }
 
-// Compact rebuilds the in-memory HNSW and purges tombstones, then saves a snapshot.
+// Compact rebuilds the index and purges tombstones, then saves a snapshot.
 func (vs *VectorStore) Compact(path string) error {
 	vs.Lock()
 	defer vs.Unlock()
-	g := hnsw.NewGraph[uint64]()
-	g.Distance = vs.hnsw.Distance
-	g.M = vs.hnsw.M
-	g.Ml = vs.hnsw.Ml
-	g.EfSearch = vs.hnsw.EfSearch
+
+	cfg := loadHNSWConfig()
+	newIdx, err := index.NewHNSWIndex(vs.Dim, map[string]interface{}{
+		"m":         cfg.M,
+		"ml":        cfg.Ml,
+		"ef_search": cfg.EfSearch,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create new index: %w", err)
+	}
 
 	vs.idToIx = make(map[uint64]int)
 	newData := make([]float32, 0, len(vs.Data))
@@ -2109,14 +2102,17 @@ func (vs *VectorStore) Compact(path string) error {
 		newData = append(newData, vec...)
 		newDocs = append(newDocs, vs.Docs[i])
 		newIDs = append(newIDs, id)
-		g.Add(hnsw.MakeNode(hid, vec))
+		if err := newIdx.Add(context.Background(), hid, vec); err != nil {
+			return fmt.Errorf("failed to add vector to new index: %w", err)
+		}
 		vs.idToIx[hid] = base
 	}
 	vs.Data = newData
 	vs.Docs = newDocs
 	vs.IDs = newIDs
 	vs.Count = len(newDocs)
-	vs.hnsw = g
+	vs.indexes["default"] = newIdx
+	vs.Deleted = make(map[uint64]bool) // Clear tombstones
 	if err := vs.Save(path); err != nil {
 		return err
 	}
