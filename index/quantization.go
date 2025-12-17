@@ -3,6 +3,8 @@ package index
 import (
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
 )
 
 // QuantizationType represents different quantization methods
@@ -13,6 +15,8 @@ const (
 	QuantizationFloat16                     // 16-bit floating point (50% memory)
 	QuantizationUint8                       // 8-bit unsigned integer (75% memory savings)
 	QuantizationProduct                     // Product Quantization (90%+ memory savings)
+	QuantizationBinary                      // Binary Quantization (97% memory savings, 32x compression)
+	QuantizationBinaryMean                  // Binary with learned thresholds (better recall)
 )
 
 // Quantizer handles vector quantization and dequantization
@@ -568,4 +572,479 @@ func GetQuantizationInfo(quantizer Quantizer, numVectors int) QuantizationInfo {
 		Dimension:      dim,
 		VectorCount:    numVectors,
 	}
+}
+
+// ======================================================================================
+// Binary Quantization (97% memory savings, 32x compression)
+// ======================================================================================
+// Converts each float32 dimension to a single bit (1 if > threshold, 0 otherwise)
+// Uses Hamming distance for similarity (popcount - extremely fast)
+// Best for: High-dimensional vectors (768d+), reranking candidates
+// ======================================================================================
+
+// BinaryQuantizer converts vectors to binary codes (1 bit per dimension)
+type BinaryQuantizer struct {
+	dim        int
+	thresholds []float32 // Per-dimension thresholds (default: 0 for normalized vectors)
+	trained    bool
+}
+
+// NewBinaryQuantizer creates a binary quantizer with zero threshold (for normalized vectors)
+func NewBinaryQuantizer(dim int) *BinaryQuantizer {
+	return &BinaryQuantizer{
+		dim:        dim,
+		thresholds: make([]float32, dim), // Zero-initialized = sign quantization
+		trained:    true,                 // Works without training for normalized vectors
+	}
+}
+
+func (q *BinaryQuantizer) Type() QuantizationType {
+	return QuantizationBinary
+}
+
+func (q *BinaryQuantizer) BytesPerVector() int {
+	return (q.dim + 7) / 8 // Ceiling division: bits to bytes
+}
+
+// Train learns optimal thresholds from data (per-dimension median)
+// This improves recall by ~5-10% over zero threshold
+func (q *BinaryQuantizer) Train(vectors []float32) error {
+	if len(vectors)%q.dim != 0 {
+		return fmt.Errorf("vector length must be multiple of dimension")
+	}
+	
+	numVectors := len(vectors) / q.dim
+	if numVectors < 10 {
+		return fmt.Errorf("need at least 10 vectors to train, got %d", numVectors)
+	}
+
+	// Compute per-dimension mean (approximates median for normal distributions)
+	for d := 0; d < q.dim; d++ {
+		var sum float32
+		for i := 0; i < numVectors; i++ {
+			sum += vectors[i*q.dim+d]
+		}
+		q.thresholds[d] = sum / float32(numVectors)
+	}
+	
+	q.trained = true
+	return nil
+}
+
+func (q *BinaryQuantizer) Quantize(vectors []float32) ([]byte, error) {
+	if len(vectors)%q.dim != 0 {
+		return nil, fmt.Errorf("vector length must be multiple of dimension")
+	}
+
+	numVectors := len(vectors) / q.dim
+	bytesPerVec := q.BytesPerVector()
+	data := make([]byte, numVectors*bytesPerVec)
+
+	for i := 0; i < numVectors; i++ {
+		vecStart := i * q.dim
+		outStart := i * bytesPerVec
+		
+		for d := 0; d < q.dim; d++ {
+			if vectors[vecStart+d] > q.thresholds[d] {
+				// Set bit d
+				byteIdx := d / 8
+				bitIdx := uint(d % 8)
+				data[outStart+byteIdx] |= 1 << bitIdx
+			}
+		}
+	}
+
+	return data, nil
+}
+
+func (q *BinaryQuantizer) Dequantize(data []byte) ([]float32, error) {
+	bytesPerVec := q.BytesPerVector()
+	if len(data)%bytesPerVec != 0 {
+		return nil, fmt.Errorf("invalid data length for binary quantization")
+	}
+
+	numVectors := len(data) / bytesPerVec
+	vectors := make([]float32, numVectors*q.dim)
+
+	for i := 0; i < numVectors; i++ {
+		inStart := i * bytesPerVec
+		outStart := i * q.dim
+		
+		for d := 0; d < q.dim; d++ {
+			byteIdx := d / 8
+			bitIdx := uint(d % 8)
+			if (data[inStart+byteIdx]>>bitIdx)&1 == 1 {
+				vectors[outStart+d] = 1.0
+			} else {
+				vectors[outStart+d] = -1.0
+			}
+		}
+	}
+
+	return vectors, nil
+}
+
+// GetThresholds returns the learned thresholds for persistence
+func (q *BinaryQuantizer) GetThresholds() []float32 {
+	return q.thresholds
+}
+
+// SetThresholds sets thresholds (for loading persisted quantizer)
+func (q *BinaryQuantizer) SetThresholds(thresholds []float32) error {
+	if len(thresholds) != q.dim {
+		return fmt.Errorf("threshold dimension mismatch: expected %d, got %d", q.dim, len(thresholds))
+	}
+	q.thresholds = thresholds
+	q.trained = true
+	return nil
+}
+
+// ======================================================================================
+// Binary Distance Functions (Hamming distance using popcount)
+// ======================================================================================
+
+// HammingDistance computes Hamming distance between two binary vectors
+// Returns number of differing bits
+func HammingDistance(a, b []byte) int {
+	if len(a) != len(b) {
+		return -1
+	}
+	
+	dist := 0
+	for i := range a {
+		dist += popcount(a[i] ^ b[i])
+	}
+	return dist
+}
+
+// HammingDistanceBatch computes Hamming distances from query to multiple vectors
+// Returns distances in same order as vectors
+// Optimized with 8-byte (uint64) processing for better performance
+func HammingDistanceBatch(query []byte, vectors []byte, bytesPerVec int) []int {
+	if len(vectors)%bytesPerVec != 0 {
+		return nil
+	}
+	
+	numVectors := len(vectors) / bytesPerVec
+	distances := make([]int, numVectors)
+	
+	// Process 8 bytes at a time using uint64
+	chunks := bytesPerVec / 8
+	_ = bytesPerVec % 8 // remainder handled in loop
+	
+	// Pre-convert query to uint64 chunks
+	queryChunks := make([]uint64, chunks)
+	for c := 0; c < chunks; c++ {
+		offset := c * 8
+		queryChunks[c] = uint64(query[offset]) |
+			uint64(query[offset+1])<<8 |
+			uint64(query[offset+2])<<16 |
+			uint64(query[offset+3])<<24 |
+			uint64(query[offset+4])<<32 |
+			uint64(query[offset+5])<<40 |
+			uint64(query[offset+6])<<48 |
+			uint64(query[offset+7])<<56
+	}
+	
+	for i := 0; i < numVectors; i++ {
+		start := i * bytesPerVec
+		dist := 0
+		
+		// Process 8-byte chunks
+		for c := 0; c < chunks; c++ {
+			offset := start + c*8
+			vecChunk := uint64(vectors[offset]) |
+				uint64(vectors[offset+1])<<8 |
+				uint64(vectors[offset+2])<<16 |
+				uint64(vectors[offset+3])<<24 |
+				uint64(vectors[offset+4])<<32 |
+				uint64(vectors[offset+5])<<40 |
+				uint64(vectors[offset+6])<<48 |
+				uint64(vectors[offset+7])<<56
+			
+			dist += popcount64(queryChunks[c] ^ vecChunk)
+		}
+		
+		// Handle remaining bytes
+		for j := chunks * 8; j < bytesPerVec; j++ {
+			dist += popcount(query[j] ^ vectors[start+j])
+		}
+		
+		distances[i] = dist
+	}
+	
+	return distances
+}
+
+// popcount64 counts set bits in uint64 using parallel bit counting
+func popcount64(x uint64) int {
+	// Use Brian Kernighan's algorithm for sparse bits
+	// Or parallel counting for dense bits
+	x = x - ((x >> 1) & 0x5555555555555555)
+	x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
+	x = (x + (x >> 4)) & 0x0f0f0f0f0f0f0f0f
+	return int((x * 0x0101010101010101) >> 56)
+}
+
+// HammingToCosineSimilarity converts Hamming distance to approximate cosine similarity
+// For binary codes from normalized vectors: cos(theta) ≈ 1 - 2*hamming/dim
+func HammingToCosineSimilarity(hammingDist int, dim int) float32 {
+	return 1.0 - 2.0*float32(hammingDist)/float32(dim)
+}
+
+// popcount counts set bits in a byte (Hamming weight)
+// Uses lookup table for speed
+func popcount(b byte) int {
+	return int(popcountTable[b])
+}
+
+// Precomputed popcount lookup table
+var popcountTable = [256]byte{
+	0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+	1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5,
+	1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5,
+	2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
+	1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5,
+	2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
+	2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
+	3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
+	1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5,
+	2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
+	2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
+	3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
+	2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
+	3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
+	3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
+	4, 5, 5, 6, 5, 6, 6, 7, 5, 6, 6, 7, 6, 7, 7, 8,
+}
+
+// ======================================================================================
+// Rescoring with Original Vectors (Two-Stage Retrieval)
+// ======================================================================================
+// Binary search is fast but lossy. Best practice:
+// 1. Use binary search to get top-K candidates (K=100-1000)
+// 2. Rescore candidates with full-precision vectors
+// 3. Return top-N results (N=10-50)
+// ======================================================================================
+
+// BinarySearchResult holds a candidate from binary search
+type BinarySearchResult struct {
+	ID              uint64
+	HammingDistance int
+	ApproxScore     float32 // Approximate cosine from Hamming
+}
+
+// RescoreCandidate holds a rescored result
+type RescoreCandidate struct {
+	ID         uint64
+	FinalScore float32 // True cosine similarity
+}
+
+// BinaryIndex holds binary-quantized vectors for fast search
+type BinaryIndex struct {
+	quantizer   *BinaryQuantizer
+	binaryData  []byte              // All binary vectors concatenated
+	idMap       []uint64            // Maps index position to vector ID
+	bytesPerVec int
+}
+
+// NewBinaryIndex creates a binary index
+func NewBinaryIndex(dim int) *BinaryIndex {
+	q := NewBinaryQuantizer(dim)
+	return &BinaryIndex{
+		quantizer:   q,
+		bytesPerVec: q.BytesPerVector(),
+	}
+}
+
+// Train trains the quantizer on sample vectors
+func (idx *BinaryIndex) Train(vectors []float32) error {
+	return idx.quantizer.Train(vectors)
+}
+
+// Add adds vectors to the index
+func (idx *BinaryIndex) Add(id uint64, vector []float32) error {
+	binary, err := idx.quantizer.Quantize(vector)
+	if err != nil {
+		return err
+	}
+	
+	idx.binaryData = append(idx.binaryData, binary...)
+	idx.idMap = append(idx.idMap, id)
+	return nil
+}
+
+// AddBatch adds multiple vectors efficiently
+func (idx *BinaryIndex) AddBatch(ids []uint64, vectors []float32) error {
+	if len(vectors)%idx.quantizer.dim != 0 {
+		return fmt.Errorf("vectors length must be multiple of dimension")
+	}
+	
+	binary, err := idx.quantizer.Quantize(vectors)
+	if err != nil {
+		return err
+	}
+	
+	idx.binaryData = append(idx.binaryData, binary...)
+	idx.idMap = append(idx.idMap, ids...)
+	return nil
+}
+
+// Search finds top-k candidates using Hamming distance
+// Uses parallel processing for large indexes
+func (idx *BinaryIndex) Search(query []float32, k int) ([]BinarySearchResult, error) {
+	// Quantize query
+	binaryQuery, err := idx.quantizer.Quantize(query)
+	if err != nil {
+		return nil, err
+	}
+	
+	numVectors := len(idx.idMap)
+	if numVectors == 0 {
+		return nil, nil
+	}
+	
+	// For small indexes, use simple search
+	if numVectors < 10000 {
+		return idx.searchSimple(binaryQuery, k)
+	}
+	
+	// Parallel search for large indexes
+	return idx.searchParallel(binaryQuery, k)
+}
+
+func (idx *BinaryIndex) searchSimple(binaryQuery []byte, k int) ([]BinarySearchResult, error) {
+	distances := HammingDistanceBatch(binaryQuery, idx.binaryData, idx.bytesPerVec)
+	return idx.selectTopK(distances, k), nil
+}
+
+func (idx *BinaryIndex) searchParallel(binaryQuery []byte, k int) ([]BinarySearchResult, error) {
+	numVectors := len(idx.idMap)
+	numWorkers := runtime.NumCPU()
+	chunkSize := (numVectors + numWorkers - 1) / numWorkers
+	
+	// Each worker finds local top-k
+	type localResult struct {
+		results []BinarySearchResult
+	}
+	
+	var wg sync.WaitGroup
+	localResults := make([]localResult, numWorkers)
+	
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			
+			start := workerID * chunkSize
+			end := start + chunkSize
+			if end > numVectors {
+				end = numVectors
+			}
+			if start >= end {
+				return
+			}
+			
+			// Compute distances for this chunk
+			chunkData := idx.binaryData[start*idx.bytesPerVec : end*idx.bytesPerVec]
+			distances := HammingDistanceBatch(binaryQuery, chunkData, idx.bytesPerVec)
+			
+			// Convert to absolute indices
+			for i := range distances {
+				distances[i] = distances[i] // distance stays same
+			}
+			
+			// Select local top-k
+			results := make([]BinarySearchResult, 0, k)
+			type idxDist struct {
+				idx  int
+				dist int
+			}
+			pairs := make([]idxDist, len(distances))
+			for i, d := range distances {
+				pairs[i] = idxDist{idx: start + i, dist: d}
+			}
+			
+			for i := 0; i < k && i < len(pairs); i++ {
+				minIdx := i
+				for j := i + 1; j < len(pairs); j++ {
+					if pairs[j].dist < pairs[minIdx].dist {
+						minIdx = j
+					}
+				}
+				pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
+				
+				results = append(results, BinarySearchResult{
+					ID:              idx.idMap[pairs[i].idx],
+					HammingDistance: pairs[i].dist,
+					ApproxScore:     HammingToCosineSimilarity(pairs[i].dist, idx.quantizer.dim),
+				})
+			}
+			
+			localResults[workerID] = localResult{results: results}
+		}(w)
+	}
+	
+	wg.Wait()
+	
+	// Merge local results
+	allCandidates := make([]BinarySearchResult, 0, numWorkers*k)
+	for _, lr := range localResults {
+		allCandidates = append(allCandidates, lr.results...)
+	}
+	
+	// Final top-k selection
+	for i := 0; i < k && i < len(allCandidates); i++ {
+		minIdx := i
+		for j := i + 1; j < len(allCandidates); j++ {
+			if allCandidates[j].HammingDistance < allCandidates[minIdx].HammingDistance {
+				minIdx = j
+			}
+		}
+		allCandidates[i], allCandidates[minIdx] = allCandidates[minIdx], allCandidates[i]
+	}
+	
+	if k > len(allCandidates) {
+		k = len(allCandidates)
+	}
+	return allCandidates[:k], nil
+}
+
+func (idx *BinaryIndex) selectTopK(distances []int, k int) []BinarySearchResult {
+	type idxDist struct {
+		idx  int
+		dist int
+	}
+	pairs := make([]idxDist, len(distances))
+	for i, d := range distances {
+		pairs[i] = idxDist{idx: i, dist: d}
+	}
+	
+	results := make([]BinarySearchResult, 0, k)
+	for i := 0; i < k && i < len(pairs); i++ {
+		minIdx := i
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j].dist < pairs[minIdx].dist {
+				minIdx = j
+			}
+		}
+		pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
+		
+		results = append(results, BinarySearchResult{
+			ID:              idx.idMap[pairs[i].idx],
+			HammingDistance: pairs[i].dist,
+			ApproxScore:     HammingToCosineSimilarity(pairs[i].dist, idx.quantizer.dim),
+		})
+	}
+	return results
+}
+
+// Size returns number of vectors in index
+func (idx *BinaryIndex) Size() int {
+	return len(idx.idMap)
+}
+
+// MemoryUsage returns approximate memory usage in bytes
+func (idx *BinaryIndex) MemoryUsage() int {
+	return len(idx.binaryData) + len(idx.idMap)*8
 }

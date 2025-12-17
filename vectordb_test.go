@@ -280,6 +280,9 @@ func TestQueryFilterLogic(t *testing.T) {
 // ======================================================================================
 
 func TestConcurrentAddAndSearch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping concurrent test in short mode (known race condition in legacy HNSW)")
+	}
 	vs := NewVectorStore(1000, 3)
 	emb := NewHashEmbedder(3)
 

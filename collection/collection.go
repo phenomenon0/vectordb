@@ -18,7 +18,8 @@ import (
 //   - Sparse fields use InvertedIndex
 //
 // Example:
-//   collection with "embedding" (HNSW) + "keywords" (Inverted)
+//
+//	collection with "embedding" (HNSW) + "keywords" (Inverted)
 type Collection struct {
 	schema  CollectionSchema
 	indexes map[string]index.Index // field name -> index instance
@@ -609,4 +610,24 @@ func (c *Collection) Schema() CollectionSchema {
 // Name returns the collection name.
 func (c *Collection) Name() string {
 	return c.schema.Name
+}
+
+// Close releases all resources held by the collection.
+// This should be called when deleting a collection.
+func (c *Collection) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Clear indexes (they will be garbage collected)
+	for name := range c.indexes {
+		delete(c.indexes, name)
+	}
+	for name := range c.sparse {
+		delete(c.sparse, name)
+	}
+
+	// Clear documents
+	for id := range c.documents {
+		delete(c.documents, id)
+	}
 }

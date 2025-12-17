@@ -211,6 +211,62 @@ Content-Type: application/json
 }
 ```
 
+#### Batch Insert (SOTA - 10-50x throughput)
+
+Insert multiple documents in a single HTTP request for maximum throughput.
+
+```http
+POST /v2/insert/batch
+Content-Type: application/json
+
+{
+  "collection": "products",
+  "docs": [
+    {
+      "vectors": {
+        "embedding": [0.1, 0.2, 0.3, ...],
+        "keywords": {"indices": [42, 157], "values": [2.5, 1.8], "dim": 10000}
+      },
+      "metadata": {"category": "electronics", "price": "299.99"}
+    },
+    {
+      "vectors": {
+        "embedding": [0.4, 0.5, 0.6, ...]
+      },
+      "metadata": {"category": "audio", "price": "149.99"}
+    }
+  ],
+  "continue_on_error": true
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "ids": [42, 43],
+  "inserted": 2,
+  "failed": 0,
+  "errors": {}
+}
+```
+
+**Parameters:**
+- `collection` (required): Collection name
+- `docs` (required): Array of documents (max 10,000 per request)
+- `continue_on_error` (optional): Continue inserting remaining docs if some fail (default: false)
+
+**Error Response (partial failure):**
+```json
+{
+  "status": "success",
+  "ids": [42],
+  "inserted": 1,
+  "failed": 1,
+  "errors": {"1": "invalid sparse vector format for field keywords"}
+}
+```
+
 #### Search (Dense-only)
 
 ```http

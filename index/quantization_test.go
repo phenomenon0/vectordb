@@ -123,6 +123,9 @@ func TestProductQuantization(t *testing.T) {
 	m := 8 // 8 subvectors
 	ksub := 256
 	numVectors := 1000
+	if testing.Short() {
+		numVectors = 300 // Minimum for k-means with ksub=256
+	}
 
 	// Create test vectors
 	vectors := make([]float32, numVectors*dim)
@@ -192,18 +195,18 @@ func TestQuantizationInfo(t *testing.T) {
 	numVectors := 10000
 
 	tests := []struct {
-		name             string
-		quantizer        Quantizer
+		name                string
+		quantizer           Quantizer
 		minCompressionRatio float64
 	}{
 		{
-			name:             "Float16",
-			quantizer:        NewFloat16Quantizer(dim),
+			name:                "Float16",
+			quantizer:           NewFloat16Quantizer(dim),
 			minCompressionRatio: 1.9, // ~2x
 		},
 		{
-			name:             "Uint8",
-			quantizer:        NewUint8Quantizer(dim),
+			name:                "Uint8",
+			quantizer:           NewUint8Quantizer(dim),
 			minCompressionRatio: 3.9, // ~4x
 		},
 	}

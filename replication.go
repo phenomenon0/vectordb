@@ -145,7 +145,10 @@ func (rm *ReplicationManager) replicateAsync(
 	// Fire-and-forget: spawn goroutines and return immediately
 	for _, replica := range replicas {
 		go func(r *ReplicaNode) {
-			_ = rm.sendToReplica(r, entry, shardID)
+			if err := rm.sendToReplica(r, entry, shardID); err != nil {
+				// Log async replication failure (best-effort replication)
+				fmt.Printf("[WARN] async replication to %s failed: %v\n", r.NodeID, err)
+			}
 		}(replica)
 	}
 

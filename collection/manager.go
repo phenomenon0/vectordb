@@ -72,11 +72,13 @@ func (cm *CollectionManager) DeleteCollection(ctx context.Context, name string) 
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	if _, exists := cm.collections[name]; !exists {
+	coll, exists := cm.collections[name]
+	if !exists {
 		return fmt.Errorf("collection %s not found", name)
 	}
 
-	// TODO: Cleanup indexes and persisted data
+	// Cleanup collection resources (indexes, documents)
+	coll.Close()
 
 	delete(cm.collections, name)
 	return nil
@@ -247,8 +249,8 @@ type ManagerStats struct {
 
 // CollectionStats contains statistics for a single collection.
 type CollectionStats struct {
-	Name      string
-	DocCount  int
+	Name       string
+	DocCount   int
 	FieldCount int
 }
 
@@ -312,7 +314,10 @@ func (cm *CollectionManager) DropAllCollections(ctx context.Context) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	// TODO: Cleanup indexes and persisted data for each collection
+	// Cleanup each collection's resources
+	for _, coll := range cm.collections {
+		coll.Close()
+	}
 
 	cm.collections = make(map[string]*Collection)
 	return nil

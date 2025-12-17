@@ -2,10 +2,54 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"hash/crc64"
+	"io"
+	"net/http"
 	"sync"
 	"time"
 )
+
+// Snapshot represents a full shard snapshot for sync
+type Snapshot struct {
+	ShardID   int             `json:"shard_id"`
+	Sequence  uint64          `json:"sequence"`
+	Timestamp time.Time       `json:"timestamp"`
+	Vectors   []SnapshotEntry `json:"vectors"`
+	Checksum  uint64          `json:"checksum"`
+}
+
+// SnapshotEntry represents a single vector in the snapshot
+type SnapshotEntry struct {
+	ID       string    `json:"id"`
+	Vector   []float32 `json:"vector"`
+	Metadata string    `json:"metadata,omitempty"`
+}
+
+// computeChecksum computes CRC64 checksum for snapshot validation
+func (s *Snapshot) computeChecksum() uint64 {
+	table := crc64.MakeTable(crc64.ECMA)
+	h := crc64.New(table)
+
+	// Hash shard ID and sequence
+	fmt.Fprintf(h, "%d:%d:", s.ShardID, s.Sequence)
+
+	// Hash each vector
+	for _, entry := range s.Vectors {
+		fmt.Fprintf(h, "%s:", entry.ID)
+		for _, v := range entry.Vector {
+			fmt.Fprintf(h, "%.6f,", v)
+		}
+	}
+
+	return h.Sum64()
+}
+
+// validate checks if snapshot checksum matches
+func (s *Snapshot) validate() bool {
+	return s.Checksum == s.computeChecksum()
+}
 
 // ===========================================================================================
 // FOLLOWER REPLICATION
@@ -184,6 +228,15 @@ func (fr *FollowerReplicator) poll() error {
 	// Pull latest entries from primary
 	entries, err := fr.walClient.PullLatest()
 	if err != nil {
+		// Check if error indicates we're too far behind (410 Gone)
+		if fr.config.FullSyncThreshold > 0 {
+			// Try full sync if WAL entries are trimmed
+			fmt.Printf("[FollowerReplicator] WAL entries too old, attempting full snapshot sync\n")
+			if syncErr := fr.RequestFullSync(fr.ctx); syncErr != nil {
+				return fmt.Errorf("full sync failed: %w", syncErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("pull failed: %w", err)
 	}
 
@@ -194,6 +247,17 @@ func (fr *FollowerReplicator) poll() error {
 	if len(entries) == 0 {
 		// No new entries - we're up to date
 		fr.setStatus(StatusStreaming)
+		return nil
+	}
+
+	// Check if lag exceeds threshold - trigger full sync
+	lag := fr.GetLag()
+	if fr.config.FullSyncThreshold > 0 && lag > fr.config.FullSyncThreshold {
+		fmt.Printf("[FollowerReplicator] Lag %d exceeds threshold %d, triggering full sync\n",
+			lag, fr.config.FullSyncThreshold)
+		if syncErr := fr.RequestFullSync(fr.ctx); syncErr != nil {
+			return fmt.Errorf("full sync failed: %w", syncErr)
+		}
 		return nil
 	}
 
@@ -309,12 +373,63 @@ func (fr *FollowerReplicator) SetPrimaryAddr(addr string, token string) {
 
 // RequestFullSync requests a full snapshot sync (when too far behind)
 func (fr *FollowerReplicator) RequestFullSync(ctx context.Context) error {
-	// TODO: Implement full snapshot sync
-	// 1. Pause replication
+	fmt.Printf("[FollowerReplicator] Starting full snapshot sync from %s\n", fr.config.PrimaryAddr)
+
+	// 1. Set status to syncing
+	fr.setStatus(StatusSyncing)
+
 	// 2. Request snapshot from primary
-	// 3. Load snapshot into local store
-	// 4. Resume replication from snapshot sequence
-	return fmt.Errorf("full sync not implemented")
+	snapshotURL := fmt.Sprintf("%s/internal/snapshot", fr.config.PrimaryAddr)
+	req, err := http.NewRequestWithContext(ctx, "GET", snapshotURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot request: %w", err)
+	}
+
+	if fr.config.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+fr.config.AuthToken)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Minute} // Snapshots can be large
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to request snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("snapshot request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 3. Parse snapshot
+	var snapshot Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		return fmt.Errorf("failed to decode snapshot: %w", err)
+	}
+
+	// 4. Validate checksum
+	if !snapshot.validate() {
+		return fmt.Errorf("snapshot checksum mismatch: data corruption detected")
+	}
+
+	fmt.Printf("[FollowerReplicator] Received snapshot: seq=%d, vectors=%d\n",
+		snapshot.Sequence, len(snapshot.Vectors))
+
+	// 5. Load snapshot into local store
+	if err := fr.shard.LoadSnapshot(&snapshot); err != nil {
+		return fmt.Errorf("failed to load snapshot: %w", err)
+	}
+
+	// 6. Update replication state
+	fr.mu.Lock()
+	fr.lastAppliedSeq = snapshot.Sequence
+	fr.stats.EntriesApplied += uint64(len(snapshot.Vectors))
+	fr.mu.Unlock()
+
+	fmt.Printf("[FollowerReplicator] Full sync complete, resuming from seq=%d\n", snapshot.Sequence)
+
+	// 7. Status will transition to streaming on next successful poll
+	return nil
 }
 
 // ===========================================================================================

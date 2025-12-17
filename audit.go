@@ -461,9 +461,6 @@ func (al *AuditLogger) flush() {
 		return
 	}
 
-	// Check for rotation before writing
-	al.checkRotation()
-
 	for _, event := range al.buffer {
 		al.writeEvent(event)
 	}
@@ -489,6 +486,9 @@ func (al *AuditLogger) writeEvent(event *AuditEvent) {
 	}
 
 	al.currentSize += int64(n)
+
+	// Check rotation after write (size-based)
+	al.checkRotation()
 }
 
 // openNewFile opens a new audit log file
@@ -496,7 +496,7 @@ func (al *AuditLogger) openNewFile() error {
 	now := time.Now().UTC()
 	al.currentDate = now.Format("2006-01-02")
 
-	filename := fmt.Sprintf("audit-%s-%s.log", al.config.NodeID, now.Format("2006-01-02-150405"))
+	filename := fmt.Sprintf("audit-%s-%s.log", al.config.NodeID, now.Format("2006-01-02-150405.000000"))
 	filepath := filepath.Join(al.config.LogDir, filename)
 
 	f, err := os.OpenFile(filepath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
