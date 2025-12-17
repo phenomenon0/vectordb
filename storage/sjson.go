@@ -2,12 +2,83 @@ package storage
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math"
 	"time"
 
 	"agentscope/sjson"
 )
+
+// Safe value extraction helpers - prevent panics from type mismatches
+
+func safeString(v *sjson.Value) string {
+	if v == nil {
+		return ""
+	}
+	switch v.Type() {
+	case sjson.TypeString:
+		return v.String()
+	case sjson.TypeInt64:
+		return fmt.Sprintf("%d", v.Int64())
+	case sjson.TypeUint64:
+		return fmt.Sprintf("%d", v.Uint64())
+	case sjson.TypeFloat64:
+		return fmt.Sprintf("%g", v.Float64())
+	case sjson.TypeBool:
+		return fmt.Sprintf("%t", v.Bool())
+	default:
+		return fmt.Sprint(sjson.ToAny(v))
+	}
+}
+
+func safeInt64(v *sjson.Value) int64 {
+	if v == nil {
+		return 0
+	}
+	switch v.Type() {
+	case sjson.TypeInt64:
+		return v.Int64()
+	case sjson.TypeUint64:
+		return int64(v.Uint64())
+	case sjson.TypeFloat64:
+		return int64(v.Float64())
+	default:
+		return 0
+	}
+}
+
+func safeFloat64(v *sjson.Value) float64 {
+	if v == nil {
+		return 0
+	}
+	switch v.Type() {
+	case sjson.TypeFloat64:
+		return v.Float64()
+	case sjson.TypeInt64:
+		return float64(v.Int64())
+	case sjson.TypeUint64:
+		return float64(v.Uint64())
+	default:
+		return 0
+	}
+}
+
+func safeBool(v *sjson.Value) bool {
+	if v == nil {
+		return false
+	}
+	switch v.Type() {
+	case sjson.TypeBool:
+		return v.Bool()
+	case sjson.TypeInt64:
+		return v.Int64() != 0
+	case sjson.TypeUint64:
+		return v.Uint64() != 0
+	default:
+		return false
+	}
+}
 
 // SJSONFormat implements Format using SJSON binary encoding.
 // Optimizes embedding storage using native tensor type (~48% smaller for float32 arrays).
@@ -112,24 +183,24 @@ func (s *SJSONFormat) Load(r io.Reader) (*Payload, error) {
 		p.Data = decodeFloat32Tensor(dataVal)
 	}
 
-	// Scalar fields
+	// Scalar fields - use safe accessors to prevent panics
 	if v := obj.Get("dim"); v != nil {
-		p.Dim = int(v.Int64())
+		p.Dim = int(safeInt64(v))
 	}
 	if v := obj.Get("next"); v != nil {
-		p.Next = v.Int64()
+		p.Next = safeInt64(v)
 	}
 	if v := obj.Get("count"); v != nil {
-		p.Count = int(v.Int64())
+		p.Count = int(safeInt64(v))
 	}
 	if v := obj.Get("sum_doc_l"); v != nil {
-		p.SumDocL = int(v.Int64())
+		p.SumDocL = int(safeInt64(v))
 	}
 	if v := obj.Get("checksum"); v != nil {
-		p.Checksum = v.String()
+		p.Checksum = safeString(v)
 	}
 	if v := obj.Get("last_saved"); v != nil {
-		if t, err := time.Parse(time.RFC3339Nano, v.String()); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, safeString(v)); err == nil {
 			p.LastSaved = t
 		}
 	}
@@ -193,7 +264,7 @@ func decodeFloat32Tensor(v *sjson.Value) []float32 {
 			arr := v.Array()
 			result := make([]float32, len(arr))
 			for i, elem := range arr {
-				result[i] = float32(elem.Float64())
+				result[i] = float32(safeFloat64(elem))
 			}
 			return result
 		}
@@ -230,7 +301,7 @@ func decodeStringArray(v *sjson.Value) []string {
 	arr := v.Array()
 	result := make([]string, len(arr))
 	for i, elem := range arr {
-		result[i] = elem.String()
+		result[i] = safeString(elem)
 	}
 	return result
 }
@@ -262,7 +333,7 @@ func decodeStringMapMap(v *sjson.Value) map[uint64]map[string]string {
 		inner := make(map[string]string)
 		if m.Value.Type() == sjson.TypeObject {
 			for _, im := range m.Value.Members() {
-				inner[im.Key] = im.Value.String()
+				inner[im.Key] = safeString(im.Value)
 			}
 		}
 		result[k] = inner
@@ -287,7 +358,7 @@ func decodeBoolMap(v *sjson.Value) map[uint64]bool {
 	}
 	result := make(map[uint64]bool)
 	for _, m := range v.Members() {
-		result[parseUint64Key(m.Key)] = m.Value.Bool()
+		result[parseUint64Key(m.Key)] = safeBool(m.Value)
 	}
 	return result
 }
@@ -309,7 +380,7 @@ func decodeStringMapUint64(v *sjson.Value) map[uint64]string {
 	}
 	result := make(map[uint64]string)
 	for _, m := range v.Members() {
-		result[parseUint64Key(m.Key)] = m.Value.String()
+		result[parseUint64Key(m.Key)] = safeString(m.Value)
 	}
 	return result
 }
@@ -339,7 +410,7 @@ func decodeIntMapMap(v *sjson.Value) map[uint64]map[string]int {
 		inner := make(map[string]int)
 		if m.Value.Type() == sjson.TypeObject {
 			for _, im := range m.Value.Members() {
-				inner[im.Key] = int(im.Value.Int64())
+				inner[im.Key] = int(safeInt64(im.Value))
 			}
 		}
 		result[k] = inner
@@ -364,7 +435,7 @@ func decodeIntMapUint64(v *sjson.Value) map[uint64]int {
 	}
 	result := make(map[uint64]int)
 	for _, m := range v.Members() {
-		result[parseUint64Key(m.Key)] = int(m.Value.Int64())
+		result[parseUint64Key(m.Key)] = int(safeInt64(m.Value))
 	}
 	return result
 }
@@ -386,7 +457,7 @@ func decodeStringIntMap(v *sjson.Value) map[string]int {
 	}
 	result := make(map[string]int)
 	for _, m := range v.Members() {
-		result[m.Key] = int(m.Value.Int64())
+		result[m.Key] = int(safeInt64(m.Value))
 	}
 	return result
 }
@@ -416,7 +487,7 @@ func decodeFloat64MapMap(v *sjson.Value) map[uint64]map[string]float64 {
 		inner := make(map[string]float64)
 		if m.Value.Type() == sjson.TypeObject {
 			for _, im := range m.Value.Members() {
-				inner[im.Key] = im.Value.Float64()
+				inner[im.Key] = safeFloat64(im.Value)
 			}
 		}
 		result[k] = inner
@@ -449,7 +520,7 @@ func decodeTimeMapMap(v *sjson.Value) map[uint64]map[string]time.Time {
 		inner := make(map[string]time.Time)
 		if m.Value.Type() == sjson.TypeObject {
 			for _, im := range m.Value.Members() {
-				if t, err := time.Parse(time.RFC3339Nano, im.Value.String()); err == nil {
+				if t, err := time.Parse(time.RFC3339Nano, safeString(im.Value)); err == nil {
 					inner[im.Key] = t
 				}
 			}

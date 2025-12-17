@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"agentscope/sjson/codec"
+	"agentscope/vectordb/index"
 	"agentscope/vectordb/logging"
 	"agentscope/vectordb/telemetry"
 
@@ -34,6 +35,14 @@ func encodeResponse(w http.ResponseWriter, r *http.Request, v any) error {
 	responseCodec := codec.FromRequest(r)
 	w.Header().Set("Content-Type", responseCodec.ContentType())
 	return responseCodec.Encode(w, v)
+}
+
+// sendResponse encodes and sends a response, logging any encoding errors.
+// Use this instead of ignoring encodeResponse errors.
+func sendResponse(w http.ResponseWriter, r *http.Request, v any) {
+	if err := encodeResponse(w, r, v); err != nil {
+		logging.Default().Error("failed to encode response", "error", err, "path", r.URL.Path)
+	}
 }
 
 // decodeRequest decodes the request body using the appropriate codec based on Content-Type.
@@ -685,9 +694,20 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			case "lexical":
 				respScores = append(respScores, float32(store.bm25(hid, qTokens)))
 			default: // vector
-				respScores = append(respScores, DotProduct(qVec, store.Data[idx*store.Dim:(idx+1)*store.Dim]))
+				if idx*store.Dim < len(store.Data) && (idx+1)*store.Dim <= len(store.Data) {
+					respScores = append(respScores, DotProduct(qVec, store.Data[idx*store.Dim:(idx+1)*store.Dim]))
+				} else {
+					respScores = append(respScores, 0) // Fallback for missing data
+				}
 			}
-			scoresOrdered = append(scoresOrdered, scored{docIdx: len(docs) - 1, score: float64(respScores[len(respScores)-1]), seq: store.Seqs[idx]})
+			// Safely get sequence number with bounds check
+			var seq uint64
+			if idx < len(store.Seqs) {
+				seq = store.Seqs[idx]
+			} else {
+				seq = uint64(idx) // Fallback to index as sequence
+			}
+			scoresOrdered = append(scoresOrdered, scored{docIdx: len(docs) - 1, score: float64(respScores[len(respScores)-1]), seq: seq})
 		}
 		if len(scoresOrdered) > 0 {
 			sort.Slice(scoresOrdered, func(i, j int) bool {
@@ -741,7 +761,14 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		nextPage := ""
 		if end < len(respIDs) {
-			nextPage = encodePageToken(offset+pageSize, hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode), store.Seqs[ids[end-1]])
+			var lastSeq uint64
+			lastIdx := ids[end-1]
+			if lastIdx < len(store.Seqs) {
+				lastSeq = store.Seqs[lastIdx]
+			} else {
+				lastSeq = uint64(lastIdx)
+			}
+			nextPage = encodePageToken(offset+pageSize, hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode), lastSeq)
 		}
 
 		rDocs, rerankScores, stats, err := reranker.Rerank(req.Query, docs, req.Limit)
@@ -1022,12 +1049,43 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		active := total - deleted
 		lastSaved := store.lastSaved
 		_, embedderIsONNX := embedder.(*OnnxEmbedder)
+		_, embedderIsOpenAI := embedder.(*OpenAIEmbedder)
+		_, embedderIsTracked := embedder.(*TrackedEmbedder)
+		_, embedderIsOllama := embedder.(*OllamaEmbedder)
 		_, rerankerIsONNX := reranker.(*OnnxCrossEncoderReranker)
 		store.RUnlock()
 		snapAge := ageMillis(indexPath, lastSaved)
 		walAge := ageMillis(store.walPath, time.Time{})
 
-		_ = encodeResponse(w, r, map[string]any{
+		// Determine embedder type
+		embedderType := "hash"
+		if embedderIsONNX {
+			embedderType = "onnx"
+		} else if embedderIsOpenAI || embedderIsTracked {
+			embedderType = "openai"
+		} else if embedderIsOllama {
+			embedderType = "ollama"
+		}
+
+		// Get collection counts (for dashboard)
+		store.RLock()
+		collectionCounts := make(map[string]int)
+		for _, coll := range store.Coll {
+			collectionCounts[coll]++
+		}
+		store.RUnlock()
+
+		// Build collections list for response
+		collections := make([]map[string]any, 0, len(collectionCounts))
+		for name, count := range collectionCounts {
+			collections = append(collections, map[string]any{
+				"name":         name,
+				"vector_count": count,
+			})
+		}
+
+		// Build response with mode info
+		response := map[string]any{
 			"ok":              true,
 			"total":           total,
 			"active":          active,
@@ -1039,12 +1097,20 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"snapshot_age_ms": snapAge,
 			"wal_age_ms":      walAge,
 			"embedder": map[string]any{
-				"type": map[bool]string{true: "onnx", false: "hash"}[embedderIsONNX],
+				"type": embedderType,
 			},
 			"reranker": map[string]any{
 				"type": map[bool]string{true: "onnx", false: "simple"}[rerankerIsONNX],
 			},
-		})
+			"collections": collections,
+		}
+
+		// Add mode information if available
+		if CurrentMode != nil {
+			response["mode"] = GetModeInfo(CurrentMode)
+		}
+
+		sendResponse(w, r, response)
 	})))
 
 	mux.Handle("/metrics", promhttp.Handler())
@@ -1143,7 +1209,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			hnswOK = false
 		}
 		store.RUnlock()
-		_ = encodeResponse(w, r, map[string]any{
+		sendResponse(w, r, map[string]any{
 			"checksum_ok": ck,
 			"hnsw_ok":     hnswOK,
 		})
@@ -1167,7 +1233,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			http.Error(w, fmt.Sprintf("compact failed: %v", err), http.StatusInternalServerError)
 			return
 		}
-		_ = encodeResponse(w, r, map[string]any{"ok": true})
+		sendResponse(w, r, map[string]any{"ok": true})
 	})))
 
 	// Export snapshot (read-only)
@@ -1328,7 +1394,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.acl.GrantCollectionAccess(req.TenantID, req.Collection)
 
-		_ = encodeResponse(w, r, map[string]any{
+		sendResponse(w, r, map[string]any{
 			"ok":         true,
 			"tenant_id":  req.TenantID,
 			"collection": req.Collection,
@@ -1359,7 +1425,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.acl.RevokeCollectionAccess(req.TenantID, req.Collection)
 
-		_ = encodeResponse(w, r, map[string]any{
+		sendResponse(w, r, map[string]any{
 			"ok":         true,
 			"tenant_id":  req.TenantID,
 			"collection": req.Collection,
@@ -1397,7 +1463,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.acl.GrantPermission(req.TenantID, req.Permission)
 
-		_ = encodeResponse(w, r, map[string]any{
+		sendResponse(w, r, map[string]any{
 			"ok":         true,
 			"tenant_id":  req.TenantID,
 			"permission": req.Permission,
@@ -1428,7 +1494,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.acl.RevokePermission(req.TenantID, req.Permission)
 
-		_ = encodeResponse(w, r, map[string]any{
+		sendResponse(w, r, map[string]any{
 			"ok":         true,
 			"tenant_id":  req.TenantID,
 			"permission": req.Permission,
@@ -1464,7 +1530,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		store.quotas.SetQuota(req.TenantID, req.MaxBytes)
 
-		_ = encodeResponse(w, r, map[string]any{
+		sendResponse(w, r, map[string]any{
 			"ok":        true,
 			"tenant_id": req.TenantID,
 			"max_bytes": req.MaxBytes,
@@ -1495,7 +1561,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			utilizationPct = float64(usedBytes) / float64(maxBytes) * 100
 		}
 
-		_ = encodeResponse(w, r, map[string]any{
+		sendResponse(w, r, map[string]any{
 			"tenant_id":       tenantID,
 			"used_bytes":      usedBytes,
 			"max_bytes":       maxBytes,
@@ -1536,7 +1602,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			store.tenantRL.setLimit(req.TenantID, req.RPS, req.Burst)
 		}
 
-		_ = encodeResponse(w, r, map[string]any{
+		sendResponse(w, r, map[string]any{
 			"ok":        true,
 			"tenant_id": req.TenantID,
 			"rps":       req.RPS,
@@ -1603,10 +1669,361 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	collectionHTTP := NewCollectionHTTPServer(indexPath + ".collections")
 	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
 
+	// ==========================================================================
+	// MODE & COST TRACKING API ENDPOINTS
+	// ==========================================================================
+
+	// GET /api/mode - Returns current mode information
+	mux.HandleFunc("/api/mode", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		if CurrentMode == nil {
+			sendResponse(w, r, map[string]any{
+				"error": "mode not initialized",
+			})
+			return
+		}
+
+		sendResponse(w, r, GetModeInfo(CurrentMode))
+	})
+
+	// GET /api/costs - Returns cost tracking statistics (PRO mode only)
+	mux.HandleFunc("/api/costs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Find the cost tracker from the embedder if it's a TrackedEmbedder
+		var costTracker *CostTracker
+		if te, ok := embedder.(*TrackedEmbedder); ok {
+			costTracker = te.costTracker
+		}
+
+		if costTracker == nil {
+			// LOCAL mode - no cost tracking
+			sendResponse(w, r, map[string]any{
+				"mode":    "local",
+				"message": "Cost tracking is only available in PRO mode",
+				"session": map[string]any{
+					"tokens": 0,
+					"cost":   0,
+					"ops":    0,
+				},
+			})
+			return
+		}
+
+		stats := costTracker.GetStats()
+		sendResponse(w, r, stats)
+	})
+
+	// GET /api/costs/daily - Returns daily cost breakdown (PRO mode only)
+	mux.HandleFunc("/api/costs/daily", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var costTracker *CostTracker
+		if te, ok := embedder.(*TrackedEmbedder); ok {
+			costTracker = te.costTracker
+		}
+
+		if costTracker == nil {
+			sendResponse(w, r, map[string]any{
+				"mode":  "local",
+				"daily": []DailyStats{},
+			})
+			return
+		}
+
+		days := 30 // Default to last 30 days
+		dailyStats, err := costTracker.GetDailyStats(days)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to get daily stats: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		sendResponse(w, r, map[string]any{
+			"mode":  "pro",
+			"days":  days,
+			"daily": dailyStats,
+		})
+	})
+
+	// GET /api/costs/export - Export costs as CSV (PRO mode only)
+	mux.HandleFunc("/api/costs/export", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var costTracker *CostTracker
+		if te, ok := embedder.(*TrackedEmbedder); ok {
+			costTracker = te.costTracker
+		}
+
+		if costTracker == nil {
+			http.Error(w, "Cost tracking is only available in PRO mode", http.StatusBadRequest)
+			return
+		}
+
+		csv, err := costTracker.ExportCSV()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to export costs: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/csv")
+		w.Header().Set("Content-Disposition", "attachment; filename=vectordb-costs.csv")
+		w.Write([]byte(csv))
+	})
+
+	// POST /api/embed - Embed a single text using server-side embedder
+	mux.HandleFunc("/api/embed", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if req.Text == "" {
+			http.Error(w, "text is required", http.StatusBadRequest)
+			return
+		}
+
+		vec, err := embedder.Embed(req.Text)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("embedding failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"embedding": vec,
+			"dimension": len(vec),
+		})
+	})
+
+	// POST /api/embed/batch - Embed multiple texts using server-side embedder
+	mux.HandleFunc("/api/embed/batch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Texts []string `json:"texts"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if len(req.Texts) == 0 {
+			http.Error(w, "texts array is required", http.StatusBadRequest)
+			return
+		}
+
+		embeddings := make([][]float32, len(req.Texts))
+		for i, text := range req.Texts {
+			vec, err := embedder.Embed(text)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("embedding failed for text %d: %v", i, err), http.StatusInternalServerError)
+				return
+			}
+			embeddings[i] = vec
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"embeddings": embeddings,
+			"count":      len(embeddings),
+			"dimension":  len(embeddings[0]),
+		})
+	})
+
+	// ==========================================================================
+	// INDEX MANAGEMENT API ENDPOINTS
+	// ==========================================================================
+
+	// GET /api/index/types - List available index types
+	mux.HandleFunc("/api/index/types", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		types := index.SupportedTypes()
+		sendResponse(w, r, map[string]any{
+			"types": types,
+			"descriptions": map[string]string{
+				"hnsw":       "Hierarchical Navigable Small World - balanced speed/recall",
+				"ivf":        "Inverted File Index - fast with cluster pruning",
+				"ivf_binary": "IVF + Binary Quantization - 30x compression, 1000+ QPS",
+				"binary":     "Binary Quantization - 32x compression, fast Hamming search",
+				"flat":       "Flat/Brute Force - exact search, no index",
+				"diskann":    "DiskANN - billion-scale disk-based index",
+			},
+		})
+	})
+
+	// POST /api/index/create - Create a new index for a collection
+	mux.HandleFunc("/api/index/create", withMetrics("index_create", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Collection string                 `json:"collection"`
+			IndexType  string                 `json:"index_type"` // hnsw, ivf, ivf_binary, binary, flat
+			Config     map[string]interface{} `json:"config"`     // Index-specific config
+		}
+		if err := decodeRequest(r, &req); err != nil {
+			http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if req.Collection == "" {
+			req.Collection = "default"
+		}
+		if req.IndexType == "" {
+			req.IndexType = "hnsw"
+		}
+
+		// Create the index using the factory
+		idx, err := index.Create(req.IndexType, store.Dim, req.Config)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to create index: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Store the index
+		store.Lock()
+		store.indexes[req.Collection] = idx
+		store.Unlock()
+
+		sendResponse(w, r, map[string]any{
+			"ok":         true,
+			"collection": req.Collection,
+			"index_type": req.IndexType,
+			"config":     req.Config,
+			"stats":      idx.Stats(),
+		})
+	})))
+
+	// GET /api/index/stats - Get index statistics for a collection
+	mux.HandleFunc("/api/index/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		collection := r.URL.Query().Get("collection")
+		if collection == "" {
+			collection = "default"
+		}
+
+		store.RLock()
+		idx, exists := store.indexes[collection]
+		store.RUnlock()
+
+		if !exists {
+			http.Error(w, fmt.Sprintf("collection '%s' not found", collection), http.StatusNotFound)
+			return
+		}
+
+		stats := idx.Stats()
+		sendResponse(w, r, map[string]any{
+			"collection": collection,
+			"stats":      stats,
+		})
+	})
+
+	// GET /api/index/list - List all indexes
+	mux.HandleFunc("/api/index/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		store.RLock()
+		indexes := make(map[string]interface{})
+		for name, idx := range store.indexes {
+			indexes[name] = map[string]interface{}{
+				"type":  idx.Name(),
+				"stats": idx.Stats(),
+			}
+		}
+		store.RUnlock()
+
+		sendResponse(w, r, map[string]any{
+			"indexes": indexes,
+			"count":   len(indexes),
+		})
+	})
+
 	// Wrap with OTel HTTP middleware for request tracing
 	// This adds automatic span creation for all HTTP requests
 	otelMiddleware := telemetry.HTTPMiddleware()
-	return otelMiddleware(mux)
+
+	// Wrap with CORS middleware to allow browser requests from different origins
+	corsMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Allow requests from any origin (for development)
+			// In production, you may want to restrict this to specific origins
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				origin = "*"
+			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+
+			// Handle preflight OPTIONS requests
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	// Panic recovery middleware - prevents server crash from panics in handlers
+	recoveryMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if err := recover(); err != nil {
+					// Log the panic with stack trace
+					logging.Default().Error("panic recovered in HTTP handler",
+						"error", err,
+						"path", r.URL.Path,
+						"method", r.Method,
+					)
+					// Return 500 error to client instead of closing connection
+					http.Error(w, fmt.Sprintf("internal server error: %v", err), http.StatusInternalServerError)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	return recoveryMiddleware(corsMiddleware(otelMiddleware(mux)))
 }
 
 func ageMillis(path string, fallback time.Time) int64 {

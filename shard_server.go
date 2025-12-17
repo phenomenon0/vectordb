@@ -217,6 +217,11 @@ func (s *ShardServer) newHTTPHandler() http.Handler {
 		mux.HandleFunc("/wal/stream", s.handleWALStream)
 	}
 
+	// Add snapshot endpoint for full sync (primaries only)
+	if s.role == RolePrimary {
+		mux.HandleFunc("/internal/snapshot", s.handleSnapshot)
+	}
+
 	// Register migration handlers for shard rebalancing
 	registerMigrationHandlers(mux, s.store)
 
@@ -397,6 +402,114 @@ func (s *ShardServer) sendHeartbeat() {
 	if err != nil {
 		fmt.Printf("Heartbeat failed: %v\n", err)
 	}
+}
+
+// LoadSnapshot loads a full snapshot into the shard store
+func (s *ShardServer) LoadSnapshot(snapshot *Snapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Clear existing data
+	s.store.Lock()
+	s.store.IDs = make([]string, 0)
+	s.store.Docs = make([]string, 0)
+	s.store.Data = make([]float32, 0)
+	s.store.Seqs = make([]uint64, 0)
+	s.store.Meta = make(map[uint64]map[string]string)
+	s.store.Deleted = make(map[uint64]bool)
+	s.store.Coll = make(map[uint64]string)
+	s.store.idToIx = make(map[uint64]int)
+	s.store.Count = 0
+	s.store.Unlock()
+
+	// Load snapshot data
+	for _, entry := range snapshot.Vectors {
+		s.store.Lock()
+		idx := s.store.Count
+		hash := hashID(entry.ID)
+
+		// Append to flat arrays
+		s.store.IDs = append(s.store.IDs, entry.ID)
+		s.store.Docs = append(s.store.Docs, "")
+		s.store.Seqs = append(s.store.Seqs, snapshot.Sequence)
+		s.store.Data = append(s.store.Data, entry.Vector...)
+		s.store.idToIx[hash] = idx
+		s.store.Coll[hash] = "default"
+		if entry.Metadata != "" {
+			s.store.Meta[hash] = map[string]string{"raw": entry.Metadata}
+		}
+		s.store.Count++
+		s.store.Unlock()
+	}
+
+	fmt.Printf("[ShardServer] Loaded snapshot: %d vectors at seq=%d\n",
+		len(snapshot.Vectors), snapshot.Sequence)
+
+	return nil
+}
+
+// CreateSnapshot creates a snapshot of the current shard state
+func (s *ShardServer) CreateSnapshot() *Snapshot {
+	s.store.RLock()
+	defer s.store.RUnlock()
+
+	snapshot := &Snapshot{
+		ShardID:   s.shardID,
+		Timestamp: time.Now(),
+		Vectors:   make([]SnapshotEntry, 0, s.store.Count),
+	}
+
+	// Get current WAL sequence if available
+	if s.walStream != nil {
+		snapshot.Sequence = s.walStream.GetLatestSeq()
+	}
+
+	// Export all vectors
+	for i, id := range s.store.IDs {
+		hash := hashID(id)
+		if s.store.Deleted[hash] {
+			continue
+		}
+
+		// Extract vector slice from flat Data array
+		startIdx := i * s.store.Dim
+		endIdx := startIdx + s.store.Dim
+		var vec []float32
+		if endIdx <= len(s.store.Data) {
+			vec = make([]float32, s.store.Dim)
+			copy(vec, s.store.Data[startIdx:endIdx])
+		}
+
+		entry := SnapshotEntry{
+			ID:     id,
+			Vector: vec,
+		}
+		if meta, ok := s.store.Meta[hash]["raw"]; ok {
+			entry.Metadata = meta
+		}
+		snapshot.Vectors = append(snapshot.Vectors, entry)
+	}
+
+	// Compute checksum
+	snapshot.Checksum = snapshot.computeChecksum()
+
+	return snapshot
+}
+
+// handleSnapshot handles snapshot requests from replicas
+func (s *ShardServer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	snapshot := s.CreateSnapshot()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(snapshot)
+
+	fmt.Printf("[ShardServer] Served snapshot: %d vectors at seq=%d\n",
+		len(snapshot.Vectors), snapshot.Sequence)
 }
 
 // RunStandalone runs a shard server as a standalone process

@@ -46,6 +46,15 @@ type VoteResponse struct {
 	Reason    string `json:"reason,omitempty"` // Why vote was rejected
 }
 
+// PeerHealth tracks the health status of a peer coordinator
+type PeerHealth struct {
+	CoordinatorID string
+	LastSeen      time.Time
+	IsHealthy     bool
+	LastHeartbeat time.Time
+	ReplicaLag    uint64 // For replica health tracking
+}
+
 // QuorumVoter handles distributed voting between coordinators
 type QuorumVoter struct {
 	mu sync.RWMutex
@@ -59,6 +68,18 @@ type QuorumVoter struct {
 
 	// Vote timeout
 	voteTimeout time.Duration
+
+	// Peer health tracking for safety checks
+	peerHealth map[string]*PeerHealth
+
+	// Current leader tracking per shard (shardID -> leaderID)
+	currentLeaders map[int]string
+
+	// Active elections tracking (shardID -> highest epoch seen)
+	activeElections map[int]uint64
+
+	// Health check timeout
+	healthTimeout time.Duration
 }
 
 // voteState tracks an ongoing vote
@@ -81,7 +102,81 @@ func NewQuorumVoter(coordinatorID string, peerAddresses []string) *QuorumVoter {
 		httpClient:       &http.Client{Timeout: 5 * time.Second},
 		activeVotes:      make(map[string]*voteState),
 		voteTimeout:      10 * time.Second,
+		peerHealth:       make(map[string]*PeerHealth),
+		currentLeaders:   make(map[int]string),
+		activeElections:  make(map[int]uint64),
+		healthTimeout:    30 * time.Second,
 	}
+}
+
+// isPeerHealthy checks if a peer is healthy based on recent heartbeats
+func (qv *QuorumVoter) isPeerHealthy(peerID string) bool {
+	qv.mu.RLock()
+	defer qv.mu.RUnlock()
+
+	health, exists := qv.peerHealth[peerID]
+	if !exists {
+		// Unknown peer - allow by default for initial bootstrap
+		return true
+	}
+
+	if !health.IsHealthy {
+		return false
+	}
+
+	// Check if we've heard from them recently
+	if time.Since(health.LastSeen) > qv.healthTimeout {
+		return false
+	}
+
+	return true
+}
+
+// UpdatePeerHealth updates the health status of a peer
+func (qv *QuorumVoter) UpdatePeerHealth(peerID string, healthy bool, replicaLag uint64) {
+	qv.mu.Lock()
+	defer qv.mu.Unlock()
+
+	health, exists := qv.peerHealth[peerID]
+	if !exists {
+		health = &PeerHealth{CoordinatorID: peerID}
+		qv.peerHealth[peerID] = health
+	}
+
+	health.IsHealthy = healthy
+	health.LastSeen = time.Now()
+	health.LastHeartbeat = time.Now()
+	health.ReplicaLag = replicaLag
+}
+
+// SetCurrentLeader records the current leader for a shard
+func (qv *QuorumVoter) SetCurrentLeader(shardID int, leaderID string) {
+	qv.mu.Lock()
+	defer qv.mu.Unlock()
+	qv.currentLeaders[shardID] = leaderID
+}
+
+// GetCurrentLeader returns the current leader for a shard
+func (qv *QuorumVoter) GetCurrentLeader(shardID int) string {
+	qv.mu.RLock()
+	defer qv.mu.RUnlock()
+	return qv.currentLeaders[shardID]
+}
+
+// recordElectionEpoch records the highest election epoch seen for a shard
+func (qv *QuorumVoter) recordElectionEpoch(shardID int, epoch uint64) {
+	qv.mu.Lock()
+	defer qv.mu.Unlock()
+	if epoch > qv.activeElections[shardID] {
+		qv.activeElections[shardID] = epoch
+	}
+}
+
+// getHighestElectionEpoch returns the highest election epoch seen for a shard
+func (qv *QuorumVoter) getHighestElectionEpoch(shardID int) uint64 {
+	qv.mu.RLock()
+	defer qv.mu.RUnlock()
+	return qv.activeElections[shardID]
 }
 
 // RequestQuorum initiates a vote and waits for quorum decision
@@ -309,8 +404,19 @@ func (qv *QuorumVoter) evaluateLeaderElectionVote(req *VoteRequest) bool {
 		return false
 	}
 
-	// TODO: Check if candidate is healthy
-	// TODO: Check if no other election in progress with higher epoch
+	// Check if candidate is healthy
+	if !qv.isPeerHealthy(candidateID) {
+		return false
+	}
+
+	// Check if no other election in progress with higher epoch
+	highestEpoch := qv.getHighestElectionEpoch(req.ShardID)
+	if uint64(epoch) < highestEpoch {
+		return false // Reject elections with lower epoch than what we've seen
+	}
+
+	// Record this election epoch
+	qv.recordElectionEpoch(req.ShardID, uint64(epoch))
 
 	return true
 }
@@ -329,8 +435,22 @@ func (qv *QuorumVoter) evaluateLeaderRenewalVote(req *VoteRequest) bool {
 		return false
 	}
 
-	// TODO: Verify leader is still the current leader
-	// TODO: Check leader health
+	// Verify leader is still the current leader
+	currentLeader := qv.GetCurrentLeader(req.ShardID)
+	if currentLeader != "" && currentLeader != leaderID {
+		return false // Someone else is the leader
+	}
+
+	// Check leader health
+	if !qv.isPeerHealthy(leaderID) {
+		return false
+	}
+
+	// Verify epoch matches what we expect
+	highestEpoch := qv.getHighestElectionEpoch(req.ShardID)
+	if uint64(epoch) < highestEpoch {
+		return false // Stale epoch
+	}
 
 	return true
 }
@@ -355,8 +475,33 @@ func (qv *QuorumVoter) evaluateLeaderTransferVote(req *VoteRequest) bool {
 		return false
 	}
 
-	// TODO: Verify old leader is actually current leader
-	// TODO: Verify new leader is healthy and eligible
+	// Verify old leader is actually current leader
+	currentLeader := qv.GetCurrentLeader(req.ShardID)
+	if currentLeader != "" && currentLeader != oldLeaderID {
+		return false // Old leader is not the current leader
+	}
+
+	// Verify new leader is healthy and eligible
+	if !qv.isPeerHealthy(newLeaderID) {
+		return false
+	}
+
+	// Check new leader's replica lag if available
+	qv.mu.RLock()
+	newLeaderHealth := qv.peerHealth[newLeaderID]
+	qv.mu.RUnlock()
+	if newLeaderHealth != nil && newLeaderHealth.ReplicaLag > 1000 {
+		return false // New leader is too far behind
+	}
+
+	// Verify epoch is higher than current
+	highestEpoch := qv.getHighestElectionEpoch(req.ShardID)
+	if uint64(epoch) <= highestEpoch {
+		return false // Epoch must be strictly higher for transfer
+	}
+
+	// Record new epoch and update leader
+	qv.recordElectionEpoch(req.ShardID, uint64(epoch))
 
 	return true
 }

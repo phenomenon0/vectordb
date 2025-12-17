@@ -79,12 +79,24 @@ type DistributedConfig struct {
 	HealthCheckInterval time.Duration
 
 	// Quorum configuration
-	CoordinatorID   string   // This coordinator's unique ID
+	CoordinatorID    string   // This coordinator's unique ID
 	PeerCoordinators []string // HTTP addresses of other coordinators for voting
 }
 
-// NewDistributedVectorDB creates a new distributed vectordb coordinator
+// NewDistributedVectorDB creates a new distributed vectordb coordinator.
+//
+// WARNING: Distributed mode is EXPERIMENTAL and not recommended for production use.
+// Known limitations:
+//   - Quorum safety checks are incomplete (see quorum.go TODOs)
+//   - Snapshot sync for far-behind replicas is not implemented
+//   - Leader election edge cases are not fully handled
+//
+// For production deployments, use single-node mode until distributed mode reaches v1.0.
 func NewDistributedVectorDB(cfg DistributedConfig) *DistributedVectorDB {
+	fmt.Println("⚠️  WARNING: Distributed mode is EXPERIMENTAL - not recommended for production")
+	fmt.Println("   Known issues: incomplete quorum checks, limited snapshot sync")
+	fmt.Println("   For production, use single-node mode")
+
 	if cfg.HealthCheckInterval == 0 {
 		cfg.HealthCheckInterval = 10 * time.Second
 	}

@@ -642,7 +642,10 @@ func (krm *KeyRotationManager) generateKey() (string, error) {
 
 func (krm *KeyRotationManager) generateKeyID() string {
 	idBytes := make([]byte, 8)
-	_, _ = rand.Read(idBytes)
+	if _, err := rand.Read(idBytes); err != nil {
+		// Fallback to time-based ID if crypto/rand fails (extremely rare)
+		return fmt.Sprintf("key-%d", time.Now().UnixNano())
+	}
 	return base64.URLEncoding.EncodeToString(idBytes)
 }
 

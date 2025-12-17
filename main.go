@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -99,7 +101,7 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		"ef_search": cfg.EfSearch,
 	})
 	if err != nil {
-		panic(fmt.Sprintf("failed to create default HNSW index: %v", err))
+		log.Fatalf("failed to create default HNSW index: %v", err)
 	}
 
 	// Legacy HNSW graph (kept for backward compatibility during migration)
@@ -831,6 +833,9 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			sumDocL:     payload.SumDocL,
 			NumMeta:     payload.NumMeta,
 			TimeMeta:    payload.TimeMeta,
+			// Numeric/time index maps for range queries (must be initialized!)
+			numIndex:  make(map[string][]numEntry),
+			timeIndex: make(map[string][]timeEntry),
 			// Multi-tenancy support (TenantID already set from payload above)
 			acl:      NewACL(),
 			quotas:   NewTenantQuota(),
@@ -1329,11 +1334,48 @@ func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
 
 func (e *OllamaEmbedder) Dim() int { return e.dim }
 
+// MaxChunkChars is the max characters per chunk (~2000 tokens for safety)
+const MaxChunkChars = 6000
+
 func (e *OllamaEmbedder) Embed(text string) ([]float32, error) {
 	if text == "" {
 		text = "empty"
 	}
 
+	// If text is short enough, embed directly
+	if len(text) <= MaxChunkChars {
+		return e.embedSingle(text)
+	}
+
+	// Long text: chunk and average embeddings (late chunking / pooling)
+	chunks := smartChunk(text, MaxChunkChars, 200) // 200 char overlap
+	if len(chunks) == 0 {
+		return e.embedSingle(text[:MaxChunkChars])
+	}
+
+	// Embed each chunk and compute weighted average
+	var allVecs [][]float32
+	var weights []float32
+	for _, chunk := range chunks {
+		vec, err := e.embedSingle(chunk)
+		if err != nil {
+			continue // Skip failed chunks
+		}
+		allVecs = append(allVecs, vec)
+		// Weight by chunk length (longer chunks = more important)
+		weights = append(weights, float32(len(chunk)))
+	}
+
+	if len(allVecs) == 0 {
+		return nil, fmt.Errorf("all chunks failed to embed")
+	}
+
+	// Weighted average pooling
+	return weightedAverageVecs(allVecs, weights), nil
+}
+
+// embedSingle embeds a single chunk of text
+func (e *OllamaEmbedder) embedSingle(text string) ([]float32, error) {
 	reqBody := map[string]interface{}{
 		"model":  e.model,
 		"prompt": text,
@@ -1356,7 +1398,8 @@ func (e *OllamaEmbedder) Embed(text string) ([]float32, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Ollama API error %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Ollama API error %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
@@ -1383,8 +1426,194 @@ func (e *OllamaEmbedder) Embed(text string) ([]float32, error) {
 			vec[i] /= float32(norm)
 		}
 	}
-	e.dim = len(vec) // Update dim based on actual response
+	e.dim = len(vec)
 	return vec, nil
+}
+
+// smartChunk splits text into semantic chunks with overlap
+// Uses sentence boundaries for cleaner splits
+func smartChunk(text string, maxChars, overlap int) []string {
+	if len(text) <= maxChars {
+		return []string{text}
+	}
+
+	var chunks []string
+
+	// Split into sentences first (approximate)
+	sentences := splitSentences(text)
+
+	var currentChunk strings.Builder
+	var currentLen int
+
+	for _, sentence := range sentences {
+		sentLen := len(sentence)
+
+		// If single sentence exceeds max, split it by words
+		if sentLen > maxChars {
+			// Flush current chunk
+			if currentLen > 0 {
+				chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+				currentChunk.Reset()
+				currentLen = 0
+			}
+			// Split long sentence by words
+			wordChunks := splitByWords(sentence, maxChars, overlap)
+			chunks = append(chunks, wordChunks...)
+			continue
+		}
+
+		// Check if adding this sentence exceeds limit
+		if currentLen+sentLen > maxChars && currentLen > 0 {
+			// Save current chunk
+			chunkText := strings.TrimSpace(currentChunk.String())
+			chunks = append(chunks, chunkText)
+
+			// Start new chunk with overlap from end of previous
+			currentChunk.Reset()
+			if overlap > 0 && len(chunkText) > overlap {
+				// Get last N chars for overlap
+				overlapText := chunkText[len(chunkText)-overlap:]
+				// Try to start at word boundary
+				if idx := strings.LastIndex(overlapText, " "); idx > 0 {
+					overlapText = overlapText[idx+1:]
+				}
+				currentChunk.WriteString(overlapText)
+				currentChunk.WriteString(" ")
+				currentLen = len(overlapText) + 1
+			} else {
+				currentLen = 0
+			}
+		}
+
+		currentChunk.WriteString(sentence)
+		currentChunk.WriteString(" ")
+		currentLen += sentLen + 1
+	}
+
+	// Don't forget the last chunk
+	if currentLen > 0 {
+		chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+	}
+
+	return chunks
+}
+
+// splitSentences splits text into sentences using common delimiters
+func splitSentences(text string) []string {
+	var sentences []string
+	var current strings.Builder
+
+	runes := []rune(text)
+	for i, r := range runes {
+		current.WriteRune(r)
+
+		// Check for sentence end
+		if r == '.' || r == '!' || r == '?' || r == '\n' {
+			// Look ahead to confirm (avoid splitting on abbreviations like "Dr.")
+			isEnd := true
+			if r == '.' && i+1 < len(runes) {
+				next := runes[i+1]
+				// Not a sentence end if followed by lowercase or digit
+				if (next >= 'a' && next <= 'z') || (next >= '0' && next <= '9') {
+					isEnd = false
+				}
+			}
+			if isEnd {
+				s := strings.TrimSpace(current.String())
+				if len(s) > 0 {
+					sentences = append(sentences, s)
+				}
+				current.Reset()
+			}
+		}
+	}
+
+	// Remaining text
+	if current.Len() > 0 {
+		s := strings.TrimSpace(current.String())
+		if len(s) > 0 {
+			sentences = append(sentences, s)
+		}
+	}
+
+	return sentences
+}
+
+// splitByWords splits text by words when sentences are too long
+func splitByWords(text string, maxChars, overlap int) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+
+	var chunks []string
+	var current strings.Builder
+	currentLen := 0
+
+	for _, word := range words {
+		wordLen := len(word)
+		if currentLen+wordLen+1 > maxChars && currentLen > 0 {
+			chunks = append(chunks, strings.TrimSpace(current.String()))
+			current.Reset()
+			currentLen = 0
+		}
+		if currentLen > 0 {
+			current.WriteString(" ")
+			currentLen++
+		}
+		current.WriteString(word)
+		currentLen += wordLen
+	}
+
+	if currentLen > 0 {
+		chunks = append(chunks, strings.TrimSpace(current.String()))
+	}
+
+	return chunks
+}
+
+// weightedAverageVecs computes weighted average of vectors and normalizes
+func weightedAverageVecs(vecs [][]float32, weights []float32) []float32 {
+	if len(vecs) == 0 {
+		return nil
+	}
+	if len(vecs) == 1 {
+		return vecs[0]
+	}
+
+	dim := len(vecs[0])
+	result := make([]float32, dim)
+
+	// Normalize weights
+	var totalWeight float32
+	for _, w := range weights {
+		totalWeight += w
+	}
+	if totalWeight == 0 {
+		totalWeight = 1
+	}
+
+	// Weighted sum
+	for i, vec := range vecs {
+		w := weights[i] / totalWeight
+		for j, v := range vec {
+			result[j] += v * w
+		}
+	}
+
+	// L2 normalize the result
+	var norm float32
+	for _, v := range result {
+		norm += v * v
+	}
+	norm = float32(math.Sqrt(float64(norm)))
+	if norm > 0 {
+		for i := range result {
+			result[i] /= norm
+		}
+	}
+
+	return result
 }
 
 type SimpleReranker struct {
@@ -1720,14 +1949,18 @@ func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec
 				vs.walOps = 0
 			}
 		}
-		_ = f.Close()
+		if err := f.Close(); err != nil {
+			logging.Default().Warn("failed to close WAL file", "error", err)
+		}
 		vs.walMu.Unlock()
 
 		if doSnapshot {
 			snapPath := strings.TrimSuffix(vs.walPath, ".wal")
 			go func() {
 				if err := vs.Save(snapPath); err == nil {
-					_ = os.Truncate(vs.walPath, 0)
+					if err := os.Truncate(vs.walPath, 0); err != nil {
+						logging.Default().Warn("failed to truncate WAL", "error", err)
+					}
 				}
 			}()
 		}
@@ -2182,13 +2415,40 @@ func main() {
 	logger := logging.Init(logConfig)
 	logger.Info("initializing vector engine")
 
-	const indexPath = "vectordb/index.gob"
-	defaultDim := 384
-	if envDim := os.Getenv("EMBED_DIM"); envDim != "" {
-		if v, err := strconv.Atoi(envDim); err == nil && v >= 0 {
-			defaultDim = v
-		}
+	// ==========================================================================
+	// Mode System Initialization (LOCAL or PRO)
+	// ==========================================================================
+	modeConfig, err := LoadModeFromEnv()
+	if err != nil {
+		logger.Error("failed to load mode configuration", "error", err)
+		fmt.Printf("ERROR: %v\n", err)
+		os.Exit(1)
 	}
+
+	// Print mode banner
+	PrintModeBanner(modeConfig)
+
+	// Ensure data directory exists
+	dataDir, err := EnsureDataDirectory(modeConfig.Mode)
+	if err != nil {
+		logger.Error("failed to create data directory", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("data directory ready", "path", dataDir)
+
+	// Initialize cost tracker (only for PRO mode)
+	costTracker, err := NewCostTracker(modeConfig.Mode)
+	if err != nil {
+		logger.Warn("failed to initialize cost tracker", "error", err)
+	}
+	if costTracker != nil {
+		defer costTracker.Close()
+		logger.Info("cost tracking enabled", "db", GetCostDBPath(modeConfig.Mode))
+	}
+
+	// Use mode-specific index path
+	indexPath := GetIndexPath(modeConfig.Mode)
+	defaultDim := modeConfig.Dimension
 
 	initMetrics()
 
@@ -2211,13 +2471,20 @@ func main() {
 		}()
 	}
 
-	// Check if we should force hash embedder (low-memory mode)
+	// Initialize embedder based on mode (LOCAL: ONNX, PRO: OpenAI)
 	var embedder Embedder
 	if os.Getenv("USE_HASH_EMBEDDER") == "1" {
 		logger.Info("using hash embedder (low-memory mode)")
 		embedder = NewHashEmbedder(defaultDim)
 	} else {
-		embedder = initEmbedder(defaultDim)
+		// Use mode-aware embedder factory
+		embedder, err = InitEmbedderForMode(modeConfig, costTracker)
+		if err != nil {
+			logger.Error("failed to initialize embedder", "error", err)
+			// Fall back to hash embedder
+			logger.Warn("falling back to hash embedder")
+			embedder = NewHashEmbedder(defaultDim)
+		}
 	}
 
 	// Make initial capacity configurable for low-memory deployments
@@ -2350,7 +2617,7 @@ func main() {
 
 	// HTTP API with graceful shutdown
 	handler := newHTTPHandler(store, embedder, reranker, indexPath)
-	addr := ":8080"
+	addr := fmt.Sprintf(":%d", envInt("PORT", 8080))
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: handler,
