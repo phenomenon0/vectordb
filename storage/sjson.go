@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	"agentscope/sjson"
+	"github.com/phenomenon0/Agent-GO/sjson"
 )
 
 // Safe value extraction helpers - prevent panics from type mismatches

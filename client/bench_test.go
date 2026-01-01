@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"agentscope/sjson/codec"
+	"github.com/phenomenon0/Agent-GO/sjson/codec"
 )
 
 // generateQueryResponseData creates realistic query response data

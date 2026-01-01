@@ -3,7 +3,7 @@ package client
 import (
 	"fmt"
 
-	"agentscope/core"
+	"github.com/phenomenon0/Agent-GO/core"
 )
 
 // QueryTool is a simple AgentScope Tool that calls the vectordb Query API.

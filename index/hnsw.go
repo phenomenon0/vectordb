@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"sync"
 
-	"agentscope/vectordb/filter"
+	"github.com/phenomenon0/Agent-GO/vectordb/filter"
 	"github.com/coder/hnsw"
 )
 
@@ -145,9 +146,34 @@ func (h *HNSWIndex) Add(ctx context.Context, id uint64, vector []float32) error 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// Check if already exists
+	// Check if already exists and not deleted (tombstoned)
 	if _, exists := h.idToIdx[id]; exists {
-		return fmt.Errorf("vector with ID %d already exists", id)
+		if !h.deleted[id] {
+			return fmt.Errorf("vector with ID %d already exists", id)
+		}
+		// Vector was tombstoned - allow resurrection with new data
+		// Remove tombstone marker
+		delete(h.deleted, id)
+
+		// Make a copy to avoid external mutations
+		vecCopy := make([]float32, h.dim)
+		copy(vecCopy, vector)
+
+		// Update the vector in place in the graph (more efficient than Delete+Add)
+		h.graph.Update(id, vecCopy)
+
+		// Update stored vector
+		if h.quantizer != nil {
+			quantized, err := h.quantizer.Quantize(vecCopy)
+			if err != nil {
+				return fmt.Errorf("failed to quantize vector: %w", err)
+			}
+			h.quantizedData[id] = quantized
+		} else {
+			h.vectors[id] = vecCopy
+		}
+
+		return nil
 	}
 
 	// Check context cancellation
@@ -283,11 +309,11 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 			processed++
 		}
 
-		// Yield lock between batches to allow other operations
+		// Yield CPU between batches to allow other goroutines to run
+		// Note: We do NOT release the lock here as that would allow readers
+		// to see a partially-inserted batch (inconsistent state)
 		if i+batchSize < len(ids) {
-			h.mu.Unlock()
-			// Brief yield
-			h.mu.Lock()
+			runtime.Gosched()
 		}
 	}
 

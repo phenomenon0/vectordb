@@ -3,7 +3,7 @@ package index
 import (
 	"context"
 
-	"agentscope/vectordb/filter"
+	"github.com/phenomenon0/Agent-GO/vectordb/filter"
 )
 
 // Index is the core interface for vector indexes in VectorDB.

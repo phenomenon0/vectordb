@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"agentscope/vectordb/filter"
+	"github.com/phenomenon0/Agent-GO/vectordb/filter"
 )
 
 // TestHNSWFilteredSearch tests filtered search with HNSW index
