@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 
-	"agentscope/sjson"
+	"github.com/phenomenon0/Agent-GO/sjson"
 )
 
 // TensorRefBridge maps SJSON TensorRef ↔ VectorDB.

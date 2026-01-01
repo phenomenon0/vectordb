@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"agentscope/vectordb/sparse"
+	"github.com/phenomenon0/Agent-GO/vectordb/sparse"
 )
 
 // MigrationTool helps migrate from v1 (single-index) to v2 (multi-vector) collections

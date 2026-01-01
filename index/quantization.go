@@ -11,7 +11,7 @@ import (
 type QuantizationType int
 
 const (
-	QuantizationNone QuantizationType = iota
+	QuantizationNone       QuantizationType = iota
 	QuantizationFloat16                     // 16-bit floating point (50% memory)
 	QuantizationUint8                       // 8-bit unsigned integer (75% memory savings)
 	QuantizationProduct                     // Product Quantization (90%+ memory savings)
@@ -159,18 +159,18 @@ func float16ToFloat32(f16 uint16) float32 {
 
 // Uint8Quantizer quantizes to 8-bit unsigned integers using min-max scaling
 type Uint8Quantizer struct {
-	dim    int
-	min    []float32 // Min value per dimension (for dequantization)
-	max    []float32 // Max value per dimension (for dequantization)
+	dim     int
+	min     []float32 // Min value per dimension (for dequantization)
+	max     []float32 // Max value per dimension (for dequantization)
 	trained bool
 }
 
 // NewUint8Quantizer creates a new uint8 quantizer
 func NewUint8Quantizer(dim int) *Uint8Quantizer {
 	return &Uint8Quantizer{
-		dim:    dim,
-		min:    make([]float32, dim),
-		max:    make([]float32, dim),
+		dim:     dim,
+		min:     make([]float32, dim),
+		max:     make([]float32, dim),
 		trained: false,
 	}
 }
@@ -301,12 +301,12 @@ func (q *Uint8Quantizer) SetCodebook(min []float32, max []float32) error {
 
 // ProductQuantizer uses k-means clustering to quantize subvectors
 type ProductQuantizer struct {
-	dim         int     // Vector dimension
-	m           int     // Number of subvectors
-	ksub        int     // Codebook size per subvector (default: 256 for 8-bit codes)
-	dsub        int     // Dimension per subvector (dim / m)
-	codebooks   [][][]float32 // [m][ksub][dsub] - m codebooks, each with ksub centroids of dsub dimensions
-	trained     bool
+	dim       int           // Vector dimension
+	m         int           // Number of subvectors
+	ksub      int           // Codebook size per subvector (default: 256 for 8-bit codes)
+	dsub      int           // Dimension per subvector (dim / m)
+	codebooks [][][]float32 // [m][ksub][dsub] - m codebooks, each with ksub centroids of dsub dimensions
+	trained   bool
 }
 
 // NewProductQuantizer creates a new product quantizer
@@ -540,12 +540,12 @@ func euclideanDistanceSimple(a, b []float32) float32 {
 
 // QuantizationInfo contains metadata about quantization
 type QuantizationInfo struct {
-	Type           QuantizationType
-	OriginalSize   int // Bytes before quantization
-	CompressedSize int // Bytes after quantization
+	Type             QuantizationType
+	OriginalSize     int // Bytes before quantization
+	CompressedSize   int // Bytes after quantization
 	CompressionRatio float64
-	Dimension      int
-	VectorCount    int
+	Dimension        int
+	VectorCount      int
 }
 
 // GetQuantizationInfo calculates compression statistics
@@ -565,12 +565,12 @@ func GetQuantizationInfo(quantizer Quantizer, numVectors int) QuantizationInfo {
 	ratio := float64(originalSize) / float64(compressedSize)
 
 	return QuantizationInfo{
-		Type:           quantizer.Type(),
-		OriginalSize:   originalSize,
-		CompressedSize: compressedSize,
+		Type:             quantizer.Type(),
+		OriginalSize:     originalSize,
+		CompressedSize:   compressedSize,
 		CompressionRatio: ratio,
-		Dimension:      dim,
-		VectorCount:    numVectors,
+		Dimension:        dim,
+		VectorCount:      numVectors,
 	}
 }
 
@@ -612,7 +612,7 @@ func (q *BinaryQuantizer) Train(vectors []float32) error {
 	if len(vectors)%q.dim != 0 {
 		return fmt.Errorf("vector length must be multiple of dimension")
 	}
-	
+
 	numVectors := len(vectors) / q.dim
 	if numVectors < 10 {
 		return fmt.Errorf("need at least 10 vectors to train, got %d", numVectors)
@@ -626,7 +626,7 @@ func (q *BinaryQuantizer) Train(vectors []float32) error {
 		}
 		q.thresholds[d] = sum / float32(numVectors)
 	}
-	
+
 	q.trained = true
 	return nil
 }
@@ -643,7 +643,7 @@ func (q *BinaryQuantizer) Quantize(vectors []float32) ([]byte, error) {
 	for i := 0; i < numVectors; i++ {
 		vecStart := i * q.dim
 		outStart := i * bytesPerVec
-		
+
 		for d := 0; d < q.dim; d++ {
 			if vectors[vecStart+d] > q.thresholds[d] {
 				// Set bit d
@@ -669,7 +669,7 @@ func (q *BinaryQuantizer) Dequantize(data []byte) ([]float32, error) {
 	for i := 0; i < numVectors; i++ {
 		inStart := i * bytesPerVec
 		outStart := i * q.dim
-		
+
 		for d := 0; d < q.dim; d++ {
 			byteIdx := d / 8
 			bitIdx := uint(d % 8)
@@ -709,7 +709,7 @@ func HammingDistance(a, b []byte) int {
 	if len(a) != len(b) {
 		return -1
 	}
-	
+
 	dist := 0
 	for i := range a {
 		dist += popcount(a[i] ^ b[i])
@@ -724,14 +724,14 @@ func HammingDistanceBatch(query []byte, vectors []byte, bytesPerVec int) []int {
 	if len(vectors)%bytesPerVec != 0 {
 		return nil
 	}
-	
+
 	numVectors := len(vectors) / bytesPerVec
 	distances := make([]int, numVectors)
-	
+
 	// Process 8 bytes at a time using uint64
 	chunks := bytesPerVec / 8
 	_ = bytesPerVec % 8 // remainder handled in loop
-	
+
 	// Pre-convert query to uint64 chunks
 	queryChunks := make([]uint64, chunks)
 	for c := 0; c < chunks; c++ {
@@ -745,11 +745,11 @@ func HammingDistanceBatch(query []byte, vectors []byte, bytesPerVec int) []int {
 			uint64(query[offset+6])<<48 |
 			uint64(query[offset+7])<<56
 	}
-	
+
 	for i := 0; i < numVectors; i++ {
 		start := i * bytesPerVec
 		dist := 0
-		
+
 		// Process 8-byte chunks
 		for c := 0; c < chunks; c++ {
 			offset := start + c*8
@@ -761,18 +761,18 @@ func HammingDistanceBatch(query []byte, vectors []byte, bytesPerVec int) []int {
 				uint64(vectors[offset+5])<<40 |
 				uint64(vectors[offset+6])<<48 |
 				uint64(vectors[offset+7])<<56
-			
+
 			dist += popcount64(queryChunks[c] ^ vecChunk)
 		}
-		
+
 		// Handle remaining bytes
 		for j := chunks * 8; j < bytesPerVec; j++ {
 			dist += popcount(query[j] ^ vectors[start+j])
 		}
-		
+
 		distances[i] = dist
 	}
-	
+
 	return distances
 }
 
@@ -843,8 +843,8 @@ type RescoreCandidate struct {
 // BinaryIndex holds binary-quantized vectors for fast search
 type BinaryIndex struct {
 	quantizer   *BinaryQuantizer
-	binaryData  []byte              // All binary vectors concatenated
-	idMap       []uint64            // Maps index position to vector ID
+	binaryData  []byte   // All binary vectors concatenated
+	idMap       []uint64 // Maps index position to vector ID
 	bytesPerVec int
 }
 
@@ -868,7 +868,7 @@ func (idx *BinaryIndex) Add(id uint64, vector []float32) error {
 	if err != nil {
 		return err
 	}
-	
+
 	idx.binaryData = append(idx.binaryData, binary...)
 	idx.idMap = append(idx.idMap, id)
 	return nil
@@ -879,12 +879,12 @@ func (idx *BinaryIndex) AddBatch(ids []uint64, vectors []float32) error {
 	if len(vectors)%idx.quantizer.dim != 0 {
 		return fmt.Errorf("vectors length must be multiple of dimension")
 	}
-	
+
 	binary, err := idx.quantizer.Quantize(vectors)
 	if err != nil {
 		return err
 	}
-	
+
 	idx.binaryData = append(idx.binaryData, binary...)
 	idx.idMap = append(idx.idMap, ids...)
 	return nil
@@ -898,17 +898,17 @@ func (idx *BinaryIndex) Search(query []float32, k int) ([]BinarySearchResult, er
 	if err != nil {
 		return nil, err
 	}
-	
+
 	numVectors := len(idx.idMap)
 	if numVectors == 0 {
 		return nil, nil
 	}
-	
+
 	// For small indexes, use simple search
 	if numVectors < 10000 {
 		return idx.searchSimple(binaryQuery, k)
 	}
-	
+
 	// Parallel search for large indexes
 	return idx.searchParallel(binaryQuery, k)
 }
@@ -922,20 +922,20 @@ func (idx *BinaryIndex) searchParallel(binaryQuery []byte, k int) ([]BinarySearc
 	numVectors := len(idx.idMap)
 	numWorkers := runtime.NumCPU()
 	chunkSize := (numVectors + numWorkers - 1) / numWorkers
-	
+
 	// Each worker finds local top-k
 	type localResult struct {
 		results []BinarySearchResult
 	}
-	
+
 	var wg sync.WaitGroup
 	localResults := make([]localResult, numWorkers)
-	
+
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			
+
 			start := workerID * chunkSize
 			end := start + chunkSize
 			if end > numVectors {
@@ -944,16 +944,11 @@ func (idx *BinaryIndex) searchParallel(binaryQuery []byte, k int) ([]BinarySearc
 			if start >= end {
 				return
 			}
-			
+
 			// Compute distances for this chunk
 			chunkData := idx.binaryData[start*idx.bytesPerVec : end*idx.bytesPerVec]
 			distances := HammingDistanceBatch(binaryQuery, chunkData, idx.bytesPerVec)
-			
-			// Convert to absolute indices
-			for i := range distances {
-				distances[i] = distances[i] // distance stays same
-			}
-			
+
 			// Select local top-k
 			results := make([]BinarySearchResult, 0, k)
 			type idxDist struct {
@@ -964,7 +959,7 @@ func (idx *BinaryIndex) searchParallel(binaryQuery []byte, k int) ([]BinarySearc
 			for i, d := range distances {
 				pairs[i] = idxDist{idx: start + i, dist: d}
 			}
-			
+
 			for i := 0; i < k && i < len(pairs); i++ {
 				minIdx := i
 				for j := i + 1; j < len(pairs); j++ {
@@ -973,26 +968,26 @@ func (idx *BinaryIndex) searchParallel(binaryQuery []byte, k int) ([]BinarySearc
 					}
 				}
 				pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
-				
+
 				results = append(results, BinarySearchResult{
 					ID:              idx.idMap[pairs[i].idx],
 					HammingDistance: pairs[i].dist,
 					ApproxScore:     HammingToCosineSimilarity(pairs[i].dist, idx.quantizer.dim),
 				})
 			}
-			
+
 			localResults[workerID] = localResult{results: results}
 		}(w)
 	}
-	
+
 	wg.Wait()
-	
+
 	// Merge local results
 	allCandidates := make([]BinarySearchResult, 0, numWorkers*k)
 	for _, lr := range localResults {
 		allCandidates = append(allCandidates, lr.results...)
 	}
-	
+
 	// Final top-k selection
 	for i := 0; i < k && i < len(allCandidates); i++ {
 		minIdx := i
@@ -1003,7 +998,7 @@ func (idx *BinaryIndex) searchParallel(binaryQuery []byte, k int) ([]BinarySearc
 		}
 		allCandidates[i], allCandidates[minIdx] = allCandidates[minIdx], allCandidates[i]
 	}
-	
+
 	if k > len(allCandidates) {
 		k = len(allCandidates)
 	}
@@ -1019,7 +1014,7 @@ func (idx *BinaryIndex) selectTopK(distances []int, k int) []BinarySearchResult 
 	for i, d := range distances {
 		pairs[i] = idxDist{idx: i, dist: d}
 	}
-	
+
 	results := make([]BinarySearchResult, 0, k)
 	for i := 0; i < k && i < len(pairs); i++ {
 		minIdx := i
@@ -1029,7 +1024,7 @@ func (idx *BinaryIndex) selectTopK(distances []int, k int) []BinarySearchResult 
 			}
 		}
 		pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
-		
+
 		results = append(results, BinarySearchResult{
 			ID:              idx.idMap[pairs[i].idx],
 			HammingDistance: pairs[i].dist,

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"agentscope/sjson"
-	"agentscope/sjson/codec"
+	"github.com/phenomenon0/Agent-GO/sjson"
+	"github.com/phenomenon0/Agent-GO/sjson/codec"
 )
 
 // init registers a fast unmarshaler for QueryResponse.

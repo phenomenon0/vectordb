@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 
-	"agentscope/vectordb/filter"
+	"github.com/phenomenon0/Agent-GO/vectordb/filter"
 	"golang.org/x/sys/unix"
 )
 
@@ -58,9 +60,10 @@ type DiskANNIndex struct {
 	diskOffsetIndex map[uint64]int64  // ID -> disk offset for quantized data
 
 	// Mmap optimization settings
-	mmapReadOnly    bool // Use read-only mmap for searches (reduces memory)
-	prefetchEnabled bool // Enable prefetching for graph traversal
-	compactOnClose  bool // Compact deleted vectors on close
+	mmapReadOnly    bool  // Use read-only mmap for searches (reduces memory)
+	prefetchEnabled bool  // Enable prefetching for graph traversal
+	compactOnClose  bool  // Compact deleted vectors on close
+	maxMmapSize     int64 // Maximum mmap file size (default: 100GB)
 
 	// Offset index for unquantized vectors (faster lookups, O(1) instead of O(n))
 	unquantizedOffsetIndex map[uint64]int64
@@ -92,6 +95,17 @@ func NewDiskANNIndex(dim int, config map[string]interface{}) (Index, error) {
 	indexPath := GetConfigString(config, "index_path", "/tmp/diskann.idx")
 	metric := GetConfigString(config, "metric", "cosine")
 
+	// Validate index path to prevent path traversal attacks
+	indexPath = filepath.Clean(indexPath)
+	if strings.Contains(indexPath, "..") {
+		return nil, fmt.Errorf("invalid index path: path traversal not allowed")
+	}
+	// Ensure path is under allowed directories (either /tmp or current working dir)
+	if !strings.HasPrefix(indexPath, "/tmp/") && !strings.HasPrefix(indexPath, "./") && !filepath.IsAbs(indexPath) {
+		// For relative paths without ./, prepend ./
+		indexPath = "./" + indexPath
+	}
+
 	// Calculate LRU cache capacity: should be larger than memoryLimit to accommodate
 	// working set during graph searches. Use 3x memory limit as a reasonable default.
 	// This allows caching recently accessed disk vectors without thrashing.
@@ -102,6 +116,8 @@ func NewDiskANNIndex(dim int, config map[string]interface{}) (Index, error) {
 	// Parse additional mmap optimization config
 	prefetchEnabled := GetConfigBool(config, "prefetch_enabled", true)
 	compactOnClose := GetConfigBool(config, "compact_on_close", false)
+	// Default max mmap size: 100GB - prevents unbounded file growth
+	maxMmapSize := GetConfigInt64(config, "max_mmap_size", 100*1024*1024*1024)
 
 	idx := &DiskANNIndex{
 		dim:                    dim,
@@ -118,6 +134,7 @@ func NewDiskANNIndex(dim int, config map[string]interface{}) (Index, error) {
 		indexPath:              indexPath,
 		prefetchEnabled:        prefetchEnabled,
 		compactOnClose:         compactOnClose,
+		maxMmapSize:            maxMmapSize,
 		unquantizedOffsetIndex: make(map[uint64]int64),
 	}
 
@@ -362,6 +379,12 @@ func (d *DiskANNIndex) growMmap() error {
 
 	// Double the file size
 	newSize := int64(len(d.mmapData) * 2)
+
+	// Check against maximum allowed mmap size to prevent unbounded growth
+	if d.maxMmapSize > 0 && newSize > d.maxMmapSize {
+		return fmt.Errorf("mmap size limit exceeded: requested %d bytes, max allowed %d bytes", newSize, d.maxMmapSize)
+	}
+
 	if err := d.mmapFile.Truncate(newSize); err != nil {
 		return fmt.Errorf("failed to grow file: %w", err)
 	}
@@ -895,37 +918,92 @@ func (d *DiskANNIndex) Import(data []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	dataLen := len(data)
 	offset := 0
 
-	readUint32 := func() uint32 {
+	// Helper to safely read uint32 with bounds check
+	readUint32 := func() (uint32, error) {
+		if offset+4 > dataLen {
+			return 0, fmt.Errorf("data truncated at offset %d (need 4 bytes, have %d)", offset, dataLen-offset)
+		}
 		v := binary.LittleEndian.Uint32(data[offset:])
 		offset += 4
-		return v
+		return v, nil
 	}
 
-	readUint64 := func() uint64 {
+	// Helper to safely read uint64 with bounds check
+	readUint64 := func() (uint64, error) {
+		if offset+8 > dataLen {
+			return 0, fmt.Errorf("data truncated at offset %d (need 8 bytes, have %d)", offset, dataLen-offset)
+		}
 		v := binary.LittleEndian.Uint64(data[offset:])
 		offset += 8
-		return v
+		return v, nil
 	}
 
+	// Helper to safely read bytes with bounds check
+	readBytes := func(n int) ([]byte, error) {
+		if n < 0 || offset+n > dataLen {
+			return nil, fmt.Errorf("data truncated at offset %d (need %d bytes, have %d)", offset, n, dataLen-offset)
+		}
+		b := data[offset : offset+n]
+		offset += n
+		return b, nil
+	}
+
+	var err error
+	var v32 uint32
+
 	// Header
-	d.dim = int(readUint32())
-	d.count = int(readUint32())
-	d.memoryLimit = int(readUint32())
-	d.maxDegree = int(readUint32())
-	d.efConstruction = int(readUint32())
-	d.efSearch = int(readUint32())
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading dim: %w", err)
+	}
+	d.dim = int(v32)
+
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading count: %w", err)
+	}
+	d.count = int(v32)
+
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading memoryLimit: %w", err)
+	}
+	d.memoryLimit = int(v32)
+
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading maxDegree: %w", err)
+	}
+	d.maxDegree = int(v32)
+
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading efConstruction: %w", err)
+	}
+	d.efConstruction = int(v32)
+
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading efSearch: %w", err)
+	}
+	d.efSearch = int(v32)
 
 	// Metric
-	metricLen := int(readUint32())
-	d.metric = string(data[offset : offset+metricLen])
-	offset += metricLen
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading metric length: %w", err)
+	}
+	metricBytes, err := readBytes(int(v32))
+	if err != nil {
+		return fmt.Errorf("reading metric: %w", err)
+	}
+	d.metric = string(metricBytes)
 
 	// Index path
-	pathLen := int(readUint32())
-	d.indexPath = string(data[offset : offset+pathLen])
-	offset += pathLen
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading path length: %w", err)
+	}
+	pathBytes, err := readBytes(int(v32))
+	if err != nil {
+		return fmt.Errorf("reading path: %w", err)
+	}
+	d.indexPath = string(pathBytes)
 
 	// Reinitialize mmap with saved path
 	if err := d.initMmap(); err != nil {
@@ -933,23 +1011,63 @@ func (d *DiskANNIndex) Import(data []byte) error {
 	}
 
 	// Graph structure
-	graphSize := int(readUint32())
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading graph size: %w", err)
+	}
+	graphSize := int(v32)
+
+	// Sanity check to prevent excessive allocation
+	const maxGraphSize = 100_000_000
+	if graphSize < 0 || graphSize > maxGraphSize {
+		return fmt.Errorf("invalid graph size: %d (max %d)", graphSize, maxGraphSize)
+	}
+
 	d.graph = make(map[uint64][]uint64, graphSize)
 	for i := 0; i < graphSize; i++ {
-		id := readUint64()
-		neighborsCount := int(readUint32())
+		id, err := readUint64()
+		if err != nil {
+			return fmt.Errorf("reading graph node %d id: %w", i, err)
+		}
+
+		nc, err := readUint32()
+		if err != nil {
+			return fmt.Errorf("reading graph node %d neighbor count: %w", i, err)
+		}
+		neighborsCount := int(nc)
+
+		// Sanity check neighbor count
+		const maxNeighbors = 10000
+		if neighborsCount < 0 || neighborsCount > maxNeighbors {
+			return fmt.Errorf("invalid neighbor count for node %d: %d", i, neighborsCount)
+		}
+
 		neighbors := make([]uint64, neighborsCount)
 		for j := 0; j < neighborsCount; j++ {
-			neighbors[j] = readUint64()
+			neighbors[j], err = readUint64()
+			if err != nil {
+				return fmt.Errorf("reading graph node %d neighbor %d: %w", i, j, err)
+			}
 		}
 		d.graph[id] = neighbors
 	}
 
 	// Deleted set
-	deletedSize := int(readUint32())
+	if v32, err = readUint32(); err != nil {
+		return fmt.Errorf("reading deleted size: %w", err)
+	}
+	deletedSize := int(v32)
+
+	// Sanity check
+	if deletedSize < 0 || deletedSize > maxGraphSize {
+		return fmt.Errorf("invalid deleted size: %d", deletedSize)
+	}
+
 	d.deleted = make(map[uint64]bool, deletedSize)
 	for i := 0; i < deletedSize; i++ {
-		id := readUint64()
+		id, err := readUint64()
+		if err != nil {
+			return fmt.Errorf("reading deleted id %d: %w", i, err)
+		}
 		d.deleted[id] = true
 	}
 
@@ -1001,20 +1119,23 @@ func (d *DiskANNIndex) CompactStats() map[string]interface{} {
 
 // Close cleanly unmaps and closes the index file
 func (d *DiskANNIndex) Close() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Optionally compact before close
-	if d.compactOnClose && len(d.deleted) > 0 {
+	// Optionally compact before close (do this without holding the main lock
+	// since Compact() acquires its own lock)
+	if d.compactOnClose {
+		d.mu.Lock()
+		hasDeleted := len(d.deleted) > 0
 		d.mu.Unlock()
-		if _, err := d.Compact(context.Background()); err != nil {
-			d.mu.Lock()
-			// Log error but continue with close
-			fmt.Printf("compact on close failed: %v\n", err)
-		} else {
-			d.mu.Lock()
+
+		if hasDeleted {
+			if _, err := d.Compact(context.Background()); err != nil {
+				// Log error but continue with close
+				fmt.Printf("compact on close failed: %v\n", err)
+			}
 		}
 	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	if d.mmapData != nil {
 		if err := syscall.Munmap(d.mmapData); err != nil {

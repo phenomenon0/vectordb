@@ -10,7 +10,7 @@ import (
 	"sort"
 	"sync"
 
-	"agentscope/vectordb/filter"
+	"github.com/phenomenon0/Agent-GO/vectordb/filter"
 )
 
 // IVFIndex implements Inverted File index for large-scale vector search

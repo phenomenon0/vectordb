@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"agentscope/vectordb/sparse"
+	"github.com/phenomenon0/Agent-GO/vectordb/sparse"
 )
 
 func TestNewCollection_DenseOnly(t *testing.T) {

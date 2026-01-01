@@ -124,6 +124,24 @@ func GetConfigInt(config map[string]interface{}, key string, defaultValue int) i
 	return defaultValue
 }
 
+// GetConfigInt64 extracts an int64 from config map with default value
+func GetConfigInt64(config map[string]interface{}, key string, defaultValue int64) int64 {
+	if config == nil {
+		return defaultValue
+	}
+	if v, ok := config[key]; ok {
+		switch val := v.(type) {
+		case int64:
+			return val
+		case int:
+			return int64(val)
+		case float64:
+			return int64(val)
+		}
+	}
+	return defaultValue
+}
+
 // GetConfigFloat extracts a float from config map with default value
 func GetConfigFloat(config map[string]interface{}, key string, defaultValue float64) float64 {
 	if config == nil {

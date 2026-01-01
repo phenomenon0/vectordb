@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"agentscope/core"
+	"github.com/phenomenon0/Agent-GO/core"
 )
 
 func TestQueryToolHappyPath(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"agentscope/vectordb/sparse"
+	"github.com/phenomenon0/Agent-GO/vectordb/sparse"
 )
 
 func TestNewCollectionManager(t *testing.T) {

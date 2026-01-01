@@ -3,7 +3,7 @@ package client
 import (
 	"fmt"
 
-	"agentscope/core"
+	"github.com/phenomenon0/Agent-GO/core"
 )
 
 // InsertTool stores a single document in the vector database.
