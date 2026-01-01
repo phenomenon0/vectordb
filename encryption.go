@@ -280,18 +280,33 @@ func (em *EncryptionManager) RotateKey() error {
 
 	// Save old key for re-encryption
 	oldDataKey := em.dataKey
+	oldKeyMeta := *em.keyMeta // Copy old metadata for rollback
 	em.dataKey = newDataKey
+
+	// Backup old wrapped key before overwriting
+	wrappedKeyPath := filepath.Join(em.keyStorePath, "wrapped_key.bin")
+	oldWrappedKey, backupErr := os.ReadFile(wrappedKeyPath)
+	hasBackup := backupErr == nil
 
 	// Save new wrapped key
 	if err := em.saveWrappedKey(); err != nil {
 		em.dataKey = oldDataKey // Rollback
+		em.keyMeta = &oldKeyMeta
 		return fmt.Errorf("failed to save new wrapped key: %w", err)
 	}
 
 	// Update metadata
 	if err := em.saveKeyMetadata(); err != nil {
-		// Note: This is a partial failure state
-		return fmt.Errorf("failed to save key metadata: %w", err)
+		// Rollback: restore old wrapped key to maintain consistency
+		if hasBackup {
+			if restoreErr := os.WriteFile(wrappedKeyPath, oldWrappedKey, 0600); restoreErr != nil {
+				// Critical: both operations failed, log and return combined error
+				return fmt.Errorf("failed to save key metadata (%v) AND failed to restore old key (%v) - manual recovery required", err, restoreErr)
+			}
+		}
+		em.dataKey = oldDataKey
+		em.keyMeta = &oldKeyMeta
+		return fmt.Errorf("failed to save key metadata (rolled back): %w", err)
 	}
 
 	// Reinitialize cipher with new key

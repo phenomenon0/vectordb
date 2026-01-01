@@ -46,6 +46,9 @@ type ShardNode struct {
 }
 
 // DistributedVectorDB coordinates multiple vectordb shards
+// maxCollectionCacheSize limits the collection shard cache to prevent unbounded memory growth
+const maxCollectionCacheSize = 10000
+
 type DistributedVectorDB struct {
 	mu sync.RWMutex
 
@@ -56,7 +59,7 @@ type DistributedVectorDB struct {
 	// Shard topology: shardID -> nodes (primary + replicas)
 	shards map[int][]*ShardNode
 
-	// Collection -> ShardID mapping cache
+	// Collection -> ShardID mapping cache (limited to maxCollectionCacheSize entries)
 	collectionShards map[string]int
 
 	// HTTP client for inter-shard communication
@@ -207,12 +210,39 @@ func (d *DistributedVectorDB) getShardForCollection(collection string) int {
 	h.Write([]byte(collection))
 	shardID := int(h.Sum64() % uint64(d.numShards))
 
-	// Cache the result
+	// Cache the result (with size limit to prevent unbounded growth)
 	d.mu.Lock()
+	if len(d.collectionShards) >= maxCollectionCacheSize {
+		// Evict random entries when cache is full (simple eviction strategy)
+		count := 0
+		for k := range d.collectionShards {
+			delete(d.collectionShards, k)
+			count++
+			if count >= maxCollectionCacheSize/10 { // Evict 10%
+				break
+			}
+		}
+	}
 	d.collectionShards[collection] = shardID
 	d.mu.Unlock()
 
 	return shardID
+}
+
+// InvalidateCollectionCache removes a collection from the shard cache.
+// Call this when a collection is deleted or when shard topology changes.
+func (d *DistributedVectorDB) InvalidateCollectionCache(collection string) {
+	d.mu.Lock()
+	delete(d.collectionShards, collection)
+	d.mu.Unlock()
+}
+
+// ClearCollectionCache removes all entries from the collection shard cache.
+// Call this when numShards changes or during cluster reconfiguration.
+func (d *DistributedVectorDB) ClearCollectionCache() {
+	d.mu.Lock()
+	d.collectionShards = make(map[string]int)
+	d.mu.Unlock()
 }
 
 // selectNodeForWrite returns the primary node for a given shard

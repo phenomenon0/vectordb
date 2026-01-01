@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	vcollection "agentscope/vectordb/collection"
-	"agentscope/vectordb/sparse"
+	vcollection "github.com/phenomenon0/Agent-GO/vectordb/collection"
+	"github.com/phenomenon0/Agent-GO/vectordb/sparse"
 )
 
 // CollectionHTTPServer wraps CollectionManager for HTTP API access

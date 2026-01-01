@@ -22,12 +22,12 @@ import (
 	"time"
 	"unicode"
 
-	"agentscope/core"
-	"agentscope/tools"
-	"agentscope/vectordb/index"
-	"agentscope/vectordb/logging"
-	"agentscope/vectordb/storage"
-	"agentscope/vectordb/telemetry"
+	"github.com/phenomenon0/Agent-GO/core"
+	"github.com/phenomenon0/Agent-GO/tools"
+	"github.com/phenomenon0/Agent-GO/vectordb/index"
+	"github.com/phenomenon0/Agent-GO/vectordb/logging"
+	"github.com/phenomenon0/Agent-GO/vectordb/storage"
+	"github.com/phenomenon0/Agent-GO/vectordb/telemetry"
 )
 
 // ======================================================================================
@@ -85,6 +85,9 @@ type VectorStore struct {
 	// Replication
 	replicationMgr *ReplicationManager
 	replicas       []*ReplicaNode
+
+	// Recovery state
+	walReplayError error // Non-nil if WAL replay failed during load
 }
 
 func NewVectorStore(capacity int, dim int) *VectorStore {
@@ -197,7 +200,29 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 	}
 	idx, ok := vs.indexes[collection]
 	if !ok {
-		idx = vs.indexes["default"] // Fall back to default index
+		// Auto-create collection index if it doesn't exist (not for "default")
+		if collection != "default" {
+			// Enforce collection limit to prevent memory exhaustion
+			const MaxCollections = 1000
+			if len(vs.indexes) >= MaxCollections {
+				return "", fmt.Errorf("collection limit exceeded: maximum %d collections allowed", MaxCollections)
+			}
+
+			cfg := loadHNSWConfig()
+			newIdx, err := index.NewHNSWIndex(vs.Dim, map[string]interface{}{
+				"m":         cfg.M,
+				"ml":        cfg.Ml,
+				"ef_search": cfg.EfSearch,
+			})
+			if err == nil {
+				vs.indexes[collection] = newIdx
+				idx = newIdx
+			} else {
+				idx = vs.indexes["default"] // Fall back to default index on error
+			}
+		} else {
+			idx = vs.indexes["default"] // Fall back to default index
+		}
 	}
 	if idx != nil {
 		if err := idx.Add(context.Background(), hid, v); err != nil {
@@ -262,14 +287,24 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 			}
 		}
 		if idx, ok := vs.indexes[updateCollection]; ok && idx != nil {
-			_ = idx.Delete(context.Background(), hid) // Ignore error if not exists
+			// Delete errors are expected if item doesn't exist in index yet
+			if err := idx.Delete(context.Background(), hid); err != nil {
+				// Only log unexpected errors (not "not found" type errors)
+				if !isNotFoundError(err) {
+					fmt.Printf("warning: failed to delete from index for %s: %v\n", id, err)
+				}
+			}
 			if err := idx.Add(context.Background(), hid, v); err != nil {
 				// Log but continue - data is already updated in flat arrays
 				fmt.Printf("warning: failed to update index for %s: %v\n", id, err)
 			}
 		} else if idx := vs.indexes["default"]; idx != nil {
-			_ = idx.Delete(context.Background(), hid)
-			_ = idx.Add(context.Background(), hid, v)
+			if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
+				fmt.Printf("warning: failed to delete from default index for %s: %v\n", id, err)
+			}
+			if err := idx.Add(context.Background(), hid, v); err != nil {
+				fmt.Printf("warning: failed to add to default index for %s: %v\n", id, err)
+			}
 		}
 
 		if meta != nil {
@@ -309,7 +344,23 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	}
 	idx, ok := vs.indexes[collection]
 	if !ok {
-		idx = vs.indexes["default"]
+		// Auto-create collection index if it doesn't exist (not for "default")
+		if collection != "default" {
+			cfg := loadHNSWConfig()
+			newIdx, err := index.NewHNSWIndex(vs.Dim, map[string]interface{}{
+				"m":         cfg.M,
+				"ml":        cfg.Ml,
+				"ef_search": cfg.EfSearch,
+			})
+			if err == nil {
+				vs.indexes[collection] = newIdx
+				idx = newIdx
+			} else {
+				idx = vs.indexes["default"] // Fall back to default index on error
+			}
+		} else {
+			idx = vs.indexes["default"]
+		}
 	}
 	if idx != nil {
 		if err := idx.Add(context.Background(), hid, v); err != nil {
@@ -338,6 +389,17 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	return id, nil
 }
 
+// isNotFoundError checks if an error is a "not found" type error that can be safely ignored
+func isNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "not found") ||
+		strings.Contains(errStr, "not exist") ||
+		strings.Contains(errStr, "does not exist")
+}
+
 func (vs *VectorStore) Delete(id string) error {
 	vs.Lock()
 	defer vs.Unlock()
@@ -353,9 +415,13 @@ func (vs *VectorStore) Delete(id string) error {
 		delCollection = "default"
 	}
 	if idx, ok := vs.indexes[delCollection]; ok && idx != nil {
-		_ = idx.Delete(context.Background(), hid)
+		if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
+			fmt.Printf("warning: failed to delete from index for %s: %v\n", id, err)
+		}
 	} else if idx := vs.indexes["default"]; idx != nil {
-		_ = idx.Delete(context.Background(), hid)
+		if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
+			fmt.Printf("warning: failed to delete from default index for %s: %v\n", id, err)
+		}
 	}
 
 	vs.Deleted[hid] = true
@@ -370,8 +436,15 @@ func (vs *VectorStore) Delete(id string) error {
 }
 
 func (vs *VectorStore) Get(index int) []float32 {
+	if index < 0 || index >= vs.Count {
+		return nil
+	}
 	offset := index * vs.Dim
-	return vs.Data[offset : offset+vs.Dim]
+	end := offset + vs.Dim
+	if end > len(vs.Data) {
+		return nil
+	}
+	return vs.Data[offset:end]
 }
 
 func (vs *VectorStore) GetDoc(index int) string {
@@ -966,7 +1039,8 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			fmt.Printf("Rebuilt metadata index: %d documents indexed\n", vs.metaIndex.GetDocumentCount())
 		}
 		if err := replayWAL(vs); err != nil {
-			fmt.Printf("warning: WAL replay failed: %v\n", err)
+			fmt.Printf("WARNING: WAL replay failed: %v - some data may be lost!\n", err)
+			vs.walReplayError = err // Store error for inspection
 		}
 		return vs, true
 	}

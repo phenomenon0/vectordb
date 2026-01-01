@@ -534,23 +534,34 @@ func (tq *TenantQuota) GetQuota(tenantID string) int64 {
 // ===========================================================================================
 
 type tenantRateLimiter struct {
-	mu       sync.RWMutex
-	limiters map[string]*rateLimiter // tenantID -> rate limiter
-	rps      int
-	burst    int
-	window   time.Duration
+	mu         sync.RWMutex
+	limiters   map[string]*rateLimiter // tenantID -> rate limiter
+	lastAccess map[string]time.Time    // tenantID -> last access time
+	rps        int
+	burst      int
+	window     time.Duration
+	maxTenants int           // Maximum number of tenants to prevent memory exhaustion
+	cleanupAge time.Duration // Age after which inactive tenants are cleaned
 }
 
 func newTenantRateLimiter(rps, burst int, window time.Duration) *tenantRateLimiter {
-	return &tenantRateLimiter{
-		limiters: make(map[string]*rateLimiter),
-		rps:      rps,
-		burst:    burst,
-		window:   window,
+	trl := &tenantRateLimiter{
+		limiters:   make(map[string]*rateLimiter),
+		lastAccess: make(map[string]time.Time),
+		rps:        rps,
+		burst:      burst,
+		window:     window,
+		maxTenants: 10000,            // Limit to 10k tenants
+		cleanupAge: 30 * time.Minute, // Clean up tenants inactive for 30 minutes
 	}
+	// Start background cleanup
+	go trl.cleanupLoop()
+	return trl
 }
 
 func (trl *tenantRateLimiter) allow(tenantID string) bool {
+	now := time.Now()
+
 	trl.mu.RLock()
 	limiter, ok := trl.limiters[tenantID]
 	trl.mu.RUnlock()
@@ -560,9 +571,20 @@ func (trl *tenantRateLimiter) allow(tenantID string) bool {
 		// Double-check after acquiring write lock
 		limiter, ok = trl.limiters[tenantID]
 		if !ok {
+			// Enforce tenant limit to prevent memory exhaustion
+			if len(trl.limiters) >= trl.maxTenants {
+				trl.mu.Unlock()
+				return false // At capacity, deny new tenants
+			}
 			limiter = newRateLimiter(trl.rps, trl.burst, trl.window)
 			trl.limiters[tenantID] = limiter
+			trl.lastAccess[tenantID] = now
 		}
+		trl.mu.Unlock()
+	} else {
+		// Update last access time (write lock needed)
+		trl.mu.Lock()
+		trl.lastAccess[tenantID] = now
 		trl.mu.Unlock()
 	}
 
@@ -573,6 +595,31 @@ func (trl *tenantRateLimiter) setLimit(tenantID string, rps, burst int) {
 	trl.mu.Lock()
 	defer trl.mu.Unlock()
 	trl.limiters[tenantID] = newRateLimiter(rps, burst, trl.window)
+	trl.lastAccess[tenantID] = time.Now()
+}
+
+// cleanupLoop periodically removes inactive tenant limiters
+func (trl *tenantRateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		trl.cleanup()
+	}
+}
+
+// cleanup removes tenant limiters that haven't been accessed recently
+func (trl *tenantRateLimiter) cleanup() {
+	trl.mu.Lock()
+	defer trl.mu.Unlock()
+
+	cutoff := time.Now().Add(-trl.cleanupAge)
+	for tenantID, lastAccess := range trl.lastAccess {
+		if lastAccess.Before(cutoff) {
+			delete(trl.limiters, tenantID)
+			delete(trl.lastAccess, tenantID)
+		}
+	}
 }
 
 // ===========================================================================================

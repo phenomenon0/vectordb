@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"agentscope/vectordb/index"
+	"github.com/phenomenon0/Agent-GO/vectordb/index"
 )
 
 // CollectionConfig defines the configuration for a collection

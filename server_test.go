@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentscope/vectordb/client"
+	"github.com/phenomenon0/Agent-GO/vectordb/client"
 )
 
 func TestHTTPHandlersInsertQueryDelete(t *testing.T) {

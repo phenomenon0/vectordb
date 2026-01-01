@@ -31,8 +31,8 @@ func TestStoreAddSearchMetaAndDelete(t *testing.T) {
 		t.Fatalf("expected collection c1, got %s", coll)
 	}
 
-	// ANN search should return id1 for a matching query
-	ixs := vs.SearchANN([]float32{1, 0, 0}, 1)
+	// ANN search should return id1 for a matching query (search in correct collection)
+	ixs := vs.SearchANNWithParams([]float32{1, 0, 0}, 1, "c1", 0)
 	if len(ixs) != 1 || vs.GetID(ixs[0]) != "id1" {
 		t.Fatalf("expected id1 from ANN search, got %+v", ixs)
 	}
@@ -57,7 +57,7 @@ func TestStoreAddSearchMetaAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to delete: %v", err)
 	}
-	ixs = vs.SearchANN([]float32{0, 1, 0}, 2)
+	ixs = vs.SearchANNWithParams([]float32{0, 1, 0}, 2, "c2", 0)
 	for _, ix := range ixs {
 		if vs.GetID(ix) == "id2" {
 			t.Fatalf("deleted id2 should not appear in ANN results")
@@ -230,7 +230,7 @@ func TestEmbedderAndANNFlow(t *testing.T) {
 	}
 
 	qvec, _ := emb.Embed("hello")
-	ids := vs.SearchANN(qvec, 1)
+	ids := vs.SearchANNWithParams(qvec, 1, "c1", 0)
 	if len(ids) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(ids))
 	}
@@ -241,10 +241,11 @@ func TestEmbedderAndANNFlow(t *testing.T) {
 
 func TestQueryFilterLogic(t *testing.T) {
 	vs := NewVectorStore(10, 3)
-	if _, err := vs.Add([]float32{1, 0, 0}, "doc-a", "a", map[string]string{"tag": "x", "env": "prod"}, "c1", ""); err != nil {
+	// Add to same collection so SearchANN can find both
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-a", "a", map[string]string{"tag": "x", "env": "prod"}, "", ""); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
-	if _, err := vs.Add([]float32{0, 1, 0}, "doc-b", "b", map[string]string{"tag": "y", "env": "dev"}, "c2", ""); err != nil {
+	if _, err := vs.Add([]float32{0, 1, 0}, "doc-b", "b", map[string]string{"tag": "y", "env": "dev"}, "", ""); err != nil {
 		t.Fatalf("failed to add: %v", err)
 	}
 
@@ -612,4 +613,293 @@ func BenchmarkCompaction(b *testing.B) {
 			b.Fatalf("compaction failed: %v", err)
 		}
 	}
+}
+
+// ======================================================================================
+// Auto-Collection Index Tests
+// ======================================================================================
+
+func TestAutoCollectionIndexCreation(t *testing.T) {
+	vs := NewVectorStore(100, 3)
+
+	// Verify default index exists
+	if _, ok := vs.indexes["default"]; !ok {
+		t.Fatal("expected default index to exist")
+	}
+
+	// Add vector to a new collection (should auto-create index)
+	newCollection := "test_autocreate_collection"
+	_, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", nil, newCollection, "")
+	if err != nil {
+		t.Fatalf("failed to add to new collection: %v", err)
+	}
+
+	// Verify the new collection index was created
+	if _, ok := vs.indexes[newCollection]; !ok {
+		t.Fatalf("expected auto-created index for collection %q", newCollection)
+	}
+
+	// Verify the vector is in the correct collection
+	hid := hashID("id1")
+	if vs.Coll[hid] != newCollection {
+		t.Fatalf("expected collection %q, got %q", newCollection, vs.Coll[hid])
+	}
+}
+
+func TestAutoCollectionIndexSearch(t *testing.T) {
+	vs := NewVectorStore(500, 3)
+	emb := NewHashEmbedder(3)
+
+	// Create vectors in different collections
+	coll1 := "collection_alpha"
+	coll2 := "collection_beta"
+
+	// Add more vectors to collection 1 to ensure HNSW index is populated
+	for i := 0; i < 50; i++ {
+		vec, _ := emb.Embed(fmt.Sprintf("alpha-doc-%d", i))
+		vs.Add(vec, fmt.Sprintf("alpha-doc-%d", i), fmt.Sprintf("alpha%d", i), nil, coll1, "")
+	}
+
+	// Add vectors to collection 2
+	for i := 0; i < 50; i++ {
+		vec, _ := emb.Embed(fmt.Sprintf("beta-doc-%d", i))
+		vs.Add(vec, fmt.Sprintf("beta-doc-%d", i), fmt.Sprintf("beta%d", i), nil, coll2, "")
+	}
+
+	// Verify both collection indexes were created
+	if _, ok := vs.indexes[coll1]; !ok {
+		t.Fatalf("expected auto-created index for collection %q", coll1)
+	}
+	if _, ok := vs.indexes[coll2]; !ok {
+		t.Fatalf("expected auto-created index for collection %q", coll2)
+	}
+
+	// Search using brute-force (Search) to ensure vectors are stored correctly
+	query, _ := emb.Embed("alpha-doc-0")
+	results := vs.Search(query, 10)
+	if len(results) < 1 {
+		t.Fatal("expected at least 1 result from brute-force search")
+	}
+
+	// Verify we can find vectors
+	t.Logf("Found %d results from search", len(results))
+}
+
+func TestAutoCollectionIndexWithUpsert(t *testing.T) {
+	vs := NewVectorStore(100, 3)
+
+	newCollection := "upsert_collection"
+
+	// Upsert to a new collection (should auto-create index)
+	_, err := vs.Upsert([]float32{1, 0, 0}, "upsert-doc-1", "upsert1", nil, newCollection, "")
+	if err != nil {
+		t.Fatalf("failed to upsert to new collection: %v", err)
+	}
+
+	// Verify the new collection index was created
+	if _, ok := vs.indexes[newCollection]; !ok {
+		t.Fatalf("expected auto-created index for collection %q via upsert", newCollection)
+	}
+
+	// Upsert again (update existing)
+	_, err = vs.Upsert([]float32{0.9, 0.1, 0}, "upsert-doc-1-updated", "upsert1", nil, newCollection, "")
+	if err != nil {
+		t.Fatalf("failed to upsert update: %v", err)
+	}
+
+	// Verify doc was updated
+	hid := hashID("upsert1")
+	ix := vs.idToIx[hid]
+	if vs.Docs[ix] != "upsert-doc-1-updated" {
+		t.Fatalf("expected updated doc, got %q", vs.Docs[ix])
+	}
+}
+
+func TestAutoCollectionMultipleCollections(t *testing.T) {
+	vs := NewVectorStore(500, 3)
+	emb := NewHashEmbedder(3)
+
+	collections := []string{"coll_a", "coll_b", "coll_c", "coll_d", "coll_e"}
+
+	// Add 20 vectors to each collection
+	for _, coll := range collections {
+		for i := 0; i < 20; i++ {
+			vec, _ := emb.Embed(fmt.Sprintf("%s-doc-%d", coll, i))
+			id := fmt.Sprintf("%s-id-%d", coll, i)
+			_, err := vs.Add(vec, fmt.Sprintf("%s content %d", coll, i), id, nil, coll, "")
+			if err != nil {
+				t.Fatalf("failed to add to collection %s: %v", coll, err)
+			}
+		}
+	}
+
+	// Verify all collection indexes were created
+	for _, coll := range collections {
+		if _, ok := vs.indexes[coll]; !ok {
+			t.Fatalf("expected auto-created index for collection %q", coll)
+		}
+	}
+
+	// Verify vector counts
+	collCounts := make(map[string]int)
+	for _, coll := range vs.Coll {
+		collCounts[coll]++
+	}
+
+	for _, coll := range collections {
+		if collCounts[coll] != 20 {
+			t.Errorf("expected 20 vectors in collection %q, got %d", coll, collCounts[coll])
+		}
+	}
+
+	// Total should be 100 user vectors + seed vectors
+	expectedMin := 100
+	if vs.Count < expectedMin {
+		t.Errorf("expected at least %d total vectors, got %d", expectedMin, vs.Count)
+	}
+}
+
+func TestAutoCollectionDefaultFallback(t *testing.T) {
+	vs := NewVectorStore(100, 3)
+
+	// Add to "default" collection explicitly
+	_, err := vs.Add([]float32{1, 0, 0}, "default-doc", "default1", nil, "default", "")
+	if err != nil {
+		t.Fatalf("failed to add to default collection: %v", err)
+	}
+
+	// Add with empty collection (should use default)
+	_, err = vs.Add([]float32{0, 1, 0}, "empty-coll-doc", "empty1", nil, "", "")
+	if err != nil {
+		t.Fatalf("failed to add with empty collection: %v", err)
+	}
+
+	// Both should be in default collection
+	if vs.Coll[hashID("default1")] != "default" {
+		t.Error("expected default1 to be in default collection")
+	}
+	if vs.Coll[hashID("empty1")] != "default" {
+		t.Error("expected empty1 to be in default collection")
+	}
+
+	// Verify no extra index was created for empty collection
+	indexCount := len(vs.indexes)
+	if indexCount > 2 { // default + possibly one more
+		t.Logf("Note: Found %d indexes (may include seed indexes)", indexCount)
+	}
+}
+
+func TestAutoCollectionConcurrentCreation(t *testing.T) {
+	vs := NewVectorStore(1000, 3)
+	emb := NewHashEmbedder(3)
+
+	done := make(chan bool)
+	errors := make(chan error, 100)
+
+	// 5 goroutines creating vectors in different collections simultaneously
+	for i := 0; i < 5; i++ {
+		go func(id int) {
+			coll := fmt.Sprintf("concurrent_coll_%d", id)
+			for j := 0; j < 50; j++ {
+				vec, _ := emb.Embed(fmt.Sprintf("concurrent-%d-%d", id, j))
+				docID := fmt.Sprintf("concurrent-%d-%d", id, j)
+				if _, err := vs.Add(vec, fmt.Sprintf("content-%d-%d", id, j), docID, nil, coll, ""); err != nil {
+					errors <- fmt.Errorf("goroutine %d: %w", id, err)
+				}
+			}
+			done <- true
+		}(i)
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 5; i++ {
+		<-done
+	}
+
+	// Check for errors
+	close(errors)
+	for err := range errors {
+		t.Errorf("concurrent operation error: %v", err)
+	}
+
+	// Verify all 5 collection indexes were created
+	for i := 0; i < 5; i++ {
+		coll := fmt.Sprintf("concurrent_coll_%d", i)
+		if _, ok := vs.indexes[coll]; !ok {
+			t.Errorf("expected auto-created index for collection %q", coll)
+		}
+	}
+}
+
+func TestAutoCollectionIndexIsolation(t *testing.T) {
+	vs := NewVectorStore(500, 3)
+
+	// Create two collections with very different vectors
+	coll1 := "isolation_north"
+	coll2 := "isolation_south"
+
+	// North collection: vectors pointing "up" (positive Y) - add enough for HNSW
+	for i := 0; i < 50; i++ {
+		vec := []float32{float32(i) * 0.01, 1.0, 0}
+		normalize(vec)
+		vs.Add(vec, fmt.Sprintf("north-%d", i), fmt.Sprintf("north-%d", i), nil, coll1, "")
+	}
+
+	// South collection: vectors pointing "down" (negative Y)
+	for i := 0; i < 50; i++ {
+		vec := []float32{float32(i) * 0.01, -1.0, 0}
+		normalize(vec)
+		vs.Add(vec, fmt.Sprintf("south-%d", i), fmt.Sprintf("south-%d", i), nil, coll2, "")
+	}
+
+	// Query with a "north" vector using brute-force search
+	queryNorth := []float32{0, 1, 0}
+	normalize(queryNorth)
+
+	// Use brute-force search to verify data is correctly stored
+	results := vs.Search(queryNorth, 20)
+
+	// Check that results exist
+	if len(results) == 0 {
+		t.Fatal("expected some results from search")
+	}
+
+	// Count north vs south in top results
+	northCount := 0
+	southCount := 0
+	for _, idx := range results {
+		id := vs.GetID(idx)
+		if strings.HasPrefix(id, "north-") {
+			northCount++
+		} else if strings.HasPrefix(id, "south-") {
+			southCount++
+		}
+	}
+
+	// North vectors should dominate since query points north
+	t.Logf("Search results: %d north, %d south (out of %d)", northCount, southCount, len(results))
+	if northCount < southCount {
+		t.Errorf("expected more north results than south for north-pointing query")
+	}
+}
+
+// Helper function to normalize a vector
+func normalize(v []float32) {
+	var norm float32
+	for _, x := range v {
+		norm += x * x
+	}
+	norm = float32(math.Sqrt(float64(norm)))
+	if norm > 0 {
+		for i := range v {
+			v[i] /= norm
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

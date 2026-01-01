@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"agentscope/transport"
+	"github.com/phenomenon0/Agent-GO/transport"
 )
 
 // =============================================================================

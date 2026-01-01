@@ -15,16 +15,31 @@ import (
 	"strings"
 	"time"
 
-	"agentscope/sjson/codec"
-	"agentscope/vectordb/index"
-	"agentscope/vectordb/logging"
-	"agentscope/vectordb/telemetry"
+	"github.com/phenomenon0/Agent-GO/sjson/codec"
+	"github.com/phenomenon0/Agent-GO/vectordb/index"
+	"github.com/phenomenon0/Agent-GO/vectordb/logging"
+	"github.com/phenomenon0/Agent-GO/vectordb/telemetry"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 //go:embed web-ui/dist
 var webUIFS embed.FS
+
+// isValidCollectionName checks if a collection name contains only allowed characters.
+// Valid names: 1-64 characters, alphanumeric, underscores, hyphens.
+func isValidCollectionName(name string) bool {
+	if len(name) == 0 || len(name) > 64 {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
 
 // encodeResponse encodes v using the codec preferred by the client (Accept header).
 // SJSON is used when Accept: application/sjson is present, JSON otherwise.
@@ -240,6 +255,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if req.Collection == "" {
 			req.Collection = "default"
 		}
+		// Validate collection name to prevent issues with special characters
+		if !isValidCollectionName(req.Collection) {
+			http.Error(w, "invalid collection name: must be 1-64 alphanumeric characters, underscores, or hyphens", http.StatusBadRequest)
+			return
+		}
 		if !tenantCtx.IsAdmin && len(tenantCtx.Collections) > 0 && !tenantCtx.Collections[req.Collection] {
 			http.Error(w, fmt.Sprintf("forbidden: no access to collection '%s'", req.Collection), http.StatusForbidden)
 			return
@@ -321,10 +341,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		const (
-			MaxDocLength       = 1_000_000 // 1MB
+			MaxDocLength       = 1_000_000 // 1MB per doc
 			MaxMetaKeys        = 100
 			MaxMetaValueLength = 10_000
 			MaxBatchSize       = 10_000
+			MaxTotalBatchBytes = 100_000_000 // 100MB total batch limit
 		)
 
 		if len(req.Docs) == 0 {
@@ -334,6 +355,16 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if len(req.Docs) > MaxBatchSize {
 			http.Error(w, fmt.Sprintf("batch too large: max %d docs", MaxBatchSize), http.StatusBadRequest)
 			return
+		}
+
+		// Check total batch size to prevent memory exhaustion
+		var totalBytes int64
+		for _, d := range req.Docs {
+			totalBytes += int64(len(d.Doc))
+			if totalBytes > MaxTotalBatchBytes {
+				http.Error(w, fmt.Sprintf("batch total size exceeds limit: max %d bytes", MaxTotalBatchBytes), http.StatusBadRequest)
+				return
+			}
 		}
 
 		ids := make([]string, 0, len(req.Docs))
@@ -754,11 +785,14 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		nextPage := ""
 		if end < len(respIDs) {
 			var lastSeq uint64
-			lastIdx := ids[end-1]
-			if lastIdx < len(store.Seqs) {
-				lastSeq = store.Seqs[lastIdx]
-			} else {
-				lastSeq = uint64(lastIdx)
+			// Bounds check: ensure end-1 is valid for the ids slice
+			if end > 0 && end-1 < len(ids) {
+				lastIdx := ids[end-1]
+				if lastIdx < len(store.Seqs) {
+					lastSeq = store.Seqs[lastIdx]
+				} else {
+					lastSeq = uint64(lastIdx)
+				}
 			}
 			nextPage = encodePageToken(offset+pageSize, hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode), lastSeq)
 		}
@@ -1311,20 +1345,84 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 		store.RUnlock()
 
-		// Replace store atomically
+		// Replace store atomically - swap data fields individually to avoid copying mutex
 		store.Lock()
-		oldStore := *store
-		*store = *newStore
-		store.walPath = oldStore.walPath
-		store.apiToken = oldStore.apiToken
-		store.rl = oldStore.rl
+		// Save old state for potential rollback (data fields only, not mutex)
+		oldData := store.Data
+		oldDim := store.Dim
+		oldCount := store.Count
+		oldDocs := store.Docs
+		oldIDs := store.IDs
+		oldSeqs := store.Seqs
+		oldNext := store.next
+		oldIndexes := store.indexes
+		oldIdToIx := store.idToIx
+		oldMeta := store.Meta
+		oldDeleted := store.Deleted
+		oldColl := store.Coll
+		oldNumMeta := store.NumMeta
+		oldTimeMeta := store.TimeMeta
+		oldNumIndex := store.numIndex
+		oldTimeIndex := store.timeIndex
+		oldLexTF := store.lexTF
+		oldDocLen := store.docLen
+		oldDF := store.df
+		oldSumDocL := store.sumDocL
+		oldTenantID := store.TenantID
+		oldMetaIndex := store.metaIndex
+
+		// Copy data from newStore (preserving store's mutex and config fields)
+		store.Data = newStore.Data
+		store.Dim = newStore.Dim
+		store.Count = newStore.Count
+		store.Docs = newStore.Docs
+		store.IDs = newStore.IDs
+		store.Seqs = newStore.Seqs
+		store.next = newStore.next
+		store.indexes = newStore.indexes
+		store.idToIx = newStore.idToIx
+		store.Meta = newStore.Meta
+		store.Deleted = newStore.Deleted
+		store.Coll = newStore.Coll
+		store.NumMeta = newStore.NumMeta
+		store.TimeMeta = newStore.TimeMeta
+		store.numIndex = newStore.numIndex
+		store.timeIndex = newStore.timeIndex
+		store.lexTF = newStore.lexTF
+		store.docLen = newStore.docLen
+		store.df = newStore.df
+		store.sumDocL = newStore.sumDocL
+		store.TenantID = newStore.TenantID
+		store.metaIndex = newStore.metaIndex
+		// Note: walPath, apiToken, rl, acl, quotas, etc. are preserved from old store
 		store.Unlock()
 
 		// Save new store
 		if err := store.Save(indexPath); err != nil {
-			// Rollback on failure
+			// Rollback on failure - restore old data fields
 			store.Lock()
-			*store = oldStore
+			store.Data = oldData
+			store.Dim = oldDim
+			store.Count = oldCount
+			store.Docs = oldDocs
+			store.IDs = oldIDs
+			store.Seqs = oldSeqs
+			store.next = oldNext
+			store.indexes = oldIndexes
+			store.idToIx = oldIdToIx
+			store.Meta = oldMeta
+			store.Deleted = oldDeleted
+			store.Coll = oldColl
+			store.NumMeta = oldNumMeta
+			store.TimeMeta = oldTimeMeta
+			store.numIndex = oldNumIndex
+			store.timeIndex = oldTimeIndex
+			store.lexTF = oldLexTF
+			store.docLen = oldDocLen
+			store.df = oldDF
+			store.sumDocL = oldSumDocL
+			store.TenantID = oldTenantID
+			store.metaIndex = oldMetaIndex
 			store.Unlock()
 			http.Error(w, fmt.Sprintf("import failed, rolled back: %v", err), http.StatusInternalServerError)
 			os.Remove(backupPath)
@@ -1656,6 +1754,21 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Initialize collection HTTP server for multi-vector support
 	collectionHTTP := NewCollectionHTTPServer(indexPath + ".collections")
 	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
+
+	// ==========================================================================
+	// FEEDBACK API ENDPOINTS (v2)
+	// ==========================================================================
+	// Enables relevance feedback collection and boost-based re-ranking
+	// Endpoints: /v2/feedback, /v2/feedback/batch, /v2/feedback/stats,
+	//            /v2/feedback/boosts, /v2/feedback/implicit, /v2/interaction
+	RegisterFeedbackHandlers(mux)
+
+	// ==========================================================================
+	// KNOWLEDGE GRAPH EXTRACTION API ENDPOINTS (v2)
+	// ==========================================================================
+	// LLM-based entity/relationship extraction from text
+	// Endpoints: /v2/extract, /v2/extract/batch, /v2/extract/temporal, /v2/extract/status
+	RegisterExtractionHandlers(mux)
 
 	// ==========================================================================
 	// MODE & COST TRACKING API ENDPOINTS

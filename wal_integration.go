@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"agentscope/vectordb/wal"
+	"github.com/phenomenon0/Agent-GO/vectordb/wal"
 )
 
 // WALAdapter bridges the VectorStore with the new WAL package.

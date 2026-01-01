@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"agentscope/vectordb/index"
+	"github.com/phenomenon0/Agent-GO/vectordb/index"
 )
 
 // =============================================================================
