@@ -189,7 +189,8 @@ func (le *LeaderElector) checkShard(shardID int) {
 	}
 }
 
-// triggerElection initiates a leader election for a shard
+// triggerElection initiates a leader election for a shard.
+// IMPORTANT: Caller must hold state.mu lock. This function releases and re-acquires the lock.
 func (le *LeaderElector) triggerElection(state *LeadershipState) {
 	if state.ElectionState == PhaseElecting {
 		return // Already electing
@@ -198,29 +199,26 @@ func (le *LeaderElector) triggerElection(state *LeadershipState) {
 	state.ElectionState = PhaseElecting
 	state.LeaderEpoch++
 	newEpoch := state.LeaderEpoch
+	shardID := state.ShardID
 
-	fmt.Printf("[LeaderElection] Shard %d: Starting election (epoch %d)\n", state.ShardID, newEpoch)
+	fmt.Printf("[LeaderElection] Shard %d: Starting election (epoch %d)\n", shardID, newEpoch)
 
-	// Release lock for election (to allow other operations)
+	// Release lock for election (to allow other operations during network call)
 	state.mu.Unlock()
-	defer state.mu.Lock()
 
-	// Request quorum approval for becoming leader
+	// Request quorum approval for becoming leader (outside lock)
 	ctx, cancel := context.WithTimeout(le.ctx, le.config.ElectionTimeout)
-	defer cancel()
+	approved, err := le.requestLeadershipVote(ctx, shardID, newEpoch)
+	cancel()
 
-	// Build vote request
-	approved, err := le.requestLeadershipVote(ctx, state.ShardID, newEpoch)
-
-	// Re-acquire lock and update state
+	// Re-acquire lock before modifying state
 	state.mu.Lock()
 
 	if err != nil || !approved {
 		fmt.Printf("[LeaderElection] Shard %d: Election failed (epoch %d): %v\n",
-			state.ShardID, newEpoch, err)
+			shardID, newEpoch, err)
 		state.ElectionState = PhaseStable
-		state.mu.Unlock()
-		return
+		return // Caller still holds lock
 	}
 
 	// We won the election!
@@ -231,12 +229,11 @@ func (le *LeaderElector) triggerElection(state *LeadershipState) {
 	state.LastHeartbeat = time.Now()
 
 	fmt.Printf("[LeaderElection] Shard %d: Elected as leader (epoch %d, lease until %v)\n",
-		state.ShardID, newEpoch, state.LeaseExpiry.Format(time.RFC3339))
+		shardID, newEpoch, state.LeaseExpiry.Format(time.RFC3339))
 
-	// Update coordinator routing
-	le.updateCoordinatorRole(state.ShardID, le.nodeID, RolePrimary)
-
-	state.mu.Unlock()
+	// Update coordinator routing (still holding lock, which is fine for this operation)
+	le.updateCoordinatorRole(shardID, le.nodeID, RolePrimary)
+	// Caller still holds lock on return
 }
 
 // requestLeadershipVote requests quorum approval for leadership
