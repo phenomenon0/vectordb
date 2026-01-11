@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/phenomenon0/Agent-GO/vectordb/filter"
 	"github.com/coder/hnsw"
+	"github.com/phenomenon0/Agent-GO/vectordb/filter"
 )
 
 // HNSWIndex wraps the github.com/coder/hnsw implementation
