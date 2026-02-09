@@ -1180,13 +1180,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			issues = append(issues, "no index available")
 		}
 
-		// Check 2: Embedder is functional (quick test)
-		if embedder != nil {
-			_, err := embedder.Embed("health check")
-			if err != nil {
-				issues = append(issues, fmt.Sprintf("embedder error: %v", err))
-			}
-		} else {
+		// Check 2: Embedder is initialized.
+		// Avoid live embedding calls in readiness probes to prevent external dependency/cost spikes.
+		if embedder == nil {
 			issues = append(issues, "embedder not initialized")
 		}
 
@@ -1195,7 +1191,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ready":   true,
-				"checks":  []string{"store", "index", "embedder"},
+				"checks":  []string{"store", "index", "embedder_initialized"},
 				"version": "1.0.0",
 			})
 		} else {
@@ -1885,9 +1881,19 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	})
 
 	// POST /api/embed - Embed a single text using server-side embedder
-	mux.HandleFunc("/api/embed", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/embed", withMetrics("embed", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		if !tenantCtx.Permissions["read"] && !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: read permission required", http.StatusForbidden)
 			return
 		}
 
@@ -1915,12 +1921,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"embedding": vec,
 			"dimension": len(vec),
 		})
-	})
+	})))
 
 	// POST /api/embed/batch - Embed multiple texts using server-side embedder
-	mux.HandleFunc("/api/embed/batch", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/embed/batch", withMetrics("embed_batch", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		if !tenantCtx.Permissions["read"] && !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: read permission required", http.StatusForbidden)
 			return
 		}
 
@@ -1953,7 +1969,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"count":      len(embeddings),
 			"dimension":  len(embeddings[0]),
 		})
-	})
+	})))
 
 	// ==========================================================================
 	// INDEX MANAGEMENT API ENDPOINTS
@@ -2080,23 +2096,48 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// This adds automatic span creation for all HTTP requests
 	otelMiddleware := telemetry.HTTPMiddleware()
 
-	// Wrap with CORS middleware to allow browser requests from different origins
+	// Wrap with CORS middleware to allow browser requests from different origins.
+	// Default: wildcard without credentials.
+	// To allow credentialed requests, set CORS_ALLOWED_ORIGINS to a comma-separated allowlist.
+	corsAllowedOriginsRaw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	corsAllowAllOrigins := corsAllowedOriginsRaw == ""
+	corsAllowedOrigins := make(map[string]struct{})
+	if !corsAllowAllOrigins {
+		for _, item := range strings.Split(corsAllowedOriginsRaw, ",") {
+			origin := strings.TrimSpace(item)
+			if origin == "" {
+				continue
+			}
+			if origin == "*" {
+				corsAllowAllOrigins = true
+				corsAllowedOrigins = map[string]struct{}{}
+				break
+			}
+			corsAllowedOrigins[origin] = struct{}{}
+		}
+	}
 	corsMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Allow requests from any origin (for development)
-			// In production, you may want to restrict this to specific origins
-			origin := r.Header.Get("Origin")
-			if origin == "" {
-				origin = "*"
+			origin := strings.TrimSpace(r.Header.Get("Origin"))
+			if corsAllowAllOrigins {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else if origin != "" {
+				if _, ok := corsAllowedOrigins[origin]; ok {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+					w.Header().Add("Vary", "Origin")
+				} else if r.Method == http.MethodOptions {
+					http.Error(w, "forbidden origin", http.StatusForbidden)
+					return
+				}
 			}
-			w.Header().Set("Access-Control-Allow-Origin", origin)
+
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 
 			// Handle preflight OPTIONS requests
-			if r.Method == "OPTIONS" {
+			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusOK)
 				return
 			}

@@ -762,17 +762,17 @@ func (vs *VectorStore) ejectMeta(hid uint64) {
 // Persistence snapshot.
 func (vs *VectorStore) Save(path string) error {
 	vs.RLock()
-	defer vs.RUnlock()
 
 	tmp := path + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		vs.RUnlock()
 		return err
 	}
 	f, err := os.Create(tmp)
 	if err != nil {
+		vs.RUnlock()
 		return err
 	}
-	defer f.Close()
 
 	// Export indexes
 	indexData := make(map[string][]byte)
@@ -815,15 +815,28 @@ func (vs *VectorStore) Save(path string) error {
 	}
 
 	if err := format.Save(f, payload); err != nil {
+		_ = f.Close()
+		vs.RUnlock()
 		return err
 	}
 	if err := f.Close(); err != nil {
+		vs.RUnlock()
 		return err
 	}
-	vs.checksum = vs.computeChecksum()
-	vs.lastSaved = payload.LastSaved
-	if vs.walPath != "" {
-		_ = os.Remove(vs.walPath)
+
+	// Capture snapshot metadata while under read lock, then update mutable fields under write lock.
+	newChecksum := vs.computeChecksum()
+	lastSaved := payload.LastSaved
+	walPath := vs.walPath
+	vs.RUnlock()
+
+	vs.Lock()
+	vs.checksum = newChecksum
+	vs.lastSaved = lastSaved
+	vs.Unlock()
+
+	if walPath != "" {
+		_ = os.Remove(walPath)
 	}
 	return os.Rename(tmp, path)
 }

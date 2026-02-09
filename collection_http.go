@@ -428,6 +428,7 @@ type SearchRequest struct {
 	CollectionName string                          `json:"collection"`
 	Queries        map[string]interface{}          `json:"queries"` // field name -> query vector
 	TopK           int                             `json:"top_k"`
+	Offset         int                             `json:"offset,omitempty"`
 	Filters        map[string]interface{}          `json:"filters,omitempty"`
 	HybridParams   *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
 }
@@ -458,6 +459,15 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 
 	if req.TopK <= 0 {
 		req.TopK = 10
+	}
+	if req.Offset < 0 {
+		http.Error(w, "offset must be >= 0", http.StatusBadRequest)
+		return
+	}
+	effectiveTopK := req.TopK + req.Offset
+	if effectiveTopK < req.TopK { // overflow guard
+		http.Error(w, "invalid top_k/offset combination", http.StatusBadRequest)
+		return
 	}
 
 	// Convert query vectors to proper format (same logic as insert)
@@ -517,7 +527,7 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 	searchReq := vcollection.SearchRequest{
 		CollectionName: req.CollectionName,
 		Queries:        queries,
-		TopK:           req.TopK,
+		TopK:           effectiveTopK,
 		Filters:        req.Filters,
 		HybridParams:   req.HybridParams,
 	}
@@ -530,12 +540,39 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Apply offset pagination at HTTP layer.
+	// Collection engine currently supports top-k only, so we overfetch (top_k+offset)
+	// then trim to the requested page.
+	documents := resp.Documents
+	scores := resp.Scores
+	if req.Offset > 0 {
+		if req.Offset >= len(documents) {
+			documents = []vcollection.Document{}
+			scores = []float32{}
+		} else {
+			end := req.Offset + req.TopK
+			if end > len(documents) {
+				end = len(documents)
+			}
+			documents = documents[req.Offset:end]
+			if req.Offset < len(scores) {
+				scoreEnd := end
+				if scoreEnd > len(scores) {
+					scoreEnd = len(scores)
+				}
+				scores = scores[req.Offset:scoreEnd]
+			} else {
+				scores = []float32{}
+			}
+		}
+	}
+
 	// Return results
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":              "success",
-		"documents":           resp.Documents,
-		"scores":              resp.Scores,
+		"documents":           documents,
+		"scores":              scores,
 		"candidates_examined": resp.CandidatesExamined,
 	})
 }
