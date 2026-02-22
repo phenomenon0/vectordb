@@ -345,7 +345,7 @@ func float16ToFloat32(h uint16) float32 {
 	return math.Float32frombits(bits)
 }
 
-// Serialization helpers for SJSON integration
+// Serialization helpers for Cowrie integration
 
 // MarshalBinary encodes VectorData to binary format for storage
 func (vd *VectorData) MarshalBinary() ([]byte, error) {

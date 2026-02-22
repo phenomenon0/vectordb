@@ -1,5 +1,5 @@
 // Package storage provides pluggable storage formats for VectorStore persistence.
-// Supports gob (default, backward compatible) and sjson (optimized for embeddings).
+// Supports gob (default, backward compatible) and cowrie (optimized for embeddings).
 package storage
 
 import (
@@ -37,10 +37,10 @@ type Payload struct {
 
 // Format defines the interface for storage format implementations.
 type Format interface {
-	// Name returns the format identifier (e.g., "gob", "sjson")
+	// Name returns the format identifier (e.g., "gob", "cowrie")
 	Name() string
 
-	// Extension returns the file extension (e.g., ".gob", ".sjson")
+	// Extension returns the file extension (e.g., ".gob", ".cowrie")
 	Extension() string
 
 	// Save writes the payload to the writer
@@ -63,14 +63,14 @@ func Get(name string) Format {
 	return registry[name]
 }
 
-// Default returns the default storage format (sjson with compression for efficiency).
+// Default returns the default storage format (cowrie with compression for efficiency).
 // For backward compatibility with existing gob files, use Get("gob").
 func Default() Format {
-	if f := registry["sjson-zstd"]; f != nil {
+	if f := registry["cowrie-zstd"]; f != nil {
 		return f
 	}
-	// Fallback to uncompressed sjson, then gob
-	if f := registry["sjson"]; f != nil {
+	// Fallback to uncompressed cowrie, then gob
+	if f := registry["cowrie"]; f != nil {
 		return f
 	}
 	return registry["gob"]

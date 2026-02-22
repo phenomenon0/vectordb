@@ -523,7 +523,7 @@ curl -X POST http://localhost:8080/v2/search \
 - **Sparse-only search**: Fast with inverted index (BM25 scoring)
 - **Hybrid search**: ~2x candidates examined, but much better relevance
 - **Memory usage**: +5-10% per collection due to multiple indexes
-- **SJSON encoding**: 48% smaller for dense, 94% smaller for sparse vectors
+- **Cowrie encoding**: 48% smaller for dense, 94% smaller for sparse vectors
 
 ## Best Practices
 
@@ -550,4 +550,4 @@ curl -X POST http://localhost:8080/v2/search \
 - [RRF Paper](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)
 - [BM25 Algorithm](https://en.wikipedia.org/wiki/Okapi_BM25)
 - [HNSW Paper](https://arxiv.org/abs/1603.09320)
-- [SJSON Format](../storage/README.md)
+- [Cowrie Format](../storage/README.md)

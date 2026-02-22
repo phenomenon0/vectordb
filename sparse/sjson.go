@@ -6,14 +6,14 @@ import (
 )
 
 // SparseVectorJSON represents the JSON encoding format for sparse vectors.
-// Optimized for SJSON with separate arrays for indices and values.
+// Optimized for Cowrie with separate arrays for indices and values.
 type SparseVectorJSON struct {
 	Indices []uint32  `json:"indices"`
 	Values  []float32 `json:"values"`
 	Dim     int       `json:"dim"`
 }
 
-// MarshalJSON implements json.Marshaler for efficient SJSON encoding.
+// MarshalJSON implements json.Marshaler for efficient Cowrie encoding.
 func (sv *SparseVector) MarshalJSON() ([]byte, error) {
 	return json.Marshal(SparseVectorJSON{
 		Indices: sv.Indices,
@@ -22,7 +22,7 @@ func (sv *SparseVector) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// UnmarshalJSON implements json.Unmarshaler for SJSON decoding.
+// UnmarshalJSON implements json.Unmarshaler for Cowrie decoding.
 func (sv *SparseVector) UnmarshalJSON(data []byte) error {
 	var svj SparseVectorJSON
 	if err := json.Unmarshal(data, &svj); err != nil {
@@ -41,7 +41,7 @@ func (sv *SparseVector) UnmarshalJSON(data []byte) error {
 }
 
 // ToBytes serializes the sparse vector to bytes (for storage).
-// Uses JSON encoding which will be compressed by SJSON codec.
+// Uses JSON encoding which will be compressed by Cowrie codec.
 func (sv *SparseVector) ToBytes() ([]byte, error) {
 	return json.Marshal(sv)
 }
@@ -71,8 +71,8 @@ func (sv *SparseVector) CompressionRatio() float64 {
 	return float64(sparseSize) / float64(denseSize)
 }
 
-// SJSONStats provides statistics about SJSON encoding efficiency.
-type SJSONStats struct {
+// CowrieStats provides statistics about Cowrie encoding efficiency.
+type CowrieStats struct {
 	SparseBytes      int     // Bytes used by sparse encoding
 	DenseBytes       int     // Bytes that would be used by dense
 	CompressionRatio float64 // sparse / dense
@@ -81,12 +81,12 @@ type SJSONStats struct {
 }
 
 // EncodingStats returns statistics about the encoding efficiency.
-func (sv *SparseVector) EncodingStats() SJSONStats {
+func (sv *SparseVector) EncodingStats() CowrieStats {
 	sparseBytes := len(sv.Indices)*4 + len(sv.Values)*4 + 12
 	denseBytes := sv.Dim * 4
 	ratio := sv.CompressionRatio()
 
-	return SJSONStats{
+	return CowrieStats{
 		SparseBytes:      sparseBytes,
 		DenseBytes:       denseBytes,
 		CompressionRatio: ratio,

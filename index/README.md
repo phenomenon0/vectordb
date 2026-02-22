@@ -6,7 +6,7 @@
 
 ## Overview
 
-This package provides a pluggable index abstraction layer for VectorDB, enabling support for multiple vector index types while maintaining backward compatibility and SJSON optimization.
+This package provides a pluggable index abstraction layer for VectorDB, enabling support for multiple vector index types while maintaining backward compatibility and Cowrie optimization.
 
 ## Design Philosophy
 
@@ -14,7 +14,7 @@ This package provides a pluggable index abstraction layer for VectorDB, enabling
 - **Pluggable**: Easy to swap index implementations
 - **Efficient**: Supports both in-memory and disk-backed indexes
 - **Observable**: Returns metrics and statistics
-- **SJSON-Compatible**: Export/Import uses JSON (upgradeable to SJSON)
+- **Cowrie-Compatible**: Export/Import uses JSON (upgradeable to Cowrie)
 
 ## Architecture
 
@@ -252,21 +252,21 @@ Example: 1M vectors, 384 dim, M=16
 ≈ 1.77 GB
 ```
 
-## SJSON Compatibility
+## Cowrie Compatibility
 
-The index abstraction is designed to work seamlessly with SJSON:
+The index abstraction is designed to work seamlessly with Cowrie:
 
 ### Current State (Phase 1)
 - Export/Import use JSON format (human-readable, debuggable)
-- JSON is compatible with SJSON (can be upgraded)
+- JSON is compatible with Cowrie (can be upgraded)
 - Vectors stored as `[]float32` arrays
 
 ### Future Enhancement (Phase 2+)
-When SJSON tensors are needed:
+When Cowrie tensors are needed:
 
 ```go
-// Export will use SJSON with tensor encoding
-type exportFormatSJSON struct {
+// Export will use Cowrie with tensor encoding
+type exportFormatCowrie struct {
     Version int
     Dim     int
     Config  map[string]interface{}
@@ -281,7 +281,7 @@ type exportFormatSJSON struct {
 - Streaming large indexes
 
 **Upgrade Path:**
-1. Add SJSON export format alongside JSON
+1. Add Cowrie export format alongside JSON
 2. Auto-detect format on Import
 3. Deprecate JSON export (with migration period)
 
@@ -324,7 +324,7 @@ func (vs *VectorStore) CreateCollection(name string, indexType string, dim int) 
 
 - [VectorDB Enhancement Plan](../../.claude/plans/gleaming-mixing-book.md) - 12-month roadmap
 - [VectorDB README](../README.md) - Main VectorDB documentation
-- [SJSON Codec](../../sjson/README.md) - SJSON format documentation
+- [Cowrie Codec](../../cowrie/README.md) - Cowrie format documentation
 
 ## Contributing
 
@@ -377,7 +377,7 @@ func init() {
 ### Phase 2 (Next)
 - [ ] Integrate with VectorStore
 - [ ] Collection management
-- [ ] SJSON export format
+- [ ] Cowrie export format
 - [ ] Migration utilities
 
 ### Phase 3 (Future)

@@ -94,18 +94,18 @@ func TestGobRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSJSONRoundTrip(t *testing.T) {
-	sjson := &SJSONFormat{UseCompression: false}
+func TestCowrieRoundTrip(t *testing.T) {
+	cw := &CowrieFormat{UseCompression: false}
 	payload := generateTestPayload(100, 384)
 
 	var buf bytes.Buffer
-	if err := sjson.Save(&buf, payload); err != nil {
-		t.Fatalf("sjson save failed: %v", err)
+	if err := cw.Save(&buf, payload); err != nil {
+		t.Fatalf("cowrie save failed: %v", err)
 	}
 
-	loaded, err := sjson.Load(bytes.NewReader(buf.Bytes()))
+	loaded, err := cw.Load(bytes.NewReader(buf.Bytes()))
 	if err != nil {
-		t.Fatalf("sjson load failed: %v", err)
+		t.Fatalf("cowrie load failed: %v", err)
 	}
 
 	// Verify key fields
@@ -128,18 +128,18 @@ func TestSJSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSJSONZstdRoundTrip(t *testing.T) {
-	sjson := &SJSONFormat{UseCompression: true}
+func TestCowrieZstdRoundTrip(t *testing.T) {
+	cw := &CowrieFormat{UseCompression: true}
 	payload := generateTestPayload(100, 384)
 
 	var buf bytes.Buffer
-	if err := sjson.Save(&buf, payload); err != nil {
-		t.Fatalf("sjson-zstd save failed: %v", err)
+	if err := cw.Save(&buf, payload); err != nil {
+		t.Fatalf("cowrie-zstd save failed: %v", err)
 	}
 
-	loaded, err := sjson.Load(bytes.NewReader(buf.Bytes()))
+	loaded, err := cw.Load(bytes.NewReader(buf.Bytes()))
 	if err != nil {
-		t.Fatalf("sjson-zstd load failed: %v", err)
+		t.Fatalf("cowrie-zstd load failed: %v", err)
 	}
 
 	if loaded.Count != payload.Count {
@@ -152,8 +152,8 @@ func TestSJSONZstdRoundTrip(t *testing.T) {
 
 func TestSizeComparison(t *testing.T) {
 	gob := &GobFormat{}
-	sjson := &SJSONFormat{UseCompression: false}
-	sjsonZstd := &SJSONFormat{UseCompression: true}
+	cw := &CowrieFormat{UseCompression: false}
+	cwZstd := &CowrieFormat{UseCompression: true}
 
 	sizes := []struct {
 		vectors int
@@ -164,26 +164,26 @@ func TestSizeComparison(t *testing.T) {
 		{1000, 768},
 	}
 
-	t.Logf("%-8s | %-10s | %-10s | %-10s | %-10s | %-10s", "Config", "Gob", "SJSON", "SJSON+Zstd", "SJ Save%", "Zstd Save%")
+	t.Logf("%-8s | %-10s | %-10s | %-10s | %-10s | %-10s", "Config", "Gob", "Cowrie", "Cowrie+Zstd", "CW Save%", "Zstd Save%")
 	t.Logf("---------|------------|------------|------------|------------|------------")
 
 	for _, sz := range sizes {
 		payload := generateTestPayload(sz.vectors, sz.dim)
 
-		var gobBuf, sjsonBuf, zstdBuf bytes.Buffer
+		var gobBuf, cowrieBuf, zstdBuf bytes.Buffer
 		gob.Save(&gobBuf, payload)
-		sjson.Save(&sjsonBuf, payload)
-		sjsonZstd.Save(&zstdBuf, payload)
+		cw.Save(&cowrieBuf, payload)
+		cwZstd.Save(&zstdBuf, payload)
 
 		gobSize := gobBuf.Len()
-		sjsonSize := sjsonBuf.Len()
+		cowrieSize := cowrieBuf.Len()
 		zstdSize := zstdBuf.Len()
 
-		sjsonSavings := float64(gobSize-sjsonSize) / float64(gobSize) * 100
+		cowrieSavings := float64(gobSize-cowrieSize) / float64(gobSize) * 100
 		zstdSavings := float64(gobSize-zstdSize) / float64(gobSize) * 100
 
 		t.Logf("%dx%d | %10d | %10d | %10d | %9.1f%% | %9.1f%%",
-			sz.vectors, sz.dim, gobSize, sjsonSize, zstdSize, sjsonSavings, zstdSavings)
+			sz.vectors, sz.dim, gobSize, cowrieSize, zstdSize, cowrieSavings, zstdSavings)
 	}
 }
 
@@ -191,20 +191,20 @@ func TestFormatRegistry(t *testing.T) {
 	// Check all formats are registered
 	formats := List()
 	if len(formats) < 3 {
-		t.Errorf("Expected at least 3 formats (gob, sjson, sjson-zstd), got %d", len(formats))
+		t.Errorf("Expected at least 3 formats (gob, cowrie, cowrie-zstd), got %d", len(formats))
 	}
 
-	// Check sjson-zstd is default (optimized for embeddings)
+	// Check cowrie-zstd is default (optimized for embeddings)
 	if Default() == nil {
 		t.Error("Default format should not be nil")
 	}
-	if Default().Name() != "sjson-zstd" {
-		t.Errorf("Default format should be sjson-zstd, got %s", Default().Name())
+	if Default().Name() != "cowrie-zstd" {
+		t.Errorf("Default format should be cowrie-zstd, got %s", Default().Name())
 	}
 
 	// Check Get works
-	if Get("sjson") == nil {
-		t.Error("Get(sjson) should not return nil")
+	if Get("cowrie") == nil {
+		t.Error("Get(cowrie) should not return nil")
 	}
 }
 
@@ -235,8 +235,8 @@ func BenchmarkGobSave(b *testing.B) {
 	}
 }
 
-func BenchmarkSJSONSave(b *testing.B) {
-	sjson := &SJSONFormat{UseCompression: false}
+func BenchmarkCowrieSave(b *testing.B) {
+	cw := &CowrieFormat{UseCompression: false}
 
 	for _, sz := range benchSizes {
 		payload := generateTestPayload(sz.vectors, sz.dim)
@@ -245,14 +245,14 @@ func BenchmarkSJSONSave(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				var buf bytes.Buffer
-				sjson.Save(&buf, payload)
+				cw.Save(&buf, payload)
 			}
 		})
 	}
 }
 
-func BenchmarkSJSONZstdSave(b *testing.B) {
-	sjson := &SJSONFormat{UseCompression: true}
+func BenchmarkCowrieZstdSave(b *testing.B) {
+	cw := &CowrieFormat{UseCompression: true}
 
 	for _, sz := range benchSizes {
 		payload := generateTestPayload(sz.vectors, sz.dim)
@@ -261,7 +261,7 @@ func BenchmarkSJSONZstdSave(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				var buf bytes.Buffer
-				sjson.Save(&buf, payload)
+				cw.Save(&buf, payload)
 			}
 		})
 	}
@@ -286,39 +286,39 @@ func BenchmarkGobLoad(b *testing.B) {
 	}
 }
 
-func BenchmarkSJSONLoad(b *testing.B) {
-	sjson := &SJSONFormat{UseCompression: false}
+func BenchmarkCowrieLoad(b *testing.B) {
+	cw := &CowrieFormat{UseCompression: false}
 
 	for _, sz := range benchSizes {
 		payload := generateTestPayload(sz.vectors, sz.dim)
 		var buf bytes.Buffer
-		sjson.Save(&buf, payload)
+		cw.Save(&buf, payload)
 		data := buf.Bytes()
 
 		b.Run(fmt.Sprintf("%dx%d", sz.vectors, sz.dim), func(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(data)))
 			for i := 0; i < b.N; i++ {
-				sjson.Load(bytes.NewReader(data))
+				cw.Load(bytes.NewReader(data))
 			}
 		})
 	}
 }
 
-func BenchmarkSJSONZstdLoad(b *testing.B) {
-	sjson := &SJSONFormat{UseCompression: true}
+func BenchmarkCowrieZstdLoad(b *testing.B) {
+	cw := &CowrieFormat{UseCompression: true}
 
 	for _, sz := range benchSizes {
 		payload := generateTestPayload(sz.vectors, sz.dim)
 		var buf bytes.Buffer
-		sjson.Save(&buf, payload)
+		cw.Save(&buf, payload)
 		data := buf.Bytes()
 
 		b.Run(fmt.Sprintf("%dx%d", sz.vectors, sz.dim), func(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(data)))
 			for i := 0; i < b.N; i++ {
-				sjson.Load(bytes.NewReader(data))
+				cw.Load(bytes.NewReader(data))
 			}
 		})
 	}

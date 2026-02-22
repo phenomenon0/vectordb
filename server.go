@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenomenon0/Agent-GO/sjson/codec"
+	"github.com/phenomenon0/Agent-GO/cowrie/codec"
 	"github.com/phenomenon0/Agent-GO/vectordb/index"
 	"github.com/phenomenon0/Agent-GO/vectordb/logging"
 	"github.com/phenomenon0/Agent-GO/vectordb/telemetry"
@@ -42,9 +42,9 @@ func isValidCollectionName(name string) bool {
 }
 
 // encodeResponse encodes v using the codec preferred by the client (Accept header).
-// SJSON is used when Accept: application/sjson is present, JSON otherwise.
+// Cowrie is used when Accept: application/cowrie is present, JSON otherwise.
 // For small responses, both formats are similar; for responses with []float32 arrays
-// (like query scores), SJSON provides ~48% size reduction.
+// (like query scores), Cowrie provides ~48% size reduction.
 func encodeResponse(w http.ResponseWriter, r *http.Request, v any) error {
 	responseCodec := codec.FromRequest(r)
 	w.Header().Set("Content-Type", responseCodec.ContentType())
@@ -60,7 +60,7 @@ func sendResponse(w http.ResponseWriter, r *http.Request, v any) {
 }
 
 // decodeRequest decodes the request body using the appropriate codec based on Content-Type.
-// Supports both JSON (default) and SJSON (Content-Type: application/sjson).
+// Supports both JSON (default) and Cowrie (Content-Type: application/cowrie).
 func decodeRequest(r *http.Request, v any) error {
 	requestCodec := codec.FromContentType(r.Header.Get("Content-Type"))
 	return requestCodec.Decode(r.Body, v)
@@ -812,7 +812,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		telemetry.RecordOK(span)
 		logging.Default().Search(r.Context(), req.Collection, req.TopK, len(respIDs), time.Since(searchStart))
 
-		// Select codec based on Accept header (JSON default, SJSON opt-in)
+		// Select codec based on Accept header (JSON default, Cowrie opt-in)
 		responseCodec := codec.FromRequest(r)
 		w.Header().Set("Content-Type", responseCodec.ContentType())
 

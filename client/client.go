@@ -10,15 +10,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenomenon0/Agent-GO/sjson"
-	"github.com/phenomenon0/Agent-GO/sjson/codec"
+	"github.com/phenomenon0/Agent-GO/cowrie"
+	"github.com/phenomenon0/Agent-GO/cowrie/codec"
 )
 
 // init registers a fast unmarshaler for QueryResponse.
 // This provides maximum performance for the hot query path (~7-8x faster than JSON bridge).
 func init() {
-	codec.Register(func(v *sjson.Value, resp *QueryResponse) error {
-		if v == nil || v.Type() != sjson.TypeObject {
+	codec.Register(func(v *cowrie.Value, resp *QueryResponse) error {
+		if v == nil || v.Type() != cowrie.TypeObject {
 			return nil
 		}
 
@@ -31,13 +31,13 @@ func init() {
 			case "scores":
 				resp.Scores = codec.GetFloat32Array(v, "scores")
 			case "stats":
-				if m.Value != nil && m.Value.Type() == sjson.TypeString {
+				if m.Value != nil && m.Value.Type() == cowrie.TypeString {
 					resp.Stats = m.Value.String()
 				}
 			case "meta":
 				resp.Meta = codec.DecodeStringMapArray(m.Value)
 			case "next":
-				if m.Value != nil && m.Value.Type() == sjson.TypeString {
+				if m.Value != nil && m.Value.Type() == cowrie.TypeString {
 					resp.Next = m.Value.String()
 				}
 			}
@@ -53,7 +53,7 @@ type Client struct {
 	http        *http.Client
 	token       string
 	headers     http.Header
-	preferSJSON bool // prefer SJSON responses when available
+	preferCowrie bool // prefer Cowrie responses when available
 }
 
 // Option mutates client configuration.
@@ -98,13 +98,13 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
-// WithSJSON enables SJSON response encoding for smaller payloads.
-// When enabled, the client sends Accept: application/sjson and handles
-// SJSON responses automatically. Particularly beneficial for queries
+// WithCowrie enables Cowrie response encoding for smaller payloads.
+// When enabled, the client sends Accept: application/cowrie and handles
+// Cowrie responses automatically. Particularly beneficial for queries
 // with large score arrays (~48% smaller for float32 arrays).
-func WithSJSON() Option {
+func WithCowrie() Option {
 	return func(c *Client) {
-		c.preferSJSON = true
+		c.preferCowrie = true
 	}
 }
 
@@ -291,9 +291,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in any, out an
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	// Set Accept header for SJSON preference
-	if c.preferSJSON {
-		req.Header.Set("Accept", codec.ContentTypeSJSON)
+	// Set Accept header for Cowrie preference
+	if c.preferCowrie {
+		req.Header.Set("Accept", codec.ContentTypeCowrie)
 	}
 
 	for k, vals := range c.headers {

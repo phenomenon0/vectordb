@@ -76,7 +76,7 @@ type VectorStore struct {
 	tenantRL    *tenantRateLimiter // per-tenant rate limiting
 	jwtMgr      *JWTManager        // JWT token manager
 	requireAuth bool               // Require JWT authentication
-	// Storage format (gob, sjson, sjson-zstd)
+	// Storage format (gob, cowrie, cowrie-zstd)
 	storageFormat storage.Format
 	// Metadata bitmap index for fast pre-filtering
 	// Metadata bitmap index for fast pre-filtering
@@ -114,7 +114,7 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 	}
 
 	// Select storage format (default: gob for backward compatibility)
-	// Options: "gob", "sjson", "sjson-zstd"
+	// Options: "gob", "cowrie", "cowrie-zstd"
 	storageFormat := storage.Default()
 	if formatName := os.Getenv("STORAGE_FORMAT"); formatName != "" {
 		if f := storage.Get(formatName); f != nil {
@@ -859,8 +859,8 @@ func tryLoadPayload(path string) (*storage.Payload, storage.Format) {
 		return payload, storage.Get("gob")
 	}
 
-	// Try sjson formats
-	for _, formatName := range []string{"sjson", "sjson-zstd"} {
+	// Try cowrie formats
+	for _, formatName := range []string{"cowrie", "cowrie-zstd"} {
 		if f := storage.Get(formatName); f != nil {
 			if payload := tryLoadWithFormat(path, f); payload != nil {
 				return payload, f
