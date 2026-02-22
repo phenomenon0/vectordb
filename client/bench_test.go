@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/phenomenon0/Agent-GO/sjson/codec"
+	"github.com/phenomenon0/Agent-GO/cowrie/codec"
 )
 
 // generateQueryResponseData creates realistic query response data
@@ -57,25 +57,25 @@ func BenchmarkQueryResponseJSON(b *testing.B) {
 	}
 }
 
-// BenchmarkQueryResponseSJSON benchmarks SJSON decoding into QueryResponse
+// BenchmarkQueryResponseCowrie benchmarks Cowrie decoding into QueryResponse
 // This uses the registered fast unmarshaler
-func BenchmarkQueryResponseSJSON(b *testing.B) {
-	sjsonCodec := codec.SJSONCodec{}
+func BenchmarkQueryResponseCowrie(b *testing.B) {
+	cowrieCodec := codec.CowrieCodec{}
 
 	for _, size := range benchSizes {
 		data := generateQueryResponseData(size)
 		var buf bytes.Buffer
-		if err := sjsonCodec.Encode(&buf, data); err != nil {
+		if err := cowrieCodec.Encode(&buf, data); err != nil {
 			b.Fatal(err)
 		}
-		sjsonBytes := buf.Bytes()
+		cowrieBytes := buf.Bytes()
 
 		b.Run(fmt.Sprintf("n=%d", size), func(b *testing.B) {
 			b.ReportAllocs()
-			b.SetBytes(int64(len(sjsonBytes)))
+			b.SetBytes(int64(len(cowrieBytes)))
 			for i := 0; i < b.N; i++ {
 				var resp QueryResponse
-				if err := sjsonCodec.Decode(bytes.NewReader(sjsonBytes), &resp); err != nil {
+				if err := cowrieCodec.Decode(bytes.NewReader(cowrieBytes), &resp); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -83,25 +83,25 @@ func BenchmarkQueryResponseSJSON(b *testing.B) {
 	}
 }
 
-// BenchmarkQueryResponseSJSONMap benchmarks SJSON decoding into map[string]any
+// BenchmarkQueryResponseCowrieMap benchmarks Cowrie decoding into map[string]any
 // This shows the generic decode path for comparison
-func BenchmarkQueryResponseSJSONMap(b *testing.B) {
-	sjsonCodec := codec.SJSONCodec{}
+func BenchmarkQueryResponseCowrieMap(b *testing.B) {
+	cowrieCodec := codec.CowrieCodec{}
 
 	for _, size := range benchSizes {
 		data := generateQueryResponseData(size)
 		var buf bytes.Buffer
-		if err := sjsonCodec.Encode(&buf, data); err != nil {
+		if err := cowrieCodec.Encode(&buf, data); err != nil {
 			b.Fatal(err)
 		}
-		sjsonBytes := buf.Bytes()
+		cowrieBytes := buf.Bytes()
 
 		b.Run(fmt.Sprintf("n=%d", size), func(b *testing.B) {
 			b.ReportAllocs()
-			b.SetBytes(int64(len(sjsonBytes)))
+			b.SetBytes(int64(len(cowrieBytes)))
 			for i := 0; i < b.N; i++ {
 				var resp map[string]any
-				if err := sjsonCodec.Decode(bytes.NewReader(sjsonBytes), &resp); err != nil {
+				if err := cowrieCodec.Decode(bytes.NewReader(cowrieBytes), &resp); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -109,9 +109,9 @@ func BenchmarkQueryResponseSJSONMap(b *testing.B) {
 	}
 }
 
-// TestQueryResponseSJSONRoundTrip verifies QueryResponse SJSON round-trip works
-func TestQueryResponseSJSONRoundTrip(t *testing.T) {
-	sjsonCodec := codec.SJSONCodec{}
+// TestQueryResponseCowrieRoundTrip verifies QueryResponse Cowrie round-trip works
+func TestQueryResponseCowrieRoundTrip(t *testing.T) {
+	cowrieCodec := codec.CowrieCodec{}
 
 	for _, size := range []int{10, 100} {
 		t.Run(fmt.Sprintf("n=%d", size), func(t *testing.T) {
@@ -120,13 +120,13 @@ func TestQueryResponseSJSONRoundTrip(t *testing.T) {
 
 			// Encode
 			var buf bytes.Buffer
-			if err := sjsonCodec.Encode(&buf, data); err != nil {
+			if err := cowrieCodec.Encode(&buf, data); err != nil {
 				t.Fatalf("encode error: %v", err)
 			}
 
 			// Decode into QueryResponse (uses registered unmarshaler)
 			var resp QueryResponse
-			if err := sjsonCodec.Decode(bytes.NewReader(buf.Bytes()), &resp); err != nil {
+			if err := cowrieCodec.Decode(bytes.NewReader(buf.Bytes()), &resp); err != nil {
 				t.Fatalf("decode error: %v", err)
 			}
 
