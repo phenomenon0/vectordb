@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/phenomenon0/Agent-GO/vectordb/client"
 )
 
@@ -63,6 +64,8 @@ func main() {
 		cmdExport()
 	case "compact":
 		cmdCompact()
+	case "gentoken":
+		cmdGentoken()
 	case "version":
 		fmt.Printf("vectordb-cli %s\n", version)
 	case "help", "-h", "--help":
@@ -89,6 +92,7 @@ Commands:
   import        Bulk import from JSONL file (--file, --collection)
   export        Export collection to JSONL (--collection, --output)
   compact       Trigger index compaction
+  gentoken      Generate a JWT authentication token
   version       Print version
 
 Global flags (set via environment):
@@ -452,6 +456,68 @@ func cmdCompact() {
 		fmt.Println("Compaction completed successfully.")
 	} else {
 		fmt.Println("Compaction returned without error but OK=false. Check server logs.")
+	}
+}
+
+func cmdGentoken() {
+	fs := flag.NewFlagSet("gentoken", flag.ExitOnError)
+	tenant := fs.String("tenant", "default", "Tenant ID")
+	permissions := fs.String("permissions", "read,write", "Comma-separated permissions (read,write,admin)")
+	collections := fs.String("collections", "", "Comma-separated allowed collections (empty = all)")
+	secret := fs.String("secret", os.Getenv("JWT_SECRET"), "JWT signing secret (or set JWT_SECRET)")
+	expires := fs.Duration("expires", 24*time.Hour, "Token expiration (e.g., 24h, 720h)")
+	outputJSON := fs.Bool("json", false, "Output as JSON")
+	fs.Parse(os.Args[1:])
+
+	if *secret == "" {
+		fmt.Fprintln(os.Stderr, "error: JWT secret required. Set JWT_SECRET env var or use --secret")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	perms := strings.Split(*permissions, ",")
+	for i := range perms {
+		perms[i] = strings.TrimSpace(perms[i])
+	}
+
+	var colls []string
+	if *collections != "" {
+		colls = strings.Split(*collections, ",")
+		for i := range colls {
+			colls[i] = strings.TrimSpace(colls[i])
+		}
+	}
+
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"tenant_id":   *tenant,
+		"permissions": perms,
+		"iss":         "vectordb",
+		"iat":         now.Unix(),
+		"exp":         now.Add(*expires).Unix(),
+	}
+	if len(colls) > 0 {
+		claims["collections"] = colls
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString([]byte(*secret))
+	if err != nil {
+		fatal("sign token", err)
+	}
+
+	if *outputJSON {
+		out := map[string]any{
+			"token":       signed,
+			"tenant_id":   *tenant,
+			"permissions": perms,
+			"collections": colls,
+			"expires_at":  now.Add(*expires).Format(time.RFC3339),
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
+	} else {
+		fmt.Println(signed)
 	}
 }
 
