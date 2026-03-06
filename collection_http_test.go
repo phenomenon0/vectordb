@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	vcollection "github.com/phenomenon0/Agent-GO/vectordb/collection"
+	vcollection "github.com/phenomenon0/vectordb/collection"
 )
 
 type collectionSearchResponse struct {

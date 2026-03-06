@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/phenomenon0/Agent-GO/cowrie"
+	"github.com/Neumenon/cowrie/go"
 )
 
 // Safe value extraction helpers - prevent panics from type mismatches

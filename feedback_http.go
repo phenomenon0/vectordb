@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenomenon0/Agent-GO/vectordb/feedback"
+	"github.com/phenomenon0/vectordb/feedback"
 )
 
 // FeedbackHandler handles feedback HTTP endpoints.

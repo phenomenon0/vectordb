@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/phenomenon0/Agent-GO/vectordb/filter"
+	"github.com/phenomenon0/vectordb/filter"
 )
 
 // TestCollectionFilteredSearch tests filtered search through the collection layer

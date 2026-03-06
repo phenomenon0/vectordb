@@ -17,10 +17,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenomenon0/Agent-GO/cowrie/codec"
-	"github.com/phenomenon0/Agent-GO/vectordb/index"
-	"github.com/phenomenon0/Agent-GO/vectordb/logging"
-	"github.com/phenomenon0/Agent-GO/vectordb/telemetry"
+	"github.com/Neumenon/cowrie/go/codec"
+	"github.com/phenomenon0/vectordb/index"
+	"github.com/phenomenon0/vectordb/logging"
+	"github.com/phenomenon0/vectordb/telemetry"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )

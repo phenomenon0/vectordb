@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/phenomenon0/Agent-GO/cowrie/codec"
+	"github.com/Neumenon/cowrie/go/codec"
 )
 
 // generateQueryResponseData creates realistic query response data

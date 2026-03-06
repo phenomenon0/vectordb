@@ -30,7 +30,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/phenomenon0/Agent-GO/vectordb/client"
+	"github.com/phenomenon0/vectordb/client"
 )
 
 var version = "dev"

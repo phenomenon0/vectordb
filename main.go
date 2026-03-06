@@ -22,12 +22,10 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/phenomenon0/Agent-GO/core"
-	"github.com/phenomenon0/Agent-GO/tools"
-	"github.com/phenomenon0/Agent-GO/vectordb/index"
-	"github.com/phenomenon0/Agent-GO/vectordb/logging"
-	"github.com/phenomenon0/Agent-GO/vectordb/storage"
-	"github.com/phenomenon0/Agent-GO/vectordb/telemetry"
+	"github.com/phenomenon0/vectordb/index"
+	"github.com/phenomenon0/vectordb/logging"
+	"github.com/phenomenon0/vectordb/storage"
+	"github.com/phenomenon0/vectordb/telemetry"
 )
 
 // ======================================================================================
@@ -1088,209 +1086,6 @@ func loadHNSWConfig() hnswConfig {
 	return cfg
 }
 
-// ======================================================================================
-// Tools and Agents
-// ======================================================================================
-
-type RetrievalTool struct {
-	Store    *VectorStore
-	Embedder Embedder
-}
-
-func (t *RetrievalTool) Name() string { return "flat_buffer_retrieval" }
-
-type RetrievalInput struct {
-	Query string `json:"query"`
-}
-
-type RetrievalResult struct {
-	IDs   []string `json:"ids"`
-	Docs  []string `json:"docs"`
-	Stats string   `json:"stats"`
-}
-
-func (t *RetrievalTool) Execute(ctx *core.ToolContext) *core.ToolExecResult {
-	var queryText string
-	if ctx.Request != nil && ctx.Request.ToolReq != nil {
-		if input, ok := ctx.Request.ToolReq.Input.(*RetrievalInput); ok && input != nil {
-			queryText = input.Query
-		}
-	}
-	if queryText == "" {
-		queryText = "default"
-	}
-
-	qVec, err := t.Embedder.Embed(queryText)
-	if err != nil {
-		return &core.ToolExecResult{
-			Status: core.ToolFailed,
-			Error:  fmt.Sprintf("embedder error: %v", err),
-		}
-	}
-
-	start := time.Now()
-	ids := t.Store.SearchANN(qVec, 3)
-	elapsed := time.Since(start)
-
-	output := fmt.Sprintf("Search completed in %s. Found IDs: %v.", elapsed, ids)
-	docs := make([]string, 0, len(ids))
-	idStrings := make([]string, 0, len(ids))
-	for _, id := range ids {
-		docs = append(docs, t.Store.GetDoc(id))
-		idStrings = append(idStrings, t.Store.GetID(id))
-	}
-
-	return &core.ToolExecResult{
-		Status: core.ToolComplete,
-		Output: &RetrievalResult{
-			IDs:   idStrings,
-			Docs:  docs,
-			Stats: output,
-		},
-		Duration: elapsed,
-	}
-}
-
-type RerankInput struct {
-	Query string   `json:"query"`
-	Docs  []string `json:"docs"`
-	TopK  int      `json:"top_k"`
-}
-
-type RerankResult struct {
-	Docs   []string  `json:"docs"`
-	Scores []float32 `json:"scores"`
-	Stats  string    `json:"stats"`
-	IDs    []int     `json:"ids,omitempty"`
-}
-
-type RerankTool struct {
-	Reranker Reranker
-}
-
-func (t *RerankTool) Name() string { return "reranker" }
-
-func (t *RerankTool) Execute(ctx *core.ToolContext) *core.ToolExecResult {
-	var input RerankInput
-	if ctx.Request != nil && ctx.Request.ToolReq != nil {
-		if in, ok := ctx.Request.ToolReq.Input.(*RerankInput); ok && in != nil {
-			input = *in
-		}
-	}
-	if input.TopK <= 0 || input.TopK > len(input.Docs) {
-		input.TopK = len(input.Docs)
-	}
-
-	docs, scores, stats, err := t.Reranker.Rerank(input.Query, input.Docs, input.TopK)
-	if err != nil {
-		return &core.ToolExecResult{Status: core.ToolFailed, Error: fmt.Sprintf("reranker error: %v", err)}
-	}
-
-	return &core.ToolExecResult{
-		Status: core.ToolComplete,
-		Output: &RerankResult{
-			Docs:   docs,
-			Scores: scores,
-			Stats:  stats,
-		},
-	}
-}
-
-type RAGState struct {
-	Step    string
-	Query   string
-	Context string
-}
-
-// RangeFilter supports numeric or RFC3339 time comparisons.
-type RangeFilter struct {
-	Key     string   `json:"key"`
-	Min     *float64 `json:"min,omitempty"`
-	Max     *float64 `json:"max,omitempty"`
-	TimeMin string   `json:"time_min,omitempty"` // RFC3339
-	TimeMax string   `json:"time_max,omitempty"` // RFC3339
-	LexOnly bool     `json:"lex_only,omitempty"` // force lexical mode on this field
-}
-
-func NewRAGAgent(llmToolID core.ToolID, retrievalToolID core.ToolID, rerankToolID core.ToolID) *core.FuncAgent {
-	return core.NewFuncAgent("rag_orchestrator", func(ctx *core.AgentContext, msg *core.Message) {
-		state, _ := ctx.UserState.(*RAGState)
-		if state == nil {
-			state = &RAGState{Step: "start"}
-		}
-
-		switch msg.Type {
-		case core.MsgUserInput:
-			state.Query = msg.Text
-			state.Step = "retrieving"
-			ctx.Scheduler.RequestTool(ctx, &core.ToolRequestPayload{
-				ToolID: retrievalToolID,
-				Input:  &RetrievalInput{Query: msg.Text},
-			})
-
-		case core.MsgToolResult:
-			switch msg.ToolRes.ToolID {
-			case retrievalToolID:
-				state.Step = "reranking"
-				var docs []string
-				switch out := msg.ToolRes.Output.(type) {
-				case *RetrievalResult:
-					docs = out.Docs
-				case RetrievalResult:
-					docs = out.Docs
-				case map[string]any:
-					if rawDocs, ok := out["docs"].([]string); ok {
-						docs = rawDocs
-					}
-				}
-				if len(docs) == 0 {
-					docs = []string{"no docs retrieved"}
-				}
-				ctx.Scheduler.RequestTool(ctx, &core.ToolRequestPayload{
-					ToolID: rerankToolID,
-					Input: &RerankInput{
-						Query: state.Query,
-						Docs:  docs,
-						TopK:  3,
-					},
-				})
-
-			case rerankToolID:
-				state.Step = "generating"
-				var docs []string
-				switch out := msg.ToolRes.Output.(type) {
-				case *RerankResult:
-					docs = out.Docs
-				case RerankResult:
-					docs = out.Docs
-				case map[string]any:
-					if rawDocs, ok := out["docs"].([]string); ok {
-						docs = rawDocs
-					}
-				}
-				state.Context = strings.Join(docs, "\n---\n")
-
-				systemPrompt := "You are a high-performance technical assistant."
-				userPrompt := fmt.Sprintf("Question: %s\n\nContext:\n%s", state.Query, state.Context)
-
-				ctx.Scheduler.RequestTool(ctx, &core.ToolRequestPayload{
-					ToolID: llmToolID,
-					Input: &tools.LLMRequest{
-						System: systemPrompt,
-						Messages: []tools.LLMMessage{
-							{Role: "user", Content: userPrompt},
-						},
-					},
-				})
-
-			case llmToolID:
-				state.Step = "done"
-				ctx.Scheduler.ConvMgr().MarkComplete(ctx.ConvID)
-			}
-		}
-		ctx.UserState = state
-	})
-}
 
 // ======================================================================================
 // Embedder/Reranker interfaces and hash fallback
@@ -1803,6 +1598,14 @@ func matchesAny(meta map[string]string, any []map[string]string) bool {
 		}
 	}
 	return false
+}
+
+type RangeFilter struct {
+	Key     string   `json:"key"`
+	Min     *float64 `json:"min,omitempty"`
+	Max     *float64 `json:"max,omitempty"`
+	TimeMin string   `json:"time_min,omitempty"`
+	TimeMax string   `json:"time_max,omitempty"`
 }
 
 func matchesRanges(meta map[string]string, num map[string]float64, times map[string]time.Time, ranges []RangeFilter) bool {
@@ -2505,12 +2308,6 @@ func main() {
 		return
 	}
 
-	// Check if running in multi-protocol transport mode
-	if os.Getenv("TRANSPORT_MODE") == "1" {
-		runWithTransport()
-		return
-	}
-
 	// Initialize structured logging
 	logConfig := logging.DefaultConfig()
 	if os.Getenv("LOG_FORMAT") == "text" {
@@ -2692,35 +2489,8 @@ func main() {
 	}
 	logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
 
-	sched := core.NewScheduler(core.DefaultSchedulerConfig)
-	defer sched.Shutdown()
-	go sched.Run()
-
-	retrievalTool := &RetrievalTool{Store: store, Embedder: embedder}
-	retrievalID := sched.Tools().Register(retrievalTool, core.ToolPolicy{
-		MaxRetries:     0,
-		DefaultTimeout: 200 * time.Millisecond,
-	}, nil)
-
 	reranker := initReranker(embedder)
-	rerankTool := &RerankTool{Reranker: reranker}
-	rerankID := sched.Tools().Register(rerankTool, core.ToolPolicy{
-		MaxRetries:     0,
-		DefaultTimeout: 200 * time.Millisecond,
-	}, nil)
-
-	// Model warmup (best-effort)
 	warmupModels(embedder, reranker)
-
-	router := tools.NewModelRouter()
-	llmCfg, err := router.FastestModel()
-	if err != nil {
-		logger.Warn("no api key found, llm calls may fail")
-	}
-	llmID := sched.Tools().Register(tools.NewLLMTool(llmCfg), core.DefaultToolPolicy, nil)
-
-	agent := NewRAGAgent(llmID, retrievalID, rerankID)
-	agentID := sched.Agents().Register(agent, nil)
 
 	// HTTP API with graceful shutdown
 	handler := newHTTPHandler(store, embedder, reranker, indexPath)
@@ -2731,17 +2501,16 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("http api listening", "addr", addr, "endpoints", "POST /insert, POST /batch_insert, POST /query, POST /delete, GET /health, GET /metrics")
+		logger.Info("http api listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("http server error", "error", err)
 		}
 	}()
 
-	// Background compaction/GC with auto-triggering based on tombstone ratio
+	// Background compaction
 	go func() {
 		interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
-		tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0 // Default 10%
-
+		tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for range t.C {
@@ -2749,40 +2518,14 @@ func main() {
 			total := store.Count
 			deleted := len(store.Deleted)
 			store.RUnlock()
-
 			if total == 0 {
 				continue
 			}
-
-			deletedRatio := float64(deleted) / float64(total)
-			if deletedRatio >= tombstoneThreshold {
-				logger.Info("auto-compaction triggered", "deleted_ratio", deletedRatio, "deleted", deleted, "total", total)
+			if float64(deleted)/float64(total) >= tombstoneThreshold {
+				logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
 				if err := store.Compact(indexPath); err != nil {
 					logger.Error("compact error", "error", err)
-				} else {
-					logger.Info("compact completed", "purged", deleted)
 				}
-			}
-		}
-	}()
-
-	// Optional snapshot export scheduler
-	go func() {
-		exportPath := os.Getenv("SNAPSHOT_EXPORT_PATH")
-		if exportPath == "" {
-			return
-		}
-		interval := time.Duration(envInt("EXPORT_INTERVAL_MIN", 0)) * time.Minute
-		if interval <= 0 {
-			return
-		}
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for range t.C {
-			if err := store.Save(exportPath); err != nil {
-				logger.Error("snapshot export error", "error", err)
-			} else {
-				logger.Info("snapshot exported", "path", exportPath)
 			}
 		}
 	}()
@@ -2791,39 +2534,10 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	// Check if server should run indefinitely (no demo)
-	serverOnly := os.Getenv("SERVER_ONLY") == "1"
-
-	if !serverOnly {
-		// Start optional RAG conversation (demo mode)
-		fmt.Println(">>> Starting RAG Conversation...")
-		convID := sched.StartConversation(agentID, "Why is memory locality important for vector search?")
-
-		ticker := time.NewTicker(500 * time.Millisecond)
-		timeout := time.After(10 * time.Second)
-		conversationDone := false
-
-		for !conversationDone {
-			select {
-			case sig := <-sigCh:
-				fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
-				conversationDone = true
-			case <-timeout:
-				fmt.Println("Timeout reached (Demo end)")
-				conversationDone = true
-			case <-ticker.C:
-				if conv, ok := sched.ConvMgr().Get(convID); ok && conv.State == core.ConvComplete {
-					fmt.Println(">>> Conversation Marked Complete by Agent.")
-					conversationDone = true
-				}
-			}
-		}
-	} else {
-		// Server-only mode: wait for signal indefinitely
-		fmt.Println(">>> Server running in HTTP-only mode. Press Ctrl+C to stop.")
-		sig := <-sigCh
-		fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
-	}
+	// Wait for shutdown signal
+	fmt.Println(">>> Server running. Press Ctrl+C to stop.")
+	sig := <-sigCh
+	fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
 
 	// Graceful shutdown sequence
 	fmt.Println(">>> Shutting down HTTP server...")
