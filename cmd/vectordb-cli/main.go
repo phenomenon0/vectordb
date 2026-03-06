@@ -256,16 +256,28 @@ func cmdDelete() {
 
 func cmdCollections() {
 	c := newClient()
-	// Use health endpoint which includes collection info
-	resp, err := c.Health(ctx())
+	resp, err := c.ListCollections(ctx())
 	if err != nil {
+		// Fall back to health endpoint if admin endpoint is unavailable
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == 403 || apiErr.StatusCode == 404) {
+			health, herr := c.Health(ctx())
+			if herr != nil {
+				fatal("failed to get collections", herr)
+			}
+			fmt.Printf("Total vectors: %d (active: %d, deleted: %d)\n", health.Total, health.Active, health.Deleted)
+			fmt.Printf("HNSW nodes:    %d\n", health.HNSWIDs)
+			return
+		}
 		fatal("failed to get collections", err)
 	}
-	fmt.Printf("Total vectors: %d (active: %d, deleted: %d)\n", resp.Total, resp.Active, resp.Deleted)
-	fmt.Printf("HNSW nodes:    %d\n", resp.HNSWIDs)
-	fmt.Printf("WAL size:      %d bytes\n", resp.WALBytes)
-	if resp.Checksum != "" {
-		fmt.Printf("Checksum:      %s\n", resp.Checksum)
+	fmt.Printf("Collections (%d):\n", resp.Count)
+	for _, coll := range resp.Collections {
+		name, _ := coll["name"].(string)
+		if name == "" {
+			name = fmt.Sprintf("%v", coll)
+		}
+		fmt.Printf("  - %s\n", name)
 	}
 }
 
@@ -430,21 +442,17 @@ func cmdExport() {
 }
 
 func cmdCompact() {
-	// Compact endpoint is GET /compact
 	c := newClient()
-	resp, err := c.Health(ctx()) // use health as a pre-check
-	if err != nil {
-		fatal("server unreachable", err)
-	}
-	fmt.Printf("Server healthy. Total: %d, Active: %d, Deleted: %d\n", resp.Total, resp.Active, resp.Deleted)
 	fmt.Println("Triggering compaction...")
-
-	// Use raw HTTP since compact isn't in the typed client
-	_, err = c.Health(ctx()) // placeholder — compact needs a direct call
+	resp, err := c.Compact(ctx())
 	if err != nil {
 		fatal("compact failed", err)
 	}
-	fmt.Println("Compaction triggered. Check server logs for progress.")
+	if resp.OK {
+		fmt.Println("Compaction completed successfully.")
+	} else {
+		fmt.Println("Compaction returned without error but OK=false. Check server logs.")
+	}
 }
 
 // parseMeta parses "key1=val1,key2=val2" into a map.
