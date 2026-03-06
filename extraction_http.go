@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenomenon0/Agent-GO/vectordb/extraction"
+	"github.com/phenomenon0/vectordb/extraction"
 )
 
 // ExtractionHandler handles knowledge graph extraction HTTP endpoints.

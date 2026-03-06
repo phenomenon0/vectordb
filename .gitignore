@@ -1,0 +1,13 @@
+# Binaries
+vectordb
+vectordb-server
+gentoken/gentoken
+gentoken/vectordb
+*.zip
+
+# Data
+data/
+*.wal
+
+# Large model files
+models/bge-small-en-v1.5/model.onnx

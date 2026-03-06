@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenomenon0/Agent-GO/cowrie"
-	"github.com/phenomenon0/Agent-GO/cowrie/codec"
+	"github.com/Neumenon/cowrie/go"
+	"github.com/Neumenon/cowrie/go/codec"
 )
 
 // init registers a fast unmarshaler for QueryResponse.

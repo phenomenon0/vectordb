@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/phenomenon0/Agent-GO/vectordb/filter"
-	"github.com/phenomenon0/Agent-GO/vectordb/hybrid"
-	"github.com/phenomenon0/Agent-GO/vectordb/index"
-	"github.com/phenomenon0/Agent-GO/vectordb/sparse"
+	"github.com/phenomenon0/vectordb/filter"
+	"github.com/phenomenon0/vectordb/hybrid"
+	"github.com/phenomenon0/vectordb/index"
+	"github.com/phenomenon0/vectordb/sparse"
 )
 
 // Collection manages multiple vector indexes for a single collection.
