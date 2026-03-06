@@ -14,8 +14,10 @@ Goal: run embeddings locally (Hetzner/local CPU) with ONNXRuntime-Go, feed the f
 | [Security](docs/security.md) | JWT, TLS/mTLS, RBAC, encryption, audit |
 | [Kubernetes](docs/kubernetes.md) | StatefulSet, Ingress, backup CronJob, monitoring |
 | [Benchmarks](docs/benchmarks.md) | Methodology, latency, throughput, scalability |
+| [Why VectorDB](docs/why-vectordb.md) | Positioning, comparisons, architecture overview |
 | [API Reference](../docs/api/vectordb.md) | Go client, HTTP endpoints, request/response types |
 | [Operations](../docs/guides/vectordb-ops.md) | Deployment, monitoring, compaction, WAL |
+| [Grafana Dashboard](grafana/) | Pre-built Prometheus dashboard + alerting rules |
 | **Migration Guides** | |
 | [From ChromaDB](docs/migration-from-chroma.md) | Export/import, API mapping, filter translation |
 | [From Qdrant](docs/migration-from-qdrant.md) | Scroll export, payload mapping |
