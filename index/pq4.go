@@ -688,9 +688,33 @@ func (w *pq4IndexWrapper) Stats() IndexStats {
 }
 
 func (w *pq4IndexWrapper) Export() ([]byte, error) {
-	return nil, fmt.Errorf("export not implemented")
+	w.idx.mu.RLock()
+	defer w.idx.mu.RUnlock()
+
+	return exportPQData(w.idx.dim, w.idx.pq.m, 16, w.idx.pq.dsub, w.idx.pq.trained,
+		w.idx.pq.codebooks, w.idx.codes, w.idx.ids)
 }
 
 func (w *pq4IndexWrapper) Import(data []byte) error {
-	return fmt.Errorf("import not implemented")
+	w.idx.mu.Lock()
+	defer w.idx.mu.Unlock()
+
+	dim, m, ksub, dsub, trained, codebooks, codes, ids, err := importPQData(data)
+	if err != nil {
+		return fmt.Errorf("pq4 import: %w", err)
+	}
+	if ksub != 16 {
+		return fmt.Errorf("pq4 import: expected ksub=16, got %d", ksub)
+	}
+
+	w.idx.dim = dim
+	w.idx.pq.dim = dim
+	w.idx.pq.m = m
+	w.idx.pq.dsub = dsub
+	w.idx.pq.trained = trained
+	w.idx.pq.codebooks = codebooks
+	w.idx.codes = codes
+	w.idx.ids = ids
+	w.dim = dim
+	return nil
 }

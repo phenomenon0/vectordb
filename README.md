@@ -1,8 +1,25 @@
 # vectordb — Local/Hcloud Design (CPU Fast Path)
 
-> **📚 Comprehensive Guide:** For operations, multi-tenancy, and distributed architecture, see [docs/guides/vectordb-ops.md](../docs/guides/vectordb-ops.md)
+> **⚠️ Note:** Distributed/cluster mode is **experimental**. Use single-node mode for production. See [DISTRIBUTED_ARCHITECTURE.md](DISTRIBUTED_ARCHITECTURE.md) for details.
 
 Goal: run embeddings locally (Hetzner/local CPU) with ONNXRuntime-Go, feed the flat-buffer store, and serve RAG without external APIs.
+
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Installation](INSTALLATION.md) | Docker, source build, all SDKs, systemd |
+| [Troubleshooting](TROUBLESHOOTING.md) | 20+ common issues with solutions |
+| [Cookbook](docs/cookbook.md) | RAG, hybrid search, multi-tenancy, tuning |
+| [Security](docs/security.md) | JWT, TLS/mTLS, RBAC, encryption, audit |
+| [Kubernetes](docs/kubernetes.md) | StatefulSet, Ingress, backup CronJob, monitoring |
+| [Benchmarks](docs/benchmarks.md) | Methodology, latency, throughput, scalability |
+| [API Reference](../docs/api/vectordb.md) | Go client, HTTP endpoints, request/response types |
+| [Operations](../docs/guides/vectordb-ops.md) | Deployment, monitoring, compaction, WAL |
+| **Migration Guides** | |
+| [From ChromaDB](docs/migration-from-chroma.md) | Export/import, API mapping, filter translation |
+| [From Qdrant](docs/migration-from-qdrant.md) | Scroll export, payload mapping |
+| [From Pinecone](docs/migration-from-pinecone.md) | Namespace mapping, cost comparison |
 
 ## Choices
 - Model: `bge-small-en` (384d) ONNX FP16 (fast, ~3–8 ms/query on modern CPU).
