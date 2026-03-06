@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -971,10 +972,21 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				respMeta = append(respMeta, cp)
 			}
 
-			// Compute sparse similarity score
-			// TODO: Get vector from store and compute sparse distance
-			// For now, use placeholder score
-			respScores = append(respScores, float32(0.5))
+			// Compute cosine similarity between query and stored vector
+			score := float32(0)
+			if idx >= 0 && (idx+1)*store.Dim <= len(store.Data) {
+				storedVec := store.Data[idx*store.Dim : (idx+1)*store.Dim]
+				var dot, normQ, normS float32
+				for d := 0; d < store.Dim && d < len(qVec); d++ {
+					dot += qVec[d] * storedVec[d]
+					normQ += qVec[d] * qVec[d]
+					normS += storedVec[d] * storedVec[d]
+				}
+				if normQ > 0 && normS > 0 {
+					score = dot / (float32(math.Sqrt(float64(normQ))) * float32(math.Sqrt(float64(normS))))
+				}
+			}
+			respScores = append(respScores, score)
 		}
 
 		response := map[string]any{

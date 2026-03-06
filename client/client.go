@@ -49,11 +49,12 @@ func init() {
 // Client is a lightweight HTTP wrapper for the vectordb service.
 // It exposes typed helpers but keeps a generic Do for extensibility.
 type Client struct {
-	baseURL     string
-	http        *http.Client
-	token       string
-	headers     http.Header
-	preferCowrie bool // prefer Cowrie responses when available
+	baseURL      string
+	http         *http.Client
+	token        string
+	headers      http.Header
+	preferCowrie bool         // prefer Cowrie responses when available
+	retry        *RetryConfig // nil = no retries
 }
 
 // Option mutates client configuration.
@@ -109,14 +110,17 @@ func WithCowrie() Option {
 }
 
 // New constructs a client. baseURL may be empty (defaults to http://localhost:8080).
+// By default, retries are enabled with DefaultRetryConfig(). Use WithRetry(nil) to disable.
 func New(baseURL string, opts ...Option) *Client {
 	if baseURL == "" {
 		baseURL = "http://localhost:8080"
 	}
+	defaultRetry := DefaultRetryConfig()
 	c := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		http:    &http.Client{Timeout: 15 * time.Second},
 		headers: make(http.Header),
+		retry:   &defaultRetry,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -216,14 +220,8 @@ type HealthResponse struct {
 }
 
 // HTTPError is returned for non-2xx responses.
-type HTTPError struct {
-	StatusCode int
-	Body       string
-}
-
-func (e *HTTPError) Error() string {
-	return fmt.Sprintf("http %d: %s", e.StatusCode, e.Body)
-}
+// Deprecated: Use APIError and errors.As for typed error handling.
+type HTTPError = APIError
 
 // Insert calls POST /insert.
 func (c *Client) Insert(ctx context.Context, req InsertRequest) (*InsertResponse, error) {
@@ -271,16 +269,51 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 }
 
 // doJSON is the small generic core used by helpers.
+// It includes retry with exponential backoff for transient failures.
 func (c *Client) doJSON(ctx context.Context, method, path string, in any, out any) error {
-	url := c.baseURL + path
-
-	var body io.Reader
+	// Pre-encode body so retries can re-read it
+	var bodyBytes []byte
 	if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch {
 		b, err := json.Marshal(in)
 		if err != nil {
 			return fmt.Errorf("encode request: %w", err)
 		}
-		body = bytes.NewReader(b)
+		bodyBytes = b
+	}
+
+	var lastErr error
+	maxAttempts := 1
+	if c.retry != nil {
+		maxAttempts = 1 + c.retry.MaxRetries
+	}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			delay := retryDelay(attempt-1, c.retry)
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return fmt.Errorf("%w: %v", ErrTimeout, err)
+			}
+		}
+
+		err := c.doJSONOnce(ctx, method, path, bodyBytes, out)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		if !shouldRetry(err, attempt, c.retry) {
+			return err
+		}
+	}
+	return lastErr
+}
+
+func (c *Client) doJSONOnce(ctx context.Context, method, path string, bodyBytes []byte, out any) error {
+	url := c.baseURL + path
+
+	var body io.Reader
+	if bodyBytes != nil {
+		body = bytes.NewReader(bodyBytes)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
@@ -291,7 +324,6 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in any, out an
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	// Set Accept header for Cowrie preference
 	if c.preferCowrie {
 		req.Header.Set("Accept", codec.ContentTypeCowrie)
 	}
@@ -307,7 +339,10 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in any, out an
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("do request: %w", err)
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: %v", ErrTimeout, err)
+		}
+		return &APIError{StatusCode: 0, Message: err.Error(), Retryable: true, Cause: ErrConnection}
 	}
 	defer resp.Body.Close()
 
@@ -317,13 +352,12 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in any, out an
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &HTTPError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		return classifyHTTPError(resp.StatusCode, string(respBody))
 	}
 	if out == nil || len(respBody) == 0 {
 		return nil
 	}
 
-	// Decode response based on Content-Type
 	contentType := resp.Header.Get("Content-Type")
 	responseCodec := codec.FromContentType(contentType)
 

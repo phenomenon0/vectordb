@@ -100,8 +100,8 @@ func TestHTTPErrorSurface(t *testing.T) {
 		if httpErr.StatusCode != http.StatusInternalServerError {
 			t.Fatalf("unexpected status: %d", httpErr.StatusCode)
 		}
-		if httpErr.Body != "boom" {
-			t.Fatalf("unexpected body: %s", httpErr.Body)
+		if httpErr.Message != "boom" {
+			t.Fatalf("unexpected message: %s", httpErr.Message)
 		}
 	} else {
 		t.Fatalf("expected HTTPError, got %T", err)

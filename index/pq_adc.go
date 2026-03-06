@@ -970,11 +970,33 @@ func (w *pqIndexWrapper) Stats() IndexStats {
 }
 
 func (w *pqIndexWrapper) Export() ([]byte, error) {
-	return nil, fmt.Errorf("export not implemented")
+	w.idx.mu.RLock()
+	defer w.idx.mu.RUnlock()
+
+	return exportPQData(w.idx.dim, w.idx.pq.m, w.idx.pq.ksub, w.idx.pq.dsub, w.idx.pq.trained,
+		w.idx.pq.codebooks, w.idx.codes, w.idx.ids)
 }
 
 func (w *pqIndexWrapper) Import(data []byte) error {
-	return fmt.Errorf("import not implemented")
+	w.idx.mu.Lock()
+	defer w.idx.mu.Unlock()
+
+	dim, m, ksub, dsub, trained, codebooks, codes, ids, err := importPQData(data)
+	if err != nil {
+		return fmt.Errorf("pq import: %w", err)
+	}
+
+	w.idx.dim = dim
+	w.idx.pq.dim = dim
+	w.idx.pq.m = m
+	w.idx.pq.ksub = ksub
+	w.idx.pq.dsub = dsub
+	w.idx.pq.trained = trained
+	w.idx.pq.codebooks = codebooks
+	w.idx.codes = codes
+	w.idx.ids = ids
+	w.dim = dim
+	return nil
 }
 
 type ivfpqIndexWrapper struct {
@@ -1016,9 +1038,9 @@ func (w *ivfpqIndexWrapper) Stats() IndexStats {
 }
 
 func (w *ivfpqIndexWrapper) Export() ([]byte, error) {
-	return nil, fmt.Errorf("export not implemented")
+	return nil, fmt.Errorf("export not implemented for IVF-PQ: use PQ or PQ4 index for persistence")
 }
 
 func (w *ivfpqIndexWrapper) Import(data []byte) error {
-	return fmt.Errorf("import not implemented")
+	return fmt.Errorf("import not implemented for IVF-PQ: use PQ or PQ4 index for persistence")
 }

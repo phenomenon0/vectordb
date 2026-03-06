@@ -1,5 +1,7 @@
 # Distributed VectorDB Architecture
 
+> **⚠️ EXPERIMENTAL**: Distributed mode is under active development and **not recommended for production use**. Known limitations include incomplete quorum safety checks, missing snapshot sync for far-behind replicas, and unhandled leader election edge cases. For production deployments, use single-node mode. See the code warning in `distributed.go` for details.
+
 ## Overview
 Distributed vectordb system that scales horizontally using collection-based sharding and replication, integrated with existing AgentScope cluster infrastructure.
 
