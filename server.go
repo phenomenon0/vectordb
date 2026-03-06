@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,16 @@ func isValidCollectionName(name string) bool {
 		}
 	}
 	return true
+}
+
+// validateVector checks that a vector contains no NaN or Inf values.
+func validateVector(vec []float32) error {
+	for i, v := range vec {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			return fmt.Errorf("invalid vector: NaN or Inf at index %d", i)
+		}
+	}
+	return nil
 }
 
 // encodeResponse encodes v using the codec preferred by the client (Accept header).
@@ -274,6 +285,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if err != nil {
 			telemetry.RecordError(span, err)
 			http.Error(w, "embed error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if err := validateVector(vec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -1078,6 +1094,114 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if err := encodeResponse(w, r, map[string]any{"deleted": req.ID}); err != nil {
 			fmt.Printf("error encoding response: %v\n", err)
 		}
+	})))
+
+	// Scroll API: paginated iteration over all documents (no search, just enumerate)
+	mux.HandleFunc("/scroll", withMetrics("scroll", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		tenantID := tenantCtx.TenantID
+
+		// Parse parameters from query string or JSON body
+		collection := r.URL.Query().Get("collection")
+		limit := 100
+		offset := 0
+		includeMeta := r.URL.Query().Get("include_meta") == "true"
+
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 10000 {
+				limit = n
+			}
+		}
+		if v := r.URL.Query().Get("offset"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+
+		store.RLock()
+		defer store.RUnlock()
+
+		ids := make([]string, 0, limit)
+		docs := make([]string, 0, limit)
+		metas := make([]map[string]string, 0, limit)
+		total := 0
+
+		for i := 0; i < store.Count; i++ {
+			hid := hashID(store.GetID(i))
+
+			// Skip deleted
+			if store.Deleted[hid] {
+				continue
+			}
+
+			// Tenant filtering
+			vectorTenant := store.TenantID[hid]
+			if vectorTenant == "" {
+				vectorTenant = "default"
+			}
+			if !tenantCtx.IsAdmin && vectorTenant != tenantID {
+				continue
+			}
+
+			// Collection filtering
+			coll := store.Coll[hid]
+			if coll == "" {
+				coll = "default"
+			}
+			if collection != "" && coll != collection {
+				continue
+			}
+
+			// Collection ACL
+			if !tenantCtx.IsAdmin && len(tenantCtx.Collections) > 0 && !tenantCtx.Collections[coll] {
+				continue
+			}
+
+			total++
+			if total <= offset {
+				continue
+			}
+			if len(ids) >= limit {
+				continue // keep counting total
+			}
+
+			ids = append(ids, store.GetID(i))
+			docs = append(docs, store.GetDoc(i))
+			if includeMeta {
+				meta := store.Meta[hid]
+				cp := make(map[string]string, len(meta))
+				for k, v := range meta {
+					cp[k] = v
+				}
+				metas = append(metas, cp)
+			}
+		}
+
+		nextOffset := offset + len(ids)
+		if nextOffset >= total {
+			nextOffset = -1 // no more pages
+		}
+
+		response := map[string]any{
+			"ids":         ids,
+			"docs":        docs,
+			"total":       total,
+			"next_offset": nextOffset,
+		}
+		if includeMeta {
+			response["meta"] = metas
+		}
+
+		sendResponse(w, r, response)
 	})))
 
 	mux.HandleFunc("/health", withMetrics("health", guard(func(w http.ResponseWriter, r *http.Request) {

@@ -268,6 +268,61 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 	return &resp, nil
 }
 
+// CompactResponse is the response from POST /compact.
+type CompactResponse struct {
+	OK bool `json:"ok"`
+}
+
+// Compact triggers index compaction. Requires admin permission.
+func (c *Client) Compact(ctx context.Context) (*CompactResponse, error) {
+	var resp CompactResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/compact", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// CollectionListResponse is the response from GET /admin/collection/list.
+type CollectionListResponse struct {
+	Status      string                   `json:"status"`
+	Count       int                      `json:"count"`
+	Collections []map[string]interface{} `json:"collections"`
+}
+
+// ListCollections calls GET /admin/collection/list. Requires admin permission.
+func (c *Client) ListCollections(ctx context.Context) (*CollectionListResponse, error) {
+	var resp CollectionListResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/admin/collection/list", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ScrollRequest is used for paginated iteration over all vectors.
+type ScrollRequest struct {
+	Collection string `json:"collection,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+	Offset     int    `json:"offset,omitempty"`
+}
+
+// ScrollResponse contains a page of documents.
+type ScrollResponse struct {
+	IDs   []string            `json:"ids"`
+	Docs  []string            `json:"docs"`
+	Meta  []map[string]string `json:"meta,omitempty"`
+	Total int                 `json:"total"`
+	Next  int                 `json:"next_offset"`
+}
+
+// Scroll calls POST /scroll for paginated document iteration.
+func (c *Client) Scroll(ctx context.Context, req ScrollRequest) (*ScrollResponse, error) {
+	var resp ScrollResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/scroll", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // doJSON is the small generic core used by helpers.
 // It includes retry with exponential backoff for transient failures.
 func (c *Client) doJSON(ctx context.Context, method, path string, in any, out any) error {
