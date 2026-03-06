@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **CLI tool** (`vectordb-cli`): health, insert, query, delete, collections, stats, import/export (JSONL), compact, gentoken
+- **Go client improvements**: `Compact()`, `ListCollections()`, `Scroll()` methods, typed error hierarchy (`APIError`, sentinel errors), exponential backoff retry with jitter
+- **Scroll endpoint** (`GET/POST /scroll`): paginated document iteration with tenant/collection filtering
+- **Grafana dashboard**: 16-panel template with query latency, throughput, error rates, shard health, and alerting rules
+- **Cowrie codec support**: `Accept: application/cowrie` for ~48% smaller float32 array responses
+- **Docker deployment**: multi-stage Dockerfile + docker-compose.yml
+- **Documentation**: Installation guide, Troubleshooting (20+ issues), Cookbook (6 recipes), Security guide, Kubernetes deployment, Benchmarks, migration guides (ChromaDB, Qdrant, Pinecone), "Why VectorDB" positioning page
+
+### Fixed
+- **Sparse search scoring**: replaced placeholder `0.5` score with actual cosine similarity computation
+- **SIMD safety**: added `Safe` variants of distance functions that return errors instead of panicking on dimension mismatch
+- **NaN/Inf rejection**: `validateVector()` on insert path prevents corrupt vectors from entering the index
+- **PQ serialization**: implemented `Export`/`Import` for PQ4 and PQ-ADC indices (was returning "not implemented")
+- **Missing strconv import**: scroll endpoint wouldn't compile
+
+### Changed
+- `HTTPError` is now a type alias for `APIError` (backward compatible)
+- Client retries enabled by default (3 retries, exponential backoff, jitter)
+- Distributed architecture docs marked as experimental with warning banners
+
 ## [0.1.0] - 2024-12-17
 
 ### Added
