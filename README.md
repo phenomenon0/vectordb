@@ -1,170 +1,156 @@
-# vectordb — Local/Hcloud Design (CPU Fast Path)
+# DeepData
 
-> **⚠️ Note:** Distributed/cluster mode is **experimental**. Use single-node mode for production. See [DISTRIBUTED_ARCHITECTURE.md](DISTRIBUTED_ARCHITECTURE.md) for details.
+High-performance vector database written in Go. Single binary, embedded web UI, optional desktop app.
 
-Goal: run embeddings locally (Hetzner/local CPU) with ONNXRuntime-Go, feed the flat-buffer store, and serve RAG without external APIs.
+## Features
+
+- **Multiple index types**: HNSW (default), IVF, DiskANN, flat scan
+- **Hybrid search**: dense + sparse vector fusion (RRF, weighted, linear)
+- **Quantization**: FP16, Uint8, PQ8, PQ4 — trade memory for speed
+- **Multi-tenancy**: tenant isolation, per-tenant quotas, collection-level ACLs
+- **Persistence**: WAL with CRC checksums, automatic snapshots, gob/SJSON formats
+- **Security**: JWT auth, API key rotation, RBAC, TLS/mTLS, audit logging
+- **Embedders**: Ollama (local), OpenAI, ONNX runtime, hash (testing) — hot-swappable at runtime
+- **Observability**: Prometheus metrics, Grafana dashboard, structured logging
+- **Desktop app**: Tauri wrapper with native window controls (Linux/macOS/Windows)
+
+## Quick Start
+
+```bash
+# Run with Go
+go run . serve --port 8080
+
+# Or with Docker
+docker compose up
+
+# Or build the binary
+go build -o deepdata .
+./deepdata serve --port 8080
+```
+
+The embedded web UI is served at the root (`http://localhost:8080`).
+
+## Modes
+
+| Mode | Embedder | Dimension | Cost |
+|------|----------|-----------|------|
+| **local** | Ollama `nomic-embed-text` / ONNX `bge-small` | 768 / 384 | Free |
+| **pro** | OpenAI `text-embedding-3-small` | 1536 | ~$0.02/1M tokens |
+
+Set with `--mode local` or `VECTORDB_MODE=local`.
+
+## API
+
+Server listens on `:8080` by default. All endpoints accept/return JSON.
+
+### Core
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/insert` | Add or upsert a document |
+| `POST` | `/query` | Search with optional metadata filters |
+| `POST` | `/delete` | Delete by ID (tombstone) |
+| `GET/POST` | `/scroll` | Paginated document iteration |
+| `POST` | `/batch/insert` | Bulk insert (up to 10K docs) |
+
+### Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Stats: total, active, deleted vectors |
+| `GET` | `/healthz` | Liveness probe |
+| `GET` | `/integrity` | Checksum validation |
+| `POST` | `/compact` | Rebuild index, drop tombstones |
+| `GET` | `/export` | Download snapshot |
+| `POST` | `/import` | Load snapshot |
+| `GET` | `/metrics` | Prometheus metrics |
+
+### Configuration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET/POST` | `/api/config/embedder` | View or hot-swap the embedder |
+| `GET/POST` | `/api/config/keys` | Manage LLM API keys (in-memory) |
+| `GET` | `/api/mode` | Current mode info |
+| `GET` | `/api/costs` | Cost tracking (pro mode) |
+
+### Insert
+
+```bash
+curl -X POST http://localhost:8080/insert \
+  -d '{"doc": "vector databases use ANN for fast retrieval", "id": "doc-1", "meta": {"topic": "databases"}}'
+```
+
+### Query
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -d '{"query": "how do vector databases work?", "top_k": 5, "mode": "ann", "include_meta": true}'
+```
+
+Supports metadata filtering: `meta` (AND), `meta_any` (OR), `meta_not` (NOT).
+
+## CLI Flags
+
+```
+deepdata serve [flags]
+
+  --port            HTTP port (env: PORT, default: 8080)
+  --mode            Engine mode: local or pro (env: VECTORDB_MODE)
+  --data-dir        Data directory (env: VECTORDB_DATA_DIR)
+  --dimension       Embedding dimension (env: EMBED_DIM)
+  --embedder        Embedder: ollama, openai, hash (env: EMBEDDER_TYPE)
+  --embedder-model  Model name (env: OLLAMA_EMBED_MODEL)
+  --embedder-url    Embedder URL (env: OLLAMA_URL)
+```
+
+## Desktop App
+
+The `desktop/` directory contains a Tauri v2 wrapper that launches the Go server as a sidecar and loads the web UI in a native window.
+
+```bash
+cd desktop
+npm install
+npm run tauri build
+```
+
+Features: dynamic port allocation, draggable titlebar, native minimize/maximize/close controls.
 
 ## Documentation
 
 | Guide | Description |
 |-------|-------------|
-| [Installation](INSTALLATION.md) | Docker, source build, all SDKs, systemd |
+| [Installation](INSTALLATION.md) | Docker, source build, SDKs, systemd |
 | [Troubleshooting](TROUBLESHOOTING.md) | 20+ common issues with solutions |
 | [Cookbook](docs/cookbook.md) | RAG, hybrid search, multi-tenancy, tuning |
 | [Security](docs/security.md) | JWT, TLS/mTLS, RBAC, encryption, audit |
-| [Kubernetes](docs/kubernetes.md) | StatefulSet, Ingress, backup CronJob, monitoring |
-| [Benchmarks](docs/benchmarks.md) | Methodology, latency, throughput, scalability |
-| [Why VectorDB](docs/why-vectordb.md) | Positioning, comparisons, architecture overview |
-| [API Reference](../docs/api/vectordb.md) | Go client, HTTP endpoints, request/response types |
-| [Operations](../docs/guides/vectordb-ops.md) | Deployment, monitoring, compaction, WAL |
-| [Grafana Dashboard](grafana/) | Pre-built Prometheus dashboard + alerting rules |
-| **Migration Guides** | |
-| [From ChromaDB](docs/migration-from-chroma.md) | Export/import, API mapping, filter translation |
-| [From Qdrant](docs/migration-from-qdrant.md) | Scroll export, payload mapping |
-| [From Pinecone](docs/migration-from-pinecone.md) | Namespace mapping, cost comparison |
+| [Kubernetes](docs/kubernetes.md) | StatefulSet, Ingress, backup CronJob |
+| [Benchmarks](docs/benchmarks.md) | Latency, throughput, scalability |
+| [Grafana Dashboard](grafana/) | Prometheus dashboard + alerting rules |
+| [Changelog](CHANGELOG.md) | Release history |
 
-## Choices
-- Model: `bge-small-en` (384d) ONNX FP16 (fast, ~3–8 ms/query on modern CPU).
-- Runtime: `github.com/microsoft/onnxruntime-go`. Set session options to use all cores, disable arena growth pauses.
-- Hardware: Hetzner CX32/CX42 (8–16 vCPU) or similar local box; no GPU required.
-- Store: existing contiguous `VectorStore` (keeps memory hot and scans fast).
+### Migration Guides
 
-## Setup
-```bash
-# Download model
-wget https://huggingface.co/BAAI/bge-small-en/resolve/main/model.onnx -O models/bge-small-en.onnx
+- [From ChromaDB](docs/migration-from-chroma.md)
+- [From Qdrant](docs/migration-from-qdrant.md)
+- [From Pinecone](docs/migration-from-pinecone.md)
 
-# Go deps
-go get github.com/microsoft/onnxruntime-go
-```
+## Environment Variables
 
-## Embedding Wiring (replace hash embedder in `main.go`)
-```go
-// Initialize once
-sess, _ := onnx.NewSession("models/bge-small-en.onnx", nil)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8080` | HTTP listen port |
+| `VECTORDB_MODE` | `local` | `local` or `pro` |
+| `VECTORDB_DATA_DIR` | `./data` | Data storage directory |
+| `EMBEDDER_TYPE` | `ollama` | `ollama`, `openai`, `onnx`, `hash` |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama API URL |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model |
+| `OPENAI_API_KEY` | — | OpenAI API key (pro mode) |
+| `JWT_SECRET` | — | JWT signing secret (required if using auth) |
+| `EMBED_DIM` | auto | Override embedding dimension |
+| `WAL_MAX_BYTES` | `5242880` | WAL size before rotation |
+| `COMPACT_INTERVAL_MIN` | — | Auto-compact interval (minutes) |
 
-type Embedder struct {
-    sess *onnx.Session
-}
+## License
 
-func (e *Embedder) Embed(text string) ([]float32, error) {
-    // Tokenize text -> ids/attn (use a small tokenizer library or precompute via fast BPE)
-    // Build input tensors and run
-    outputs, err := e.sess.Run(map[string]*onnx.Value{
-        "input_ids":     idsTensor,
-        "attention_mask": maskTensor,
-    })
-    if err != nil { return nil, err }
-    vec := outputs[0].Float32s()
-    // L2 normalize
-    var norm float32
-    for _, v := range vec { norm += v * v }
-    norm = float32(math.Sqrt(float64(norm)))
-    for i := range vec { vec[i] /= norm }
-    return vec, nil
-}
-```
-
-Use the embedder in:
-- Ingestion: embed document chunks, `store.Add(vec)`, keep a parallel slice for metadata/IDs (current code uses a fast hash embedder by default—swap in your ONNX embedder).
-- Query: embed user query, then `store.Search(vec, k)`.
-
-## Reranker
-- Recommended: `bge-reranker-base` (cross-encoder) ONNX for CPU; swap into `Reranker` implementation in `main.go`.
-- Interim: the code uses `SimpleReranker` (cosine over embeddings). Replace with an ONNX cross-encoder reranker when ready.
-
-## Concurrency/Batching
-- Batch small (8–16) per inference call to amortize runtime overhead.
-- Use a worker pool that accepts texts, batches them, runs one session call, returns vectors.
-- Set ONNX session options: `IntraOpNumThreads = runtime.NumCPU()`, `InterOpNumThreads = 1`.
-
-## HTTP API (minimal)
-Server starts on `:8080` by default.
-
-- `POST /insert`
-  ```json
-  {"doc": "text to index", "id": "optional-custom-id", "meta": {"tag": "code"}, "upsert": true}
-  ```
-  Returns `{ "id": "<assigned>" }`. Embeds, indexes, and persists to `vectordb/index.gob`.
-
-- `POST /query`
-  ```json
-  {
-    "query": "what is locality?",
-    "top_k": 3,
-    "mode": "ann",
-    "meta": {"tag": "code"},           // AND filter
-    "meta_any": [{"team": "a"}],       // OR filter
-    "meta_not": {"env": "dev"},        // NOT filter
-    "collection": "default",
-    "offset": 0,
-    "limit": 3,
-    "include_meta": true
-  }
-  ```
-  Embeds query, searches (ANN by default, set `"mode":"scan"` to brute-force), reranks, returns:
-  ```json
-  {"ids":["..."], "docs": ["..."], "scores": [0.9], "meta":[{"tag":"code"}], "stats": "Rerank completed in ..."}
-  ```
-
-- `POST /delete`
-  ```json
-  {"id": "doc-123"}
-  ```
-  Marks a document deleted (tombstone; HNSW is not compacted).
-
-- `GET /health`
-  Returns basic stats (`total`, `active`, `deleted`, `hnsw_ids`).
-
-## Running
-```bash
-go run ./vectordb
-# HTTP API on :8080; RAG demo also starts in main()
-```
-
-## Swap in real models
-- Embedder: replace `HashEmbedder` with ONNX embedder (e.g., BGE-small). Keep dim (384) aligned with store.
-- Reranker: implement `Reranker` using ONNX `bge-reranker-base` (cross-encoder), batching doc pairs for speed.
-
-### ONNX toggle (build tag)
-- Build with `-tags onnx` and set env:
-  - `ONNX_EMBED_MODEL=./vectordb/models/bge-small-en-v1.5/model.onnx` (auto-detected if present)
-  - `ONNX_EMBED_TOKENIZER=./vectordb/models/bge-small-en-v1.5/tokenizer.json` (auto-detected if present)
-  - `ONNX_RERANK_MODEL=./models/bge-reranker-base.onnx`
-  - `ONNX_RERANK_TOKENIZER=./models/tokenizer.json`
-- Optional: `ONNX_EMBED_MAX_LEN`, `ONNX_RERANK_MAX_LEN`, `EMBED_DIM` (default 384).
-- Without the tag, the code falls back to the hash embedder + simple cosine reranker.
-
-### Fetch helper
-```bash
-./vectordb/fetch_bge_small.sh
-# downloads model.onnx + tokenizer.json into vectordb/models/bge-small-en-v1.5/
-```
-
-### Model size/quality notes
-- Current example: BGE-small-en-v1.5 ONNX (~100–130 MB FP32). For tighter footprints:
-  - Int8 quantize BGE-small with onnxruntime quantization (size ~20–30 MB, small quality hit).
-  - Alternatives: MiniLM-L6-v2 or E5-small-v2 (384d) int8 (~15–25 MB) with slightly lower recall.
-  - Keep tokenizer aligned with the model; only swap the ONNX file and env vars.
-
-### Export/Import & Compaction (replication basics)
-- Export snapshot: `GET /export` returns `index.gob` (HNSW + metadata). Import on another node: `POST /import` with the snapshot file. Integrity check: `GET /integrity`.
-- Compact: `POST /compact` rebuilds HNSW and drops tombstones, then saves a fresh snapshot. Enable periodic compaction with `COMPACT_INTERVAL_MIN` (env, minutes).
-- Suggested replication recipe:
-  1) On primary, `curl -o index.gob http://host:8080/export`
-  2) On secondary, `curl -X POST --data-binary @index.gob http://host:8080/import`
-  3) Warm compaction periodically on both nodes (`COMPACT_INTERVAL_MIN`), and monitor `/health` + `/integrity`.
-- Helper script: `vectordb/scripts/pull_snapshot.sh` pulls from `LEADER_URL` and imports to `FOLLOWER_URL` (defaults to localhost). Set envs `LEADER_URL`, `FOLLOWER_URL`, `SNAPSHOT_PATH`.
-- Scheduled export: set `SNAPSHOT_EXPORT_PATH` and `EXPORT_INTERVAL_MIN` to periodically write a snapshot to disk for backups/replication.
-
-## Runtime Notes
-- Warm the model at startup with a dummy call.
-- Ensure `VectorStore` capacity matches ingestion volume (`capacity * dim * 4 bytes`).
-- If you need persistence, append vectors/metadata to a file (or mmap) alongside the flat buffer.
-- Keep `DefaultTimeout` for the retrieval tool small (e.g., 200 ms) to enforce tail latency.
-
-## Running
-```bash
-go run ./vectordb
-# ensure the embedder is initialized and RetrievalTool uses it instead of the rand mock
-```
+MIT
