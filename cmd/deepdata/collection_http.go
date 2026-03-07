@@ -8,12 +8,15 @@ import (
 
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/encoding"
+	"github.com/phenomenon0/vectordb/internal/graph"
+	"github.com/phenomenon0/vectordb/internal/hybrid"
 	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
 // CollectionHTTPServer wraps CollectionManager for HTTP API access
 type CollectionHTTPServer struct {
-	manager *vcollection.CollectionManager
+	manager    *vcollection.CollectionManager
+	graphIndex *graph.GraphIndex // Optional GraphRAG index for graph-boosted search
 }
 
 // NewCollectionHTTPServer creates a new HTTP server wrapper for CollectionManager
@@ -21,6 +24,11 @@ func NewCollectionHTTPServer(storagePath string) *CollectionHTTPServer {
 	return &CollectionHTTPServer{
 		manager: vcollection.NewCollectionManager(storagePath),
 	}
+}
+
+// EnableGraphRAG activates the GraphRAG index for graph-boosted hybrid search.
+func (s *CollectionHTTPServer) EnableGraphRAG(cfg graph.Config) {
+	s.graphIndex = graph.NewGraphIndex(cfg)
 }
 
 // RegisterHandlers registers all collection HTTP handlers with the given mux
@@ -427,11 +435,13 @@ func (s *CollectionHTTPServer) handleBatchInsert(w http.ResponseWriter, r *http.
 // SearchRequest for hybrid search
 type SearchRequest struct {
 	CollectionName string                          `json:"collection"`
-	Queries        map[string]interface{}          `json:"queries"` // field name -> query vector
+	Queries        map[string]interface{}          `json:"queries"`      // field name -> query vector
+	QueryText      string                          `json:"query_text"`   // text query for GraphRAG entity matching
 	TopK           int                             `json:"top_k"`
 	Offset         int                             `json:"offset,omitempty"`
 	Filters        map[string]interface{}          `json:"filters,omitempty"`
 	HybridParams   *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
+	GraphWeight    float32                         `json:"graph_weight,omitempty"` // weight for graph signal (0 = disabled)
 }
 
 // handleSearch performs search (dense, sparse, or hybrid)
@@ -539,6 +549,49 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		http.Error(w, fmt.Sprintf("search failed: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// Apply GraphRAG boosting if enabled
+	if s.graphIndex != nil && s.graphIndex.NodeCount() > 0 && req.GraphWeight > 0 {
+		queryTerms := strings.Fields(req.QueryText)
+		if len(queryTerms) > 0 {
+			graphResults := s.graphIndex.Search(queryTerms, effectiveTopK)
+			if len(graphResults) > 0 {
+				// Convert collection results to hybrid format
+				baseResults := make([]hybrid.SearchResult, len(resp.Documents))
+				for i, doc := range resp.Documents {
+					score := float32(0)
+					if i < len(resp.Scores) {
+						score = resp.Scores[i]
+					}
+					baseResults[i] = hybrid.SearchResult{DocID: doc.ID, Score: score}
+				}
+
+				// Fuse with graph scores
+				params := hybrid.FusionParams{
+					Strategy:    hybrid.FusionRRF,
+					DenseWeight: 1.0,
+					GraphWeight: req.GraphWeight,
+				}
+				fused, _ := hybrid.HybridSearchWithGraph(baseResults, nil, graphResults, params, effectiveTopK)
+
+				// Rebuild response from fused results
+				docMap := make(map[uint64]vcollection.Document, len(resp.Documents))
+				for _, doc := range resp.Documents {
+					docMap[doc.ID] = doc
+				}
+				fusedDocs := make([]vcollection.Document, 0, len(fused))
+				fusedScores := make([]float32, 0, len(fused))
+				for _, fr := range fused {
+					if doc, ok := docMap[fr.DocID]; ok {
+						fusedDocs = append(fusedDocs, doc)
+						fusedScores = append(fusedScores, fr.Score)
+					}
+				}
+				resp.Documents = fusedDocs
+				resp.Scores = fusedScores
+			}
+		}
 	}
 
 	// Apply offset pagination at HTTP layer.
