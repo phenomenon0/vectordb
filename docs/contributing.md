@@ -183,7 +183,7 @@ For feature requests:
 
 If you have questions:
 
-1. Check existing documentation in `/vectordb/QUICKSTART.md`
+1. Check the [README](../README.md) and [docs/](./)
 2. Search existing issues
 3. Open a new issue with the "question" label
 

@@ -120,8 +120,8 @@ Features: dynamic port allocation, draggable titlebar, native minimize/maximize/
 
 | Guide | Description |
 |-------|-------------|
-| [Installation](INSTALLATION.md) | Docker, source build, SDKs, systemd |
-| [Troubleshooting](TROUBLESHOOTING.md) | 20+ common issues with solutions |
+| [Installation](docs/installation.md) | Docker, source build, SDKs, systemd |
+| [Troubleshooting](docs/troubleshooting.md) | 20+ common issues with solutions |
 | [Cookbook](docs/cookbook.md) | RAG, hybrid search, multi-tenancy, tuning |
 | [Security](docs/security.md) | JWT, TLS/mTLS, RBAC, encryption, audit |
 | [Kubernetes](docs/kubernetes.md) | StatefulSet, Ingress, backup CronJob |
