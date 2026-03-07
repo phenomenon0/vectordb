@@ -237,7 +237,7 @@ func (mc *MetricsCollector) RecordQuery(mode string, collections []string, durat
 }
 
 // UpdateShardHealth updates shard health metrics
-func (mc *MetricsCollector) UpdateShardHealth(shardID int, nodeID string, role ReplicaRole, healthy bool, replicationLag int) {
+func (mc *MetricsCollector) UpdateShardHealth(shardID int, nodeID string, role string, healthy bool, replicationLag int) {
 	healthValue := 0.0
 	if healthy {
 		healthValue = 1.0
@@ -246,10 +246,10 @@ func (mc *MetricsCollector) UpdateShardHealth(shardID int, nodeID string, role R
 	mc.shardHealthStatus.WithLabelValues(
 		fmt.Sprintf("%d", shardID),
 		nodeID,
-		string(role),
+		role,
 	).Set(healthValue)
 
-	if role == RoleReplica {
+	if role == "replica" {
 		mc.shardReplicationLag.WithLabelValues(
 			fmt.Sprintf("%d", shardID),
 			nodeID,

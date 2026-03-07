@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -24,6 +26,7 @@ import (
 
 	"github.com/phenomenon0/vectordb/index"
 	"github.com/phenomenon0/vectordb/logging"
+	"github.com/phenomenon0/vectordb/security"
 	"github.com/phenomenon0/vectordb/storage"
 	"github.com/phenomenon0/vectordb/telemetry"
 )
@@ -69,20 +72,16 @@ type VectorStore struct {
 	sumDocL int
 	// Multi-tenancy support
 	TenantID    map[uint64]string  // vector hash -> tenant ID
-	acl         *ACL               // access control lists
-	quotas      *TenantQuota       // storage quotas per tenant
+	acl         *security.ACL              // access control lists
+	quotas      *security.TenantQuota      // storage quotas per tenant
 	tenantRL    *tenantRateLimiter // per-tenant rate limiting
-	jwtMgr      *JWTManager        // JWT token manager
+	jwtMgr      *security.JWTManager       // JWT token manager
 	requireAuth bool               // Require JWT authentication
 	// Storage format (gob, cowrie, cowrie-zstd)
 	storageFormat storage.Format
 	// Metadata bitmap index for fast pre-filtering
 	// Metadata bitmap index for fast pre-filtering
 	metaIndex *MetadataIndex
-
-	// Replication
-	replicationMgr *ReplicationManager
-	replicas       []*ReplicaNode
 
 	// Recovery state
 	walReplayError error // Non-nil if WAL replay failed during load
@@ -102,13 +101,13 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 	}
 
 	// Initialize JWT manager if configured
-	var jwtMgr *JWTManager
+	var jwtMgr *security.JWTManager
 	if secret := os.Getenv("JWT_SECRET"); secret != "" {
 		issuer := os.Getenv("JWT_ISSUER")
 		if issuer == "" {
 			issuer = "vectordb"
 		}
-		jwtMgr = NewJWTManager(secret, issuer)
+		jwtMgr = security.NewJWTManager(secret, issuer)
 	}
 
 	// Select storage format (default: gob for backward compatibility)
@@ -147,8 +146,8 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		sumDocL:     0,
 		// Multi-tenancy
 		TenantID: make(map[uint64]string),
-		acl:      NewACL(),
-		quotas:   NewTenantQuota(),
+		acl:      security.NewACL(),
+		quotas:   security.NewTenantQuota(),
 		tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), time.Minute),
 		jwtMgr:   jwtMgr,
 		// Storage
@@ -899,13 +898,13 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		}
 		_ = loadedFormat // format used for loading (for logging if needed)
 		// Initialize JWT manager if configured
-		var jwtMgr *JWTManager
+		var jwtMgr *security.JWTManager
 		if secret := os.Getenv("JWT_SECRET"); secret != "" {
 			issuer := os.Getenv("JWT_ISSUER")
 			if issuer == "" {
 				issuer = "vectordb"
 			}
-			jwtMgr = NewJWTManager(secret, issuer)
+			jwtMgr = security.NewJWTManager(secret, issuer)
 		}
 
 		vs := &VectorStore{
@@ -939,8 +938,8 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			numIndex:  make(map[string][]numEntry),
 			timeIndex: make(map[string][]timeEntry),
 			// Multi-tenancy support (TenantID already set from payload above)
-			acl:      NewACL(),
-			quotas:   NewTenantQuota(),
+			acl:      security.NewACL(),
+			quotas:   security.NewTenantQuota(),
 			tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), time.Minute),
 			jwtMgr:   jwtMgr,
 			// Storage format
@@ -949,11 +948,17 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			metaIndex: NewMetadataIndex(),
 		}
 		if vs.checksum == "" {
-			vs.checksum = fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
+			vs.checksum = vs.computeChecksum()
 		}
-		// Checksum is best-effort; warn but continue to allow recovery.
+		// Checksum migration: if stored checksum was computed with an older formula, recompute.
 		if !vs.validateChecksum() {
-			fmt.Printf("warning: checksum mismatch; continuing with loaded snapshot\n")
+			oldFormula := fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
+			if vs.checksum == oldFormula {
+				fmt.Printf("info: migrating checksum from old formula\n")
+				vs.checksum = vs.computeChecksum()
+			} else {
+				fmt.Printf("warning: checksum mismatch; continuing with loaded snapshot\n")
+			}
 		}
 		for i, idStr := range vs.IDs {
 			vs.idToIx[hashID(idStr)] = i
@@ -1094,6 +1099,42 @@ func loadHNSWConfig() hnswConfig {
 type Embedder interface {
 	Embed(text string) ([]float32, error)
 	Dim() int
+}
+
+// SwappableEmbedder wraps an Embedder and allows hot-swapping at runtime.
+type SwappableEmbedder struct {
+	mu    sync.RWMutex
+	inner Embedder
+}
+
+func NewSwappableEmbedder(e Embedder) *SwappableEmbedder {
+	return &SwappableEmbedder{inner: e}
+}
+
+func (s *SwappableEmbedder) Embed(text string) ([]float32, error) {
+	s.mu.RLock()
+	e := s.inner
+	s.mu.RUnlock()
+	return e.Embed(text)
+}
+
+func (s *SwappableEmbedder) Dim() int {
+	s.mu.RLock()
+	e := s.inner
+	s.mu.RUnlock()
+	return e.Dim()
+}
+
+func (s *SwappableEmbedder) Swap(e Embedder) {
+	s.mu.Lock()
+	s.inner = e
+	s.mu.Unlock()
+}
+
+func (s *SwappableEmbedder) Inner() Embedder {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.inner
 }
 
 type Reranker interface {
@@ -2060,252 +2101,48 @@ func warmupModels(embedder Embedder, reranker Reranker) {
 	}
 }
 
-// ======================================================================================
-// Coordinator Mode: runs as distributed coordinator with quorum
-// ======================================================================================
-
-func runCoordinatorMode() {
-	fmt.Println(">>> Starting Distributed Coordinator Mode...")
-
-	// Read coordinator configuration from environment
-	coordinatorID := os.Getenv("COORDINATOR_ID")
-	if coordinatorID == "" {
-		coordinatorID = fmt.Sprintf("coordinator-%d", time.Now().Unix())
-	}
-
-	// Parse peer coordinators
-	peerCoordinators := []string{}
-	if peers := os.Getenv("PEER_COORDINATORS"); peers != "" {
-		peerCoordinators = strings.Split(peers, ",")
-		for i := range peerCoordinators {
-			peerCoordinators[i] = strings.TrimSpace(peerCoordinators[i])
-		}
-	}
-
-	// Get port
-	port := envInt("PORT", 8080)
-	listenAddr := fmt.Sprintf(":%d", port)
-
-	// Get number of shards and replication factor
-	numShards := envInt("NUM_SHARDS", 2)
-	replicationFactor := envInt("REPLICATION_FACTOR", 2)
-
-	// Determine read strategy
-	readStrategyStr := os.Getenv("READ_STRATEGY")
-	var readStrategy ReadStrategy
-	switch readStrategyStr {
-	case "primary-only":
-		readStrategy = ReadPrimaryOnly
-	case "replica-prefer":
-		readStrategy = ReadReplicaPrefer
-	case "balanced":
-		readStrategy = ReadBalanced
-	default:
-		readStrategy = ReadReplicaPrefer
-	}
-
-	// Initialize JWT manager if configured
-	var jwtMgr *JWTManager
-	if secret := os.Getenv("JWT_SECRET"); secret != "" {
-		issuer := os.Getenv("JWT_ISSUER")
-		if issuer == "" {
-			issuer = "vectordb"
-		}
-		jwtMgr = NewJWTManager(secret, issuer)
-	}
-
-	// Create coordinator config
-	cfg := CoordinatorServerConfig{
-		ListenAddr:        listenAddr,
-		NumShards:         numShards,
-		ReplicationFactor: replicationFactor,
-		ReadStrategy:      readStrategy,
-		CoordinatorID:     coordinatorID,
-		PeerCoordinators:  peerCoordinators,
-		EnableFailover:    os.Getenv("ENABLE_FAILOVER") == "1",
-		FailoverConfig: FailoverConfig{
-			UnhealthyThreshold: time.Duration(envInt("FAILOVER_THRESHOLD_SEC", 30)) * time.Second,
-			CheckInterval:      time.Duration(envInt("FAILOVER_CHECK_SEC", 5)) * time.Second,
-			EnableAutoFailover: os.Getenv("ENABLE_AUTO_FAILOVER") == "1",
-		},
-		EnableMetrics: os.Getenv("ENABLE_METRICS") != "0", // Enabled by default
-		EnableAuth:    jwtMgr != nil,
-		JWTMgr:        jwtMgr,
-	}
-
-	fmt.Printf(">>> Coordinator Configuration:\n")
-	fmt.Printf("    ID: %s\n", coordinatorID)
-	fmt.Printf("    Listen: %s\n", listenAddr)
-	fmt.Printf("    Shards: %d\n", numShards)
-	fmt.Printf("    Replication Factor: %d\n", replicationFactor)
-	fmt.Printf("    Read Strategy: %s\n", readStrategy)
-	if len(peerCoordinators) > 0 {
-		fmt.Printf("    Peer Coordinators: %v\n", peerCoordinators)
-	} else {
-		fmt.Printf("    Peer Coordinators: none (single-coordinator mode)\n")
-	}
-	fmt.Printf("    Failover: enabled=%v, auto=%v\n", cfg.EnableFailover, cfg.FailoverConfig.EnableAutoFailover)
-	fmt.Println()
-
-	// Run coordinator
-	RunCoordinator(cfg)
-}
-
-// ======================================================================================
-// Shard Mode: runs as a shard server (primary or replica)
-// ======================================================================================
-
-func runShardMode() {
-	fmt.Println(">>> Starting Shard Server Mode...")
-
-	// Read shard configuration from environment
-	nodeID := os.Getenv("NODE_ID")
-	if nodeID == "" {
-		fmt.Println("ERROR: NODE_ID environment variable required for shard mode")
-		os.Exit(1)
-	}
-
-	shardID := envInt("SHARD_ID", -1)
-	if shardID < 0 {
-		fmt.Println("ERROR: SHARD_ID environment variable required for shard mode")
-		os.Exit(1)
-	}
-
-	roleStr := os.Getenv("ROLE")
-	if roleStr == "" {
-		fmt.Println("ERROR: ROLE environment variable required (primary or replica)")
-		os.Exit(1)
-	}
-	var role ReplicaRole
-	switch roleStr {
-	case "primary":
-		role = RolePrimary
-	case "replica":
-		role = RoleReplica
-	default:
-		fmt.Printf("ERROR: Invalid ROLE '%s' (must be 'primary' or 'replica')\n", roleStr)
-		os.Exit(1)
-	}
-
-	httpAddr := os.Getenv("HTTP_ADDR")
-	if httpAddr == "" {
-		fmt.Println("ERROR: HTTP_ADDR environment variable required (e.g., ':9000')")
-		os.Exit(1)
-	}
-
-	coordinatorAddr := os.Getenv("COORDINATOR_ADDR")
-	if coordinatorAddr == "" {
-		fmt.Println("WARNING: COORDINATOR_ADDR not set, will not register with coordinator")
-	}
-
-	// Optional: primary address for replicas
-	primaryAddr := os.Getenv("PRIMARY_ADDR")
-	if role == RoleReplica && primaryAddr == "" {
-		fmt.Println("WARNING: REPLICA without PRIMARY_ADDR set")
-	}
-
-	// Optional: replica addresses for primary
-	var replicas []string
-	if replicasStr := os.Getenv("REPLICAS"); replicasStr != "" {
-		replicas = strings.Split(replicasStr, ",")
-		for i := range replicas {
-			replicas[i] = strings.TrimSpace(replicas[i])
-		}
-	}
-
-	// Vector store config
-	capacity := envInt("CAPACITY", 1000) // Reduced from 100000 for low-memory deployment
-	dimension := envInt("DIMENSION", 384)
-	indexPath := os.Getenv("INDEX_PATH")
-	if indexPath == "" {
-		indexPath = fmt.Sprintf("vectordb/shard-%d-%s.gob", shardID, nodeID)
-	}
-
-	// Initialize embedder
-	embedder := initEmbedder(dimension)
-
-	// Create shard server config
-	cfg := ShardServerConfig{
-		NodeID:          nodeID,
-		ShardID:         shardID,
-		Role:            role,
-		HTTPAddr:        httpAddr,
-		PrimaryAddr:     primaryAddr,
-		Replicas:        replicas,
-		CoordinatorAddr: coordinatorAddr,
-		Capacity:        capacity,
-		Dimension:       dimension,
-		IndexPath:       indexPath,
-		Embedder:        embedder,
-	}
-
-	fmt.Printf(">>> Shard Configuration:\n")
-	fmt.Printf("    Node ID: %s\n", nodeID)
-	fmt.Printf("    Shard ID: %d\n", shardID)
-	fmt.Printf("    Role: %s\n", role)
-	fmt.Printf("    HTTP Address: %s\n", httpAddr)
-	if role == RoleReplica && primaryAddr != "" {
-		fmt.Printf("    Primary: %s\n", primaryAddr)
-	}
-	if role == RolePrimary && len(replicas) > 0 {
-		fmt.Printf("    Replicas: %v\n", replicas)
-	}
-	if coordinatorAddr != "" {
-		fmt.Printf("    Coordinator: %s\n", coordinatorAddr)
-	}
-	fmt.Printf("    Index Path: %s\n", indexPath)
-	fmt.Println()
-
-	// Create shard server
-	shard, err := NewShardServer(cfg)
-	if err != nil {
-		fmt.Printf("ERROR: Failed to create shard server: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Start shard server
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := shard.Start(ctx); err != nil {
-		fmt.Printf("ERROR: Failed to start shard server: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("Shard server started. Press Ctrl+C to shutdown.")
-
-	// Wait for shutdown signal
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-
-	fmt.Println("\nShutdown signal received...")
-	cancel()
-
-	// Graceful shutdown
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-	if err := shard.Shutdown(shutdownCtx); err != nil {
-		fmt.Printf("ERROR: Shutdown failed: %v\n", err)
-		os.Exit(1)
-	}
-}
 
 // ======================================================================================
 // Main: bootstrap, HTTP API
 // ======================================================================================
 
 func main() {
-	// Check if running in shard mode
-	if os.Getenv("SHARD_MODE") == "1" {
-		runShardMode()
-		return
+	// CLI flag parsing — strip "serve" subcommand if present
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "serve" {
+		args = args[1:]
 	}
+	fs := flag.NewFlagSet("vectordb", flag.ExitOnError)
+	flagPort := fs.String("port", "", "HTTP port (env: PORT)")
+	flagMode := fs.String("mode", "", "Engine mode: local or pro (env: VECTORDB_MODE)")
+	flagDataDir := fs.String("data-dir", "", "Data directory (env: VECTORDB_DATA_DIR)")
+	flagDim := fs.String("dimension", "", "Embedding dimension (env: EMBED_DIM)")
+	flagEmbedder := fs.String("embedder", "", "Embedder type: ollama, openai, hash (env: EMBEDDER_TYPE)")
+	flagEmbModel := fs.String("embedder-model", "", "Embedder model name (env: OLLAMA_EMBED_MODEL)")
+	flagEmbURL := fs.String("embedder-url", "", "Embedder URL (env: OLLAMA_URL)")
 
-	// Check if running in coordinator mode
-	if os.Getenv("COORDINATOR_MODE") == "1" {
-		runCoordinatorMode()
-		return
+	fs.Parse(args)
+	// Flags set env vars so downstream code works unchanged
+	if *flagPort != "" {
+		os.Setenv("PORT", *flagPort)
+	}
+	if *flagMode != "" {
+		os.Setenv("VECTORDB_MODE", *flagMode)
+	}
+	if *flagDataDir != "" {
+		os.Setenv("VECTORDB_DATA_DIR", *flagDataDir)
+	}
+	if *flagDim != "" {
+		os.Setenv("EMBED_DIM", *flagDim)
+	}
+	if *flagEmbedder != "" {
+		os.Setenv("EMBEDDER_TYPE", *flagEmbedder)
+	}
+	if *flagEmbModel != "" {
+		os.Setenv("OLLAMA_EMBED_MODEL", *flagEmbModel)
+	}
+	if *flagEmbURL != "" {
+		os.Setenv("OLLAMA_URL", *flagEmbURL)
 	}
 
 	// Initialize structured logging
@@ -2398,74 +2235,11 @@ func main() {
 			initialCapacity = v
 		}
 	}
-	store, loaded := loadOrInitStore(indexPath, initialCapacity, embedder.Dim())
+	// Wrap in SwappableEmbedder so we can hot-swap at runtime via API
+	swappableEmbedder := NewSwappableEmbedder(embedder)
+	store, loaded := loadOrInitStore(indexPath, initialCapacity, swappableEmbedder.Dim())
 	store.walMaxBytes = envInt64("WAL_MAX_BYTES", 5*1024*1024)
 	store.walMaxOps = envInt("WAL_MAX_OPS", 1000)
-
-	// Setup replication if enabled
-	if os.Getenv("ENABLE_REPLICATION") == "1" {
-		logger.Info("replication enabled")
-
-		// Parse replicas
-		var replicas []*ReplicaNode
-		if replicasStr := os.Getenv("REPLICAS"); replicasStr != "" {
-			for i, addr := range strings.Split(replicasStr, ",") {
-				addr = strings.TrimSpace(addr)
-				if addr != "" {
-					replicas = append(replicas, &ReplicaNode{
-						NodeID:   fmt.Sprintf("replica-%d", i),
-						BaseURL:  addr,
-						Healthy:  true,
-						Priority: i,
-					})
-				}
-			}
-		}
-
-		if len(replicas) > 0 {
-			logger.Info("configured replicas", "count", len(replicas))
-			store.replicas = replicas
-
-			// Create replication manager
-			replConfig := DefaultReplicationConfig()
-			if mode := os.Getenv("REPLICATION_MODE"); mode != "" {
-				switch mode {
-				case "sync":
-					replConfig.Mode = SyncReplication
-				case "strong":
-					replConfig.Mode = StrongConsistency
-				default:
-					replConfig.Mode = AsyncReplication
-				}
-			}
-
-			// Initialize metrics collector (nil for now, could be added later)
-			store.replicationMgr = NewReplicationManager(replConfig, nil)
-			logger.Info("replication manager initialized", "mode", replConfig.Mode.String())
-
-			// Setup replication hook
-			store.SetWALHook(func(e walEntry) {
-				// Convert to replication WALEntry
-				replEntry := &WALEntry{
-					Op:     e.Op,
-					ID:     e.ID,
-					Doc:    e.Doc,
-					Meta:   e.Meta,
-					Vec:    e.Vec,
-					Coll:   e.Coll,
-					Tenant: e.Tenant,
-					Time:   e.Time,
-				}
-
-				// Replicate (use shardID=0 for standalone)
-				if err := store.replicationMgr.ReplicateEntry(replEntry, store.replicas, 0); err != nil {
-					logger.Error("replication failed", "error", err, "op", e.Op, "id", e.ID)
-				}
-			})
-		} else {
-			logger.Warn("replication enabled but no replicas configured")
-		}
-	}
 
 	if !loaded {
 		// Make hydration count configurable for low-memory deployments
@@ -2478,7 +2252,7 @@ func main() {
 
 		logger.Info("hydrating index", "count", hydrationCount)
 		for i := 0; i < hydrationCount; i++ {
-			vec, _ := embedder.Embed(fmt.Sprintf("doc-%d", i))
+			vec, _ := swappableEmbedder.Embed(fmt.Sprintf("doc-%d", i))
 			if _, err := store.Add(vec, fmt.Sprintf("doc-%d content about memory locality and vector search.", i), "", nil, "default", ""); err != nil {
 				logger.Warn("failed to add vector", "index", i, "error", err)
 			}
@@ -2489,11 +2263,11 @@ func main() {
 	}
 	logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
 
-	reranker := initReranker(embedder)
-	warmupModels(embedder, reranker)
+	reranker := initReranker(swappableEmbedder)
+	warmupModels(swappableEmbedder, reranker)
 
 	// HTTP API with graceful shutdown
-	handler := newHTTPHandler(store, embedder, reranker, indexPath)
+	handler := newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
 	addr := fmt.Sprintf(":%d", envInt("PORT", 8080))
 	srv := &http.Server{
 		Addr:    addr,

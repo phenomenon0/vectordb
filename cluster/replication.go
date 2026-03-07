@@ -1,4 +1,4 @@
-package main
+package cluster
 
 import (
 	"bytes"
@@ -84,11 +84,11 @@ func DefaultReplicationConfig() ReplicationConfig {
 type ReplicationManager struct {
 	mu      sync.RWMutex
 	config  ReplicationConfig
-	metrics *MetricsCollector // Optional metrics
+	metrics MetricsProvider // Optional metrics
 }
 
 // NewReplicationManager creates a new replication manager
-func NewReplicationManager(config ReplicationConfig, metrics *MetricsCollector) *ReplicationManager {
+func NewReplicationManager(config ReplicationConfig, metrics MetricsProvider) *ReplicationManager {
 	// Validate config
 	if config.ReplicaTimeout == 0 {
 		config.ReplicaTimeout = 100 * time.Millisecond
@@ -202,11 +202,11 @@ func (rm *ReplicationManager) replicateSync(
 			} else {
 				lastErr = result.err
 				if rm.metrics != nil {
-					rm.metrics.operationErrors.WithLabelValues(
+					rm.metrics.RecordReplicateError(
 						"replicate",
-						fmt.Sprintf("%d", shardID),
+						shardID,
 						"replica_failed",
-					).Inc()
+					)
 				}
 			}
 		case <-ctx.Done():
@@ -218,11 +218,11 @@ func (rm *ReplicationManager) replicateSync(
 				quorumSize,
 			)
 			if rm.metrics != nil {
-				rm.metrics.operationErrors.WithLabelValues(
+				rm.metrics.RecordReplicateError(
 					"replicate",
-					fmt.Sprintf("%d", shardID),
+					shardID,
 					"timeout",
-				).Inc()
+				)
 			}
 			return err
 		}
@@ -258,20 +258,20 @@ func (rm *ReplicationManager) replicateStrong(
 	}
 
 	// Wait for ALL replicas
-	var errors []error
+	var errs []error
 	for i := 0; i < len(replicas); i++ {
 		select {
 		case err := <-results:
 			if err != nil {
-				errors = append(errors, err)
+				errs = append(errs, err)
 			}
 		case <-ctx.Done():
 			return fmt.Errorf("replication timeout waiting for all replicas")
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to replicate to all replicas: %v", errors)
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to replicate to all replicas: %v", errs)
 	}
 
 	return nil
@@ -467,44 +467,3 @@ func (rs *ReplicationStats) GetStats() map[string]any {
 		"success_rate":       float64(rs.SuccessfulQuorums) / float64(rs.TotalReplications),
 	}
 }
-
-// ===========================================================================================
-// USAGE EXAMPLE
-// ===========================================================================================
-
-/*
-Example usage:
-
-// Create replication manager with sync mode
-config := ReplicationConfig{
-    Mode:           SyncReplication,  // Wait for quorum
-    QuorumSize:     0,                // Auto-calculate (majority)
-    ReplicaTimeout: 100 * time.Millisecond,
-    RetryAttempts:  3,
-}
-
-replMgr := NewReplicationManager(config, metricsCollector)
-
-// Define replicas
-replicas := []*ReplicaNode{
-    {NodeID: "replica-1", BaseURL: "http://host1:9001", Healthy: true},
-    {NodeID: "replica-2", BaseURL: "http://host2:9001", Healthy: true},
-    {NodeID: "replica-3", BaseURL: "http://host3:9001", Healthy: true},
-}
-
-// Replicate WAL entry
-entry := &WALEntry{
-    OpType: OpInsert,
-    Doc:    "Sample document",
-    Vector: []float32{0.1, 0.2, 0.3},
-}
-
-// This will wait for 2/3 replicas (quorum) before returning
-err := replMgr.ReplicateEntry(entry, replicas, shardID)
-if err != nil {
-    // Failed to reach quorum - write not safe!
-    return err
-}
-
-// Success! Write is durable (replicated to majority)
-*/

@@ -8,47 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/phenomenon0/vectordb/security"
 )
-
-// TenantClaims represents JWT claims with tenant information
-type TenantClaims struct {
-	TenantID    string   `json:"tenant_id"`
-	Permissions []string `json:"permissions"`
-	Collections []string `json:"collections"`
-	jwt.RegisteredClaims
-}
-
-// JWTManager manages JWT tokens
-type JWTManager struct {
-	secretKey []byte
-	issuer    string
-}
-
-// NewJWTManager creates a new JWT manager
-func NewJWTManager(secretKey, issuer string) *JWTManager {
-	return &JWTManager{
-		secretKey: []byte(secretKey),
-		issuer:    issuer,
-	}
-}
-
-// GenerateTenantToken generates a JWT token with tenant claims
-func (jm *JWTManager) GenerateTenantToken(tenantID string, permissions []string, collections []string, expiresIn time.Duration) (string, error) {
-	claims := &TenantClaims{
-		TenantID:    tenantID,
-		Permissions: permissions,
-		Collections: collections,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    jm.issuer,
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jm.secretKey)
-}
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "preset" {
@@ -107,7 +68,7 @@ func main() {
 	}
 
 	// Create JWT manager
-	jwtMgr := NewJWTManager(*secret, *issuer)
+	jwtMgr := security.NewJWTManager(*secret, *issuer)
 
 	// Generate token
 	token, err := jwtMgr.GenerateTenantToken(*tenantID, perms, colls, *expiresIn)
@@ -155,7 +116,7 @@ func generatePresetTokens() {
 		os.Exit(1)
 	}
 
-	jwtMgr := NewJWTManager(secret, "vectordb")
+	jwtMgr := security.NewJWTManager(secret, "vectordb")
 
 	fmt.Println("=== Preset JWT Tokens for Development ===")
 

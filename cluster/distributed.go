@@ -1,4 +1,4 @@
-package main
+package cluster
 
 import (
 	"bytes"
@@ -36,13 +36,13 @@ const (
 
 // ShardNode represents a single vectordb instance in a shard
 type ShardNode struct {
-	NodeID         string      // Unique node identifier
-	ShardID        int         // Shard number (0-based)
-	Role           ReplicaRole // Primary or Replica
-	HTTPAddr       string      // HTTP API endpoint (e.g., "http://localhost:9000")
-	Healthy        bool        // Health status
-	LastSeen       time.Time   // Last health check
-	ReplicationLag int         // Operations behind primary (replicas only)
+	NodeID         string      `json:"node_id"`
+	ShardID        int         `json:"shard_id"`
+	Role           ReplicaRole `json:"role"`
+	HTTPAddr       string      `json:"http_addr"`
+	Healthy        bool        `json:"healthy"`
+	LastSeen       time.Time   `json:"last_seen"`
+	ReplicationLag int         `json:"replication_lag"`
 }
 
 // DistributedVectorDB coordinates multiple vectordb shards
@@ -96,7 +96,7 @@ type DistributedConfig struct {
 //
 // For production deployments, use single-node mode until distributed mode reaches v1.0.
 func NewDistributedVectorDB(cfg DistributedConfig) *DistributedVectorDB {
-	fmt.Println("⚠️  WARNING: Distributed mode is EXPERIMENTAL - not recommended for production")
+	fmt.Println("WARNING: Distributed mode is EXPERIMENTAL - not recommended for production")
 	fmt.Println("   Known issues: incomplete quorum checks, limited snapshot sync")
 	fmt.Println("   For production, use single-node mode")
 
@@ -125,10 +125,10 @@ func NewDistributedVectorDB(cfg DistributedConfig) *DistributedVectorDB {
 	if len(cfg.PeerCoordinators) > 0 {
 		d.quorum = NewQuorumVoter(cfg.CoordinatorID, cfg.PeerCoordinators)
 		d.fencing = NewFencingManager(d.quorum)
-		fmt.Printf("✅ Quorum voting enabled: coordinator=%s, peers=%d\n",
+		fmt.Printf("Quorum voting enabled: coordinator=%s, peers=%d\n",
 			cfg.CoordinatorID, len(cfg.PeerCoordinators))
 	} else {
-		fmt.Printf("⚠️  Running in single-coordinator mode (no quorum)\n")
+		fmt.Printf("Running in single-coordinator mode (no quorum)\n")
 	}
 
 	// Start health monitoring

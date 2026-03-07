@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/phenomenon0/vectordb/index"
+	"github.com/phenomenon0/vectordb/security"
 )
 
 // =============================================================================
@@ -840,7 +841,7 @@ func newTestStore(dim int) *VectorStore {
 		docLen:   make(map[uint64]int),
 		df:       make(map[string]int),
 		TenantID: make(map[uint64]string),
-		quotas:   NewTenantQuota(),
+		quotas:   security.NewTenantQuota(),
 	}
 }
 

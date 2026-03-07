@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/phenomenon0/vectordb/security"
 )
 
 // generateTestToken is a CLI utility to generate JWT tokens for testing
@@ -60,7 +62,7 @@ func generateTestToken() {
 	}
 
 	// Create JWT manager
-	jwtMgr := NewJWTManager(*secret, *issuer)
+	jwtMgr := security.NewJWTManager(*secret, *issuer)
 
 	// Generate token
 	token, err := jwtMgr.GenerateTenantToken(*tenantID, perms, colls, *expiresIn)
@@ -109,7 +111,7 @@ func generatePresetTokens() {
 		return
 	}
 
-	jwtMgr := NewJWTManager(secret, "vectordb")
+	jwtMgr := security.NewJWTManager(secret, "vectordb")
 
 	fmt.Println("=== Preset JWT Tokens for Development ===")
 

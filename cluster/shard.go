@@ -1,4 +1,4 @@
-package main
+package cluster
 
 import (
 	"bytes"
@@ -17,7 +17,7 @@ import (
 
 // ===========================================================================================
 // VECTORDB SHARD SERVER
-// Wraps VectorStore with HTTP API and replication support
+// Wraps Store with HTTP API and replication support
 // ===========================================================================================
 
 // ShardServer is a vectordb shard instance with replication support
@@ -29,15 +29,18 @@ type ShardServer struct {
 	role     ReplicaRole
 	httpAddr string
 
-	store     *VectorStore
+	store     Store
 	embedder  Embedder
 	reranker  Reranker
 	indexPath string
 
+	// Dependencies from main package
+	deps *Deps
+
 	// Replication
 	primaryAddr string       // For replicas: primary's HTTP address
 	replicas    []string     // For primary: replica HTTP addresses
-	walLog      []walEntry   // Replication log (operations since last sync)
+	walLog      []WalEntry   // Replication log (operations since last sync)
 	walMu       sync.Mutex   // Protects walLog
 	lastSyncSeq int          // Last synced sequence number
 	syncTicker  *time.Ticker // Periodic sync for replicas
@@ -73,29 +76,36 @@ type ShardServerConfig struct {
 	Embedder Embedder
 	Reranker Reranker
 	APIToken string
+
+	// Dependencies from main package
+	Deps *Deps
 }
 
 // NewShardServer creates a new shard server
 func NewShardServer(cfg ShardServerConfig) (*ShardServer, error) {
+	if cfg.Deps == nil {
+		return nil, fmt.Errorf("Deps is required for ShardServer")
+	}
+
 	// Load or initialize store
-	store, loaded := loadOrInitStore(cfg.IndexPath, cfg.Capacity, cfg.Dimension)
+	store, loaded := cfg.Deps.LoadOrInitStore(cfg.IndexPath, cfg.Capacity, cfg.Dimension)
 	if loaded {
-		fmt.Printf("Loaded shard %d (%s) from %s: %d vectors\n", cfg.ShardID, cfg.Role, cfg.IndexPath, store.Count)
+		fmt.Printf("Loaded shard %d (%s) from %s: %d vectors\n", cfg.ShardID, cfg.Role, cfg.IndexPath, store.StoreCount())
 	} else {
 		fmt.Printf("Initialized new shard %d (%s): capacity=%d, dim=%d\n", cfg.ShardID, cfg.Role, cfg.Capacity, cfg.Dimension)
 	}
 
 	// Set API token if provided
 	if cfg.APIToken != "" {
-		store.apiToken = cfg.APIToken
+		store.SetAPIToken(cfg.APIToken)
 	}
 
 	// Default embedder if not provided
 	if cfg.Embedder == nil {
-		cfg.Embedder = NewHashEmbedder(cfg.Dimension)
+		cfg.Embedder = cfg.Deps.NewEmbedder(cfg.Dimension)
 	}
 	if cfg.Reranker == nil {
-		cfg.Reranker = &SimpleReranker{Embedder: cfg.Embedder}
+		cfg.Reranker = cfg.Deps.NewReranker(cfg.Embedder)
 	}
 
 	s := &ShardServer{
@@ -107,24 +117,25 @@ func NewShardServer(cfg ShardServerConfig) (*ShardServer, error) {
 		embedder:        cfg.Embedder,
 		reranker:        cfg.Reranker,
 		indexPath:       cfg.IndexPath,
+		deps:            cfg.Deps,
 		primaryAddr:     cfg.PrimaryAddr,
 		replicas:        cfg.Replicas,
-		walLog:          make([]walEntry, 0),
+		walLog:          make([]WalEntry, 0),
 		coordinatorAddr: cfg.CoordinatorAddr,
 	}
 
 	// Initialize WAL streaming
 	if cfg.Role == RolePrimary {
 		s.walStream = NewWALStream()
-		s.store.SetWALHook(func(entry walEntry) {
+		store.SetWALHook(func(entry WalEntry) {
 			if s.walStream != nil {
 				s.walStream.Append(entry)
 			}
 		})
-		fmt.Printf("✅ WAL streaming enabled (primary mode)\n")
+		fmt.Printf("WAL streaming enabled (primary mode)\n")
 	} else if cfg.PrimaryAddr != "" {
 		s.walStreamClient = NewWALStreamClient(cfg.PrimaryAddr, cfg.APIToken)
-		fmt.Printf("✅ WAL streaming client enabled (pulling from %s)\n", cfg.PrimaryAddr)
+		fmt.Printf("WAL streaming client enabled (pulling from %s)\n", cfg.PrimaryAddr)
 	}
 
 	return s, nil
@@ -210,11 +221,11 @@ func (s *ShardServer) newHTTPHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Use existing HTTP handler from server.go as base
-	baseHandler := newHTTPHandler(s.store, s.embedder, s.reranker, s.indexPath)
+	baseHandler := s.deps.NewHTTPHandler(s.store, s.embedder, s.reranker, s.indexPath)
 
 	// Add WAL streaming endpoint for primaries
 	if s.role == RolePrimary && s.walStream != nil {
-		mux.HandleFunc("/wal/stream", s.handleWALStream)
+		mux.HandleFunc("/wal/stream", s.HandleWALStream)
 	}
 
 	// Add snapshot endpoint for full sync (primaries only)
@@ -223,7 +234,7 @@ func (s *ShardServer) newHTTPHandler() http.Handler {
 	}
 
 	// Register migration handlers for shard rebalancing
-	registerMigrationHandlers(mux, s.store)
+	s.deps.RegisterMigrationHandlers(mux, s.store)
 
 	// Mount base handler on root
 	mux.Handle("/", baseHandler)
@@ -296,7 +307,7 @@ func (s *ShardServer) appendToWAL(path string, req map[string]interface{}) {
 	}
 
 	// Append to WAL
-	entry := walEntry{
+	entry := WalEntry{
 		Op:     op,
 		ID:     id,
 		Doc:    doc,
@@ -307,7 +318,7 @@ func (s *ShardServer) appendToWAL(path string, req map[string]interface{}) {
 	}
 	seq := s.walStream.Append(entry)
 	if seq%100 == 0 {
-		fmt.Printf("📝 WAL: Appended operation (seq=%d, op=%s, id=%s)\n", seq, op, id)
+		fmt.Printf("WAL: Appended operation (seq=%d, op=%s, id=%s)\n", seq, op, id)
 	}
 }
 
@@ -342,7 +353,7 @@ func (s *ShardServer) syncFromPrimary() error {
 		return fmt.Errorf("failed to apply WAL entries: %w", err)
 	}
 
-	fmt.Printf("✅ Replica sync: Applied %d WAL entries (latest seq: %d)\n",
+	fmt.Printf("Replica sync: Applied %d WAL entries (latest seq: %d)\n",
 		len(entries), entries[len(entries)-1].Seq)
 
 	return nil
@@ -382,10 +393,10 @@ func (s *ShardServer) heartbeatLoop() {
 
 // sendHeartbeat sends health status to coordinator
 func (s *ShardServer) sendHeartbeat() {
-	s.store.RLock()
-	vectorCount := s.store.Count
-	deletedCount := len(s.store.Deleted)
-	s.store.RUnlock()
+	s.store.StoreRLock()
+	vectorCount := s.store.StoreCount()
+	deletedCount := len(s.store.StoreDeleted())
+	s.store.StoreRUnlock()
 
 	heartbeat := map[string]any{
 		"node_id":       s.nodeID,
@@ -409,37 +420,32 @@ func (s *ShardServer) LoadSnapshot(snapshot *Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Clear existing data
-	s.store.Lock()
-	s.store.IDs = make([]string, 0)
-	s.store.Docs = make([]string, 0)
-	s.store.Data = make([]float32, 0)
-	s.store.Seqs = make([]uint64, 0)
-	s.store.Meta = make(map[uint64]map[string]string)
-	s.store.Deleted = make(map[uint64]bool)
-	s.store.Coll = make(map[uint64]string)
-	s.store.idToIx = make(map[uint64]int)
-	s.store.Count = 0
-	s.store.Unlock()
+	// Clear existing data via store interface
+	s.store.StoreLock()
+	clearSnap := &SnapshotData{
+		Count:   0,
+		IDs:     make([]string, 0),
+		Docs:    make([]string, 0),
+		Data:    make([]float32, 0),
+		Seqs:    make([]uint64, 0),
+		Meta:    make(map[uint64]map[string]string),
+		Deleted: make(map[uint64]bool),
+		Coll:    make(map[uint64]string),
+		IDToIx:  make(map[uint64]int),
+	}
+	s.store.LoadSnapshotData(clearSnap)
+	s.store.StoreUnlock()
 
-	// Load snapshot data
+	// Load snapshot data using store.Add() for each vector
 	for _, entry := range snapshot.Vectors {
-		s.store.Lock()
-		idx := s.store.Count
-		hash := hashID(entry.ID)
-
-		// Append to flat arrays
-		s.store.IDs = append(s.store.IDs, entry.ID)
-		s.store.Docs = append(s.store.Docs, "")
-		s.store.Seqs = append(s.store.Seqs, snapshot.Sequence)
-		s.store.Data = append(s.store.Data, entry.Vector...)
-		s.store.idToIx[hash] = idx
-		s.store.Coll[hash] = "default"
+		meta := map[string]string{}
 		if entry.Metadata != "" {
-			s.store.Meta[hash] = map[string]string{"raw": entry.Metadata}
+			meta["raw"] = entry.Metadata
 		}
-		s.store.Count++
-		s.store.Unlock()
+		_, err := s.store.Add(entry.Vector, "", entry.ID, meta, "default", "")
+		if err != nil {
+			return fmt.Errorf("failed to add vector %s from snapshot: %w", entry.ID, err)
+		}
 	}
 
 	fmt.Printf("[ShardServer] Loaded snapshot: %d vectors at seq=%d\n",
@@ -450,13 +456,15 @@ func (s *ShardServer) LoadSnapshot(snapshot *Snapshot) error {
 
 // CreateSnapshot creates a snapshot of the current shard state
 func (s *ShardServer) CreateSnapshot() *Snapshot {
-	s.store.RLock()
-	defer s.store.RUnlock()
+	hashID := s.deps.HashID
+
+	s.store.StoreRLock()
+	defer s.store.StoreRUnlock()
 
 	snapshot := &Snapshot{
 		ShardID:   s.shardID,
 		Timestamp: time.Now(),
-		Vectors:   make([]SnapshotEntry, 0, s.store.Count),
+		Vectors:   make([]SnapshotEntry, 0, s.store.StoreCount()),
 	}
 
 	// Get current WAL sequence if available
@@ -464,28 +472,36 @@ func (s *ShardServer) CreateSnapshot() *Snapshot {
 		snapshot.Sequence = s.walStream.GetLatestSeq()
 	}
 
+	ids := s.store.StoreIDs()
+	data := s.store.StoreData()
+	dim := s.store.StoreDim()
+	deleted := s.store.StoreDeleted()
+	meta := s.store.StoreMeta()
+
 	// Export all vectors
-	for i, id := range s.store.IDs {
+	for i, id := range ids {
 		hash := hashID(id)
-		if s.store.Deleted[hash] {
+		if deleted[hash] {
 			continue
 		}
 
 		// Extract vector slice from flat Data array
-		startIdx := i * s.store.Dim
-		endIdx := startIdx + s.store.Dim
+		startIdx := i * dim
+		endIdx := startIdx + dim
 		var vec []float32
-		if endIdx <= len(s.store.Data) {
-			vec = make([]float32, s.store.Dim)
-			copy(vec, s.store.Data[startIdx:endIdx])
+		if endIdx <= len(data) {
+			vec = make([]float32, dim)
+			copy(vec, data[startIdx:endIdx])
 		}
 
 		entry := SnapshotEntry{
 			ID:     id,
 			Vector: vec,
 		}
-		if meta, ok := s.store.Meta[hash]["raw"]; ok {
-			entry.Metadata = meta
+		if m, ok := meta[hash]; ok {
+			if raw, ok := m["raw"]; ok {
+				entry.Metadata = raw
+			}
 		}
 		snapshot.Vectors = append(snapshot.Vectors, entry)
 	}
@@ -512,7 +528,7 @@ func (s *ShardServer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		len(snapshot.Vectors), snapshot.Sequence)
 }
 
-// RunStandalone runs a shard server as a standalone process
+// RunStandaloneShard runs a shard server as a standalone process
 func RunStandaloneShard(cfg ShardServerConfig) {
 	// Create shard server
 	shard, err := NewShardServer(cfg)

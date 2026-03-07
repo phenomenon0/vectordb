@@ -1,4 +1,4 @@
-package main
+package cluster
 
 import (
 	"encoding/json"
@@ -17,7 +17,7 @@ import (
 // WALStream manages streaming WAL entries to replicas
 type WALStream struct {
 	mu      sync.RWMutex
-	entries []walEntry // In-memory WAL buffer
+	entries []WalEntry // In-memory WAL buffer
 	nextSeq uint64     // Next sequence number to assign
 
 	maxEntries int    // Maximum entries to keep in memory (default: 10000)
@@ -27,7 +27,7 @@ type WALStream struct {
 // NewWALStream creates a new WAL stream
 func NewWALStream() *WALStream {
 	return &WALStream{
-		entries:    make([]walEntry, 0, 1000),
+		entries:    make([]WalEntry, 0, 1000),
 		nextSeq:    1,
 		minSeq:     1,
 		maxEntries: 10000,
@@ -35,7 +35,7 @@ func NewWALStream() *WALStream {
 }
 
 // Append adds a new entry to the WAL stream
-func (ws *WALStream) Append(entry walEntry) uint64 {
+func (ws *WALStream) Append(entry WalEntry) uint64 {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
@@ -59,7 +59,7 @@ func (ws *WALStream) Append(entry walEntry) uint64 {
 }
 
 // GetSince returns all WAL entries since the given sequence number
-func (ws *WALStream) GetSince(sinceSeq uint64) ([]walEntry, error) {
+func (ws *WALStream) GetSince(sinceSeq uint64) ([]WalEntry, error) {
 	ws.mu.RLock()
 	defer ws.mu.RUnlock()
 
@@ -71,7 +71,7 @@ func (ws *WALStream) GetSince(sinceSeq uint64) ([]walEntry, error) {
 	}
 
 	// Find start index
-	result := make([]walEntry, 0)
+	result := make([]WalEntry, 0)
 	for _, entry := range ws.entries {
 		if entry.Seq > sinceSeq {
 			result = append(result, entry)
@@ -90,21 +90,21 @@ func (ws *WALStream) GetLatestSeq() uint64 {
 
 // WALStreamResponse is the response format for /wal/stream endpoint
 type WALStreamResponse struct {
-	Entries   []walEntry `json:"entries"`
+	Entries   []WalEntry `json:"entries"`
 	LatestSeq uint64     `json:"latest_seq"`
 	MinSeq    uint64     `json:"min_seq"`
 	Count     int        `json:"count"`
 }
 
-// handleWALStream serves WAL entries to replicas (GET /wal/stream?since=N)
-func (s *ShardServer) handleWALStream(w http.ResponseWriter, r *http.Request) {
+// HandleWALStream serves WAL entries to replicas (GET /wal/stream?since=N)
+func (s *ShardServer) HandleWALStream(w http.ResponseWriter, r *http.Request) {
 	// Only primaries can serve WAL stream
 	if s.role != RolePrimary {
 		http.Error(w, "only primary can serve WAL stream", http.StatusForbidden)
 		return
 	}
 
-	if err := authorizeWALStream(s.store, r); err != nil {
+	if err := AuthorizeWALStream(s.store, r); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
@@ -135,22 +135,23 @@ func (s *ShardServer) handleWALStream(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// authorizeWALStream protects the WAL stream endpoint to prevent unauthenticated replication.
-func authorizeWALStream(store *VectorStore, r *http.Request) error {
+// AuthorizeWALStream protects the WAL stream endpoint to prevent unauthenticated replication.
+func AuthorizeWALStream(store Store, r *http.Request) error {
 	token := r.Header.Get("Authorization")
 	if token == "" {
 		token = r.URL.Query().Get("token")
 	}
 
 	// If auth is required or tokens are configured, enforce them
-	if store.requireAuth || store.apiToken != "" || store.jwtMgr != nil {
+	if store.StoreRequireAuth() || store.StoreAPIToken() != "" || store.StoreJWTMgr() != nil {
 		if token == "" {
 			return fmt.Errorf("unauthorized: missing token")
 		}
 	}
 
-	if store.apiToken != "" {
-		if token == store.apiToken || token == "Bearer "+store.apiToken {
+	apiToken := store.StoreAPIToken()
+	if apiToken != "" {
+		if token == apiToken || token == "Bearer "+apiToken {
 			return nil
 		}
 		if token != "" {
@@ -158,15 +159,16 @@ func authorizeWALStream(store *VectorStore, r *http.Request) error {
 		}
 	}
 
-	if store.jwtMgr != nil && token != "" {
+	jwtMgr := store.StoreJWTMgr()
+	if jwtMgr != nil && token != "" {
 		jwtToken := strings.TrimPrefix(token, "Bearer ")
-		if ctx, err := store.jwtMgr.ValidateTenantToken(jwtToken); err == nil && ctx.IsAdmin {
+		if ctx, err := jwtMgr.ValidateTenantToken(jwtToken); err == nil && ctx.IsAdmin {
 			return nil
 		}
 		return fmt.Errorf("unauthorized")
 	}
 
-	if store.requireAuth {
+	if store.StoreRequireAuth() {
 		return fmt.Errorf("unauthorized")
 	}
 
@@ -192,7 +194,7 @@ func NewWALStreamClient(primaryAddr string, authToken string) *WALStreamClient {
 }
 
 // PullLatest pulls the latest WAL entries from primary
-func (wsc *WALStreamClient) PullLatest() ([]walEntry, error) {
+func (wsc *WALStreamClient) PullLatest() ([]WalEntry, error) {
 	url := fmt.Sprintf("%s/wal/stream?since=%d", wsc.primaryAddr, wsc.lastSeq)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -232,7 +234,7 @@ func (wsc *WALStreamClient) PullLatest() ([]walEntry, error) {
 }
 
 // ApplyEntries applies WAL entries to the local store
-func (s *ShardServer) ApplyEntries(entries []walEntry) error {
+func (s *ShardServer) ApplyEntries(entries []WalEntry) error {
 	for _, entry := range entries {
 		switch entry.Op {
 		case "insert", "upsert":
@@ -244,7 +246,7 @@ func (s *ShardServer) ApplyEntries(entries []walEntry) error {
 
 		case "delete":
 			// Delete from store
-			s.store.Delete(entry.ID)
+			s.store.DeleteByID(entry.ID)
 
 		default:
 			return fmt.Errorf("unknown WAL operation: %s", entry.Op)

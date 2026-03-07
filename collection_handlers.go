@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/phenomenon0/vectordb/security"
 )
 
 // Collection API Handlers
@@ -25,7 +27,7 @@ func handleCollectionCreate(store *VectorStore) http.HandlerFunc {
 		}
 
 		// Validate tenant access (if multi-tenancy enabled)
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok && store.requireAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -62,7 +64,7 @@ func handleCollectionList(store *VectorStore) http.HandlerFunc {
 		}
 
 		// Validate tenant access
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok && store.requireAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -105,7 +107,7 @@ func handleCollectionGet(store *VectorStore) http.HandlerFunc {
 		}
 
 		// Validate tenant access
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok && store.requireAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -156,7 +158,7 @@ func handleCollectionStats(store *VectorStore) http.HandlerFunc {
 		}
 
 		// Validate tenant access
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok && store.requireAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -215,7 +217,7 @@ func handleCollectionUpdate(store *VectorStore) http.HandlerFunc {
 		}
 
 		// Validate tenant access
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok && store.requireAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -260,7 +262,7 @@ func handleCollectionDelete(store *VectorStore) http.HandlerFunc {
 		}
 
 		// Validate tenant access
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok && store.requireAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -296,7 +298,7 @@ func handleAllCollectionStats(store *VectorStore) http.HandlerFunc {
 		}
 
 		// Validate tenant access
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok && store.requireAuth {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

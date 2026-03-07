@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/phenomenon0/vectordb/security"
 )
 
 // ======================================================================================
@@ -21,11 +23,11 @@ const (
 )
 
 // setupMultiTenantTest creates a test environment with JWT authentication
-func setupMultiTenantTest(t *testing.T) (*VectorStore, *JWTManager, http.Handler) {
+func setupMultiTenantTest(t *testing.T) (*VectorStore, *security.JWTManager, http.Handler) {
 	store := NewVectorStore(1000, 128)
 	emb := NewHashEmbedder(128)
 	reranker := &SimpleReranker{Embedder: emb}
-	jwtMgr := NewJWTManager(testJWTSecret, testIssuer)
+	jwtMgr := security.NewJWTManager(testJWTSecret, testIssuer)
 
 	// Set JWT manager on store (used by HTTP handlers)
 	store.jwtMgr = jwtMgr
@@ -239,7 +241,7 @@ func TestCollectionScopedPermissions(t *testing.T) {
 	}
 
 	// Create ACL and grant access to public collection
-	acl := NewACL()
+	acl := security.NewACL()
 	acl.GrantCollectionAccess("tenant-scoped", "public")
 	acl.GrantPermission("tenant-scoped", "read")
 
@@ -312,7 +314,7 @@ func TestJWTClaimValidation(t *testing.T) {
 			name: "invalid signature",
 			tokenGen: func() string {
 				// Use different secret to generate invalid signature
-				badJWT := NewJWTManager("wrong-secret-key-for-testing-123", testIssuer)
+				badJWT := security.NewJWTManager("wrong-secret-key-for-testing-123", testIssuer)
 				token, _ := badJWT.GenerateTenantToken("bad-tenant", []string{"read"}, []string{}, 1*time.Hour)
 				return token
 			},
@@ -372,7 +374,7 @@ func TestJWTClaimValidation(t *testing.T) {
 
 func TestTenantQuotaEnforcement(t *testing.T) {
 	store := NewVectorStore(1000, 128)
-	quota := NewTenantQuota()
+	quota := security.NewTenantQuota()
 	emb := NewHashEmbedder(128)
 
 	// Set quota for tenant: 1KB (very small for testing)
@@ -545,7 +547,7 @@ func TestJWTIssuerValidation(t *testing.T) {
 	_, _, handler := setupMultiTenantTest(t)
 
 	// Create token with wrong issuer
-	wrongIssuerJWT := NewJWTManager(testJWTSecret, "wrong-issuer")
+	wrongIssuerJWT := security.NewJWTManager(testJWTSecret, "wrong-issuer")
 	token, _ := wrongIssuerJWT.GenerateTenantToken("test-tenant", []string{"read"}, []string{}, 1*time.Hour)
 
 	reqBody := map[string]any{

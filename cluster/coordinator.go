@@ -1,4 +1,4 @@
-package main
+package cluster
 
 import (
 	"context"
@@ -25,8 +25,8 @@ type CoordinatorServer struct {
 
 	// Production features
 	failoverMgr *FailoverManager
-	metrics     *MetricsCollector
-	authMw      *AuthMiddleware
+	metrics     MetricsProvider
+	authMw      AuthProvider
 }
 
 // CoordinatorServerConfig configures the coordinator server
@@ -48,15 +48,18 @@ type CoordinatorServerConfig struct {
 	FailoverConfig FailoverConfig
 	EnableMetrics  bool
 	EnableAuth     bool
-	APIKeyMgr      *APIKeyManager
-	JWTMgr         *JWTManager
+	APIKeyMgr      interface{} // Opaque; passed to Deps.NewAuth
+	JWTMgr         interface{} // Opaque; passed to Deps.NewAuth
+
+	// Dependencies from main package
+	Deps *Deps
 }
 
 // NewCoordinatorServer creates a new coordinator server
 func NewCoordinatorServer(cfg CoordinatorServerConfig) *CoordinatorServer {
 	// Default embedder
-	if cfg.Embedder == nil {
-		cfg.Embedder = NewHashEmbedder(384) // Default dimension
+	if cfg.Embedder == nil && cfg.Deps != nil && cfg.Deps.NewEmbedder != nil {
+		cfg.Embedder = cfg.Deps.NewEmbedder(384) // Default dimension
 	}
 
 	// Create distributed vectordb
@@ -75,23 +78,19 @@ func NewCoordinatorServer(cfg CoordinatorServerConfig) *CoordinatorServer {
 	}
 
 	// Initialize production features
-	if cfg.EnableMetrics {
-		c.metrics = NewMetricsCollector()
-		fmt.Println("✅ Prometheus metrics enabled at /metrics")
+	if cfg.EnableMetrics && cfg.Deps != nil && cfg.Deps.NewMetrics != nil {
+		c.metrics = cfg.Deps.NewMetrics()
+		fmt.Println("Prometheus metrics enabled at /metrics")
 	}
 
-	if cfg.EnableAuth {
-		// Create default API key manager if not provided
-		if cfg.APIKeyMgr == nil {
-			cfg.APIKeyMgr = NewAPIKeyManager()
-		}
-		c.authMw = NewAuthMiddleware(cfg.APIKeyMgr, cfg.JWTMgr)
-		fmt.Println("✅ Authentication enabled (API keys + JWT)")
+	if cfg.EnableAuth && cfg.Deps != nil && cfg.Deps.NewAuth != nil {
+		c.authMw = cfg.Deps.NewAuth(cfg.APIKeyMgr, cfg.JWTMgr)
+		fmt.Println("Authentication enabled (API keys + JWT)")
 	}
 
 	if cfg.EnableFailover {
 		c.failoverMgr = NewFailoverManager(distributed, cfg.FailoverConfig)
-		fmt.Printf("✅ Automatic failover configured (threshold: %v)\n", cfg.FailoverConfig.UnhealthyThreshold)
+		fmt.Printf("Automatic failover configured (threshold: %v)\n", cfg.FailoverConfig.UnhealthyThreshold)
 	}
 
 	// Setup HTTP routes
@@ -154,7 +153,7 @@ func (c *CoordinatorServer) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		fmt.Printf("🚀 Coordinator HTTP API listening on %s\n", c.addr)
+		fmt.Printf("Coordinator HTTP API listening on %s\n", c.addr)
 		if err := c.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("Coordinator server error: %v\n", err)
 		}

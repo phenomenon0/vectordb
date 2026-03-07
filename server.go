@@ -20,6 +20,7 @@ import (
 	"github.com/Neumenon/cowrie/go/codec"
 	"github.com/phenomenon0/vectordb/index"
 	"github.com/phenomenon0/vectordb/logging"
+	"github.com/phenomenon0/vectordb/security"
 	"github.com/phenomenon0/vectordb/telemetry"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -97,7 +98,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			}
 
 			authenticated := false
-			var tenantCtx *TenantContext
+			var tenantCtx *security.TenantContext
 
 			// JWT authentication (when enabled) - SECURE VERSION
 			if store.jwtMgr != nil {
@@ -108,7 +109,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 						return
 					}
 					// If not required, use default context (backward compatibility)
-					tenantCtx = &TenantContext{
+					tenantCtx = &security.TenantContext{
 						TenantID:    "default",
 						Permissions: map[string]bool{"read": true, "write": true},
 						Collections: make(map[string]bool),
@@ -144,11 +145,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 				// Use default tenant context for non-JWT mode
 				if tenantCtx == nil {
-					tenantCtx = &TenantContext{
+					tenantCtx = &security.TenantContext{
 						TenantID:    "default",
 						Permissions: map[string]bool{"read": true, "write": true},
 						Collections: make(map[string]bool),
-						IsAdmin:     false,
+						IsAdmin:     store.jwtMgr == nil && store.apiToken == "",
 					}
 				}
 			}
@@ -188,7 +189,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			// Add tenant context to request context for handlers to use
 			if tenantCtx != nil {
 				ctx := r.Context()
-				ctx = context.WithValue(ctx, TenantContextKey, tenantCtx)
+				ctx = context.WithValue(ctx, security.TenantContextKey, tenantCtx)
 				r = r.WithContext(ctx)
 			}
 
@@ -203,7 +204,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Extract tenant context from request context (set by guard middleware)
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -321,7 +322,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Extract tenant context from request context (set by guard middleware)
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -453,7 +454,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -551,7 +552,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Extract tenant context from request context (set by guard middleware)
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -856,7 +857,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -1024,7 +1025,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Extract tenant context from request context (set by guard middleware)
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -1103,7 +1104,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -1364,6 +1365,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		indexOK := len(store.indexes) > 0
 		store.RUnlock()
 		sendResponse(w, r, map[string]any{
+			"ok":          ck && indexOK,
 			"checksum_ok": ck,
 			"index_ok":    indexOK,
 		})
@@ -1374,7 +1376,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -1396,7 +1398,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -1417,7 +1419,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -1580,7 +1582,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Admin middleware - requires admin permission
 	adminGuard := func(next http.HandlerFunc) http.HandlerFunc {
 		return guard(func(w http.ResponseWriter, r *http.Request) {
-			tenantCtx := GetTenantContextFromRequest(r, store.jwtMgr)
+			tenantCtx := security.GetTenantContextFromRequest(r, store.jwtMgr)
 			if !tenantCtx.IsAdmin {
 				http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
 				return
@@ -1923,6 +1925,213 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		sendResponse(w, r, GetModeInfo(CurrentMode))
 	})
 
+	// POST /api/config/embedder - Hot-swap the embedder at runtime
+	mux.HandleFunc("/api/config/embedder", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// Return current embedder info
+			if CurrentMode != nil {
+				sendResponse(w, r, map[string]any{
+					"type":      CurrentMode.EmbedderType,
+					"model":     CurrentMode.EmbedderModel,
+					"dimension": CurrentMode.Dimension,
+				})
+			} else {
+				sendResponse(w, r, map[string]any{"error": "mode not initialized"})
+			}
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		if !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
+			return
+		}
+
+		var req struct {
+			Type  string `json:"type"`  // "ollama", "openai", "hash"
+			Model string `json:"model"` // model name
+			URL   string `json:"url"`   // for ollama: base URL
+			Key   string `json:"key"`   // for openai: API key
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		se, ok := embedder.(*SwappableEmbedder)
+		if !ok {
+			http.Error(w, "embedder is not swappable", http.StatusInternalServerError)
+			return
+		}
+
+		var newEmb Embedder
+		var newDim int
+		var errMsg string
+
+		switch req.Type {
+		case "ollama":
+			url := req.URL
+			if url == "" {
+				url = "http://localhost:11434"
+			}
+			model := req.Model
+			if model == "" {
+				model = "nomic-embed-text"
+			}
+			// Test connectivity
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Get(url + "/api/tags")
+			if err != nil {
+				errMsg = "cannot reach Ollama at " + url + ": " + err.Error()
+				break
+			}
+			resp.Body.Close()
+			emb := NewOllamaEmbedder(url, model)
+			// Test embed to get dimension
+			vec, err := emb.Embed("dimension test")
+			if err != nil {
+				errMsg = "ollama embed failed: " + err.Error()
+				break
+			}
+			newDim = len(vec)
+			newEmb = emb
+			if CurrentMode != nil {
+				CurrentMode.EmbedderType = "ollama"
+				CurrentMode.EmbedderModel = model
+				CurrentMode.Dimension = newDim
+			}
+
+		case "openai":
+			key := req.Key
+			if key == "" {
+				key = os.Getenv("OPENAI_API_KEY")
+			}
+			if key == "" {
+				errMsg = "OpenAI API key required (pass 'key' field or set OPENAI_API_KEY)"
+				break
+			}
+			emb := NewOpenAIEmbedder(key)
+			vec, err := emb.Embed("dimension test")
+			if err != nil {
+				errMsg = "openai embed failed: " + err.Error()
+				break
+			}
+			newDim = len(vec)
+			newEmb = emb
+			if CurrentMode != nil {
+				CurrentMode.EmbedderType = "openai"
+				CurrentMode.EmbedderModel = "text-embedding-3-small"
+				CurrentMode.Dimension = newDim
+			}
+
+		case "hash":
+			dim := 384
+			if req.Model != "" {
+				if d, err := strconv.Atoi(req.Model); err == nil && d > 0 {
+					dim = d
+				}
+			}
+			newEmb = NewHashEmbedder(dim)
+			newDim = dim
+			if CurrentMode != nil {
+				CurrentMode.EmbedderType = "hash"
+				CurrentMode.EmbedderModel = fmt.Sprintf("hash-%d", dim)
+				CurrentMode.Dimension = dim
+			}
+
+		default:
+			errMsg = "unknown embedder type: " + req.Type + " (valid: ollama, openai, hash)"
+		}
+
+		if errMsg != "" {
+			sendResponse(w, r, map[string]any{"ok": false, "error": errMsg})
+			return
+		}
+
+		oldDim := se.Dim()
+		se.Swap(newEmb)
+
+		sendResponse(w, r, map[string]any{
+			"ok":            true,
+			"type":          req.Type,
+			"model":         CurrentMode.EmbedderModel,
+			"dimension":     newDim,
+			"dimension_changed": oldDim != newDim,
+			"warning":       func() string {
+				if oldDim != newDim {
+					return fmt.Sprintf("dimension changed from %d to %d — existing vectors will not be compatible", oldDim, newDim)
+				}
+				return ""
+			}(),
+		})
+	}))
+
+	// POST /api/config/keys - Store LLM API keys (kept in memory only, not persisted)
+	mux.HandleFunc("/api/config/keys", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// Return which keys are set (not the actual values)
+			sendResponse(w, r, map[string]any{
+				"openai":     os.Getenv("OPENAI_API_KEY") != "",
+				"deepseek":   os.Getenv("DEEPSEEK_API_KEY") != "",
+				"anthropic":  os.Getenv("ANTHROPIC_API_KEY") != "",
+				"openrouter": os.Getenv("OPENROUTER_API_KEY") != "",
+				"cerebras":   os.Getenv("CEREBRAS_API_KEY") != "",
+			})
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
+		if !ok {
+			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
+			return
+		}
+		if !tenantCtx.IsAdmin {
+			http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
+			return
+		}
+
+		var req map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		validKeys := map[string]string{
+			"openai":     "OPENAI_API_KEY",
+			"deepseek":   "DEEPSEEK_API_KEY",
+			"anthropic":  "ANTHROPIC_API_KEY",
+			"openrouter": "OPENROUTER_API_KEY",
+			"cerebras":   "CEREBRAS_API_KEY",
+		}
+
+		set := []string{}
+		for name, value := range req {
+			envName, ok := validKeys[name]
+			if !ok {
+				continue
+			}
+			if value != "" {
+				os.Setenv(envName, value)
+				set = append(set, name)
+			}
+		}
+
+		sendResponse(w, r, map[string]any{
+			"ok":  true,
+			"set": set,
+		})
+	}))
+
 	// GET /api/costs - Returns cost tracking statistics (PRO mode only)
 	mux.HandleFunc("/api/costs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -2023,7 +2232,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return
@@ -2066,7 +2275,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		tenantCtx, ok := GetTenantContextFromContext(r.Context())
+		tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
 		if !ok {
 			http.Error(w, "internal error: missing tenant context", http.StatusInternalServerError)
 			return

@@ -1,10 +1,143 @@
-package main
+package cluster
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"time"
 )
+
+// ===========================================================================================
+// MIGRATION CLIENT
+// HTTP client for shard-to-shard data migration
+// ===========================================================================================
+
+// CollectionExport represents exported collection data for migration
+type CollectionExport struct {
+	Collection string         `json:"collection"`
+	Vectors    []VectorRecord `json:"vectors"`
+	Count      int            `json:"count"`
+	Dimension  int            `json:"dimension"`
+	ExportTime time.Time      `json:"export_time"`
+	Checksum   string         `json:"checksum"`
+}
+
+// VectorRecord is a single exportable vector with all metadata
+type VectorRecord struct {
+	ID       string            `json:"id"`
+	Vector   []float32         `json:"vector"`
+	Doc      string            `json:"doc"`
+	Meta     map[string]string `json:"meta,omitempty"`
+	TenantID string            `json:"tenant_id,omitempty"`
+}
+
+// MigrationClient handles HTTP calls for data migration
+type MigrationClient struct {
+	httpClient *http.Client
+}
+
+// NewMigrationClient creates a new migration client
+func NewMigrationClient() *MigrationClient {
+	return &MigrationClient{
+		httpClient: &http.Client{
+			Timeout: 5 * time.Minute, // Long timeout for large migrations
+		},
+	}
+}
+
+// ExportFromShard exports a collection from a remote shard
+func (mc *MigrationClient) ExportFromShard(shardAddr, collection string) (*CollectionExport, error) {
+	url := fmt.Sprintf("%s/migration/export?collection=%s", shardAddr, collection)
+
+	resp, err := mc.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("export request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("export failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var export CollectionExport
+	if err := json.NewDecoder(resp.Body).Decode(&export); err != nil {
+		return nil, fmt.Errorf("failed to decode export: %w", err)
+	}
+
+	return &export, nil
+}
+
+// ImportToShard imports a collection to a remote shard
+func (mc *MigrationClient) ImportToShard(shardAddr string, export *CollectionExport) error {
+	body, err := json.Marshal(export)
+	if err != nil {
+		return fmt.Errorf("failed to marshal export: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/migration/import", shardAddr)
+	resp, err := mc.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("import request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("import failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
+// DeleteFromShard deletes a collection from a remote shard
+func (mc *MigrationClient) DeleteFromShard(shardAddr, collection string) error {
+	url := fmt.Sprintf("%s/migration/delete?collection=%s", shardAddr, collection)
+
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := mc.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// GetCollectionStats gets statistics for a collection on a remote shard
+func (mc *MigrationClient) GetCollectionStats(shardAddr, collection string) (map[string]any, error) {
+	url := fmt.Sprintf("%s/migration/stats?collection=%s", shardAddr, collection)
+
+	resp, err := mc.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("stats request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("stats failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var stats map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, fmt.Errorf("failed to decode stats: %w", err)
+	}
+
+	return stats, nil
+}
 
 // ===========================================================================================
 // AUTO-REBALANCING

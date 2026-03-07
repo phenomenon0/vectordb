@@ -1,4 +1,4 @@
-package main
+package cluster
 
 import (
 	"bytes"
@@ -16,10 +16,10 @@ import (
 
 // ===========================================================================================
 // FULL SNAPSHOT SYNC
-// Complete VectorStore snapshot for bootstrapping new replicas
+// Complete store snapshot for bootstrapping new replicas
 // ===========================================================================================
 
-// StoreSnapshot represents a complete VectorStore snapshot
+// StoreSnapshot represents a complete store snapshot
 type StoreSnapshot struct {
 	// Metadata
 	ID          string    `json:"id"`
@@ -69,7 +69,7 @@ func DefaultSnapshotSyncConfig() SnapshotSyncConfig {
 type SnapshotSyncManager struct {
 	mu sync.RWMutex
 
-	store     *VectorStore
+	store     Store
 	config    SnapshotSyncConfig
 	walStream *WALStream
 
@@ -79,7 +79,7 @@ type SnapshotSyncManager struct {
 }
 
 // NewSnapshotSyncManager creates a new snapshot sync manager
-func NewSnapshotSyncManager(store *VectorStore, walStream *WALStream, config SnapshotSyncConfig) (*SnapshotSyncManager, error) {
+func NewSnapshotSyncManager(store Store, walStream *WALStream, config SnapshotSyncConfig) (*SnapshotSyncManager, error) {
 	// Create snapshot directory
 	if err := os.MkdirAll(config.SnapshotDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create snapshot directory: %w", err)
@@ -115,8 +115,8 @@ func (ssm *SnapshotSyncManager) CreateSnapshot(ctx context.Context) (*StoreSnaps
 	fmt.Printf("[SnapshotSync] Creating snapshot %s...\n", snapshotID)
 
 	// Lock store for reading
-	ssm.store.RLock()
-	defer ssm.store.RUnlock()
+	ssm.store.StoreRLock()
+	defer ssm.store.StoreRUnlock()
 
 	// Get current WAL sequence
 	var walSeq uint64
@@ -124,21 +124,24 @@ func (ssm *SnapshotSyncManager) CreateSnapshot(ctx context.Context) (*StoreSnaps
 		walSeq = ssm.walStream.GetLatestSeq()
 	}
 
+	// Get snapshot data from store
+	snapData := ssm.store.CreateSnapshotData()
+
 	// Create snapshot metadata
 	snapshot := &StoreSnapshot{
 		ID:          snapshotID,
 		CreatedAt:   now,
 		WALSequence: walSeq,
-		VectorCount: ssm.store.Count,
-		Dimension:   ssm.store.Dim,
-		Collections: ssm.countCollections(),
+		VectorCount: snapData.Count,
+		Dimension:   snapData.Dim,
+		Collections: countCollectionsFromData(snapData),
 		Compressed:  ssm.config.CompressionEnabled,
 		Version:     1,
 	}
 
 	// Create snapshot file
 	snapshotPath := ssm.getSnapshotPath(snapshotID)
-	if err := ssm.writeSnapshot(snapshotPath, snapshot); err != nil {
+	if err := ssm.writeSnapshot(snapshotPath, snapshot, snapData); err != nil {
 		return nil, fmt.Errorf("failed to write snapshot: %w", err)
 	}
 
@@ -163,8 +166,36 @@ func (ssm *SnapshotSyncManager) CreateSnapshot(ctx context.Context) (*StoreSnaps
 	return snapshot, nil
 }
 
+// countCollectionsFromData counts unique collections from snapshot data
+func countCollectionsFromData(snapData *SnapshotData) int {
+	collections := make(map[string]bool)
+	for _, coll := range snapData.Coll {
+		collections[coll] = true
+	}
+	return len(collections)
+}
+
+// snapshotFileData is the internal snapshot format
+type snapshotFileData struct {
+	Metadata *StoreSnapshot                  `json:"metadata"`
+	Data     []float32                       `json:"data"`
+	Docs     []string                        `json:"docs"`
+	IDs      []string                        `json:"ids"`
+	Seqs     []uint64                        `json:"seqs"`
+	Meta     map[uint64]map[string]string    `json:"meta"`
+	NumMeta  map[uint64]map[string]float64   `json:"num_meta"`
+	TimeMeta map[uint64]map[string]time.Time `json:"time_meta"`
+	Deleted  map[uint64]bool                 `json:"deleted"`
+	Coll     map[uint64]string               `json:"coll"`
+	TenantID map[uint64]string               `json:"tenant_id"`
+	LexTF    map[uint64]map[string]int       `json:"lex_tf"`
+	DocLen   map[uint64]int                  `json:"doc_len"`
+	DF       map[string]int                  `json:"df"`
+	SumDocL  int                             `json:"sum_doc_l"`
+}
+
 // writeSnapshot serializes store state to a file
-func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapshot) error {
+func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapshot, snapData *SnapshotData) error {
 	file, err := os.Create(path)
 	if err != nil {
 		return err
@@ -181,45 +212,26 @@ func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapsh
 	}
 
 	// Write snapshot data structure
-	data := &snapshotData{
+	data := &snapshotFileData{
 		Metadata: metadata,
-		Data:     ssm.store.Data,
-		Docs:     ssm.store.Docs,
-		IDs:      ssm.store.IDs,
-		Seqs:     ssm.store.Seqs,
-		Meta:     ssm.store.Meta,
-		NumMeta:  ssm.store.NumMeta,
-		TimeMeta: ssm.store.TimeMeta,
-		Deleted:  ssm.store.Deleted,
-		Coll:     ssm.store.Coll,
-		TenantID: ssm.store.TenantID,
-		LexTF:    ssm.store.lexTF,
-		DocLen:   ssm.store.docLen,
-		DF:       ssm.store.df,
-		SumDocL:  ssm.store.sumDocL,
+		Data:     snapData.Data,
+		Docs:     snapData.Docs,
+		IDs:      snapData.IDs,
+		Seqs:     snapData.Seqs,
+		Meta:     snapData.Meta,
+		NumMeta:  snapData.NumMeta,
+		TimeMeta: snapData.TimeMeta,
+		Deleted:  snapData.Deleted,
+		Coll:     snapData.Coll,
+		TenantID: snapData.TenantID,
+		LexTF:    snapData.LexTF,
+		DocLen:   snapData.DocLen,
+		DF:       snapData.DF,
+		SumDocL:  snapData.SumDocL,
 	}
 
 	encoder := json.NewEncoder(writer)
 	return encoder.Encode(data)
-}
-
-// snapshotData is the internal snapshot format
-type snapshotData struct {
-	Metadata *StoreSnapshot                  `json:"metadata"`
-	Data     []float32                       `json:"data"`
-	Docs     []string                        `json:"docs"`
-	IDs      []string                        `json:"ids"`
-	Seqs     []uint64                        `json:"seqs"`
-	Meta     map[uint64]map[string]string    `json:"meta"`
-	NumMeta  map[uint64]map[string]float64   `json:"num_meta"`
-	TimeMeta map[uint64]map[string]time.Time `json:"time_meta"`
-	Deleted  map[uint64]bool                 `json:"deleted"`
-	Coll     map[uint64]string               `json:"coll"`
-	TenantID map[uint64]string               `json:"tenant_id"`
-	LexTF    map[uint64]map[string]int       `json:"lex_tf"`
-	DocLen   map[uint64]int                  `json:"doc_len"`
-	DF       map[string]int                  `json:"df"`
-	SumDocL  int                             `json:"sum_doc_l"`
 }
 
 // LoadSnapshot loads a snapshot into the store
@@ -254,38 +266,44 @@ func (ssm *SnapshotSyncManager) LoadSnapshot(ctx context.Context, snapshotID str
 	}
 
 	// Decode snapshot data
-	var data snapshotData
+	var data snapshotFileData
 	decoder := json.NewDecoder(reader)
 	if err := decoder.Decode(&data); err != nil {
 		return fmt.Errorf("failed to decode snapshot: %w", err)
 	}
 
-	// Apply to store (requires exclusive lock)
-	ssm.store.Lock()
-	defer ssm.store.Unlock()
-
-	// Clear current state
-	ssm.store.Data = data.Data
-	ssm.store.Docs = data.Docs
-	ssm.store.IDs = data.IDs
-	ssm.store.Seqs = data.Seqs
-	ssm.store.Meta = data.Meta
-	ssm.store.NumMeta = data.NumMeta
-	ssm.store.TimeMeta = data.TimeMeta
-	ssm.store.Deleted = data.Deleted
-	ssm.store.Coll = data.Coll
-	ssm.store.TenantID = data.TenantID
-	ssm.store.lexTF = data.LexTF
-	ssm.store.docLen = data.DocLen
-	ssm.store.df = data.DF
-	ssm.store.sumDocL = data.SumDocL
-	ssm.store.Count = data.Metadata.VectorCount
-	ssm.store.Dim = data.Metadata.Dimension
+	// Build SnapshotData and load into store
+	snapData := &SnapshotData{
+		Count:    data.Metadata.VectorCount,
+		Dim:      data.Metadata.Dimension,
+		IDs:      data.IDs,
+		Docs:     data.Docs,
+		Data:     data.Data,
+		Seqs:     data.Seqs,
+		Meta:     data.Meta,
+		NumMeta:  data.NumMeta,
+		TimeMeta: data.TimeMeta,
+		Deleted:  data.Deleted,
+		Coll:     data.Coll,
+		TenantID: data.TenantID,
+		LexTF:    data.LexTF,
+		DocLen:   data.DocLen,
+		DF:       data.DF,
+		SumDocL:  data.SumDocL,
+	}
 
 	// Rebuild idToIx mapping
-	ssm.store.idToIx = make(map[uint64]int)
-	for i, seq := range ssm.store.Seqs {
-		ssm.store.idToIx[seq] = i
+	snapData.IDToIx = make(map[uint64]int)
+	for i, seq := range data.Seqs {
+		snapData.IDToIx[seq] = i
+	}
+
+	// Apply to store via interface
+	ssm.store.StoreLock()
+	defer ssm.store.StoreUnlock()
+
+	if err := ssm.store.LoadSnapshotData(snapData); err != nil {
+		return fmt.Errorf("failed to load snapshot data: %w", err)
 	}
 
 	fmt.Printf("[SnapshotSync] Snapshot %s loaded (vectors=%d, wal_seq=%d)\n",
@@ -353,7 +371,7 @@ func (ssm *SnapshotSyncManager) loadSnapshotMetadata(path string) (*StoreSnapsho
 	}
 
 	// Just decode the beginning to get metadata
-	var data snapshotData
+	var data snapshotFileData
 	decoder := json.NewDecoder(reader)
 	if err := decoder.Decode(&data); err != nil {
 		return nil, err
@@ -371,15 +389,6 @@ func (ssm *SnapshotSyncManager) getSnapshotPath(snapshotID string) string {
 	return filepath.Join(ssm.config.SnapshotDir, snapshotID+ext)
 }
 
-// countCollections counts unique collections
-func (ssm *SnapshotSyncManager) countCollections() int {
-	collections := make(map[string]bool)
-	for _, coll := range ssm.store.Coll {
-		collections[coll] = true
-	}
-	return len(collections)
-}
-
 // cleanupOldSnapshots removes old snapshots beyond limit
 func (ssm *SnapshotSyncManager) cleanupOldSnapshots() {
 	snapshots, err := ssm.ListSnapshots()
@@ -392,7 +401,6 @@ func (ssm *SnapshotSyncManager) cleanupOldSnapshots() {
 	}
 
 	// Sort by timestamp (oldest first)
-	// Note: snapshots are already in filesystem order, need to sort
 	for i := ssm.config.MaxSnapshots; i < len(snapshots); i++ {
 		path := ssm.getSnapshotPath(snapshots[i].ID)
 		os.Remove(path)
@@ -404,8 +412,8 @@ func (ssm *SnapshotSyncManager) cleanupOldSnapshots() {
 // HTTP HANDLERS FOR SNAPSHOT TRANSFER
 // ===========================================================================================
 
-// handleSnapshotList handles GET /snapshot/list - returns available snapshots
-func (ssm *SnapshotSyncManager) handleSnapshotList(w http.ResponseWriter, r *http.Request) {
+// HandleSnapshotList handles GET /snapshot/list - returns available snapshots
+func (ssm *SnapshotSyncManager) HandleSnapshotList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -424,8 +432,8 @@ func (ssm *SnapshotSyncManager) handleSnapshotList(w http.ResponseWriter, r *htt
 	})
 }
 
-// handleSnapshotCreate handles POST /snapshot/create - creates new snapshot
-func (ssm *SnapshotSyncManager) handleSnapshotCreate(w http.ResponseWriter, r *http.Request) {
+// HandleSnapshotCreate handles POST /snapshot/create - creates new snapshot
+func (ssm *SnapshotSyncManager) HandleSnapshotCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -444,8 +452,8 @@ func (ssm *SnapshotSyncManager) handleSnapshotCreate(w http.ResponseWriter, r *h
 	json.NewEncoder(w).Encode(snapshot)
 }
 
-// handleSnapshotDownload handles GET /snapshot/download?id=xxx - streams snapshot
-func (ssm *SnapshotSyncManager) handleSnapshotDownload(w http.ResponseWriter, r *http.Request) {
+// HandleSnapshotDownload handles GET /snapshot/download?id=xxx - streams snapshot
+func (ssm *SnapshotSyncManager) HandleSnapshotDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -487,8 +495,8 @@ func (ssm *SnapshotSyncManager) handleSnapshotDownload(w http.ResponseWriter, r 
 	io.Copy(w, file)
 }
 
-// handleSnapshotUpload handles POST /snapshot/upload - receives snapshot from primary
-func (ssm *SnapshotSyncManager) handleSnapshotUpload(w http.ResponseWriter, r *http.Request) {
+// HandleSnapshotUpload handles POST /snapshot/upload - receives snapshot from primary
+func (ssm *SnapshotSyncManager) HandleSnapshotUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -596,7 +604,7 @@ func (ssc *SnapshotSyncClient) FetchLatestSnapshot(ctx context.Context) (*StoreS
 }
 
 // FetchAndApplySnapshot fetches and applies snapshot to a store
-func (ssc *SnapshotSyncClient) FetchAndApplySnapshot(ctx context.Context, store *VectorStore, walStream *WALStream) (*StoreSnapshot, error) {
+func (ssc *SnapshotSyncClient) FetchAndApplySnapshot(ctx context.Context, store Store, walStream *WALStream) (*StoreSnapshot, error) {
 	fmt.Printf("[SnapshotSyncClient] Fetching snapshot from %s...\n", ssc.primaryAddr)
 
 	metadata, data, err := ssc.FetchLatestSnapshot(ctx)
@@ -619,42 +627,49 @@ func (ssc *SnapshotSyncClient) FetchAndApplySnapshot(ctx context.Context, store 
 		reader = gzReader
 	}
 
-	var snapshotData snapshotData
-	if err := json.NewDecoder(reader).Decode(&snapshotData); err != nil {
+	var fileData snapshotFileData
+	if err := json.NewDecoder(reader).Decode(&fileData); err != nil {
 		return nil, fmt.Errorf("failed to decode snapshot: %w", err)
 	}
 
-	// Apply to store
-	store.Lock()
-	defer store.Unlock()
-
-	store.Data = snapshotData.Data
-	store.Docs = snapshotData.Docs
-	store.IDs = snapshotData.IDs
-	store.Seqs = snapshotData.Seqs
-	store.Meta = snapshotData.Meta
-	store.NumMeta = snapshotData.NumMeta
-	store.TimeMeta = snapshotData.TimeMeta
-	store.Deleted = snapshotData.Deleted
-	store.Coll = snapshotData.Coll
-	store.TenantID = snapshotData.TenantID
-	store.lexTF = snapshotData.LexTF
-	store.docLen = snapshotData.DocLen
-	store.df = snapshotData.DF
-	store.sumDocL = snapshotData.SumDocL
-	store.Count = snapshotData.Metadata.VectorCount
-	store.Dim = snapshotData.Metadata.Dimension
+	// Build SnapshotData
+	snapData := &SnapshotData{
+		Count:    fileData.Metadata.VectorCount,
+		Dim:      fileData.Metadata.Dimension,
+		IDs:      fileData.IDs,
+		Docs:     fileData.Docs,
+		Data:     fileData.Data,
+		Seqs:     fileData.Seqs,
+		Meta:     fileData.Meta,
+		NumMeta:  fileData.NumMeta,
+		TimeMeta: fileData.TimeMeta,
+		Deleted:  fileData.Deleted,
+		Coll:     fileData.Coll,
+		TenantID: fileData.TenantID,
+		LexTF:    fileData.LexTF,
+		DocLen:   fileData.DocLen,
+		DF:       fileData.DF,
+		SumDocL:  fileData.SumDocL,
+	}
 
 	// Rebuild idToIx mapping
-	store.idToIx = make(map[uint64]int)
-	for i, seq := range store.Seqs {
-		store.idToIx[seq] = i
+	snapData.IDToIx = make(map[uint64]int)
+	for i, seq := range fileData.Seqs {
+		snapData.IDToIx[seq] = i
+	}
+
+	// Apply to store via interface
+	store.StoreLock()
+	defer store.StoreUnlock()
+
+	if err := store.LoadSnapshotData(snapData); err != nil {
+		return nil, fmt.Errorf("failed to load snapshot data: %w", err)
 	}
 
 	fmt.Printf("[SnapshotSyncClient] Applied snapshot %s (vectors=%d, wal_seq=%d)\n",
-		metadata.ID, snapshotData.Metadata.VectorCount, snapshotData.Metadata.WALSequence)
+		metadata.ID, fileData.Metadata.VectorCount, fileData.Metadata.WALSequence)
 
-	return snapshotData.Metadata, nil
+	return fileData.Metadata, nil
 }
 
 // ===========================================================================================
@@ -662,7 +677,7 @@ func (ssc *SnapshotSyncClient) FetchAndApplySnapshot(ctx context.Context, store 
 // ===========================================================================================
 
 // BootstrapFromPrimary performs full bootstrap: snapshot + WAL catchup
-func BootstrapFromPrimary(ctx context.Context, store *VectorStore, walStream *WALStream, primaryAddr, authToken string) error {
+func BootstrapFromPrimary(ctx context.Context, store Store, walStream *WALStream, primaryAddr, authToken string) error {
 	config := DefaultSnapshotSyncConfig()
 
 	// Step 1: Fetch and apply snapshot
