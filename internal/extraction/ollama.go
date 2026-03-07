@@ -93,6 +93,19 @@ func (e *OllamaExtractor) Extract(ctx context.Context, content string) (*Knowled
 		return nil, ErrEmptyContent
 	}
 
+	// Glyph mode: use Glyph prompts and text-mode response
+	if e.cfg.GlyphMode {
+		prompt := e.cfg.CustomPrompt
+		if prompt == "" {
+			prompt = GlyphExtractionPrompt
+		}
+		response, err := e.callOllamaGlyph(ctx, prompt, content)
+		if err != nil {
+			return nil, err
+		}
+		return parseGlyphKnowledgeGraph(response)
+	}
+
 	prompt := e.cfg.CustomPrompt
 	if prompt == "" {
 		prompt = DefaultExtractionPrompt
@@ -110,6 +123,19 @@ func (e *OllamaExtractor) Extract(ctx context.Context, content string) (*Knowled
 func (e *OllamaExtractor) ExtractTemporal(ctx context.Context, content string) (*TemporalKnowledgeGraph, error) {
 	if content == "" {
 		return nil, ErrEmptyContent
+	}
+
+	// Glyph mode: use Glyph temporal prompts and text-mode response
+	if e.cfg.GlyphMode {
+		prompt := e.cfg.TemporalPrompt
+		if prompt == "" {
+			prompt = GlyphTemporalPrompt
+		}
+		response, err := e.callOllamaGlyph(ctx, prompt, content)
+		if err != nil {
+			return nil, err
+		}
+		return parseGlyphTemporalKnowledgeGraph(response)
 	}
 
 	prompt := e.cfg.TemporalPrompt
@@ -178,7 +204,7 @@ func (e *OllamaExtractor) ExtractBatch(ctx context.Context, chunks []string) ([]
 	return results, nil
 }
 
-// callOllama sends a request to the Ollama API.
+// callOllama sends a request to the Ollama API with JSON format.
 func (e *OllamaExtractor) callOllama(ctx context.Context, systemPrompt, userContent string) (string, error) {
 	url := strings.TrimSuffix(e.cfg.BaseURL, "/") + "/api/generate"
 
@@ -194,6 +220,31 @@ func (e *OllamaExtractor) callOllama(ctx context.Context, systemPrompt, userCont
 		},
 	}
 
+	return e.doOllamaRequest(ctx, url, req)
+}
+
+// callOllamaGlyph sends a request to the Ollama API without JSON format constraint.
+// Glyph responses are plain text in tabular format, not JSON.
+func (e *OllamaExtractor) callOllamaGlyph(ctx context.Context, systemPrompt, userContent string) (string, error) {
+	url := strings.TrimSuffix(e.cfg.BaseURL, "/") + "/api/generate"
+
+	req := OllamaRequest{
+		Model:  e.cfg.Model,
+		System: systemPrompt,
+		Prompt: userContent,
+		Stream: false,
+		// No Format field — Glyph is text, not JSON
+		Options: &OllamaOptions{
+			Temperature: e.cfg.Temperature,
+			NumPredict:  e.cfg.MaxTokens,
+		},
+	}
+
+	return e.doOllamaRequest(ctx, url, req)
+}
+
+// doOllamaRequest executes the HTTP request to Ollama and returns the response text.
+func (e *OllamaExtractor) doOllamaRequest(ctx context.Context, url string, req OllamaRequest) (string, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)

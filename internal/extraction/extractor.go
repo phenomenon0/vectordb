@@ -59,6 +59,9 @@ type ExtractorConfig struct {
 
 	// RetryDelayMs between retries
 	RetryDelayMs int `json:"retry_delay_ms"`
+
+	// GlyphMode enables Glyph format for extraction prompts (saves ~30% tokens)
+	GlyphMode bool `json:"glyph_mode,omitempty"`
 }
 
 // DefaultConfig returns sensible defaults for Ollama.
@@ -89,7 +92,7 @@ func NewExtractor(cfg ExtractorConfig) (Extractor, error) {
 }
 
 // DefaultExtractionPrompt is the system prompt for entity extraction.
-const DefaultExtractionPrompt = `You are an expert at extracting structured knowledge from text. 
+const DefaultExtractionPrompt = `You are an expert at extracting structured knowledge from text.
 Extract entities (nodes) and relationships (edges) from the given text.
 
 For each entity, provide:
@@ -100,7 +103,7 @@ For each entity, provide:
 
 For each relationship, provide:
 - source_node_id: The ID of the source entity
-- target_node_id: The ID of the target entity  
+- target_node_id: The ID of the target entity
 - relationship_name: One of: RELATED_TO, PART_OF, CREATED_BY, USED_BY, DEPENDS_ON, IMPLEMENTS, EXTENDS, CALLS, CONTAINS, LOCATED_IN, OCCURRED_AT, WORKS_FOR, COLLABORATES_WITH
 
 Return ONLY valid JSON in this exact format:
@@ -155,3 +158,50 @@ Rules:
 2. Connect events to relevant entities
 3. Preserve original date text even if you extract structured date
 4. Events can overlap with entities (e.g., "The 2020 Conference" is both an event and entity)`
+
+// GlyphExtractionPrompt is the system prompt for Glyph-format entity extraction.
+// Uses tabular Glyph format instead of JSON, saving ~30% tokens in prompt and response.
+const GlyphExtractionPrompt = `You are an expert at extracting structured knowledge from text.
+Extract entities (nodes) and relationships (edges) from the given text.
+
+Return ONLY in this exact Glyph format:
+
+@tab Node [id name type desc]
+entity_id "Entity Name" TYPE "Brief description"
+@end
+
+@tab Edge [src tgt rel w]
+source_id target_id RELATIONSHIP 1.0
+@end
+
+Entity types: PERSON ORGANIZATION LOCATION CONCEPT TECHNOLOGY EVENT DATE PRODUCT CODE FUNCTION CLASS MODULE
+Relationships: RELATED_TO PART_OF CREATED_BY USED_BY DEPENDS_ON IMPLEMENTS EXTENDS CALLS CONTAINS LOCATED_IN OCCURRED_AT WORKS_FOR COLLABORATES_WITH
+
+Rules:
+1. Extract ALL meaningful entities and relationships
+2. Use consistent IDs (lowercase, underscores for spaces)
+3. Prefer specific relationship types over RELATED_TO
+4. Quote strings containing spaces
+5. Weight defaults to 1.0 if unsure`
+
+// GlyphTemporalPrompt is the system prompt for Glyph-format temporal extraction.
+const GlyphTemporalPrompt = `You are an expert at extracting structured knowledge and temporal events from text.
+
+Return ONLY in this exact Glyph format:
+
+@tab Node [id name type desc]
+entity_id "Entity Name" TYPE "Brief description"
+@end
+
+@tab Edge [src tgt rel w]
+source_id target_id RELATIONSHIP 1.0
+@end
+
+@tab Event [id desc year date_text entities]
+event_id "What happened" 2024 "in 2024" [entity1 entity2]
+@end
+
+Rules:
+1. Extract all entities, relationships, and temporal events
+2. Connect events to relevant entities via the entities list
+3. Use consistent lowercase IDs with underscores`

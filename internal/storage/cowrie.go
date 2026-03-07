@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Neumenon/cowrie/go"
+	"github.com/Neumenon/cowrie/go/ucodec"
 )
 
 // Safe value extraction helpers - prevent panics from type mismatches
@@ -85,14 +86,24 @@ func safeBool(v *cowrie.Value) bool {
 type CowrieFormat struct {
 	// UseCompression enables Zstd compression (additional ~40% reduction)
 	UseCompression bool
+
+	// UseDeltaPrediction enables delta-predictive encoding for embeddings.
+	// When true, correlated embedding data is delta-encoded before zstd compression,
+	// achieving 40-55% smaller than raw float32 (vs 10-15% with zstd alone).
+	// Falls back to normal tensor encoding if data correlation is too low.
+	UseDeltaPrediction bool
 }
 
 func init() {
 	Register(&CowrieFormat{UseCompression: false})
 	Register(&CowrieFormat{UseCompression: true})
+	Register(&CowrieFormat{UseCompression: true, UseDeltaPrediction: true})
 }
 
 func (s *CowrieFormat) Name() string {
+	if s.UseCompression && s.UseDeltaPrediction {
+		return "cowrie-delta-zstd"
+	}
 	if s.UseCompression {
 		return "cowrie-zstd"
 	}
@@ -100,6 +111,9 @@ func (s *CowrieFormat) Name() string {
 }
 
 func (s *CowrieFormat) Extension() string {
+	if s.UseCompression && s.UseDeltaPrediction {
+		return ".cowrie.delta.zst"
+	}
 	if s.UseCompression {
 		return ".cowrie.zst"
 	}
@@ -110,10 +124,23 @@ func (s *CowrieFormat) Save(w io.Writer, p *Payload) error {
 	// Build Cowrie value with optimized tensor for embeddings
 	obj := cowrie.Object()
 
-	// Store embeddings as native tensor (main optimization)
+	// Store embeddings - choose encoding strategy
+	deltaEncoded := false
 	if len(p.Data) > 0 {
-		obj.Set("data", encodeFloat32Tensor(p.Data))
+		if s.UseDeltaPrediction && ucodec.ShouldUseDelta(p.Data, 0.5) {
+			// Delta-predictive encoding: encode embeddings as delta bytes
+			deltaBytes, err := ucodec.EncodeDelta(p.Data)
+			if err == nil {
+				obj.Set("data_delta", cowrie.Bytes(deltaBytes))
+				deltaEncoded = true
+			}
+			// If EncodeDelta fails, fall through to normal tensor encoding
+		}
+		if !deltaEncoded {
+			obj.Set("data", encodeFloat32Tensor(p.Data))
+		}
 	}
+	obj.Set("delta_encoded", cowrie.Bool(deltaEncoded))
 
 	// Scalar fields
 	obj.Set("dim", cowrie.Int64(int64(p.Dim)))
@@ -178,9 +205,25 @@ func (s *CowrieFormat) Load(r io.Reader) (*Payload, error) {
 
 	p := &Payload{}
 
-	// Decode embeddings tensor
-	if dataVal := obj.Get("data"); dataVal != nil {
-		p.Data = decodeFloat32Tensor(dataVal)
+	// Check if delta encoding was used
+	isDelta := false
+	if v := obj.Get("delta_encoded"); v != nil {
+		isDelta = safeBool(v)
+	}
+
+	// Decode embeddings
+	if isDelta {
+		if v := obj.Get("data_delta"); v != nil && v.Type() == cowrie.TypeBytes {
+			decoded, err := ucodec.DecodeDelta(v.Bytes())
+			if err != nil {
+				return nil, fmt.Errorf("delta decode failed: %w", err)
+			}
+			p.Data = decoded
+		}
+	} else {
+		if dataVal := obj.Get("data"); dataVal != nil {
+			p.Data = decodeFloat32Tensor(dataVal)
+		}
 	}
 
 	// Scalar fields - use safe accessors to prevent panics

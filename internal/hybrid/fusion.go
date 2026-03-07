@@ -44,6 +44,7 @@ type FusionParams struct {
 	// Weighted fusion parameters
 	DenseWeight  float32 // Weight for dense results (default: 0.7)
 	SparseWeight float32 // Weight for sparse results (default: 0.3)
+	GraphWeight  float32 // Weight for graph importance results (default: 0.0, disabled)
 }
 
 // DefaultFusionParams returns recommended fusion parameters.
@@ -250,6 +251,30 @@ func HybridSearch(
 	return Fuse(resultSets, params, topK), nil
 }
 
+// HybridSearchWithGraph performs hybrid search combining dense, sparse, and graph results.
+// graphResults come from GraphIndex.Search() and provide structural importance scores.
+func HybridSearchWithGraph(
+	denseResults []SearchResult,
+	sparseResults []SearchResult,
+	graphResults []SearchResult,
+	params FusionParams,
+	topK int,
+) ([]SearchResult, error) {
+	resultSets := []ResultSet{
+		{Results: denseResults, Weight: params.DenseWeight},
+		{Results: sparseResults, Weight: params.SparseWeight},
+	}
+
+	if len(graphResults) > 0 && params.GraphWeight > 0 {
+		resultSets = append(resultSets, ResultSet{
+			Results: graphResults,
+			Weight:  params.GraphWeight,
+		})
+	}
+
+	return Fuse(resultSets, params, topK), nil
+}
+
 // ValidateFusionParams checks if fusion parameters are valid.
 func ValidateFusionParams(params FusionParams) error {
 	if params.K <= 0 {
@@ -257,11 +282,11 @@ func ValidateFusionParams(params FusionParams) error {
 	}
 
 	if params.Strategy == FusionWeighted {
-		if params.DenseWeight < 0 || params.SparseWeight < 0 {
+		if params.DenseWeight < 0 || params.SparseWeight < 0 || params.GraphWeight < 0 {
 			return fmt.Errorf("weights must be non-negative")
 		}
 
-		total := params.DenseWeight + params.SparseWeight
+		total := params.DenseWeight + params.SparseWeight + params.GraphWeight
 		if total == 0 {
 			return fmt.Errorf("at least one weight must be positive")
 		}
@@ -273,10 +298,11 @@ func ValidateFusionParams(params FusionParams) error {
 // NormalizeWeights normalizes fusion weights to sum to 1.0.
 func NormalizeWeights(params *FusionParams) {
 	if params.Strategy == FusionWeighted {
-		total := params.DenseWeight + params.SparseWeight
+		total := params.DenseWeight + params.SparseWeight + params.GraphWeight
 		if total > 0 {
 			params.DenseWeight /= total
 			params.SparseWeight /= total
+			params.GraphWeight /= total
 		}
 	}
 }

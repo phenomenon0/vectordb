@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
+	"github.com/phenomenon0/vectordb/internal/encoding"
 	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
@@ -567,7 +568,16 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// Return results
+	// Check if client wants Glyph tabular format (50-62% fewer tokens for RAG)
+	accept := r.Header.Get("Accept")
+	if accept == "application/glyph" || accept == "text/glyph" {
+		glyphOutput := encoding.EncodeSearchResults(documents, scores)
+		w.Header().Set("Content-Type", "application/glyph")
+		w.Write([]byte(glyphOutput))
+		return
+	}
+
+	// Return results as JSON (default)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":              "success",
