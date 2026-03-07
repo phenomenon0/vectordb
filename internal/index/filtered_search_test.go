@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/phenomenon0/vectordb/filter"
+	"github.com/phenomenon0/vectordb/internal/filter"
 )
 
 // TestHNSWFilteredSearch tests filtered search with HNSW index

@@ -10,7 +10,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/phenomenon0/vectordb/filter"
+	"github.com/phenomenon0/vectordb/internal/filter"
 )
 
 // IVFIndex implements Inverted File index for large-scale vector search

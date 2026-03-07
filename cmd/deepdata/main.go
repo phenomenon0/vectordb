@@ -24,11 +24,11 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/phenomenon0/vectordb/index"
-	"github.com/phenomenon0/vectordb/logging"
-	"github.com/phenomenon0/vectordb/security"
-	"github.com/phenomenon0/vectordb/storage"
-	"github.com/phenomenon0/vectordb/telemetry"
+	"github.com/phenomenon0/vectordb/internal/index"
+	"github.com/phenomenon0/vectordb/internal/logging"
+	"github.com/phenomenon0/vectordb/internal/security"
+	"github.com/phenomenon0/vectordb/internal/storage"
+	"github.com/phenomenon0/vectordb/internal/telemetry"
 )
 
 // ======================================================================================

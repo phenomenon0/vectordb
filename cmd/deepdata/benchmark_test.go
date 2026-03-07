@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenomenon0/vectordb/index"
-	"github.com/phenomenon0/vectordb/security"
+	"github.com/phenomenon0/vectordb/internal/index"
+	"github.com/phenomenon0/vectordb/internal/security"
 )
 
 // =============================================================================

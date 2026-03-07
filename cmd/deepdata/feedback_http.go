@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenomenon0/vectordb/feedback"
+	"github.com/phenomenon0/vectordb/internal/feedback"
 )
 
 // FeedbackHandler handles feedback HTTP endpoints.

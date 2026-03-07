@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/phenomenon0/vectordb/filter"
-	"github.com/phenomenon0/vectordb/hybrid"
-	"github.com/phenomenon0/vectordb/index"
-	"github.com/phenomenon0/vectordb/sparse"
+	"github.com/phenomenon0/vectordb/internal/filter"
+	"github.com/phenomenon0/vectordb/internal/hybrid"
+	"github.com/phenomenon0/vectordb/internal/index"
+	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
 // Collection manages multiple vector indexes for a single collection.

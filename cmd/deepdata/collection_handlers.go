@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/phenomenon0/vectordb/security"
+	"github.com/phenomenon0/vectordb/internal/security"
 )
 
 // Collection API Handlers

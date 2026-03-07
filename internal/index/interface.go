@@ -3,7 +3,7 @@ package index
 import (
 	"context"
 
-	"github.com/phenomenon0/vectordb/filter"
+	"github.com/phenomenon0/vectordb/internal/filter"
 )
 
 // Index is the core interface for vector indexes in VectorDB.

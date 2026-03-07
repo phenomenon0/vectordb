@@ -8,32 +8,38 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenomenon0/vectordb/security"
+	"github.com/phenomenon0/vectordb/internal/security"
 )
 
-// generateTestToken is a CLI utility to generate JWT tokens for testing
-func generateTestToken() {
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "preset" {
+		generatePresetTokens()
+		return
+	}
+
 	// Parse command-line flags
 	tenantID := flag.String("tenant", "test-tenant", "Tenant ID")
 	permissions := flag.String("permissions", "read,write", "Comma-separated permissions (read,write,admin)")
 	collections := flag.String("collections", "", "Comma-separated collections (empty = all collections)")
 	secret := flag.String("secret", os.Getenv("JWT_SECRET"), "JWT secret key")
 	issuer := flag.String("issuer", "vectordb", "JWT issuer")
-	expiresIn := flag.Duration("expires", 24*time.Hour, "Token expiration duration (e.g., 24h, 7d)")
+	expiresIn := flag.Duration("expires", 24*time.Hour, "Token expiration duration (e.g., 24h, 168h for 7d)")
 	outputJSON := flag.Bool("json", false, "Output as JSON")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Generate JWT tokens for VectorDB multi-tenant authentication\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: %s gentoken [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage:\n")
+		fmt.Fprintf(os.Stderr, "  %s [options]           Generate custom token\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s preset             Generate preset tokens for dev/testing\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  # Generate admin token for all collections\n")
-		fmt.Fprintf(os.Stderr, "  %s gentoken -tenant=acme-corp -permissions=admin -secret=my-secret\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -tenant=acme-corp -permissions=admin -secret=my-secret\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  # Generate read-only token for specific collections\n")
-		fmt.Fprintf(os.Stderr, "  %s gentoken -tenant=customer-1 -permissions=read -collections=docs,images\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  # Generate token with 7-day expiration\n")
-		fmt.Fprintf(os.Stderr, "  %s gentoken -tenant=test -expires=168h\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -tenant=customer-1 -permissions=read -collections=docs,images\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  # Generate preset tokens\n")
+		fmt.Fprintf(os.Stderr, "  JWT_SECRET=my-secret %s preset\n\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -103,12 +109,11 @@ func generateTestToken() {
 	}
 }
 
-// Example preset tokens for common scenarios
 func generatePresetTokens() {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		fmt.Println("JWT_SECRET environment variable required")
-		return
+		fmt.Println("Error: JWT_SECRET environment variable required")
+		os.Exit(1)
 	}
 
 	jwtMgr := security.NewJWTManager(secret, "vectordb")

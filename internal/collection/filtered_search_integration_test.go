@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/phenomenon0/vectordb/filter"
+	"github.com/phenomenon0/vectordb/internal/filter"
 )
 
 // TestCollectionFilteredSearch tests filtered search through the collection layer

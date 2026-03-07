@@ -12,7 +12,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/phenomenon0/vectordb/filter"
+	"github.com/phenomenon0/vectordb/internal/filter"
 	"golang.org/x/sys/unix"
 )
 

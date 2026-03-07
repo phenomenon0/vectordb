@@ -1,0 +1,2366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeepData</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    :root {
+      --bg-0: #0a0a0a;
+      --bg-1: #111111;
+      --bg-2: #1a1a1a;
+      --bg-3: #222222;
+      --border: #2a2a2a;
+      --border-h: #3a3a3a;
+      --fg: #d4d4d4;
+      --fg-2: #737373;
+      --fg-3: #525252;
+      --accent: #3b82f6;
+      --accent-dim: #2563eb;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #eab308;
+      --purple: #a78bfa;
+      --orange: #f59e0b;
+      --orange-dim: #d97706;
+      --radius: 4px;
+      --font-display: 'Space Grotesk', system-ui, sans-serif;
+      --font-body: 'DM Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: var(--font-body); background: var(--bg-0); color: var(--fg); min-height: 100vh; font-size: 13px; -webkit-font-smoothing: antialiased; }
+    [x-cloak] { display: none !important; }
+
+    /* ---- Top Nav ---- */
+    .topnav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      height: 40px; background: var(--bg-1); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 16px; gap: 0;
+    }
+    .topnav-brand {
+      font-family: var(--font-display); font-weight: 600; font-size: 14px;
+      color: var(--fg); margin-right: 8px; white-space: nowrap;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .status-dot {
+      width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex-shrink: 0;
+    }
+    .status-dot.online { background: var(--green); }
+    .status-dot.offline { background: var(--red); }
+    .topnav-tabs {
+      display: flex; gap: 0; margin-left: 12px; height: 100%;
+    }
+    .topnav-tab {
+      padding: 0 12px; height: 100%; display: flex; align-items: center;
+      font-size: 12px; color: var(--fg-2); cursor: pointer; border: none; background: none;
+      border-bottom: 2px solid transparent; transition: color .15s;
+      font-family: var(--font-body); white-space: nowrap;
+    }
+    .topnav-tab:hover { color: var(--fg); }
+    .topnav-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+    .topnav-right {
+      margin-left: auto; display: flex; align-items: center; gap: 8px;
+      font-size: 11px; color: var(--fg-2); font-family: var(--font-mono);
+    }
+    .badge {
+      display: inline-block; padding: 1px 6px; border-radius: var(--radius);
+      font-size: 10px; font-family: var(--font-mono); font-weight: 500; text-transform: uppercase;
+    }
+    .badge-blue { background: rgba(59,130,246,.15); color: var(--accent); }
+    .badge-green { background: rgba(34,197,94,.12); color: var(--green); }
+    .badge-yellow { background: rgba(234,179,8,.12); color: var(--yellow); }
+    .badge-red { background: rgba(239,68,68,.12); color: var(--red); }
+    .badge-purple { background: rgba(167,139,250,.12); color: var(--purple); }
+    .badge-orange { background: rgba(245,158,11,.12); color: var(--orange); }
+
+    /* ---- Main Content ---- */
+    .main { padding: 52px 20px 20px 20px; max-width: 1400px; margin: 0 auto; }
+
+    /* ---- Cards ---- */
+    .card {
+      background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 12px 16px;
+    }
+    .card-header {
+      font-family: var(--font-display); font-size: 13px; font-weight: 500;
+      color: var(--fg-2); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;
+    }
+
+    /* ---- Stat Strip ---- */
+    .stat-strip {
+      font-family: var(--font-mono); font-size: 12px; color: var(--fg-2);
+      display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center;
+    }
+    .stat-strip .val { color: var(--fg); font-weight: 500; }
+
+    /* ---- Tables ---- */
+    .tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .tbl th {
+      text-align: left; padding: 6px 8px; font-weight: 500; color: var(--fg-3);
+      border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase;
+      letter-spacing: .03em; font-family: var(--font-body);
+    }
+    .tbl td {
+      padding: 6px 8px; border-bottom: 1px solid var(--border);
+      font-family: var(--font-mono); font-size: 12px; color: var(--fg);
+    }
+    .tbl tr:last-child td { border-bottom: none; }
+    .tbl tr:hover td { background: var(--bg-2); }
+    .tbl .actions { display: flex; gap: 4px; }
+
+    /* ---- Buttons ---- */
+    .btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 10px; border-radius: var(--radius); font-size: 11px;
+      font-family: var(--font-body); font-weight: 500; cursor: pointer;
+      border: 1px solid var(--border); background: var(--bg-2); color: var(--fg);
+      transition: background .15s, border-color .15s;
+    }
+    .btn:hover { background: var(--bg-3); border-color: var(--border-h); }
+    .btn-primary { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent); }
+    .btn-danger { border-color: rgba(239,68,68,.3); color: var(--red); }
+    .btn-danger:hover { background: rgba(239,68,68,.1); }
+    .btn-sm { padding: 2px 6px; font-size: 10px; }
+    .btn-green { background: rgba(34,197,94,.12); border-color: rgba(34,197,94,.3); color: var(--green); }
+    .btn-green:hover { background: rgba(34,197,94,.2); }
+    .btn-yellow { background: rgba(234,179,8,.12); border-color: rgba(234,179,8,.3); color: var(--yellow); }
+    .btn-yellow:hover { background: rgba(234,179,8,.2); }
+
+    /* ---- Forms ---- */
+    .input, .textarea, .select {
+      background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--radius);
+      color: var(--fg); font-family: var(--font-mono); font-size: 12px;
+      padding: 6px 8px; outline: none; width: 100%;
+    }
+    .input:focus, .textarea:focus, .select:focus { border-color: var(--accent); }
+    .textarea { resize: vertical; min-height: 60px; }
+    .form-row { display: flex; gap: 8px; align-items: end; margin-bottom: 8px; }
+    .form-group { display: flex; flex-direction: column; gap: 2px; }
+    .form-group label { font-size: 11px; color: var(--fg-3); }
+    .form-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+    /* ---- Layout helpers ---- */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .gap-8 { gap: 8px; }
+    .gap-10 { gap: 10px; }
+    .mb-8 { margin-bottom: 8px; }
+    .mb-10 { margin-bottom: 10px; }
+    .mb-12 { margin-bottom: 12px; }
+    .mt-8 { margin-top: 8px; }
+    .mt-12 { margin-top: 12px; }
+    .flex { display: flex; }
+    .flex-col { flex-direction: column; }
+    .items-center { align-items: center; }
+    .justify-between { justify-content: space-between; }
+    .mono { font-family: var(--font-mono); }
+    .text-xs { font-size: 11px; }
+    .text-muted { color: var(--fg-2); }
+    .text-dim { color: var(--fg-3); }
+    .text-green { color: var(--green); }
+    .text-red { color: var(--red); }
+    .text-accent { color: var(--accent); }
+    .text-yellow { color: var(--yellow); }
+    .text-orange { color: var(--orange); }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pre-wrap { white-space: pre-wrap; word-break: break-word; }
+    .scroll-y { overflow-y: auto; max-height: 320px; }
+
+    /* ---- Search page ---- */
+    .search-layout { display: grid; grid-template-columns: 320px 1fr; gap: 12px; }
+    .result-row {
+      padding: 8px 10px; border-bottom: 1px solid var(--border); cursor: pointer;
+    }
+    .result-row:hover { background: var(--bg-2); }
+    .result-row .score { font-family: var(--font-mono); font-size: 12px; color: var(--accent); min-width: 52px; }
+    .result-row .doc-preview { font-size: 12px; color: var(--fg-2); margin-top: 2px; }
+    .result-expanded { padding: 8px 10px; background: var(--bg-2); border-bottom: 1px solid var(--border); font-size: 12px; }
+
+    /* ---- Pagination ---- */
+    .pagination { display: flex; align-items: center; gap: 8px; font-size: 12px; font-family: var(--font-mono); color: var(--fg-2); }
+
+    /* ---- Playground ---- */
+    .playground-output {
+      background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 8px 10px; font-family: var(--font-mono); font-size: 11px;
+      max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+      color: var(--fg-2);
+    }
+
+    /* ---- Toasts ---- */
+    .toast-container {
+      position: fixed; bottom: 16px; right: 16px; z-index: 200;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .toast {
+      padding: 6px 12px; border-radius: var(--radius); font-size: 12px;
+      background: var(--bg-2); border: 1px solid var(--border); color: var(--fg);
+      animation: fadeIn .2s ease;
+    }
+    .toast.error { border-color: rgba(239,68,68,.3); color: var(--red); }
+    .toast.success { border-color: rgba(34,197,94,.2); color: var(--green); }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* ---- Request Log ---- */
+    .req-log-row { font-family: var(--font-mono); font-size: 11px; padding: 3px 0; display: flex; gap: 8px; color: var(--fg-2); }
+    .req-log-row .method { min-width: 36px; font-weight: 500; }
+    .req-log-row .method.GET { color: var(--green); }
+    .req-log-row .method.POST { color: var(--accent); }
+    .req-log-row .method.DELETE { color: var(--red); }
+    .req-log-row .status { min-width: 28px; }
+    .req-log-row .status.ok { color: var(--green); }
+    .req-log-row .status.err { color: var(--red); }
+    .req-log-row .latency { min-width: 48px; text-align: right; color: var(--fg-3); }
+
+    /* ---- Chat area (agents page) ---- */
+    .chat-card {
+      background: var(--bg-1); border: 1px solid rgba(245,158,11,.2); border-radius: var(--radius);
+      padding: 12px 16px;
+    }
+    .chat-card .card-header { color: var(--orange); }
+    .chat-msg-user { border-left: 2px solid var(--orange-dim); padding-left: 8px; }
+    .chat-msg-assistant { border-left: 2px solid var(--fg-3); padding-left: 8px; }
+    .chat-input-area {
+      border-top: 1px solid rgba(245,158,11,.15);
+      padding-top: 8px;
+    }
+    .btn-orange { background: rgba(245,158,11,.15); border-color: rgba(245,158,11,.3); color: var(--orange); }
+    .btn-orange:hover { background: rgba(245,158,11,.25); }
+
+    /* ---- Agent event log ---- */
+    .event-log { max-height: 500px; overflow-y: auto; }
+    .event-row { font-family: var(--font-mono); font-size: 11px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+    .event-row.tool-call { border-left: 2px solid var(--accent); }
+    .event-row.tool-result-ok { border-left: 2px solid var(--green); }
+    .event-row.tool-result-err { border-left: 2px solid var(--red); }
+    .event-row.text-event { border-left: 2px solid var(--fg-3); }
+    .event-row.pending { background: rgba(234,179,8,.08); border-left: 2px solid var(--yellow); }
+    .event-row.error-event { background: rgba(239,68,68,.06); border-left: 2px solid var(--red); }
+
+    /* ---- Collapsible ---- */
+    .collapse-header {
+      display: flex; align-items: center; gap: 6px; cursor: pointer;
+      padding: 8px 0; font-family: var(--font-display); font-size: 13px; font-weight: 500; color: var(--fg-2);
+    }
+    .collapse-header:hover { color: var(--fg); }
+
+    /* ---- Copy button ---- */
+    .copy-btn {
+      display: inline-flex; align-items: center; gap: 2px;
+      padding: 1px 4px; border-radius: 2px; font-size: 9px;
+      font-family: var(--font-mono); cursor: pointer;
+      border: 1px solid var(--border); background: var(--bg-2); color: var(--fg-3);
+    }
+    .copy-btn:hover { color: var(--fg); border-color: var(--border-h); }
+
+    /* ---- Radio group ---- */
+    .radio-group { display: flex; gap: 0; }
+    .radio-group label {
+      padding: 4px 10px; font-size: 11px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--bg-2); color: var(--fg-2);
+      font-family: var(--font-body);
+    }
+    .radio-group label:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+    .radio-group label:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+    .radio-group label:not(:first-child) { border-left: none; }
+    .radio-group input[type="radio"] { display: none; }
+    .radio-group input[type="radio"]:checked + span { color: var(--accent); }
+
+    /* ---- Template card ---- */
+    .template-card {
+      background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 10px 12px; margin-bottom: 8px;
+    }
+    .template-card:hover { border-color: var(--border-h); }
+    .template-card .template-name { font-family: var(--font-display); font-size: 12px; font-weight: 500; color: var(--fg); }
+    .template-card .template-desc { font-size: 11px; color: var(--fg-2); margin: 4px 0; }
+
+    @media (max-width: 900px) {
+      .search-layout { grid-template-columns: 1fr; }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    }
+
+    /* ---- Onboarding Overlay ---- */
+    .onboarding-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,.7); backdrop-filter: blur(4px);
+      z-index: 300; display: flex; align-items: center; justify-content: center;
+    }
+    .onboarding-modal {
+      width: 580px; max-width: 90vw; max-height: 90vh; overflow-y: auto;
+      background: var(--bg-1); border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: 0 24px 48px rgba(0,0,0,.5);
+    }
+    .onboarding-header {
+      padding: 28px 32px 0; text-align: center;
+    }
+    .onboarding-header h2 {
+      font-family: var(--font-display); font-size: 22px; font-weight: 600; color: var(--fg); margin-bottom: 4px;
+    }
+    .onboarding-header p {
+      font-size: 13px; color: var(--fg-2); margin-top: 4px;
+    }
+    .onboarding-body {
+      padding: 20px 32px 24px;
+    }
+    .onboarding-footer {
+      padding: 14px 32px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .onboarding-dots {
+      display: flex; gap: 6px;
+    }
+    .onboarding-dots .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--bg-3);
+      cursor: pointer; transition: background .2s;
+    }
+    .onboarding-dots .dot.active { background: var(--accent); }
+    .onboarding-dots .dot.completed { background: var(--green); }
+    .onboarding-vp {
+      display: flex; align-items: flex-start; gap: 12px; padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .onboarding-vp:last-child { border-bottom: none; }
+    .onboarding-vp .vp-icon {
+      font-size: 20px; flex-shrink: 0; width: 32px; text-align: center; line-height: 1.4;
+    }
+    .onboarding-vp .vp-text strong {
+      font-family: var(--font-display); font-size: 13px; color: var(--fg); display: block; margin-bottom: 2px;
+    }
+    .onboarding-vp .vp-text span {
+      font-size: 12px; color: var(--fg-2);
+    }
+    .onboarding-tab-preview {
+      display: flex; gap: 4px; margin-bottom: 12px;
+    }
+    .onboarding-tab-btn {
+      flex: 1; padding: 8px 6px; border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--bg-2); color: var(--fg-2); font-size: 12px; font-family: var(--font-display);
+      cursor: pointer; text-align: center; transition: all .15s;
+    }
+    .onboarding-tab-btn:hover { border-color: var(--border-h); color: var(--fg); }
+    .onboarding-tab-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(59,130,246,.08); }
+    .onboarding-tab-desc {
+      background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 16px; font-size: 12px; color: var(--fg-2); line-height: 1.6; min-height: 80px;
+    }
+    .onboarding-tab-desc strong { color: var(--fg); font-family: var(--font-display); }
+    .onboarding-action {
+      background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 12px 14px; cursor: pointer; transition: all .15s;
+    }
+    .onboarding-action:hover { border-color: var(--accent); background: rgba(59,130,246,.05); }
+    .onboarding-action strong {
+      font-family: var(--font-display); font-size: 13px; color: var(--fg); display: block; margin-bottom: 2px;
+    }
+    .onboarding-action span { font-size: 11px; color: var(--fg-2); }
+  </style>
+</head>
+<body x-data="app()" x-init="init()">
+
+<!-- Onboarding Overlay -->
+<div x-show="showOnboarding" x-cloak class="onboarding-overlay" @keydown.escape.window="if(showOnboarding) skipOnboarding()">
+  <div class="onboarding-modal" @click.stop>
+
+    <!-- Step 1: Welcome -->
+    <template x-if="onboardingStep === 0">
+      <div>
+        <div class="onboarding-header">
+          <h2>Welcome to DeepData</h2>
+          <p>Your personal semantic search engine &amp; vector database</p>
+        </div>
+        <div class="onboarding-body">
+          <div class="onboarding-vp">
+            <div class="vp-icon">&#x1F50D;</div>
+            <div class="vp-text">
+              <strong>Semantic Search</strong>
+              <span>Find data by meaning, not just keywords. Ask questions in natural language.</span>
+            </div>
+          </div>
+          <div class="onboarding-vp">
+            <div class="vp-icon">&#x2699;</div>
+            <div class="vp-text">
+              <strong>Automatic Embeddings</strong>
+              <span>Insert text and it's automatically vectorized. No external setup needed.</span>
+            </div>
+          </div>
+          <div class="onboarding-vp">
+            <div class="vp-icon">&#x1F4AC;</div>
+            <div class="vp-text">
+              <strong>Chat with your Data</strong>
+              <span>Connect any LLM provider for RAG-powered conversations over your data.</span>
+            </div>
+          </div>
+          <div class="onboarding-vp">
+            <div class="vp-icon">&#x1F310;</div>
+            <div class="vp-text">
+              <strong>Full REST API</strong>
+              <span>Insert, query, and manage everything from anywhere via HTTP.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Step 2: Quick Tour -->
+    <template x-if="onboardingStep === 1">
+      <div x-data="{ tourTab: 'dashboard' }">
+        <div class="onboarding-header">
+          <h2>Quick Tour</h2>
+          <p>DeepData has 4 main sections. Click each to learn more.</p>
+        </div>
+        <div class="onboarding-body">
+          <div class="onboarding-tab-preview">
+            <button class="onboarding-tab-btn" :class="{ active: tourTab === 'dashboard' }" @click="tourTab = 'dashboard'">Dashboard</button>
+            <button class="onboarding-tab-btn" :class="{ active: tourTab === 'data' }" @click="tourTab = 'data'">Data</button>
+            <button class="onboarding-tab-btn" :class="{ active: tourTab === 'settings' }" @click="tourTab = 'settings'">Settings</button>
+            <button class="onboarding-tab-btn" :class="{ active: tourTab === 'chat' }" @click="tourTab = 'chat'">Chat</button>
+          </div>
+          <div class="onboarding-tab-desc">
+            <template x-if="tourTab === 'dashboard'">
+              <div><strong>Dashboard</strong> &#8212; Monitor your instance at a glance. See server health, index stats, record counts, and uptime. Run integrity checks and view cost tracking.</div>
+            </template>
+            <template x-if="tourTab === 'data'">
+              <div><strong>Data</strong> &#8212; Search your vectors semantically, browse stored records, and view individual entries with their metadata and similarity scores.</div>
+            </template>
+            <template x-if="tourTab === 'settings'">
+              <div><strong>Settings</strong> &#8212; Configure your DeepData instance. Manage indexes, adjust embedding settings, use bulk insert tools, and track costs.</div>
+            </template>
+            <template x-if="tourTab === 'chat'">
+              <div><strong>Chat</strong> &#8212; Have RAG-powered conversations with your data. Connect an LLM provider, then ask questions and get answers grounded in your stored knowledge.</div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Step 3: Get Started -->
+    <template x-if="onboardingStep === 2">
+      <div>
+        <div class="onboarding-header">
+          <h2>Get Started</h2>
+          <p>Pick an action to jump right in.</p>
+        </div>
+        <div class="onboarding-body" style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <div class="onboarding-action" @click="completeOnboarding(); navigateTo('data'); dataSection='search'">
+            <strong>&#x1F50D; Try a Search</strong>
+            <span>Run a semantic query on your data</span>
+          </div>
+          <div class="onboarding-action" @click="completeOnboarding(); navigateTo('settings')">
+            <strong>&#x2795; Insert Data</strong>
+            <span>Add records via the tools panel</span>
+          </div>
+          <div class="onboarding-action" @click="completeOnboarding(); navigateTo('chat')">
+            <strong>&#x1F4AC; Connect an LLM</strong>
+            <span>Set up RAG-powered chat</span>
+          </div>
+          <div class="onboarding-action" @click="completeOnboarding(); navigateTo('dashboard')">
+            <strong>&#x1F4CA; Explore Dashboard</strong>
+            <span>See your instance health &amp; stats</span>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Footer: dots + nav buttons -->
+    <div class="onboarding-footer">
+      <div class="onboarding-dots">
+        <template x-for="(s, i) in onboardingSteps" :key="s.id">
+          <div class="dot"
+               :class="{ active: i === onboardingStep, completed: i < onboardingStep }"
+               @click="onboardingStep = i"></div>
+        </template>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="btn btn-sm" style="color:var(--fg-3)" @click="skipOnboarding()">Skip</button>
+        <button class="btn btn-sm" x-show="onboardingStep > 0" @click="onboardingBack()">Back</button>
+        <button class="btn btn-sm btn-primary" @click="onboardingNext()" x-text="onboardingStep === onboardingSteps.length - 1 ? 'Done' : 'Next'"></button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Top Navigation -->
+<nav class="topnav">
+  <div class="topnav-brand">
+    <span class="status-dot" :class="health.ok ? 'online' : 'offline'"></span>
+    DeepData
+  </div>
+  <div class="topnav-tabs">
+    <template x-for="p in pages" :key="p.id">
+      <button class="topnav-tab" :class="{ active: page === p.id }" @click="navigateTo(p.id)" x-text="p.label"></button>
+    </template>
+  </div>
+  <div class="topnav-right">
+    <span class="badge badge-blue" x-text="mode.mode || 'local'" x-show="mode.mode"></span>
+    <span x-text="mode.embedder_model || mode.embedder_type || ''"></span>
+    <span x-show="mode.dimension" x-text="mode.dimension + 'd'"></span>
+  </div>
+</nav>
+
+<!-- Toast container -->
+<div class="toast-container">
+  <template x-for="(t, i) in toasts" :key="i">
+    <div class="toast" :class="t.type" x-text="t.msg" x-init="setTimeout(() => toasts.splice(i, 1), 3000)"></div>
+  </template>
+</div>
+
+<!-- Main content -->
+<div class="main">
+
+  <!-- ===== DASHBOARD ===== -->
+  <div x-show="page === 'dashboard'" x-cloak>
+    <!-- Row 1: Status strip -->
+    <div class="stat-strip mb-10">
+      <span><span class="val" x-text="health.ok ? 'online' : 'offline'" :class="health.ok ? 'text-green' : 'text-red'"></span></span>
+      <span x-show="mode.mode"><span class="val" x-text="mode.mode"></span> mode</span>
+      <span x-show="mode.embedder_type">embedder: <span class="val" x-text="mode.embedder_type"></span></span>
+      <span x-show="mode.embedder_model">model: <span class="val" x-text="mode.embedder_model"></span></span>
+      <span x-show="mode.dimension">dim: <span class="val" x-text="mode.dimension"></span></span>
+      <span x-show="uptime">uptime: <span class="val" x-text="uptime"></span></span>
+    </div>
+
+    <!-- Row 2: Stats strip -->
+    <div class="stat-strip mb-12">
+      <span><span class="val" x-text="fmt(health.active || 0)"></span> vectors</span>
+      <span><span class="val" x-text="(health.collections || []).length"></span> collections</span>
+      <span><span class="val" x-text="fmtBytes(health.index_bytes || 0)"></span> index</span>
+      <span><span class="val" x-text="fmtBytes(health.wal_bytes || 0)"></span> WAL</span>
+      <span><span class="val" x-text="fmt(health.deleted || 0)"></span> deleted</span>
+      <span>hnsw: <span class="val" x-text="fmt(health.hnsw_ids || 0)"></span></span>
+    </div>
+
+    <!-- Row 3: Three-column grid -->
+    <div class="grid-3 mb-10">
+      <!-- Collections mini-table -->
+      <div class="card">
+        <div class="card-header">Collections</div>
+        <div class="scroll-y">
+          <table class="tbl">
+            <thead><tr><th>Name</th><th>Vectors</th><th></th></tr></thead>
+            <tbody>
+              <template x-for="c in (health.collections || [])" :key="c.name">
+                <tr>
+                  <td x-text="c.name"></td>
+                  <td x-text="fmt(c.vector_count)"></td>
+                  <td><button class="btn btn-sm" @click="page='data'; dataSection='search'; searchCollection=c.name">search</button></td>
+                </tr>
+              </template>
+              <tr x-show="!(health.collections||[]).length"><td colspan="3" class="text-muted">no collections</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Indexes -->
+      <div class="card">
+        <div class="card-header">Indexes</div>
+        <div class="scroll-y">
+          <table class="tbl">
+            <thead><tr><th>Collection</th><th>Type</th><th>Details</th></tr></thead>
+            <tbody>
+              <template x-for="[name, idx] in Object.entries(indexes)" :key="name">
+                <tr>
+                  <td x-text="name"></td>
+                  <td><span class="badge badge-purple" x-text="idx.type"></span></td>
+                  <td class="text-muted text-xs" x-text="indexDetail(idx.stats)"></td>
+                </tr>
+              </template>
+              <tr x-show="!Object.keys(indexes).length"><td colspan="3" class="text-muted">no indexes</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Storage & Health -->
+      <div class="card">
+        <div class="card-header">Storage & Health</div>
+        <table class="tbl">
+          <tbody>
+            <tr><td class="text-muted" style="width:100px">Snapshot</td><td x-text="fmtBytes(health.index_bytes || 0)"></td></tr>
+            <tr><td class="text-muted">Snap age</td><td x-text="fmtAge(health.snapshot_age_ms)"></td></tr>
+            <tr><td class="text-muted">WAL</td><td x-text="fmtBytes(health.wal_bytes || 0)"></td></tr>
+            <tr><td class="text-muted">WAL age</td><td x-text="fmtAge(health.wal_age_ms)"></td></tr>
+            <tr><td class="text-muted">Checksum</td><td class="mono text-xs" x-text="(health.checksum || '').substring(0, 12) || '-'"></td></tr>
+            <tr>
+              <td class="text-muted">Integrity</td>
+              <td>
+                <span x-show="dashIntegrityResult === null" class="text-muted text-xs">checking...</span>
+                <span x-show="dashIntegrityResult !== null" class="text-xs" :class="dashIntegrityResult?.ok ? 'text-green' : 'text-red'" x-text="dashIntegrityResult?.ok ? 'OK' : 'FAIL'"></span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Row 4: Two-column grid -->
+    <div class="grid-2 mb-10">
+      <!-- Recent Activity -->
+      <div class="card">
+        <div class="card-header">
+          <span>Recent Activity</span>
+          <span class="mono text-xs text-muted" x-text="requestLog.length + ' requests'"></span>
+        </div>
+        <div class="scroll-y" style="max-height: 200px">
+          <template x-for="(r, i) in requestLog.slice(-15).reverse()" :key="i">
+            <div class="req-log-row">
+              <span class="method" :class="r.method" x-text="r.method"></span>
+              <span class="truncate" style="flex:1" x-text="r.path"></span>
+              <span class="status" :class="r.ok ? 'ok' : 'err'" x-text="r.status"></span>
+              <span class="latency" x-text="r.ms + 'ms'"></span>
+            </div>
+          </template>
+          <div x-show="!requestLog.length" class="text-muted text-xs" style="padding:8px 0">No requests yet</div>
+        </div>
+      </div>
+
+      <!-- Cost Summary -->
+      <div class="card">
+        <div class="card-header">Cost Summary</div>
+        <table class="tbl">
+          <tbody>
+            <tr><td class="text-muted" style="width:100px">Tokens</td><td x-text="fmt(dashCosts.session?.tokens || 0)"></td></tr>
+            <tr><td class="text-muted">Cost</td><td x-text="dashCosts.mode === 'local' ? 'free' : '$' + (dashCosts.session?.cost || 0).toFixed(4)"></td></tr>
+            <tr><td class="text-muted">Operations</td><td x-text="fmt(dashCosts.session?.ops || 0)"></td></tr>
+            <tr><td class="text-muted">Mode</td><td><span class="badge" :class="dashCosts.mode === 'local' ? 'badge-green' : 'badge-blue'" x-text="dashCosts.mode || '-'"></span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Row 5: Two-column grid -->
+    <div class="grid-2 mb-10">
+      <!-- Feedback Snapshot -->
+      <div class="card">
+        <div class="card-header">Feedback Snapshot</div>
+        <div class="stat-strip">
+          <span>interactions: <span class="val" x-text="fmt(dashFeedback.total_interactions || 0)"></span></span>
+          <span>feedback: <span class="val" x-text="fmt(dashFeedback.total_feedback || 0)"></span></span>
+          <span>boosts: <span class="val" x-text="fmt(dashFeedback.total_boosts || 0)"></span></span>
+          <span>patterns: <span class="val" x-text="fmt(dashFeedback.total_query_patterns || 0)"></span></span>
+        </div>
+        <div x-show="!dashFeedback.enabled && dashFeedback.enabled !== undefined" class="text-muted text-xs mt-8">feedback system disabled</div>
+      </div>
+
+      <!-- Quick Reference -->
+      <div class="card">
+        <div class="card-header">Quick Reference</div>
+        <div class="mono text-xs text-muted mb-8">API: <span class="val" x-text="apiBase"></span></div>
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <div class="flex items-center justify-between">
+            <code class="mono text-xs text-muted" x-text="'curl ' + apiBase + '/health'"></code>
+            <button class="copy-btn" @click="copyText('curl ' + apiBase + '/health')">copy</button>
+          </div>
+          <div class="flex items-center justify-between">
+            <code class="mono text-xs text-muted">curl -X POST <span x-text="apiBase"></span>/query -d '{"text":"hello","top_k":5}'</code>
+            <button class="copy-btn" @click="copyText('curl -X POST ' + apiBase + '/query -d \'{ &quot;text&quot;:&quot;hello&quot;,&quot;top_k&quot;:5}\'')">copy</button>
+          </div>
+          <div class="flex items-center justify-between">
+            <code class="mono text-xs text-muted">curl -X POST <span x-text="apiBase"></span>/insert -d '{"text":"doc"}'</code>
+            <button class="copy-btn" @click="copyText('curl -X POST ' + apiBase + '/insert -d \'{ &quot;text&quot;:&quot;doc&quot;,&quot;collection&quot;:&quot;default&quot;}\'')">copy</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== DATA (Search + Explorer + Collections) ===== -->
+  <div x-show="page === 'data'" x-cloak>
+    <!-- Sub-nav -->
+    <div class="flex gap-8 mb-10">
+      <button class="btn btn-sm" :class="{ 'btn-primary': dataSection === 'search' }" @click="dataSection = 'search'">Search</button>
+      <button class="btn btn-sm" :class="{ 'btn-primary': dataSection === 'explorer' }" @click="dataSection = 'explorer'; loadDocs()">Explorer</button>
+      <button class="btn btn-sm" :class="{ 'btn-primary': dataSection === 'collections' }" @click="dataSection = 'collections'; loadV2Collections()">Collections</button>
+    </div>
+
+  <!-- Search sub-section -->
+  <div x-show="dataSection === 'search'" x-cloak>
+    <div class="search-layout">
+      <!-- Query panel -->
+      <div class="flex flex-col gap-10">
+        <div class="card">
+          <div class="form-group mb-8">
+            <label>Query</label>
+            <textarea class="textarea" x-model="searchQuery" placeholder="Enter search query..." rows="3"></textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label>Collection</label>
+              <select class="select" x-model="searchCollection">
+                <option value="">All (default)</option>
+                <template x-for="c in (health.collections || [])" :key="c.name">
+                  <option :value="c.name" x-text="c.name + ' (' + c.vector_count + ')'"></option>
+                </template>
+              </select>
+            </div>
+            <div class="form-group" style="width:70px">
+              <label>Top K</label>
+              <input class="input" type="number" x-model.number="searchTopK" min="1" max="100">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label>Mode</label>
+              <select class="select" x-model="searchMode">
+                <option value="vector">Vector</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="keyword">Keyword</option>
+              </select>
+            </div>
+            <div class="form-group" style="width:70px">
+              <label>Alpha</label>
+              <input class="input" type="number" x-model.number="searchAlpha" min="0" max="1" step="0.1">
+            </div>
+          </div>
+
+          <!-- Filters (collapsed) -->
+          <div class="mt-8">
+            <button class="btn btn-sm" @click="showFilters = !showFilters" x-text="showFilters ? '- filters' : '+ filters'"></button>
+            <div x-show="showFilters" class="mt-8">
+              <div class="form-group mb-8">
+                <label>Metadata filter (JSON)</label>
+                <input class="input" x-model="searchMeta" placeholder='{"key": "value"}'>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-8">
+            <button class="btn btn-primary" @click="doSearch()" :disabled="searching">
+              <span x-show="!searching">Search</span>
+              <span x-show="searching">...</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Results panel -->
+      <div class="card" style="min-height: 200px">
+        <div class="card-header">
+          <span>Results</span>
+          <span class="mono text-xs text-muted" x-show="searchLatency">
+            <span x-text="searchResults.length"></span> results in <span x-text="searchLatency"></span>ms
+          </span>
+        </div>
+        <div x-show="!searchResults.length" class="text-muted text-xs" style="padding: 20px 0; text-align: center;">
+          Run a query to see results
+        </div>
+        <div class="scroll-y" style="max-height: 600px">
+          <template x-for="(r, i) in searchResults" :key="i">
+            <div>
+              <div class="result-row flex items-center" @click="r._expanded = !r._expanded">
+                <span class="text-muted mono" style="min-width:24px">#<span x-text="i+1"></span></span>
+                <span class="score" x-text="r.score?.toFixed(4) || '-'"></span>
+                <span class="mono text-xs truncate" style="max-width:120px" x-text="r.id || r.doc_id || ''"></span>
+                <span class="text-muted text-xs truncate" style="margin-left:8px; flex:1" x-text="(r.text || r.document || '').substring(0, 80)"></span>
+              </div>
+              <div x-show="r._expanded" class="result-expanded">
+                <div class="mb-8"><strong class="text-xs text-muted">ID:</strong> <span class="mono" x-text="r.id || r.doc_id"></span></div>
+                <div class="mb-8 pre-wrap" x-text="r.text || r.document || ''"></div>
+                <div x-show="r.metadata" class="mono text-xs text-muted pre-wrap" x-text="JSON.stringify(r.metadata, null, 2)"></div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Explorer sub-section -->
+  <div x-show="dataSection === 'explorer'" x-cloak>
+    <div class="card">
+      <div class="card-header">
+        <div class="flex items-center gap-8">
+          <span>Documents</span>
+          <div class="form-inline">
+            <input class="input" style="width:150px" x-model="explorerCollection" placeholder="collection">
+            <button class="btn btn-sm" @click="loadDocs()">load</button>
+          </div>
+        </div>
+        <div class="pagination">
+          <button class="btn btn-sm" @click="explorerOffset = Math.max(0, explorerOffset - explorerLimit); loadDocs()" :disabled="explorerOffset === 0">&lt;</button>
+          <span x-text="(explorerOffset+1) + '-' + Math.min(explorerOffset+explorerLimit, explorerTotal) + ' of ' + fmt(explorerTotal)"></span>
+          <button class="btn btn-sm" @click="explorerOffset += explorerLimit; loadDocs()" :disabled="explorerOffset + explorerLimit >= explorerTotal">&gt;</button>
+        </div>
+      </div>
+      <table class="tbl">
+        <thead><tr><th style="width:200px">ID</th><th>Document</th><th style="width:100px">Collection</th><th style="width:80px"></th></tr></thead>
+        <tbody>
+          <template x-for="(d, i) in explorerDocs" :key="i">
+            <tr>
+              <td class="truncate" style="max-width:200px" x-text="d.id"></td>
+              <td>
+                <div class="truncate" style="max-width:500px; cursor:pointer" @click="d._expanded = !d._expanded" x-text="d.text || d.document || '-'"></div>
+                <div x-show="d._expanded" class="mt-8 pre-wrap text-xs text-muted">
+                  <div x-text="d.text || d.document || ''"></div>
+                  <div x-show="d.metadata" class="mt-8 mono" x-text="JSON.stringify(d.metadata, null, 2)"></div>
+                  <div class="mt-8 flex gap-8">
+                    <button class="btn btn-sm btn-danger" @click="deleteDoc(d.id, explorerCollection)">delete</button>
+                    <button class="btn btn-sm" @click="searchQuery = (d.text||d.document||'').substring(0,200); page='data'; dataSection='search'">similar</button>
+                  </div>
+                </div>
+              </td>
+              <td class="text-muted" x-text="d.collection || explorerCollection || '-'"></td>
+              <td><button class="btn btn-sm" @click="d._expanded = !d._expanded" x-text="d._expanded ? 'close' : 'view'"></button></td>
+            </tr>
+          </template>
+          <tr x-show="!explorerDocs.length"><td colspan="4" class="text-muted">No documents</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Collections sub-section -->
+  <div x-show="dataSection === 'collections'" x-cloak>
+    <!-- Create form -->
+    <div class="card mb-10">
+      <div class="card-header">Create Collection</div>
+      <div class="form-row">
+        <div class="form-group" style="flex:1">
+          <label>Name</label>
+          <input class="input" x-model="newCollName" placeholder="my-collection">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label>Fields (JSON array)</label>
+          <input class="input" x-model="newCollFields" placeholder='[{"name":"text","type":"text"},{"name":"vec","type":"vector","dimension":384}]'>
+        </div>
+        <button class="btn btn-primary" @click="createCollection()" style="margin-top: 14px;">Create</button>
+      </div>
+    </div>
+
+    <!-- V1 Collections (from health) -->
+    <div class="card mb-10">
+      <div class="card-header">V1 Collections</div>
+      <table class="tbl">
+        <thead><tr><th>Name</th><th>Vectors</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="c in (health.collections || [])" :key="c.name">
+            <tr>
+              <td x-text="c.name"></td>
+              <td x-text="fmt(c.vector_count)"></td>
+              <td class="actions">
+                <button class="btn btn-sm" @click="page='data'; dataSection='search'; searchCollection=c.name">search</button>
+                <button class="btn btn-sm" @click="page='data'; dataSection='explorer'; explorerCollection=c.name; loadDocs()">browse</button>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="!(health.collections||[]).length"><td colspan="3" class="text-muted">none</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- V2 Collections -->
+    <div class="card">
+      <div class="card-header">
+        <span>V2 Collections</span>
+        <button class="btn btn-sm" @click="loadV2Collections()">refresh</button>
+      </div>
+      <table class="tbl">
+        <thead><tr><th>Name</th><th>Type</th><th>Docs</th><th>Fields</th><th></th></tr></thead>
+        <tbody>
+          <template x-for="c in v2Collections" :key="c.name">
+            <tr>
+              <td x-text="c.name"></td>
+              <td><span class="badge badge-blue">v2</span></td>
+              <td x-text="fmt(c.doc_count || c.document_count || 0)"></td>
+              <td class="text-muted text-xs" x-text="(c.fields || []).map(f => f.name).join(', ') || '-'"></td>
+              <td class="actions">
+                <button class="btn btn-sm" @click="page='data'; dataSection='search'; searchCollection=c.name">search</button>
+                <template x-if="!c._confirmDelete">
+                  <button class="btn btn-sm btn-danger" @click="c._confirmDelete = true">delete</button>
+                </template>
+                <template x-if="c._confirmDelete">
+                  <span class="flex gap-8">
+                    <button class="btn btn-sm btn-danger" @click="deleteCollection(c.name)">confirm</button>
+                    <button class="btn btn-sm" @click="c._confirmDelete = false">cancel</button>
+                  </span>
+                </template>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="!v2Collections.length"><td colspan="5" class="text-muted">none</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  </div><!-- end Data page -->
+
+  <!-- ===== SETTINGS (absorbs Costs + Feedback) ===== -->
+  <div x-show="page === 'settings'" x-cloak>
+
+  <!-- Costs (collapsed) -->
+  <div class="card mb-10">
+    <div class="collapse-header" @click="showCosts = !showCosts; if (showCosts) loadCosts()">
+      <span>></span>
+      Cost Tracking
+      <span class="text-xs text-muted" x-text="'$' + (costs.session?.cost || 0).toFixed(4) + ' session'"></span>
+    </div>
+    <div x-show="showCosts" x-cloak>
+      <div class="stat-strip" style="margin:8px 0">
+        <span>tokens: <span class="val" x-text="fmt(costs.session?.tokens || 0)"></span></span>
+        <span>cost: <span class="val" x-text="'$' + (costs.session?.cost || 0).toFixed(4)"></span></span>
+        <span>operations: <span class="val" x-text="fmt(costs.session?.ops || 0)"></span></span>
+        <span x-show="costs.mode === 'local'" class="text-muted">cost tracking: local (free)</span>
+      </div>
+      <div class="card-header" style="margin-top:8px">
+        <span>Daily Breakdown</span>
+        <a class="btn btn-sm" :href="apiBase + '/api/costs/export'" target="_blank">export CSV</a>
+      </div>
+      <table class="tbl">
+        <thead><tr><th>Date</th><th>Ops</th><th>Tokens</th><th>Cost</th></tr></thead>
+        <tbody>
+          <template x-for="d in dailyCosts" :key="d.date">
+            <tr>
+              <td x-text="d.date"></td>
+              <td x-text="fmt(d.ops || d.operations || 0)"></td>
+              <td x-text="fmt(d.tokens || 0)"></td>
+              <td x-text="'$' + (d.cost || 0).toFixed(4)"></td>
+            </tr>
+          </template>
+          <tr x-show="!dailyCosts.length"><td colspan="4" class="text-muted">No cost data</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Feedback (collapsed) -->
+  <div class="card mb-10">
+    <div class="collapse-header" @click="showFeedback = !showFeedback; if (showFeedback) loadFeedbackStats()">
+      <span>></span>
+      Feedback
+      <span class="text-xs text-muted" x-text="fmt(feedbackStats.total_feedback || 0) + ' total'"></span>
+    </div>
+    <div x-show="showFeedback" x-cloak>
+      <div class="stat-strip" style="margin:8px 0">
+        <span>interactions: <span class="val" x-text="fmt(feedbackStats.total_interactions || 0)"></span></span>
+        <span>feedback: <span class="val" x-text="fmt(feedbackStats.total_feedback || 0)"></span></span>
+        <span>boosts: <span class="val" x-text="fmt(feedbackStats.total_boosts || 0)"></span></span>
+        <span>patterns: <span class="val" x-text="fmt(feedbackStats.total_query_patterns || 0)"></span></span>
+        <span x-show="!feedbackStats.enabled" class="text-muted">feedback: disabled</span>
+      </div>
+      <div class="grid-2" style="margin-top:8px">
+        <!-- Submit feedback -->
+        <div class="card">
+          <div class="card-header">Submit Feedback</div>
+          <div class="form-group mb-8">
+            <label>Interaction ID</label>
+            <input class="input" x-model="fbInteractionId" placeholder="interaction-id">
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label>Type</label>
+              <select class="select" x-model="fbType">
+                <option value="natural">Natural</option>
+                <option value="explicit">Explicit</option>
+                <option value="implicit">Implicit</option>
+              </select>
+            </div>
+            <div class="form-group" style="width:70px">
+              <label>Rating</label>
+              <input class="input" type="number" x-model.number="fbRating" min="-1" max="1" step="0.1">
+            </div>
+          </div>
+          <div class="form-group mb-8">
+            <label>Text (optional)</label>
+            <textarea class="textarea" x-model="fbText" rows="2" placeholder="Feedback text..."></textarea>
+          </div>
+          <button class="btn btn-primary" @click="submitFeedback()">Submit</button>
+        </div>
+
+        <!-- Record interaction -->
+        <div class="card">
+          <div class="card-header">Record Interaction</div>
+          <div class="form-group mb-8">
+            <label>Query</label>
+            <input class="input" x-model="intQuery" placeholder="user query">
+          </div>
+          <div class="form-group mb-8">
+            <label>Result IDs (comma-separated)</label>
+            <input class="input" x-model="intResults" placeholder="id1, id2, id3">
+          </div>
+          <div class="form-group mb-8">
+            <label>Collection</label>
+            <input class="input" x-model="intCollection" placeholder="default">
+          </div>
+          <button class="btn btn-primary" @click="recordInteraction()">Record</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+    <div class="grid-2 mb-10">
+      <!-- Server config -->
+      <div class="card">
+        <div class="card-header">Server Config</div>
+        <table class="tbl">
+          <tbody>
+            <tr><td class="text-muted" style="width:120px">Mode</td><td x-text="mode.mode || '-'"></td></tr>
+            <tr><td class="text-muted">Embedder</td><td x-text="mode.embedder_type || '-'"></td></tr>
+            <tr><td class="text-muted">Model</td><td x-text="mode.embedder_model || '-'"></td></tr>
+            <tr><td class="text-muted">Dimension</td><td x-text="mode.dimension || '-'"></td></tr>
+            <tr><td class="text-muted">Cost/1M tok</td><td x-text="mode.cost_per_1m_token ? '$' + mode.cost_per_1m_token : 'free'"></td></tr>
+            <tr><td class="text-muted">Data dir</td><td x-text="mode.data_directory || '-'"></td></tr>
+            <tr><td class="text-muted">Pro</td><td x-text="mode.is_pro ? 'yes' : 'no'"></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Maintenance -->
+      <div class="card">
+        <div class="card-header">Maintenance</div>
+        <div class="flex flex-col gap-8">
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-muted">Run integrity check</span>
+            <button class="btn btn-sm" @click="runIntegrity()" :disabled="integrityRunning">
+              <span x-text="integrityRunning ? 'running...' : 'check'"></span>
+            </button>
+          </div>
+          <div x-show="integrityResult !== null" class="mono text-xs" :class="integrityResult?.ok ? 'text-green' : 'text-red'" x-text="integrityResult?.ok ? 'OK' : 'FAILED: ' + (integrityResult?.error || 'unknown')"></div>
+
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-muted">Compact storage</span>
+            <button class="btn btn-sm" @click="runCompact()" :disabled="compactRunning">
+              <span x-text="compactRunning ? 'running...' : 'compact'"></span>
+            </button>
+          </div>
+          <div x-show="compactResult !== null" class="mono text-xs text-green" x-text="compactResult"></div>
+
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-muted">Export snapshot</span>
+            <a class="btn btn-sm" :href="apiBase + '/export'" target="_blank">download</a>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-muted">Import snapshot</span>
+            <div class="flex gap-8">
+              <input type="file" id="importFile" style="display:none" @change="importSnapshot($event)">
+              <button class="btn btn-sm" @click="document.getElementById('importFile').click()" :disabled="importRunning">
+                <span x-text="importRunning ? 'importing...' : 'import'"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Index management -->
+    <div class="card mb-10">
+      <div class="card-header">
+        <span>Index Management</span>
+        <button class="btn btn-sm" @click="loadIndexes()">refresh</button>
+      </div>
+      <table class="tbl mb-8">
+        <thead><tr><th>Collection</th><th>Type</th><th>Stats</th></tr></thead>
+        <tbody>
+          <template x-for="[name, idx] in Object.entries(indexes)" :key="name">
+            <tr>
+              <td x-text="name"></td>
+              <td><span class="badge badge-purple" x-text="idx.type"></span></td>
+              <td class="text-muted text-xs mono" x-text="indexDetail(idx.stats)"></td>
+            </tr>
+          </template>
+          <tr x-show="!Object.keys(indexes).length"><td colspan="3" class="text-muted">no indexes</td></tr>
+        </tbody>
+      </table>
+      <div class="form-row">
+        <div class="form-group" style="flex:1">
+          <label>Collection</label>
+          <input class="input" x-model="newIdxCollection" placeholder="default">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label>Index Type</label>
+          <select class="select" x-model="newIdxType">
+            <option value="hnsw">HNSW</option>
+            <option value="ivf">IVF</option>
+            <option value="ivf_binary">IVF Binary</option>
+            <option value="binary">Binary</option>
+            <option value="flat">Flat</option>
+            <option value="diskann">DiskANN</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:1">
+          <label>Config (JSON)</label>
+          <input class="input" x-model="newIdxConfig" placeholder="{}">
+        </div>
+        <button class="btn btn-primary" @click="createIndex()" style="margin-top:14px">Create</button>
+      </div>
+    </div>
+
+    <!-- Embedder Configuration -->
+    <div class="card mb-10">
+      <div class="collapse-header" @click="showEmbedderConfig = !showEmbedderConfig">
+        <span>></span>
+        Embedder Configuration
+        <span class="text-xs text-muted" x-text="'current: ' + (embType || mode.embedder_type || '-') + ' / ' + (embModel || mode.embedder_model || '-') + ' (dim=' + (embDim || mode.dimension || '?') + ')'"></span>
+      </div>
+      <div x-show="showEmbedderConfig" x-cloak>
+        <div class="form-row" style="margin-top:8px">
+          <div class="form-group" style="flex:1">
+            <label>Type</label>
+            <select class="select" x-model="embType">
+              <option value="ollama">Ollama</option>
+              <option value="openai">OpenAI</option>
+              <option value="hash">Hash (fallback)</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1" x-show="embType === 'ollama'">
+            <label>Model</label>
+            <input class="input" x-model="embModel" placeholder="nomic-embed-text">
+          </div>
+          <div class="form-group" style="flex:1" x-show="embType === 'ollama'">
+            <label>Ollama URL</label>
+            <input class="input" x-model="embUrl" placeholder="http://localhost:11434">
+          </div>
+          <div class="form-group" style="flex:1" x-show="embType === 'openai'">
+            <label>OpenAI Key</label>
+            <input class="input" type="password" x-model="embKey" placeholder="sk-...">
+          </div>
+          <div class="form-group" style="flex:1" x-show="embType === 'hash'">
+            <label>Dimension</label>
+            <input class="input" x-model="embModel" placeholder="384">
+          </div>
+        </div>
+        <div class="flex items-center gap-8" style="margin-top:8px">
+          <button class="btn btn-primary" @click="saveEmbedderConfig()" :disabled="embSaving">
+            <span x-text="embSaving ? 'testing & saving...' : 'Apply'"></span>
+          </button>
+          <div x-show="embTestResult" class="text-xs" :class="embTestResult?.ok ? 'text-green' : 'text-red'" x-text="embTestResult?.msg"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Keys -->
+    <div class="card mb-10">
+      <div class="collapse-header" @click="showApiKeys = !showApiKeys">
+        <span>></span>
+        LLM API Keys
+        <span class="text-xs text-muted" x-text="Object.entries(apiKeysSet).filter(([k,v]) => v).map(([k]) => k).join(', ') || 'none set'"></span>
+      </div>
+      <div x-show="showApiKeys" x-cloak>
+        <p class="text-xs text-muted" style="margin:8px 0">Keys are stored in server memory only (not persisted to disk). Enter a value to set/update a key.</p>
+        <div class="grid-2" style="gap:8px">
+          <template x-for="provider in ['openai', 'deepseek', 'anthropic', 'openrouter', 'cerebras']" :key="provider">
+            <div class="flex items-center gap-8">
+              <span class="mono text-xs" style="width:90px; text-transform:capitalize" x-text="provider"></span>
+              <input class="input" type="password" style="flex:1" x-model="apiKeyInputs[provider]" :placeholder="apiKeysSet[provider] ? '••••••• (set)' : 'not set'">
+              <span class="status-dot" :class="apiKeysSet[provider] ? 'online' : 'offline'" style="margin-left:4px"></span>
+            </div>
+          </template>
+        </div>
+        <div style="margin-top:8px">
+          <button class="btn btn-primary" @click="saveApiKeys()" :disabled="apiKeysSaving">
+            <span x-text="apiKeysSaving ? 'saving...' : 'Save Keys'"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection info -->
+    <div class="card mb-10">
+      <div class="card-header">Connection</div>
+      <div class="mono text-xs text-muted mb-8">API Base: <span class="val" x-text="apiBase"></span></div>
+      <div class="playground-output">curl <span x-text="apiBase"></span>/health
+curl <span x-text="apiBase"></span>/api/mode
+curl -X POST <span x-text="apiBase"></span>/query -d '{"text":"hello","top_k":5}'
+curl -X POST <span x-text="apiBase"></span>/insert -d '{"id":"doc1","text":"hello world","collection":"default"}'
+curl <span x-text="apiBase"></span>/scroll?collection=default&limit=50
+curl -X POST <span x-text="apiBase"></span>/api/embed -d '{"text":"hello"}'</div>
+    </div>
+
+    <!-- Tools (moved from old Agents page) -->
+    <div class="card">
+      <div class="collapse-header" @click="showTools = !showTools">
+        <span x-text="showTools ? '>' : '>'"></span>
+        Tools
+        <span class="text-xs text-muted">(embed, extract, batch insert)</span>
+      </div>
+      <div x-show="showTools" x-cloak>
+        <div class="grid-2 mb-10">
+          <!-- Embed playground -->
+          <div style="padding:8px 0">
+            <div class="card-header">Embed Playground</div>
+            <div class="form-group mb-8">
+              <label>Text</label>
+              <textarea class="textarea" x-model="embedText" rows="2" placeholder="Paste text to embed..."></textarea>
+            </div>
+            <button class="btn btn-primary mb-8" @click="runEmbed()" :disabled="embedRunning">
+              <span x-text="embedRunning ? 'embedding...' : 'Embed'"></span>
+            </button>
+            <div x-show="embedResult" class="playground-output" x-text="embedResult"></div>
+          </div>
+
+          <!-- Extract playground -->
+          <div style="padding:8px 0">
+            <div class="card-header">Extract Playground</div>
+            <div class="form-group mb-8">
+              <label>Text</label>
+              <textarea class="textarea" x-model="extractText" rows="2" placeholder="Paste text to extract entities..."></textarea>
+            </div>
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label>Types (comma-sep)</label>
+                <input class="input" x-model="extractTypes" placeholder="person, organization, location">
+              </div>
+            </div>
+            <button class="btn btn-primary mb-8" @click="runExtract()" :disabled="extractRunning">
+              <span x-text="extractRunning ? 'extracting...' : 'Extract'"></span>
+            </button>
+            <div x-show="extractResult" class="playground-output" x-text="extractResult"></div>
+          </div>
+        </div>
+
+        <!-- Batch insert -->
+        <div style="padding:8px 0; border-top: 1px solid var(--border);">
+          <div class="card-header">Batch Insert</div>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label>Collection</label>
+              <input class="input" x-model="batchCollection" placeholder="default">
+            </div>
+          </div>
+          <div class="form-group mb-8">
+            <label>Document text</label>
+            <textarea class="textarea" x-model="batchText" rows="3" placeholder="Document text..."></textarea>
+          </div>
+          <div class="form-group mb-8">
+            <label>ID (optional)</label>
+            <input class="input" x-model="batchId" placeholder="auto-generated if empty">
+          </div>
+          <div class="form-group mb-8">
+            <label>Metadata (JSON)</label>
+            <input class="input" x-model="batchMeta" placeholder='{"source": "manual"}'>
+          </div>
+          <button class="btn btn-primary" @click="batchInsert()">Insert</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Welcome Tour -->
+    <div class="card mb-10" style="display:flex; align-items:center; justify-content:space-between;">
+      <div>
+        <div style="font-family:var(--font-display); font-size:13px; font-weight:500; color:var(--fg);">Welcome Tour</div>
+        <div style="font-size:11px; color:var(--fg-2); margin-top:2px;">Re-watch the onboarding walkthrough</div>
+      </div>
+      <button class="btn btn-sm btn-primary" @click="restartOnboarding()">Show Welcome Tour</button>
+    </div>
+  </div>
+
+  <!-- ===== CHAT ===== -->
+  <div x-show="page === 'chat'" x-cloak>
+
+    <!-- Section 1: LLM Provider Connection -->
+    <div class="card mb-10">
+      <div class="flex items-center gap-8" style="flex-wrap: wrap;">
+        <span class="text-xs text-muted" style="white-space:nowrap">Provider:</span>
+        <select class="select" style="width:160px" x-model="llmProvider" @change="onLlmProviderChange()">
+          <option value="ollama">Ollama</option>
+          <option value="atlasd">Atlas (atlasd)</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="cerebras">Cerebras</option>
+          <option value="openai">OpenAI</option>
+          <option value="custom">Custom URL</option>
+        </select>
+        <input class="input" style="width:280px" x-model="llmUrl" placeholder="http://localhost:11434/v1">
+        <div class="form-group" x-show="llmNeedsKey" style="width:200px">
+          <input class="input" type="password" x-model="llmApiKey" placeholder="API key">
+        </div>
+        <button class="btn btn-sm btn-primary" @click="connectLlm()" :disabled="llmConnecting">
+          <span x-text="llmConnecting ? '...' : (llmConnected ? 'Reconnect' : 'Connect')"></span>
+        </button>
+        <span class="status-dot" :class="llmConnected ? 'online' : 'offline'"></span>
+        <template x-if="llmConnected">
+          <div class="flex items-center gap-8">
+            <select class="select" style="width:240px" x-model="llmModel">
+              <template x-for="m in llmModels" :key="m">
+                <option :value="m" x-text="m"></option>
+              </template>
+            </select>
+            <span class="text-xs text-muted" x-text="llmModels.length + ' models'"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Not connected -->
+    <template x-if="!llmConnected">
+      <div>
+        <div class="card" style="text-align:center; padding: 40px 20px;">
+          <div class="text-muted mb-10">Connect an LLM to chat with your database</div>
+          <div class="text-xs text-dim">Pick a provider above, or point to any OpenAI-compatible endpoint</div>
+        </div>
+
+        <!-- Provider quick-start cards -->
+        <div class="grid-3 mt-12">
+          <div class="card" style="cursor:pointer" @click="llmProvider='ollama'; onLlmProviderChange(); connectLlm()">
+            <div class="card-header">Ollama (Local)</div>
+            <div class="text-xs text-muted">localhost:11434 — free, private, no key needed</div>
+            <div class="mono text-xs mt-8 text-dim">ollama serve</div>
+          </div>
+          <div class="card" style="cursor:pointer" @click="llmProvider='atlasd'; onLlmProviderChange(); connectLlm()">
+            <div class="card-header">Atlas (Local)</div>
+            <div class="text-xs text-muted">localhost:11435 — your atlas-runtime, no key needed</div>
+            <div class="mono text-xs mt-8 text-dim">atlasd serve</div>
+          </div>
+          <div class="card" style="cursor:pointer" @click="llmProvider='openrouter'; onLlmProviderChange()">
+            <div class="card-header">OpenRouter (Cloud)</div>
+            <div class="text-xs text-muted">200+ models — GPT-4, Claude, Llama, Qwen</div>
+            <div class="mono text-xs mt-8 text-dim">needs API key</div>
+          </div>
+        </div>
+
+        <!-- System prompt reference -->
+        <div class="card mt-12">
+          <div class="card-header">DeepData Context for Agents</div>
+          <div class="grid-2">
+            <div>
+              <div class="text-xs text-muted mb-8">Your DeepData instance</div>
+              <table class="tbl">
+                <tbody>
+                  <tr><td class="text-muted" style="width:80px">URL</td><td class="mono text-xs" x-text="apiBase"></td></tr>
+                  <tr><td class="text-muted">Vectors</td><td x-text="fmt(health.active || 0)"></td></tr>
+                  <tr><td class="text-muted">Collections</td><td x-text="(health.collections || []).length"></td></tr>
+                  <tr><td class="text-muted">Mode</td><td x-text="mode.mode || '-'"></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <div class="text-xs text-muted mb-8">System prompt snippet</div>
+              <div class="playground-output" style="font-size:10px; max-height:160px;">You have access to a DeepData vector database at <span x-text="apiBase"></span>.
+
+Endpoints:
+- POST /query — {"text":"...","top_k":5,"collection":"default"}
+- POST /insert — {"text":"...","collection":"default"}
+- GET /scroll?collection=default&amp;limit=50
+- GET /health — DB status
+- POST /api/embed — {"text":"..."}</div>
+              <button class="copy-btn mt-8" @click="copyText(buildSystemPrompt())">copy snippet</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Connected — Chat Interface -->
+    <template x-if="llmConnected">
+      <div>
+        <!-- Chat messages -->
+        <div class="chat-card mb-10" style="min-height:300px; display:flex; flex-direction:column;">
+          <div class="card-header">
+            <div class="flex items-center gap-8">
+              <span class="text-orange">Chat</span>
+              <span class="badge badge-orange" x-text="llmModel"></span>
+              <span class="text-xs text-dim" x-text="chatMessages.filter(m => m.role !== 'system').length + ' messages'"></span>
+              <span class="text-xs text-dim">|</span>
+              <span class="text-xs text-muted">collection:</span>
+              <select class="select" style="width:140px; font-size:11px; padding:2px 6px;" x-model="chatCollection" @change="applyChatSystem()">
+                <option value="">all</option>
+                <template x-for="c in (health.collections || [])" :key="c.name">
+                  <option :value="c.name" x-text="c.name + ' (' + c.vector_count + ')'"></option>
+                </template>
+              </select>
+            </div>
+            <div class="flex gap-8">
+              <button class="btn btn-sm" @click="chatMessages = chatMessages.filter(m => m.role === 'system'); chatStreamContent = ''">clear</button>
+              <button class="btn btn-sm" @click="showChatSystem = !showChatSystem" x-text="showChatSystem ? 'hide system' : 'system'"></button>
+            </div>
+          </div>
+
+          <!-- System prompt (collapsible) -->
+          <div x-show="showChatSystem" class="mb-8">
+            <textarea class="textarea" x-model="chatSystemPromptOverride" rows="4" style="font-size:11px;" placeholder="System prompt (auto-generated with DeepData context)"></textarea>
+            <div class="flex gap-8 mt-8">
+              <button class="btn btn-sm" @click="applyChatSystem()">apply</button>
+              <button class="btn btn-sm" @click="chatSystemPromptOverride = buildSystemPrompt()">reset to default</button>
+            </div>
+          </div>
+
+          <!-- Message list -->
+          <div class="scroll-y" style="max-height:500px; flex:1;" x-ref="chatScroll">
+            <template x-for="(msg, i) in chatMessages.filter(m => m.role !== 'system')" :key="i">
+              <div class="mb-8" :class="msg.role === 'user' ? 'chat-msg-user' : 'chat-msg-assistant'" style="padding:6px 0; border-bottom: 1px solid var(--border);">
+                <div class="flex items-center gap-8 mb-8">
+                  <span class="badge" :class="msg.role === 'user' ? 'badge-orange' : 'badge-purple'" x-text="msg.role" style="font-size:9px"></span>
+                </div>
+                <div class="pre-wrap text-xs" :class="msg.role === 'user' ? '' : 'text-muted'" x-text="msg.content"></div>
+              </div>
+            </template>
+            <!-- Streaming content -->
+            <div x-show="chatStreamContent" class="mb-8" style="padding:6px 0;">
+              <div class="flex items-center gap-8 mb-8">
+                <span class="badge badge-green" style="font-size:9px">assistant</span>
+                <span class="text-xs text-dim">streaming...</span>
+              </div>
+              <div class="pre-wrap text-xs text-muted" x-text="chatStreamContent"></div>
+            </div>
+            <div x-show="chatMessages.length <= 1 && !chatStreamContent" class="text-muted text-xs" style="padding:20px 0; text-align:center;">
+              Ask the LLM about your data, run queries, or get help managing collections
+            </div>
+          </div>
+
+          <!-- Input -->
+          <div class="chat-input-area flex gap-8 mt-8">
+            <textarea class="textarea" x-model="chatInput" rows="2" style="flex:1; min-height:40px; border-color: rgba(245,158,11,.2);"
+              placeholder="Ask about your data... (Shift+Enter for newline)"
+              @keydown.enter.prevent="if (!$event.shiftKey) { sendChat(); } else { chatInput += '\n'; }"></textarea>
+            <div class="flex flex-col gap-8">
+              <button class="btn btn-orange" @click="sendChat()" :disabled="chatStreaming || !chatInput.trim()" style="height:100%">
+                <span x-text="chatStreaming ? '...' : 'Send'"></span>
+              </button>
+              <button class="btn btn-sm btn-danger" x-show="chatStreaming" @click="abortChat()">Stop</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick actions -->
+        <div class="card mb-10">
+          <div class="card-header">Quick Prompts</div>
+          <div class="flex gap-8" style="flex-wrap:wrap;">
+            <button class="btn btn-sm" @click="chatInput = 'What collections exist and how many vectors are in each?'; sendChat()">list collections</button>
+            <button class="btn btn-sm" @click="chatInput = 'Run an integrity check and tell me if the database is healthy.'; sendChat()">health check</button>
+            <button class="btn btn-sm" @click="chatInput = 'Search for documents about machine learning in the default collection.'; sendChat()">sample search</button>
+            <button class="btn btn-sm" @click="chatInput = 'What is the current storage usage and when was the last snapshot?'; sendChat()">storage info</button>
+            <button class="btn btn-sm" @click="chatInput = 'Suggest how to organize my data into collections for a RAG pipeline.'; sendChat()">RAG advice</button>
+          </div>
+        </div>
+
+        <!-- Agent-GO (collapsed, optional) -->
+        <div class="card">
+          <div class="collapse-header" @click="showAgentGo = !showAgentGo">
+            <span>></span>
+            Agent-GO
+            <span class="text-xs text-muted">(autonomous runs — optional)</span>
+            <span class="status-dot" :class="agentGoConnected ? 'online' : 'offline'" style="margin-left:4px"></span>
+          </div>
+          <div x-show="showAgentGo" x-cloak>
+            <div class="flex items-center gap-8 mb-10" style="flex-wrap:wrap; padding-top:8px;">
+              <input class="input" style="width:260px" x-model="agentGoUrl" placeholder="http://localhost:4243">
+              <button class="btn btn-sm" @click="connectAgentGo()" :disabled="agentGoConnecting">
+                <span x-text="agentGoConnecting ? '...' : 'Connect'"></span>
+              </button>
+              <span class="status-dot" :class="agentGoConnected ? 'online' : 'offline'"></span>
+              <span x-show="agentGoConnected" class="text-xs text-muted">
+                LLM: <span class="val" x-text="agentGoHealth?.llm?.model || '-'"></span>
+              </span>
+            </div>
+            <template x-if="agentGoConnected">
+              <div>
+                <table class="tbl mb-10">
+                  <thead><tr><th>Run ID</th><th>Status</th><th></th></tr></thead>
+                  <tbody>
+                    <template x-for="run in agentRuns" :key="run.run_id">
+                      <tr>
+                        <td class="truncate" style="max-width:200px" x-text="run.run_id"></td>
+                        <td><span class="badge" :class="runStatusBadge(run.status)" x-text="run.status || '?'"></span></td>
+                        <td class="actions">
+                          <button class="btn btn-sm" @click="selectRun(run.run_id)">view</button>
+                        </td>
+                      </tr>
+                    </template>
+                    <tr x-show="!agentRuns.length"><td colspan="3" class="text-muted">No runs</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+            <div x-show="!agentGoConnected" class="text-xs text-muted" style="padding:8px 0;">
+              Agent-GO enables autonomous multi-step runs. Start it with: <code class="mono">./agentgo-server</code> on port 4243
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+</div>
+
+<script>
+function app() {
+  return {
+    // Navigation
+    page: 'dashboard',
+    pages: [
+      { id: 'dashboard', label: 'Dashboard' },
+      { id: 'data', label: 'Data' },
+      { id: 'settings', label: 'Settings' },
+      { id: 'chat', label: 'Chat' },
+    ],
+    dataSection: 'search',
+    showCosts: false,
+    showFeedback: false,
+    apiBase: window.location.origin,
+    toasts: [],
+    requestLog: [],
+
+    // Onboarding
+    showOnboarding: !localStorage.getItem('deepdata_onboarded'),
+    onboardingStep: 0,
+    onboardingSteps: [
+      { id: 'welcome', title: 'Welcome to DeepData' },
+      { id: 'tour',    title: 'Quick Tour' },
+      { id: 'start',   title: 'Get Started' },
+    ],
+
+    // Dashboard
+    health: {},
+    mode: {},
+    indexes: {},
+    uptime: '',
+    startTime: null,
+    dashIntegrityResult: null,
+    dashCosts: {},
+    dashFeedback: {},
+
+    // Search
+    searchQuery: '',
+    searchCollection: '',
+    searchTopK: 10,
+    searchMode: 'vector',
+    searchAlpha: 0.5,
+    searchMeta: '',
+    showFilters: false,
+    searching: false,
+    searchResults: [],
+    searchLatency: null,
+
+    // Explorer
+    explorerDocs: [],
+    explorerCollection: 'default',
+    explorerOffset: 0,
+    explorerLimit: 50,
+    explorerTotal: 0,
+
+    // Collections
+    v2Collections: [],
+    newCollName: '',
+    newCollFields: '',
+
+    // Costs
+    costs: {},
+    dailyCosts: [],
+
+    // Feedback
+    feedbackStats: {},
+    fbInteractionId: '',
+    fbType: 'explicit',
+    fbRating: 1,
+    fbText: '',
+    intQuery: '',
+    intResults: '',
+    intCollection: 'default',
+
+    // Settings
+    integrityResult: null,
+    integrityRunning: false,
+    compactResult: null,
+    compactRunning: false,
+    importRunning: false,
+    newIdxCollection: 'default',
+    newIdxType: 'hnsw',
+    newIdxConfig: '{}',
+    showTools: false,
+    showEmbedderConfig: false,
+    showApiKeys: false,
+
+    // Embedder config
+    embType: '',
+    embModel: '',
+    embUrl: '',
+    embKey: '',
+    embDim: 0,
+    embSaving: false,
+    embTestResult: null,
+
+    // API Keys
+    apiKeysSet: {},
+    apiKeyInputs: { openai: '', deepseek: '', anthropic: '', openrouter: '', cerebras: '' },
+    apiKeysSaving: false,
+
+    // Tools (moved from old Agents)
+    embedText: '',
+    embedResult: '',
+    embedRunning: false,
+    extractText: '',
+    extractTypes: '',
+    extractResult: '',
+    extractRunning: false,
+    batchCollection: 'default',
+    batchText: '',
+    batchId: '',
+    batchMeta: '',
+
+    // LLM Provider
+    llmProvider: localStorage.getItem('llmProvider') || 'ollama',
+    llmUrl: localStorage.getItem('llmUrl') || 'http://localhost:11434/v1',
+    llmApiKey: localStorage.getItem('llmApiKey') || '',
+    llmModel: localStorage.getItem('llmModel') || '',
+    llmModels: [],
+    llmConnected: false,
+    llmConnecting: false,
+    llmNeedsKey: false,
+
+    // Chat
+    chatMessages: [],
+    chatInput: '',
+    chatStreaming: false,
+    chatStreamContent: '',
+    chatAbortCtrl: null,
+    chatSystemPromptOverride: '',
+    showChatSystem: false,
+    chatCollection: '',
+
+    // Agent-GO (optional, collapsed)
+    agentGoUrl: localStorage.getItem('agentGoUrl') || 'http://localhost:4243',
+    agentGoConnected: false,
+    agentGoConnecting: false,
+    agentGoHealth: null,
+    agentRuns: [],
+    runPollId: null,
+    showAgentGo: false,
+
+    async init() {
+      this.startTime = Date.now();
+      // Restore LLM provider state
+      this.llmNeedsKey = this.getLlmProviderDefaults(this.llmProvider).needsKey;
+      await Promise.all([
+        this.loadHealth(),
+        this.loadMode(),
+        this.loadIndexes(),
+        this.loadDashCosts(),
+        this.loadDashFeedback(),
+        this.loadDashIntegrity(),
+        this.loadEmbedderConfig(),
+        this.loadApiKeys(),
+      ]);
+      this.updateUptime();
+      setInterval(() => this.loadHealth(), 15000);
+      setInterval(() => this.updateUptime(), 1000);
+    },
+
+    navigateTo(pageId) {
+      const prevPage = this.page;
+      this.page = pageId;
+      // Stop agent polling when leaving agents page
+      if (prevPage === 'chat' && pageId !== 'chat') {
+        this.stopAgentPolling();
+      }
+    },
+
+    // ---- Onboarding ----
+    onboardingNext() {
+      if (this.onboardingStep < this.onboardingSteps.length - 1) {
+        this.onboardingStep++;
+      } else {
+        this.completeOnboarding();
+      }
+    },
+    onboardingBack() {
+      if (this.onboardingStep > 0) this.onboardingStep--;
+    },
+    skipOnboarding() {
+      this.completeOnboarding();
+    },
+    completeOnboarding() {
+      localStorage.setItem('deepdata_onboarded', '1');
+      this.showOnboarding = false;
+    },
+    restartOnboarding() {
+      this.onboardingStep = 0;
+      this.showOnboarding = true;
+    },
+
+    // ---- API helper ----
+    async api(method, path, body = null) {
+      const t0 = Date.now();
+      const opts = { method, headers: {} };
+      if (body) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+      }
+      try {
+        const r = await fetch(this.apiBase + path, opts);
+        const ms = Date.now() - t0;
+        let data = null;
+        const ct = r.headers.get('content-type') || '';
+        if (ct.includes('json')) data = await r.json();
+        else data = await r.text();
+        this.requestLog.push({ method, path, status: r.status, ok: r.ok, ms });
+        if (this.requestLog.length > 100) this.requestLog.shift();
+        return { ok: r.ok, status: r.status, data, ms };
+      } catch (e) {
+        const ms = Date.now() - t0;
+        this.requestLog.push({ method, path, status: 0, ok: false, ms });
+        return { ok: false, status: 0, data: null, ms, error: e.message };
+      }
+    },
+
+    // Agent-GO API helper (does NOT log to requestLog)
+    async agentApi(method, path, body = null) {
+      const opts = { method, headers: {} };
+      if (body) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+      }
+      try {
+        const r = await fetch(this.agentGoUrl + path, opts);
+        let data = null;
+        const ct = r.headers.get('content-type') || '';
+        if (ct.includes('json')) data = await r.json();
+        else data = await r.text();
+        return { ok: r.ok, status: r.status, data };
+      } catch (e) {
+        return { ok: false, status: 0, data: null, error: e.message };
+      }
+    },
+
+    toast(msg, type = '') { this.toasts.push({ msg, type }); },
+
+    copyText(text) {
+      navigator.clipboard.writeText(text).then(() => this.toast('Copied', 'success'));
+    },
+
+    // ---- Dashboard ----
+    async loadHealth() {
+      const r = await this.api('GET', '/health');
+      if (r.ok) this.health = r.data;
+    },
+    async loadMode() {
+      const r = await this.api('GET', '/api/mode');
+      if (r.ok && !r.data.error) this.mode = r.data;
+    },
+    async loadIndexes() {
+      const r = await this.api('GET', '/api/index/list');
+      if (r.ok) this.indexes = r.data.indexes || {};
+    },
+    async loadDashCosts() {
+      const r = await this.api('GET', '/api/costs');
+      if (r.ok) this.dashCosts = r.data;
+    },
+    async loadDashFeedback() {
+      const r = await this.api('GET', '/v2/feedback/stats');
+      if (r.ok) this.dashFeedback = r.data;
+    },
+    async loadDashIntegrity() {
+      const r = await this.api('GET', '/integrity');
+      this.dashIntegrityResult = r.ok ? r.data : { ok: false, error: 'request failed' };
+    },
+    updateUptime() {
+      if (!this.startTime) return;
+      const s = Math.floor((Date.now() - this.startTime) / 1000);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      this.uptime = (h ? h + 'h ' : '') + m + 'm ' + sec + 's';
+    },
+
+    // ---- Search ----
+    async doSearch() {
+      if (!this.searchQuery.trim()) return;
+      this.searching = true;
+      this.searchResults = [];
+      this.searchLatency = null;
+
+      let path = '/query';
+      let body = {
+        query: this.searchQuery,
+        top_k: this.searchTopK,
+        collection: this.searchCollection || '',
+      };
+
+      if (this.searchMode === 'hybrid') {
+        path = '/v2/search';
+        body.mode = 'hybrid';
+        body.alpha = this.searchAlpha;
+      } else if (this.searchMode === 'keyword') {
+        path = '/v2/search';
+        body.mode = 'keyword';
+      }
+
+      if (this.searchMeta) {
+        try { body.metadata = JSON.parse(this.searchMeta); } catch {}
+      }
+
+      const r = await this.api('POST', path, body);
+      this.searching = false;
+      if (r.ok) {
+        this.searchResults = (r.data.results || []).map(x => ({ ...x, _expanded: false }));
+        this.searchLatency = r.ms;
+      } else {
+        this.toast('Search failed: ' + (r.data?.error || r.status), 'error');
+      }
+    },
+
+    // ---- Explorer ----
+    async loadDocs() {
+      const q = new URLSearchParams({
+        collection: this.explorerCollection || '',
+        limit: this.explorerLimit,
+        offset: this.explorerOffset,
+        include_meta: 'true',
+      });
+      const r = await this.api('GET', '/scroll?' + q.toString());
+      if (r.ok) {
+        const ids = r.data.ids || [];
+        const docs = r.data.documents || [];
+        const metas = r.data.metadata || [];
+        this.explorerTotal = r.data.total || 0;
+        this.explorerDocs = ids.map((id, i) => ({
+          id,
+          text: docs[i] || '',
+          metadata: metas[i] || null,
+          collection: this.explorerCollection,
+          _expanded: false,
+        }));
+      }
+    },
+
+    async deleteDoc(id, collection) {
+      const r = await this.api('POST', '/delete', { ids: [id], collection: collection || 'default' });
+      if (r.ok) {
+        this.toast('Deleted ' + id, 'success');
+        this.loadDocs();
+        this.loadHealth();
+      } else {
+        this.toast('Delete failed', 'error');
+      }
+    },
+
+    // ---- Collections ----
+    async loadV2Collections() {
+      const r = await this.api('GET', '/v2/collections');
+      if (r.ok) {
+        this.v2Collections = (r.data.collections || []).map(c => ({ ...c, _confirmDelete: false }));
+      }
+    },
+    async createCollection() {
+      if (!this.newCollName) return;
+      let fields = [];
+      if (this.newCollFields) {
+        try { fields = JSON.parse(this.newCollFields); } catch { this.toast('Invalid fields JSON', 'error'); return; }
+      }
+      const r = await this.api('POST', '/v2/collections', { name: this.newCollName, fields });
+      if (r.ok) {
+        this.toast('Created ' + this.newCollName, 'success');
+        this.newCollName = '';
+        this.newCollFields = '';
+        this.loadV2Collections();
+        this.loadHealth();
+      } else {
+        this.toast('Create failed: ' + (r.data?.message || r.status), 'error');
+      }
+    },
+    async deleteCollection(name) {
+      const r = await this.api('DELETE', '/v2/collections/' + encodeURIComponent(name));
+      if (r.ok) {
+        this.toast('Deleted ' + name, 'success');
+        this.loadV2Collections();
+        this.loadHealth();
+      } else {
+        this.toast('Delete failed', 'error');
+      }
+    },
+
+    // ---- Costs ----
+    async loadCosts() {
+      const [r1, r2] = await Promise.all([
+        this.api('GET', '/api/costs'),
+        this.api('GET', '/api/costs/daily?days=30'),
+      ]);
+      if (r1.ok) this.costs = r1.data;
+      if (r2.ok) this.dailyCosts = r2.data.daily || r2.data || [];
+    },
+
+    // ---- Feedback ----
+    async loadFeedbackStats() {
+      const r = await this.api('GET', '/v2/feedback/stats');
+      if (r.ok) this.feedbackStats = r.data;
+    },
+    async submitFeedback() {
+      if (!this.fbInteractionId) return;
+      const r = await this.api('POST', '/v2/feedback', {
+        interaction_id: this.fbInteractionId,
+        type: this.fbType,
+        rating: this.fbRating,
+        text: this.fbText,
+      });
+      if (r.ok) {
+        this.toast('Feedback submitted', 'success');
+        this.fbInteractionId = '';
+        this.fbText = '';
+        this.loadFeedbackStats();
+      } else {
+        this.toast('Failed: ' + (r.data?.error || r.status), 'error');
+      }
+    },
+    async recordInteraction() {
+      if (!this.intQuery) return;
+      const r = await this.api('POST', '/v2/interaction', {
+        query: this.intQuery,
+        result_ids: this.intResults.split(',').map(s => s.trim()).filter(Boolean),
+        collection: this.intCollection || 'default',
+      });
+      if (r.ok) {
+        this.toast('Interaction recorded: ' + (r.data?.interaction_id || ''), 'success');
+        this.intQuery = '';
+        this.intResults = '';
+        this.loadFeedbackStats();
+      } else {
+        this.toast('Failed', 'error');
+      }
+    },
+
+    // ---- Settings ----
+    async runIntegrity() {
+      this.integrityRunning = true;
+      this.integrityResult = null;
+      const r = await this.api('GET', '/integrity');
+      this.integrityRunning = false;
+      this.integrityResult = r.ok ? r.data : { ok: false, error: r.data?.error || 'request failed' };
+    },
+    async runCompact() {
+      this.compactRunning = true;
+      this.compactResult = null;
+      const r = await this.api('POST', '/compact');
+      this.compactRunning = false;
+      if (r.ok) {
+        this.compactResult = 'Compacted successfully';
+        this.loadHealth();
+      } else {
+        this.compactResult = 'Failed';
+      }
+    },
+    async importSnapshot(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      this.importRunning = true;
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const r = await fetch(this.apiBase + '/import', { method: 'POST', body: formData });
+        if (r.ok) {
+          this.toast('Import successful', 'success');
+          this.loadHealth();
+        } else {
+          this.toast('Import failed', 'error');
+        }
+      } catch (e) {
+        this.toast('Import error: ' + e.message, 'error');
+      }
+      this.importRunning = false;
+      event.target.value = '';
+    },
+    async createIndex() {
+      let config = {};
+      if (this.newIdxConfig) {
+        try { config = JSON.parse(this.newIdxConfig); } catch { this.toast('Invalid config JSON', 'error'); return; }
+      }
+      const r = await this.api('POST', '/api/index/create', {
+        collection: this.newIdxCollection || 'default',
+        index_type: this.newIdxType,
+        config,
+      });
+      if (r.ok) {
+        this.toast('Index created', 'success');
+        this.loadIndexes();
+      } else {
+        this.toast('Failed: ' + (r.data?.error || r.status), 'error');
+      }
+    },
+
+    // ---- Embedder Config ----
+    async loadEmbedderConfig() {
+      const r = await this.api('GET', '/api/config/embedder');
+      if (r.ok) {
+        this.embType = r.data.type || 'hash';
+        this.embModel = r.data.model || '';
+        this.embDim = r.data.dimension || 0;
+      }
+    },
+    async saveEmbedderConfig() {
+      this.embSaving = true;
+      this.embTestResult = null;
+      const body = { type: this.embType, model: this.embModel };
+      if (this.embType === 'ollama') body.url = this.embUrl || 'http://localhost:11434';
+      if (this.embType === 'openai') body.key = this.embKey;
+      if (this.embType === 'hash') body.model = this.embModel || '384';
+      const r = await this.api('POST', '/api/config/embedder', body);
+      this.embSaving = false;
+      if (r.ok && r.data.ok) {
+        this.embDim = r.data.dimension;
+        this.embModel = r.data.model;
+        this.embTestResult = { ok: true, msg: 'Switched to ' + r.data.type + ' (dim=' + r.data.dimension + ')' };
+        if (r.data.warning) this.embTestResult.msg += ' — ' + r.data.warning;
+        this.loadMode();
+      } else {
+        this.embTestResult = { ok: false, msg: r.data?.error || 'Failed' };
+      }
+    },
+
+    // ---- API Keys ----
+    async loadApiKeys() {
+      const r = await this.api('GET', '/api/config/keys');
+      if (r.ok) this.apiKeysSet = r.data || {};
+    },
+    async saveApiKeys() {
+      this.apiKeysSaving = true;
+      const body = {};
+      for (const [k, v] of Object.entries(this.apiKeyInputs)) {
+        if (v.trim()) body[k] = v.trim();
+      }
+      const r = await this.api('POST', '/api/config/keys', body);
+      this.apiKeysSaving = false;
+      if (r.ok && r.data.ok) {
+        this.toast('Keys saved: ' + (r.data.set?.join(', ') || 'none'), 'success');
+        this.apiKeyInputs = { openai: '', deepseek: '', anthropic: '', openrouter: '', cerebras: '' };
+        this.loadApiKeys();
+      } else {
+        this.toast('Failed to save keys', 'error');
+      }
+    },
+
+    // ---- Tools (embed/extract/insert) ----
+    async runEmbed() {
+      if (!this.embedText.trim()) return;
+      this.embedRunning = true;
+      this.embedResult = '';
+      const r = await this.api('POST', '/api/embed', { text: this.embedText });
+      this.embedRunning = false;
+      if (r.ok) {
+        const vec = r.data.vector || r.data.embedding || [];
+        this.embedResult = `dim: ${vec.length}\n[${vec.slice(0, 20).map(v => v.toFixed(6)).join(', ')}${vec.length > 20 ? ', ...' : ''}]`;
+      } else {
+        this.embedResult = 'Error: ' + (r.data?.error || r.status);
+      }
+    },
+    async runExtract() {
+      if (!this.extractText.trim()) return;
+      this.extractRunning = true;
+      this.extractResult = '';
+      const body = { content: this.extractText };
+      if (this.extractTypes.trim()) {
+        body.entity_types = this.extractTypes.split(',').map(s => s.trim()).filter(Boolean);
+      }
+      const r = await this.api('POST', '/v2/extract', body);
+      this.extractRunning = false;
+      if (r.ok) {
+        this.extractResult = JSON.stringify(r.data, null, 2);
+      } else {
+        this.extractResult = 'Error: ' + (r.data || r.status);
+      }
+    },
+    async batchInsert() {
+      if (!this.batchText.trim()) return;
+      const doc = {
+        text: this.batchText,
+        collection: this.batchCollection || 'default',
+      };
+      if (this.batchId) doc.id = this.batchId;
+      if (this.batchMeta) {
+        try { doc.metadata = JSON.parse(this.batchMeta); } catch {}
+      }
+      const r = await this.api('POST', '/insert', doc);
+      if (r.ok) {
+        this.toast('Inserted', 'success');
+        this.batchText = '';
+        this.batchId = '';
+        this.batchMeta = '';
+        this.loadHealth();
+      } else {
+        this.toast('Insert failed: ' + (r.data?.error || r.status), 'error');
+      }
+    },
+
+    // ---- LLM Provider ----
+    getLlmProviderDefaults(provider) {
+      const presets = {
+        ollama:     { url: 'http://localhost:11434/v1', needsKey: false },
+        atlasd:     { url: 'http://localhost:11435/v1', needsKey: false },
+        openrouter: { url: 'https://openrouter.ai/api/v1', needsKey: true },
+        deepseek:   { url: 'https://api.deepseek.com/v1', needsKey: true },
+        cerebras:   { url: 'https://api.cerebras.ai/v1', needsKey: true },
+        openai:     { url: 'https://api.openai.com/v1', needsKey: true },
+        custom:     { url: '', needsKey: false },
+      };
+      return presets[provider] || presets.custom;
+    },
+
+    onLlmProviderChange() {
+      const d = this.getLlmProviderDefaults(this.llmProvider);
+      this.llmUrl = d.url;
+      this.llmNeedsKey = d.needsKey;
+      if (!d.needsKey) this.llmApiKey = '';
+      this.llmConnected = false;
+      this.llmModels = [];
+    },
+
+    async connectLlm() {
+      this.llmConnecting = true;
+      localStorage.setItem('llmProvider', this.llmProvider);
+      localStorage.setItem('llmUrl', this.llmUrl);
+      if (this.llmApiKey) localStorage.setItem('llmApiKey', this.llmApiKey);
+
+      try {
+        const headers = {};
+        if (this.llmApiKey) headers['Authorization'] = 'Bearer ' + this.llmApiKey;
+        const ctrl = new AbortController();
+        const timeoutId = setTimeout(() => ctrl.abort(), 8000);
+        const r = await fetch(this.llmUrl + '/models', { headers, signal: ctrl.signal });
+        clearTimeout(timeoutId);
+        if (r.ok) {
+          const data = await r.json();
+          const models = (data.data || data.models || []).map(m => m.id || m.name || m.model || m);
+          this.llmModels = models.filter(Boolean);
+          if (this.llmModels.length && !this.llmModel) {
+            this.llmModel = this.llmModels[0];
+          }
+          // Restore saved model if still available
+          const saved = localStorage.getItem('llmModel');
+          if (saved && this.llmModels.includes(saved)) this.llmModel = saved;
+
+          this.llmConnected = true;
+          // Init chat with system prompt
+          this.chatSystemPromptOverride = this.buildSystemPrompt();
+          this.chatMessages = [{ role: 'system', content: this.chatSystemPromptOverride }];
+          this.toast('Connected — ' + this.llmModels.length + ' models', 'success');
+        } else {
+          this.llmConnected = false;
+          this.toast('Failed to reach ' + this.llmUrl + ' (' + r.status + ')', 'error');
+        }
+      } catch (e) {
+        this.llmConnected = false;
+        const msg = e.name === 'AbortError' ? 'Connection timed out' : e.message;
+        this.toast('Connection failed: ' + msg, 'error');
+      }
+      this.llmConnecting = false;
+    },
+
+    buildSystemPrompt() {
+      const colls = (this.health.collections || []).map(c => c.name + ' (' + c.vector_count + ' vectors)').join(', ') || 'none';
+      const focused = this.chatCollection
+        ? `\nFocused collection: "${this.chatCollection}" — scope all queries/inserts to this collection unless asked otherwise.`
+        : '';
+      return `You are a helpful database assistant for DeepData, a vector database.
+
+Instance: ${this.apiBase}
+Mode: ${this.mode.mode || 'local'}
+Embedder: ${this.mode.embedder_model || this.mode.embedder_type || 'unknown'}
+Dimension: ${this.mode.dimension || '?'}
+Collections: ${colls}
+Vectors: ${this.health.active || 0}${focused}
+
+Available API endpoints (all at ${this.apiBase}):
+- GET /health — status, vector count, collections
+- POST /query — vector search: {"text":"...","top_k":5,"collection":"${this.chatCollection || 'default'}"}
+- POST /insert — add document: {"text":"...","collection":"${this.chatCollection || 'default'}","metadata":{}}
+- GET /scroll?collection=${this.chatCollection || 'default'}&limit=50&offset=0 — browse documents
+- POST /api/embed — get embedding: {"text":"..."}
+- GET /integrity — integrity check
+- POST /compact — compact storage
+- POST /v2/search — hybrid/keyword: {"text":"...","mode":"hybrid","alpha":0.5,"collection":"${this.chatCollection || 'default'}"}
+
+When the user asks about their data, reference the actual collections and counts above. Give concrete curl commands or API calls they can run. Be concise.`;
+    },
+
+    applyChatSystem() {
+      this.chatSystemPromptOverride = this.buildSystemPrompt();
+      const sysIdx = this.chatMessages.findIndex(m => m.role === 'system');
+      if (sysIdx >= 0) {
+        this.chatMessages[sysIdx].content = this.chatSystemPromptOverride;
+      } else {
+        this.chatMessages.unshift({ role: 'system', content: this.chatSystemPromptOverride });
+      }
+    },
+
+    async sendChat() {
+      if (!this.chatInput.trim() || this.chatStreaming) return;
+      const userMsg = this.chatInput.trim();
+      this.chatInput = '';
+      this.chatMessages.push({ role: 'user', content: userMsg });
+      this.chatStreaming = true;
+      this.chatStreamContent = '';
+
+      localStorage.setItem('llmModel', this.llmModel);
+
+      const headers = { 'Content-Type': 'application/json' };
+      if (this.llmApiKey) headers['Authorization'] = 'Bearer ' + this.llmApiKey;
+
+      this.chatAbortCtrl = new AbortController();
+
+      try {
+        const r = await fetch(this.llmUrl + '/chat/completions', {
+          method: 'POST',
+          headers,
+          signal: this.chatAbortCtrl.signal,
+          body: JSON.stringify({
+            model: this.llmModel,
+            messages: this.chatMessages,
+            stream: true,
+          }),
+        });
+
+        if (!r.ok) {
+          const errText = await r.text();
+          this.chatMessages.push({ role: 'assistant', content: 'Error: ' + r.status + ' — ' + errText });
+          this.chatStreaming = false;
+          return;
+        }
+
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+
+          const lines = buf.split('\n');
+          buf = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed === 'data: [DONE]') continue;
+            if (!trimmed.startsWith('data: ')) continue;
+            try {
+              const json = JSON.parse(trimmed.slice(6));
+              const delta = json.choices?.[0]?.delta?.content;
+              if (delta) {
+                this.chatStreamContent += delta;
+                // Auto-scroll
+                this.$nextTick(() => {
+                  const el = this.$refs.chatScroll;
+                  if (el) el.scrollTop = el.scrollHeight;
+                });
+              }
+            } catch {}
+          }
+        }
+
+        // Finalize
+        if (this.chatStreamContent) {
+          this.chatMessages.push({ role: 'assistant', content: this.chatStreamContent });
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          this.chatMessages.push({ role: 'assistant', content: 'Error: ' + e.message });
+        } else if (this.chatStreamContent) {
+          this.chatMessages.push({ role: 'assistant', content: this.chatStreamContent + '\n\n[stopped]' });
+        }
+      }
+
+      this.chatStreamContent = '';
+      this.chatStreaming = false;
+      this.chatAbortCtrl = null;
+      this.$nextTick(() => {
+        const el = this.$refs.chatScroll;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    },
+
+    abortChat() {
+      if (this.chatAbortCtrl) this.chatAbortCtrl.abort();
+    },
+
+    // ---- Agent-GO (optional) ----
+    async connectAgentGo() {
+      this.agentGoConnecting = true;
+      localStorage.setItem('agentGoUrl', this.agentGoUrl);
+      const r = await this.agentApi('GET', '/health');
+      this.agentGoConnecting = false;
+      if (r.ok) {
+        this.agentGoConnected = true;
+        this.agentGoHealth = r.data;
+        await this.loadAgentRuns();
+        this.startRunPolling();
+        this.toast('Agent-GO connected', 'success');
+      } else {
+        this.agentGoConnected = false;
+        this.toast('Cannot reach Agent-GO', 'error');
+      }
+    },
+
+    async loadAgentRuns() {
+      const r = await this.agentApi('GET', '/runs');
+      if (r.ok) this.agentRuns = r.data.runs || [];
+    },
+
+    startRunPolling() {
+      this.stopRunPolling();
+      this.runPollId = setInterval(() => { if (this.agentGoConnected) this.loadAgentRuns(); }, 5000);
+    },
+
+    stopRunPolling() {
+      if (this.runPollId) { clearInterval(this.runPollId); this.runPollId = null; }
+    },
+
+    stopAgentPolling() {
+      this.stopRunPolling();
+    },
+
+    async selectRun(runId) {
+      // Open run details in a toast for now (full viewer can come later)
+      const r = await this.agentApi('GET', '/runs/' + runId);
+      if (r.ok) {
+        this.toast('Run ' + runId.substring(0, 8) + ': ' + (r.data.status || '?') + ', ' + (r.data.event_count || 0) + ' events');
+      }
+    },
+
+    runStatusBadge(status) {
+      switch (status) {
+        case 'running': return 'badge-green';
+        case 'completed': case 'done': return 'badge-blue';
+        case 'paused': case 'pause_requested': return 'badge-yellow';
+        case 'failed': case 'error': return 'badge-red';
+        default: return 'badge-purple';
+      }
+    },
+
+    // ---- Formatters ----
+    fmt(n) { return n == null ? '0' : Number(n).toLocaleString(); },
+    fmtBytes(b) {
+      if (!b || b === 0) return '0 B';
+      const u = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), u.length - 1);
+      return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + u[i];
+    },
+    fmtAge(ms) {
+      if (!ms && ms !== 0) return '-';
+      if (ms < 1000) return ms + 'ms';
+      const s = Math.floor(ms / 1000);
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + 'm ' + (s % 60) + 's';
+      const h = Math.floor(m / 60);
+      return h + 'h ' + (m % 60) + 'm';
+    },
+    indexDetail(stats) {
+      if (!stats) return '-';
+      const parts = [];
+      // Parse nested stats structure
+      const count = stats.Count ?? stats.vectors ?? stats.count;
+      const mem = stats.MemoryUsed ?? stats.memory_bytes ?? stats.memory_used;
+      const efSearch = stats.Extra?.ef_search ?? stats.ef_search;
+      const m = stats.Extra?.m ?? stats.m;
+      const levels = stats.levels ?? stats.Levels;
+      const clusters = stats.clusters ?? stats.Clusters;
+
+      if (count != null) parts.push(this.fmt(count) + ' vecs');
+      if (mem) parts.push(this.fmtBytes(mem));
+      if (efSearch) parts.push('ef=' + efSearch);
+      if (m) parts.push('M=' + m);
+      if (levels) parts.push(levels + ' levels');
+      if (clusters) parts.push(clusters + ' clusters');
+      return parts.join(', ') || '-';
+    },
+  };
+}
+</script>
+</body>
+</html>

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/phenomenon0/vectordb/sparse"
+	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
 func TestNewCollectionManager(t *testing.T) {

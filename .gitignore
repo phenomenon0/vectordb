@@ -2,8 +2,7 @@
 deepdata
 vectordb
 vectordb-server
-gentoken/gentoken
-gentoken/vectordb
+cmd/gentoken/gentoken
 *.exe
 *.zip
 

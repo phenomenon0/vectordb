@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/Neumenon/cowrie/go/codec"
-	"github.com/phenomenon0/vectordb/index"
-	"github.com/phenomenon0/vectordb/logging"
-	"github.com/phenomenon0/vectordb/security"
-	"github.com/phenomenon0/vectordb/telemetry"
+	"github.com/phenomenon0/vectordb/internal/index"
+	"github.com/phenomenon0/vectordb/internal/logging"
+	"github.com/phenomenon0/vectordb/internal/security"
+	"github.com/phenomenon0/vectordb/internal/telemetry"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )

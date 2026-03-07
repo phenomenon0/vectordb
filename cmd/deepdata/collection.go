@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/phenomenon0/vectordb/index"
+	"github.com/phenomenon0/vectordb/internal/index"
 )
 
 // CollectionConfig defines the configuration for a collection

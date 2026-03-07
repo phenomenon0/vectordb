@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/phenomenon0/vectordb/wal"
+	"github.com/phenomenon0/vectordb/internal/wal"
 )
 
 // WALAdapter bridges the Store with the new WAL package.

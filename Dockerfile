@@ -11,7 +11,7 @@ COPY . .
 
 # Build vectordb binary (static, no CGO for portability)
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
-    -o /out/vectordb ./vectordb/
+    -o /out/vectordb ./cmd/deepdata/
 
 # --- Runtime ---
 FROM debian:bookworm-slim
