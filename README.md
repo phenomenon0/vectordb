@@ -1,155 +1,120 @@
 # DeepData
 
-High-performance vector database written in Go. Single binary, embedded web UI, optional desktop app.
+**High-performance vector database. Single binary. Zero dependencies.**
 
-## Features
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-- **Multiple index types**: HNSW (default), IVF, DiskANN, flat scan
-- **Hybrid search**: dense + sparse vector fusion (RRF, weighted, linear)
-- **Quantization**: FP16, Uint8, PQ8, PQ4 — trade memory for speed
-- **Multi-tenancy**: tenant isolation, per-tenant quotas, collection-level ACLs
-- **Persistence**: WAL with CRC checksums, automatic snapshots, gob/SJSON formats
-- **Security**: JWT auth, API key rotation, RBAC, TLS/mTLS, audit logging
-- **Embedders**: Ollama (local), OpenAI, ONNX runtime, hash (testing) — hot-swappable at runtime
-- **Observability**: Prometheus metrics, Grafana dashboard, structured logging
-- **Desktop app**: Tauri wrapper with native window controls (Linux/macOS/Windows)
+DeepData is a vector database written in Go that ships as a single binary with an embedded web UI. HNSW, IVF, DiskANN indexes. Hybrid dense+sparse search. SIMD-accelerated distance functions. Runs locally, scales to clusters.
 
 ## Quick Start
 
 ```bash
-# Run with Go
-go run . serve --port 8080
-
-# Or with Docker
-docker compose up
-
-# Or build the binary
-go build -o deepdata .
-./deepdata serve --port 8080
+go build ./cmd/deepdata && ./deepdata serve
+# Web UI → http://localhost:8080
 ```
 
-The embedded web UI is served at the root (`http://localhost:8080`).
+Or with Docker:
 
-## Modes
+```bash
+docker compose up
+```
 
-| Mode | Embedder | Dimension | Cost |
-|------|----------|-----------|------|
-| **local** | Ollama `nomic-embed-text` / ONNX `bge-small` | 768 / 384 | Free |
-| **pro** | OpenAI `text-embedding-3-small` | 1536 | ~$0.02/1M tokens |
+## Usage
 
-Set with `--mode local` or `VECTORDB_MODE=local`.
-
-## API
-
-Server listens on `:8080` by default. All endpoints accept/return JSON.
-
-### Core
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/insert` | Add or upsert a document |
-| `POST` | `/query` | Search with optional metadata filters |
-| `POST` | `/delete` | Delete by ID (tombstone) |
-| `GET/POST` | `/scroll` | Paginated document iteration |
-| `POST` | `/batch/insert` | Bulk insert (up to 10K docs) |
-
-### Operations
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Stats: total, active, deleted vectors |
-| `GET` | `/healthz` | Liveness probe |
-| `GET` | `/integrity` | Checksum validation |
-| `POST` | `/compact` | Rebuild index, drop tombstones |
-| `GET` | `/export` | Download snapshot |
-| `POST` | `/import` | Load snapshot |
-| `GET` | `/metrics` | Prometheus metrics |
-
-### Configuration
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET/POST` | `/api/config/embedder` | View or hot-swap the embedder |
-| `GET/POST` | `/api/config/keys` | Manage LLM API keys (in-memory) |
-| `GET` | `/api/mode` | Current mode info |
-| `GET` | `/api/costs` | Cost tracking (pro mode) |
-
-### Insert
+Insert a document:
 
 ```bash
 curl -X POST http://localhost:8080/insert \
   -d '{"doc": "vector databases use ANN for fast retrieval", "id": "doc-1", "meta": {"topic": "databases"}}'
 ```
 
-### Query
+Query it back:
 
 ```bash
 curl -X POST http://localhost:8080/query \
   -d '{"query": "how do vector databases work?", "top_k": 5, "mode": "ann", "include_meta": true}'
 ```
 
-Supports metadata filtering: `meta` (AND), `meta_any` (OR), `meta_not` (NOT).
+Metadata filtering with `meta` (AND), `meta_any` (OR), `meta_not` (NOT).
 
-## CLI Flags
+## Why DeepData
+
+- **Single binary** — no runtime deps, no JVM, no Python. `go build` and ship
+- **Hybrid search** — dense + sparse fusion via RRF or weighted scoring
+- **4 index types** — HNSW, IVF, DiskANN, flat scan. Pick your tradeoff
+- **Quantization** — FP16, Uint8, PQ8, PQ4 to trade memory for speed
+- **SIMD + GPU** — AVX2 distance kernels, optional CUDA acceleration
+- **Multi-tenant** — collection isolation, per-tenant quotas, RBAC
+- **Embedders built in** — Ollama, OpenAI, ONNX runtime, hot-swappable
+- **Production ready** — WAL with CRC checksums, snapshots, Prometheus metrics, JWT auth, TLS/mTLS
+
+## Architecture
 
 ```
-deepdata serve [flags]
-
-  --port            HTTP port (env: PORT, default: 8080)
-  --mode            Engine mode: local or pro (env: VECTORDB_MODE)
-  --data-dir        Data directory (env: VECTORDB_DATA_DIR)
-  --dimension       Embedding dimension (env: EMBED_DIM)
-  --embedder        Embedder: ollama, openai, hash (env: EMBEDDER_TYPE)
-  --embedder-model  Model name (env: OLLAMA_EMBED_MODEL)
-  --embedder-url    Embedder URL (env: OLLAMA_URL)
+DeepData/
+  cmd/
+    deepdata/       # Main server + embedded web UI
+    cli/            # Command-line client
+    gentoken/       # JWT token generator
+  internal/
+    index/          # HNSW, IVF, DiskANN, flat — SIMD kernels
+    collection/     # Collection manager, filtered search
+    cluster/        # Distributed: election, replication, sharding
+    security/       # JWT auth, RBAC, TLS, encryption, audit
+    hybrid/         # Dense+sparse fusion
+    sparse/         # Inverted index, BM25
+    storage/        # Persistence (gob, cowrie/SJSON)
+    wal/            # Write-ahead log
+    extraction/     # LLM-powered metadata extraction
+    feedback/       # Relevance feedback loop
+    filter/         # Metadata filter engine
+  desktop/          # Tauri v2 native wrapper
+  docs/             # Guides, migration, benchmarks
 ```
+
+## API at a Glance
+
+| | Endpoint | What it does |
+|---|---|---|
+| **POST** | `/insert` | Add or upsert a document |
+| **POST** | `/query` | Search with filters |
+| **POST** | `/delete` | Delete by ID |
+| **POST** | `/batch/insert` | Bulk insert (up to 10K) |
+| **GET** | `/scroll` | Paginated iteration |
+| **GET** | `/health` | Stats + liveness |
+| **GET** | `/metrics` | Prometheus endpoint |
+
+Full API reference in [`internal/collection/API.md`](internal/collection/API.md).
+
+## Modes
+
+| Mode | Embedder | Cost |
+|------|----------|------|
+| `local` | Ollama / ONNX | Free |
+| `pro` | OpenAI `text-embedding-3-small` | ~$0.02/1M tokens |
+
+Set with `--mode local` or `VECTORDB_MODE=local`.
 
 ## Desktop App
 
-The `desktop/` directory contains a Tauri v2 wrapper that launches the Go server as a sidecar and loads the web UI in a native window.
+The `desktop/` directory wraps DeepData in a Tauri v2 native window with dynamic port allocation and native controls. Build with:
 
 ```bash
-cd desktop
-npm install
-npm run tauri build
+cd desktop && npm install && npm run tauri build
 ```
 
-Features: dynamic port allocation, draggable titlebar, native minimize/maximize/close controls.
+## Docs
 
-## Documentation
-
-| Guide | Description |
-|-------|-------------|
-| [Installation](docs/installation.md) | Docker, source build, SDKs, systemd |
-| [Troubleshooting](docs/troubleshooting.md) | 20+ common issues with solutions |
-| [Cookbook](docs/cookbook.md) | RAG, hybrid search, multi-tenancy, tuning |
-| [Security](docs/security.md) | JWT, TLS/mTLS, RBAC, encryption, audit |
-| [Kubernetes](docs/kubernetes.md) | StatefulSet, Ingress, backup CronJob |
-| [Benchmarks](docs/benchmarks.md) | Latency, throughput, scalability |
-| [Grafana Dashboard](grafana/) | Prometheus dashboard + alerting rules |
-| [Changelog](CHANGELOG.md) | Release history |
-
-### Migration Guides
-
-- [From ChromaDB](docs/migration-from-chroma.md)
-- [From Qdrant](docs/migration-from-qdrant.md)
-- [From Pinecone](docs/migration-from-pinecone.md)
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8080` | HTTP listen port |
-| `VECTORDB_MODE` | `local` | `local` or `pro` |
-| `VECTORDB_DATA_DIR` | `./data` | Data storage directory |
-| `EMBEDDER_TYPE` | `ollama` | `ollama`, `openai`, `onnx`, `hash` |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API URL |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model |
-| `OPENAI_API_KEY` | — | OpenAI API key (pro mode) |
-| `JWT_SECRET` | — | JWT signing secret (required if using auth) |
-| `EMBED_DIM` | auto | Override embedding dimension |
-| `WAL_MAX_BYTES` | `5242880` | WAL size before rotation |
-| `COMPACT_INTERVAL_MIN` | — | Auto-compact interval (minutes) |
+- [Installation](docs/installation.md) — Docker, source, systemd
+- [Cookbook](docs/cookbook.md) — RAG, hybrid search, multi-tenancy
+- [Security](docs/security.md) — JWT, TLS/mTLS, RBAC, encryption
+- [Benchmarks](docs/benchmarks.md) — Latency and throughput numbers
+- [Kubernetes](docs/kubernetes.md) — StatefulSet, Ingress, backups
+- [Troubleshooting](docs/troubleshooting.md) — Common issues
+- [Grafana Dashboard](docs/grafana/) — Prometheus dashboard + alerts
+- [Contributing](docs/contributing.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
