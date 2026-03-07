@@ -4,8 +4,26 @@
 
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/phenomenon0/vectordb)](https://github.com/phenomenon0/vectordb/releases/latest)
 
 DeepData is a vector database written in Go that ships as a single binary with an embedded web UI. HNSW, IVF, DiskANN indexes. Hybrid dense+sparse search. SIMD-accelerated distance functions. Runs locally, scales to clusters.
+
+## Download
+
+Pre-built binaries — no Go toolchain required:
+
+| Platform | Download |
+|----------|----------|
+| Linux x86_64 | [deepdata-linux-amd64](https://github.com/phenomenon0/vectordb/releases/latest/download/deepdata-linux-amd64) |
+| macOS x86_64 | [deepdata-darwin-amd64](https://github.com/phenomenon0/vectordb/releases/latest/download/deepdata-darwin-amd64) |
+| macOS ARM (Apple Silicon) | [deepdata-darwin-arm64](https://github.com/phenomenon0/vectordb/releases/latest/download/deepdata-darwin-arm64) |
+| Windows x86_64 | [deepdata-windows-amd64.exe](https://github.com/phenomenon0/vectordb/releases/latest/download/deepdata-windows-amd64.exe) |
+
+```bash
+# Linux/macOS: download, make executable, run
+chmod +x deepdata-linux-amd64
+./deepdata-linux-amd64 serve
+```
 
 ## Quick Start
 

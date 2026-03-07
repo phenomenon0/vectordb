@@ -10,10 +10,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/phenomenon0/vectordb/internal/filter"
-	"golang.org/x/sys/unix"
 )
 
 // DiskANNIndex implements a memory-mapped disk-backed vector index
@@ -208,25 +206,13 @@ func (d *DiskANNIndex) initMmap() error {
 	}
 
 	// Memory map the file
-	data, err := syscall.Mmap(
-		int(d.mmapFile.Fd()),
-		0,
-		int(initialSize),
-		syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_SHARED,
-	)
+	data, err := mmapCreate(int(d.mmapFile.Fd()), int(initialSize))
 	if err != nil {
-		return fmt.Errorf("failed to mmap file: %w", err)
+		return err
 	}
 
 	d.mmapData = data
 	d.mmapOffset = 0
-
-	// Apply madvise hints for random access pattern (typical for graph search)
-	if err := unix.Madvise(d.mmapData, unix.MADV_RANDOM); err != nil {
-		// Non-fatal, just a hint
-		_ = err
-	}
 
 	return nil
 }
@@ -373,7 +359,7 @@ func (d *DiskANNIndex) writeToDisk(id uint64, vector []float32) error {
 // growMmap doubles the size of the memory-mapped file
 func (d *DiskANNIndex) growMmap() error {
 	// Unmap current mapping
-	if err := syscall.Munmap(d.mmapData); err != nil {
+	if err := mmapUnmap(d.mmapData); err != nil {
 		return fmt.Errorf("failed to unmap: %w", err)
 	}
 
@@ -390,15 +376,9 @@ func (d *DiskANNIndex) growMmap() error {
 	}
 
 	// Remap with new size
-	data, err := syscall.Mmap(
-		int(d.mmapFile.Fd()),
-		0,
-		int(newSize),
-		syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_SHARED,
-	)
+	data, err := mmapCreate(int(d.mmapFile.Fd()), int(newSize))
 	if err != nil {
-		return fmt.Errorf("failed to remap: %w", err)
+		return err
 	}
 
 	d.mmapData = data
@@ -856,7 +836,7 @@ func (d *DiskANNIndex) Export() ([]byte, error) {
 	defer d.mu.RUnlock()
 
 	// Flush mmap to ensure disk consistency
-	if err := unix.Msync(d.mmapData, unix.MS_SYNC); err != nil {
+	if err := mmapSync(d.mmapData); err != nil {
 		return nil, fmt.Errorf("failed to sync mmap: %w", err)
 	}
 
@@ -1138,7 +1118,7 @@ func (d *DiskANNIndex) Close() error {
 	defer d.mu.Unlock()
 
 	if d.mmapData != nil {
-		if err := syscall.Munmap(d.mmapData); err != nil {
+		if err := mmapUnmap(d.mmapData); err != nil {
 			return fmt.Errorf("failed to unmap: %w", err)
 		}
 		d.mmapData = nil

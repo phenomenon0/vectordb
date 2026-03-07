@@ -7,7 +7,6 @@ import (
 	"math"
 	"os"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -116,12 +115,11 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 	}
 
 	// Memory-map the temp file
-	tempData, err := syscall.Mmap(int(tempFile.Fd()), 0, int(initialSize),
-		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	tempData, err := mmapCreate(int(tempFile.Fd()), int(initialSize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to mmap temp file: %w", err)
 	}
-	defer syscall.Munmap(tempData)
+	defer mmapUnmap(tempData)
 
 	// Copy non-deleted vectors to temp file
 	newOffset := int64(0)
@@ -200,13 +198,12 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 			recordSize := int64(8 + 4 + len(quantized)) // ID + length + data
 			if newOffset+recordSize > int64(len(tempData)) {
 				// Need to grow temp mmap
-				syscall.Munmap(tempData)
+				mmapUnmap(tempData)
 				newSize := newOffset * 2
 				if err := tempFile.Truncate(newSize); err != nil {
 					return nil, fmt.Errorf("failed to grow temp file: %w", err)
 				}
-				tempData, err = syscall.Mmap(int(tempFile.Fd()), 0, int(newSize),
-					syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+				tempData, err = mmapCreate(int(tempFile.Fd()), int(newSize))
 				if err != nil {
 					return nil, fmt.Errorf("failed to remap temp file: %w", err)
 				}
@@ -223,13 +220,12 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 			// Write unquantized data
 			recordSize := int64(8 + d.dim*4) // ID + vector
 			if newOffset+recordSize > int64(len(tempData)) {
-				syscall.Munmap(tempData)
+				mmapUnmap(tempData)
 				newSize := newOffset * 2
 				if err := tempFile.Truncate(newSize); err != nil {
 					return nil, fmt.Errorf("failed to grow temp file: %w", err)
 				}
-				tempData, err = syscall.Mmap(int(tempFile.Fd()), 0, int(newSize),
-					syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+				tempData, err = mmapCreate(int(tempFile.Fd()), int(newSize))
 				if err != nil {
 					return nil, fmt.Errorf("failed to remap temp file: %w", err)
 				}
@@ -247,7 +243,7 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 	}
 
 	// Sync temp file
-	if err := syscall.Munmap(tempData); err != nil {
+	if err := mmapUnmap(tempData); err != nil {
 		return nil, fmt.Errorf("failed to unmap temp file: %w", err)
 	}
 	if err := tempFile.Sync(); err != nil {
@@ -262,7 +258,7 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 
 	// Unmap old file
 	if d.mmapData != nil {
-		if err := syscall.Munmap(d.mmapData); err != nil {
+		if err := mmapUnmap(d.mmapData); err != nil {
 			return nil, fmt.Errorf("failed to unmap old file: %w", err)
 		}
 		d.mmapData = nil
@@ -297,8 +293,7 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 	}
 
 	if fileInfo.Size() > 0 {
-		mmapData, err := syscall.Mmap(int(file.Fd()), 0, int(fileInfo.Size()),
-			syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		mmapData, err := mmapCreate(int(file.Fd()), int(fileInfo.Size()))
 		if err != nil {
 			file.Close()
 			return nil, fmt.Errorf("failed to mmap compacted file: %w", err)
