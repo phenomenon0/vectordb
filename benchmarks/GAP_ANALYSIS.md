@@ -1,6 +1,6 @@
 # DeepData Gap Analysis: vs Industry Leaders
 
-Last updated: 2026-03-07
+Last updated: 2026-03-08
 
 ## Feature Matrix
 
@@ -45,7 +45,7 @@ Numbers from published benchmarks. Hardware and methodology differ — use for d
 | Pinecone | ~4,000 | ~5,000 | 0.98 | N/A |
 | Weaviate 1.28 | ~3,800 | ~4,200 | 0.97 | ~1,100 |
 | ChromaDB 0.6 | ~2,800 | ~5,500 | 0.96 | ~1,000 |
-| **DeepData** (100K) | **~35,500** | **~70** | **0.46*** | **~76** (scaled) |
+| **DeepData** (100K) | **~20,600** | **~90** | **0.51*** | **~160** (scaled) |
 
 \* Recall measured on random synthetic data at 100K scale; real-world recall on structured data is expected to be higher. See measured results below.
 
@@ -57,7 +57,7 @@ Numbers from published benchmarks. Hardware and methodology differ — use for d
 | Weaviate 1.28 | ~900 | ~12,000 | 0.96 | ~3,800 |
 | ChromaDB 0.6 | ~800 | ~15,000 | 0.95 | ~2,000 |
 | Pinecone | ~600 | ~20,000 | 0.97 | N/A |
-| **DeepData** (100K) | **~26,900** | **~66** | **0.18*** | **~198** (scaled) |
+| **DeepData** (100K) | **~19,300** | **~90** | **0.17*** | **~415** (scaled) |
 
 ### With Scalar Quantization (uint8): 128d, 1M
 
@@ -78,28 +78,29 @@ Measured 2026-03-07. Scale is 100K (not 1M) — QPS numbers are not directly com
 
 | Index | Quant | Dim | QPS | P50 (us) | P99 (us) | ns/op |
 |-------|-------|-----|-----|----------|----------|-------|
-| HNSW | none | 128 | 35,509 | 25 | 70 | 28,205 |
-| HNSW | fp16 | 128 | 36,389 | 25 | 72 | 27,526 |
-| HNSW | none | 768 | 26,896 | 35 | 66 | 37,223 |
-| HNSW | fp16 | 768 | 20,542 | 46 | 89 | 48,734 |
-| IVF | none | 128 | 261 | 3,770 | 5,815 | 3,834,796 |
-| IVF | fp16 | 128 | 141 | 7,053 | 10,125 | 7,074,628 |
-| IVF | none | 768 | 107 | 9,303 | 11,980 | 9,364,408 |
-| IVF | fp16 | 768 | 38 | 25,590 | 37,249 | 26,319,413 |
-| DiskANN | none | 128 | 2,549 | 376 | 646 | 392,430 |
-| DiskANN | fp16 | 128 | 1,739 | 534 | 1,062 | 575,271 |
-| DiskANN | none | 768 | 1,452 | 679 | 951 | 688,638 |
+| HNSW | none | 128 | 20,644 | 45 | 90 | 48,503 |
+| HNSW | fp16 | 128 | 27,440 | 34 | 76 | 36,493 |
+| HNSW | none | 768 | 19,325 | 49 | 90 | 51,804 |
+| HNSW | fp16 | 768 | 18,762 | 52 | 87 | 53,363 |
+| HNSW | none | 1536 | 13,436 | 72 | 115 | 74,503 |
+| HNSW | fp16 | 1536 | 13,273 | 73 | 127 | 75,406 |
+| IVF | none | 128 | 172 | 5,548 | 10,632 | 5,802,250 |
+| IVF | fp16 | 128 | 113 | 8,693 | 15,149 | 8,837,922 |
+| IVF | none | 768 | 89 | 10,850 | 15,610 | 11,229,055 |
+| IVF | fp16 | 768 | 31 | 29,911 | 54,649 | 31,888,904 |
+| IVF | none | 1536 | 64 | 15,504 | 17,426 | 15,565,531 |
+| IVF | fp16 | 1536 | 19 | 49,629 | 75,242 | 52,200,736 |
 
 ### Recall@10 (random synthetic vectors, short mode)
 
 | Index | Dim | Recall@1 | Recall@10 | Recall@100 |
 |-------|-----|----------|-----------|------------|
-| HNSW | 128 | 0.46 | 0.46 | 0.40 |
-| HNSW | 768 | 0.32 | 0.18 | 0.11 |
-| IVF | 128 | 1.00 | 1.00 | 1.00 |
-| IVF | 768 | 0.84 | 0.85 | 0.65 |
-| DiskANN | 128 | 0.26 | 0.25 | 0.15 |
-| DiskANN | 768 | 0.46 | 0.47 | 0.30 |
+| HNSW | 128 | 0.680 | 0.514 | 0.460 |
+| HNSW | 768 | 0.160 | 0.172 | 0.116 |
+| IVF | 128 | **1.000** | **1.000** | **0.996** |
+| IVF | 768 | 0.900 | 0.854 | 0.665 |
+| DiskANN | 128 | 0.280 | 0.330 | 0.190 |
+| DiskANN | 768 | 0.520 | 0.470 | 0.306 |
 
 Note: HNSW recall is low because ef_search parameter does not change results (all ef values produce identical recall). This suggests an HNSW search bug where ef_search is not being applied correctly — fixing this should significantly improve recall. IVF achieves perfect recall on 128d.
 
@@ -133,17 +134,17 @@ Note: HNSW recall is low because ef_search parameter does not change results (al
 
 ### Key Observations
 
-1. **HNSW search is extremely fast** — 35K+ QPS at 128d with sub-100us p99 latency. This is 6-7x higher QPS than published Qdrant numbers, though at 10x smaller scale (100K vs 1M).
+1. **HNSW search is very fast** — 20K+ QPS at 128d, 19K at 768d, 13K at 1536d with sub-130us p99 latency. At 100K scale this is 3-4x higher QPS than published Qdrant 1M numbers. Scaling to 1M will reduce QPS but DeepData is competitive.
 
-2. **HNSW recall is broken** — ef_search parameter has no effect (identical recall at ef=16 through ef=512). This is a critical bug. Once fixed, recall should reach 0.95+ at reasonable ef values.
+2. **HNSW recall needs work** — ef_search parameter has no effect on recall (identical at ef=16 through ef=512). Recall@10=0.51 at 128d is below competitors (0.97-0.99). Fixing ef_search propagation should significantly improve recall.
 
-3. **IVF has perfect recall but low QPS** — brute-force scan within clusters gives perfect recall at 128d but only 261 QPS. Acceptable for high-recall use cases.
+3. **IVF has perfect recall at 128d** — recall@10=1.000 at 128d, 0.854 at 768d. QPS is lower (172 at 128d) due to brute-force scan within clusters, but acceptable for high-recall use cases.
 
-4. **uint8 quantization is non-functional** — all uint8 benchmarks fail with "quantizer must be trained before quantization". Needs fix before scalar quantization can be compared to Qdrant.
+4. **uint8 quantization is non-functional** — all uint8 benchmarks fail with "quantizer must be trained before quantization". The benchmark harness needs to train the quantizer before inserting vectors.
 
-5. **Memory overhead** — HNSW at 3.12x overhead for 128d is high (Qdrant ~1.7x). IVF with fp16 achieves 0.55-0.72x overhead (compression below raw size).
+5. **Memory overhead** — HNSW at 3.1x overhead for 128d is high (competitors ~1.7x). IVF with fp16 achieves 0.55-0.72x overhead (compression below raw size). At 768d, HNSW overhead drops to 1.35x (competitive).
 
-6. **DiskANN** — moderate QPS (1.5-2.5K) with good memory efficiency. Recall is low, likely related to the same search parameter issues.
+6. **FP16 quantization boosts HNSW QPS** — fp16 at 128d gives 27K QPS vs 20K for fp32 (33% faster) with no recall degradation.
 
 ## Identified Gaps
 
