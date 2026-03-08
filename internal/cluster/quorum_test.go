@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/phenomenon0/vectordb/internal/testutil"
 )
 
 // ===========================================================================================
@@ -478,7 +479,7 @@ func TestVoteState(t *testing.T) {
 // TestRequestQuorumWithMockedPeers tests quorum with mock HTTP peers
 func TestRequestQuorumWithMockedPeers(t *testing.T) {
 	// Create mock peer servers
-	approveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	approveServer := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req VoteRequest
 		json.NewDecoder(r.Body).Decode(&req)
 		resp := VoteResponse{
@@ -489,9 +490,8 @@ func TestRequestQuorumWithMockedPeers(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(resp)
 	}))
-	defer approveServer.Close()
 
-	rejectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	rejectServer := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req VoteRequest
 		json.NewDecoder(r.Body).Decode(&req)
 		resp := VoteResponse{
@@ -502,7 +502,6 @@ func TestRequestQuorumWithMockedPeers(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(resp)
 	}))
-	defer rejectServer.Close()
 
 	t.Run("quorum reached with approvals", func(t *testing.T) {
 		qv := NewQuorumVoter("coord-1", []string{approveServer.URL, approveServer.URL})

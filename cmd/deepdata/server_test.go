@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/phenomenon0/vectordb/client"
+	"github.com/phenomenon0/vectordb/internal/testutil"
 )
 
 type testEmbedder struct {
@@ -67,8 +68,7 @@ func TestHTTPHandlersInsertQueryDelete(t *testing.T) {
 	reranker := &SimpleReranker{Embedder: embedder}
 
 	handler := newHTTPHandler(store, embedder, reranker, indexPath)
-	srv := httptest.NewServer(handler)
-	defer srv.Close()
+	srv := testutil.NewLoopbackServer(t, handler)
 
 	cli := client.New(srv.URL)
 

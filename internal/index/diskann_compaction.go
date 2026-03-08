@@ -232,6 +232,7 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 			}
 
 			// Write: ID + vector
+			newOffsetIndex[id] = newOffset
 			binary.LittleEndian.PutUint64(tempData[newOffset:], id)
 			for i, val := range vec {
 				bits := math.Float32bits(val)
@@ -305,13 +306,15 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 	d.mmapOffset = newOffset
 	if d.quantizer != nil {
 		d.diskOffsetIndex = newOffsetIndex
+	} else {
+		d.unquantizedOffsetIndex = newOffsetIndex
 	}
 
 	// Clear deleted vectors map and graph entries
 	for id := range d.deleted {
 		delete(d.memoryVectors, id)
 		delete(d.quantizedMemory, id)
-		delete(d.graph, id)  // Also remove from graph
+		delete(d.graph, id) // Also remove from graph
 	}
 	d.deleted = make(map[uint64]bool)
 	d.count -= deletedCount
@@ -329,14 +332,14 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 // BackgroundCompaction runs compaction in a background goroutine
 // It periodically checks if compaction is needed and runs it if necessary
 type BackgroundCompaction struct {
-	index      *DiskANNIndex
-	config     CompactionConfig
-	interval   time.Duration
-	stopChan   chan struct{}
+	index       *DiskANNIndex
+	config      CompactionConfig
+	interval    time.Duration
+	stopChan    chan struct{}
 	stoppedChan chan struct{}
-	mu         sync.Mutex
-	running    bool
-	lastStats  *CompactionStats
+	mu          sync.Mutex
+	running     bool
+	lastStats   *CompactionStats
 }
 
 // NewBackgroundCompaction creates a background compaction manager

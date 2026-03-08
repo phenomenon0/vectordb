@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/phenomenon0/vectordb/internal/testutil"
 )
 
 type mockStore struct {
@@ -272,7 +274,7 @@ func TestApplyEntriesUsesUpsertForUpserts(t *testing.T) {
 
 func TestFollowerPollAppliesAllReturnedEntriesAcrossBatches(t *testing.T) {
 	store := newMockStore(2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("since"); got != "0" {
 			t.Fatalf("expected first poll to request since=0, got %s", got)
 		}
@@ -288,7 +290,6 @@ func TestFollowerPollAppliesAllReturnedEntriesAcrossBatches(t *testing.T) {
 			t.Fatalf("encode failed: %v", err)
 		}
 	}))
-	defer server.Close()
 
 	replicator := NewFollowerReplicator(&ShardServer{store: store}, FollowerReplicatorConfig{
 		PrimaryAddr:          server.URL,
@@ -363,7 +364,7 @@ func TestRequestFullSyncUpdatesLagStateWithoutUnderflow(t *testing.T) {
 	}
 	snapshot.Checksum = snapshot.computeChecksum()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer secret" {
 			t.Fatalf("expected auth header, got %q", got)
 		}
@@ -371,7 +372,6 @@ func TestRequestFullSyncUpdatesLagStateWithoutUnderflow(t *testing.T) {
 			t.Fatalf("encode failed: %v", err)
 		}
 	}))
-	defer server.Close()
 
 	replicator := NewFollowerReplicator(&ShardServer{store: newMockStore(2)}, FollowerReplicatorConfig{
 		PrimaryAddr: server.URL,

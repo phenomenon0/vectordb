@@ -4,15 +4,16 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/phenomenon0/vectordb/internal/testutil"
 )
 
 func TestInsertSetsHeadersAndParsesResponse(t *testing.T) {
 	var sawAuth, sawCustom bool
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/insert" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -29,7 +30,6 @@ func TestInsertSetsHeadersAndParsesResponse(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"abc"}`))
 	}))
-	defer ts.Close()
 
 	c := New(ts.URL, WithToken("tok"), WithHeader("X-Custom", "yes"))
 	resp, err := c.Insert(context.Background(), InsertRequest{Doc: "hello"})
@@ -45,7 +45,7 @@ func TestInsertSetsHeadersAndParsesResponse(t *testing.T) {
 }
 
 func TestQueryParsesBody(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/query" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -56,7 +56,6 @@ func TestQueryParsesBody(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ids":["1"],"docs":["d"],"scores":[0.9],"stats":"ok"}`))
 	}))
-	defer ts.Close()
 
 	min := 0.1
 	max := 1.0
@@ -85,11 +84,10 @@ func TestQueryParsesBody(t *testing.T) {
 }
 
 func TestHTTPErrorSurface(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("boom"))
 	}))
-	defer ts.Close()
 
 	c := New(ts.URL)
 	_, err := c.Delete(context.Background(), DeleteRequest{ID: "x"})
