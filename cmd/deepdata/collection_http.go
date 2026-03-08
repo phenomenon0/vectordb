@@ -15,14 +15,16 @@ import (
 
 // CollectionHTTPServer wraps CollectionManager for HTTP API access
 type CollectionHTTPServer struct {
-	manager    *vcollection.CollectionManager
-	graphIndex *graph.GraphIndex // Optional GraphRAG index for graph-boosted search
+	manager       *vcollection.CollectionManager
+	tenantManager *vcollection.TenantManager   // Multi-tenant collection manager
+	graphIndex    *graph.GraphIndex             // Optional GraphRAG index for graph-boosted search
 }
 
 // NewCollectionHTTPServer creates a new HTTP server wrapper for CollectionManager
 func NewCollectionHTTPServer(storagePath string) *CollectionHTTPServer {
 	return &CollectionHTTPServer{
-		manager: vcollection.NewCollectionManager(storagePath),
+		manager:       vcollection.NewCollectionManager(storagePath),
+		tenantManager: vcollection.NewTenantManager(storagePath),
 	}
 }
 
@@ -42,6 +44,10 @@ func (s *CollectionHTTPServer) RegisterHandlers(mux *http.ServeMux, guard func(h
 	mux.HandleFunc("/v2/insert/batch", guard(s.handleBatchInsert)) // True batch insert
 	mux.HandleFunc("/v2/search", guard(s.handleSearch))
 	mux.HandleFunc("/v2/delete", guard(s.handleDelete))
+
+	// Multi-tenant endpoints (v3)
+	// Tenant collection management
+	mux.HandleFunc("/v3/tenants/", guard(s.handleTenantRoutes))
 }
 
 // handleCollections handles POST (create) and GET (list) on /v2/collections
@@ -681,5 +687,382 @@ func (s *CollectionHTTPServer) handleDelete(w http.ResponseWriter, r *http.Reque
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "success",
 		"message": fmt.Sprintf("document %d deleted from collection %s", req.DocID, req.CollectionName),
+	})
+}
+
+// ======================================================================================
+// MULTI-TENANT ROUTES (v3)
+// URL pattern: /v3/tenants/{tenant_id}/collections[/{name}[/docs|/search]]
+//
+// The tenant ID comes from the URL path. This provides hard namespace isolation:
+// each tenant has its own independent set of collections.
+// ======================================================================================
+
+// handleTenantRoutes is the top-level router for /v3/tenants/...
+func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http.Request) {
+	// Parse: /v3/tenants/{tenant_id}/collections[/{name}[/docs|/search]]
+	path := strings.TrimPrefix(r.URL.Path, "/v3/tenants/")
+	parts := strings.SplitN(path, "/", 5) // tenant_id / collections / name / operation / ...
+
+	if len(parts) < 1 || parts[0] == "" {
+		http.Error(w, "tenant ID required in URL path", http.StatusBadRequest)
+		return
+	}
+
+	tenantID := parts[0]
+
+	// Also accept X-Tenant-ID header as override (useful for proxied requests)
+	if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
+		tenantID = headerTenant
+	}
+
+	// Validate tenant ID format
+	if !isValidTenantID(tenantID) {
+		http.Error(w, "invalid tenant ID: must be 1-64 alphanumeric/hyphen/underscore characters", http.StatusBadRequest)
+		return
+	}
+
+	// /v3/tenants/{tenant_id} — tenant info
+	if len(parts) == 1 {
+		s.handleTenantInfo(w, r, tenantID)
+		return
+	}
+
+	// Must be /v3/tenants/{tenant_id}/collections[/...]
+	if parts[1] != "collections" {
+		http.Error(w, "unknown resource; expected 'collections'", http.StatusNotFound)
+		return
+	}
+
+	// /v3/tenants/{tenant_id}/collections — list or create
+	if len(parts) == 2 {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleTenantListCollections(w, r, tenantID)
+		case http.MethodPost:
+			s.handleTenantCreateCollection(w, r, tenantID)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	collectionName := parts[2]
+	if collectionName == "" {
+		http.Error(w, "collection name required", http.StatusBadRequest)
+		return
+	}
+
+	// /v3/tenants/{tenant_id}/collections/{name} — get or delete
+	if len(parts) == 3 {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleTenantGetCollection(w, r, tenantID, collectionName)
+		case http.MethodDelete:
+			s.handleTenantDeleteCollection(w, r, tenantID, collectionName)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	// /v3/tenants/{tenant_id}/collections/{name}/{operation}
+	operation := parts[3]
+	switch operation {
+	case "docs":
+		s.handleTenantDocs(w, r, tenantID, collectionName)
+	case "search":
+		s.handleTenantSearch(w, r, tenantID, collectionName)
+	default:
+		http.Error(w, fmt.Sprintf("unknown operation: %s", operation), http.StatusNotFound)
+	}
+}
+
+// isValidTenantID checks if a tenant ID is valid.
+func isValidTenantID(id string) bool {
+	if len(id) == 0 || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// handleTenantInfo returns info about a tenant (collection count, stats).
+func (s *CollectionHTTPServer) handleTenantInfo(w http.ResponseWriter, r *http.Request, tenantID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stats, err := s.tenantManager.GetTenantStats(tenantID)
+	if err != nil {
+		// Tenant with no collections yet is not an error — return empty stats
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":           "success",
+			"tenant_id":        tenantID,
+			"collection_count": 0,
+			"total_documents":  0,
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":           "success",
+		"tenant_id":        tenantID,
+		"collection_count": stats.CollectionCount,
+		"total_documents":  stats.TotalDocuments,
+		"collections":      stats.Collections,
+	})
+}
+
+// handleTenantCreateCollection creates a collection for a tenant.
+func (s *CollectionHTTPServer) handleTenantCreateCollection(w http.ResponseWriter, r *http.Request, tenantID string) {
+	var schema vcollection.CollectionSchema
+	if err := json.NewDecoder(r.Body).Decode(&schema); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	if _, err := s.tenantManager.CreateCollection(ctx, tenantID, schema); err != nil {
+		http.Error(w, fmt.Sprintf("failed to create collection: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"tenant_id": tenantID,
+		"message":   fmt.Sprintf("collection %q created for tenant %q", schema.Name, tenantID),
+	})
+}
+
+// handleTenantListCollections lists all collections for a tenant.
+func (s *CollectionHTTPServer) handleTenantListCollections(w http.ResponseWriter, r *http.Request, tenantID string) {
+	infos := s.tenantManager.ListCollectionInfos(tenantID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":      "success",
+		"tenant_id":   tenantID,
+		"count":       len(infos),
+		"collections": infos,
+	})
+}
+
+// handleTenantGetCollection returns info about a specific tenant collection.
+func (s *CollectionHTTPServer) handleTenantGetCollection(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
+	info, err := s.tenantManager.GetCollectionInfo(tenantID, collectionName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("collection not found: %v", err), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":     "success",
+		"tenant_id":  tenantID,
+		"collection": info,
+	})
+}
+
+// handleTenantDeleteCollection deletes a collection belonging to a tenant.
+func (s *CollectionHTTPServer) handleTenantDeleteCollection(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
+	ctx := r.Context()
+	if err := s.tenantManager.DeleteCollection(ctx, tenantID, collectionName); err != nil {
+		http.Error(w, fmt.Sprintf("failed to delete collection: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"tenant_id": tenantID,
+		"message":   fmt.Sprintf("collection %q deleted for tenant %q", collectionName, tenantID),
+	})
+}
+
+// handleTenantDocs handles document insert/delete for a tenant collection.
+// POST = insert, DELETE = delete
+func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
+	switch r.Method {
+	case http.MethodPost:
+		// Insert document
+		var req struct {
+			Vectors  map[string]interface{} `json:"vectors"`
+			Metadata map[string]interface{} `json:"metadata,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if len(req.Vectors) == 0 {
+			http.Error(w, "at least one vector required", http.StatusBadRequest)
+			return
+		}
+
+		// Convert vectors (reuse same format as v2)
+		vectors := make(map[string]interface{})
+		for fieldName, vectorData := range req.Vectors {
+			if vecSlice, ok := vectorData.([]interface{}); ok {
+				denseVec := make([]float32, len(vecSlice))
+				for i, v := range vecSlice {
+					if f, ok := v.(float64); ok {
+						denseVec[i] = float32(f)
+					}
+				}
+				vectors[fieldName] = denseVec
+			} else if vecMap, ok := vectorData.(map[string]interface{}); ok {
+				if _, hasIndices := vecMap["indices"]; hasIndices {
+					indicesSlice, ok1 := vecMap["indices"].([]interface{})
+					values, ok2 := vecMap["values"].([]interface{})
+					dim, ok3 := vecMap["dim"].(float64)
+					if !ok1 || !ok2 || !ok3 {
+						http.Error(w, fmt.Sprintf("invalid sparse vector for field %s", fieldName), http.StatusBadRequest)
+						return
+					}
+					uint32Indices := make([]uint32, len(indicesSlice))
+					for i, v := range indicesSlice {
+						if f, ok := v.(float64); ok {
+							uint32Indices[i] = uint32(f)
+						}
+					}
+					float32Values := make([]float32, len(values))
+					for i, v := range values {
+						if f, ok := v.(float64); ok {
+							float32Values[i] = float32(f)
+						}
+					}
+					sparseVec, err := sparse.NewSparseVector(uint32Indices, float32Values, int(dim))
+					if err != nil {
+						http.Error(w, fmt.Sprintf("invalid sparse vector: %v", err), http.StatusBadRequest)
+						return
+					}
+					vectors[fieldName] = sparseVec
+				}
+			}
+		}
+
+		doc := vcollection.Document{
+			Vectors:  vectors,
+			Metadata: req.Metadata,
+		}
+
+		ctx := r.Context()
+		if err := s.tenantManager.AddDocument(ctx, tenantID, collectionName, doc); err != nil {
+			http.Error(w, fmt.Sprintf("failed to add document: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":    "success",
+			"tenant_id": tenantID,
+			"id":        doc.ID,
+			"message":   "document added",
+		})
+
+	case http.MethodDelete:
+		var req struct {
+			DocID uint64 `json:"doc_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.DocID == 0 {
+			http.Error(w, "doc_id required", http.StatusBadRequest)
+			return
+		}
+
+		ctx := r.Context()
+		if err := s.tenantManager.DeleteDocument(ctx, tenantID, collectionName, req.DocID); err != nil {
+			http.Error(w, fmt.Sprintf("failed to delete document: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":    "success",
+			"tenant_id": tenantID,
+			"message":   fmt.Sprintf("document %d deleted", req.DocID),
+		})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleTenantSearch performs a search on a tenant's collection.
+func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Queries      map[string]interface{}          `json:"queries"`
+		TopK         int                             `json:"top_k"`
+		Filters      map[string]interface{}          `json:"filters,omitempty"`
+		HybridParams *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Queries) == 0 {
+		http.Error(w, "at least one query vector required", http.StatusBadRequest)
+		return
+	}
+	if req.TopK <= 0 {
+		req.TopK = 10
+	}
+
+	// Convert query vectors
+	queries := make(map[string]interface{})
+	for fieldName, vectorData := range req.Queries {
+		if vecSlice, ok := vectorData.([]interface{}); ok {
+			denseVec := make([]float32, len(vecSlice))
+			for i, v := range vecSlice {
+				if f, ok := v.(float64); ok {
+					denseVec[i] = float32(f)
+				}
+			}
+			queries[fieldName] = denseVec
+		}
+	}
+
+	searchReq := vcollection.SearchRequest{
+		CollectionName: collectionName,
+		Queries:        queries,
+		TopK:           req.TopK,
+		Filters:        req.Filters,
+		HybridParams:   req.HybridParams,
+	}
+
+	ctx := r.Context()
+	resp, err := s.tenantManager.SearchCollection(ctx, tenantID, searchReq)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("search failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":              "success",
+		"tenant_id":           tenantID,
+		"documents":           resp.Documents,
+		"scores":              resp.Scores,
+		"candidates_examined": resp.CandidatesExamined,
 	})
 }

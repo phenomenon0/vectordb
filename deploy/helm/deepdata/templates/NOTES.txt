@@ -1,0 +1,26 @@
+DeepData vector database has been deployed.
+
+1. Get the application URL:
+{{- if eq .Values.service.type "ClusterIP" }}
+  kubectl port-forward svc/{{ .Release.Name }}-deepdata {{ .Values.service.port }}:{{ .Values.service.port }}
+{{- else if eq .Values.service.type "NodePort" }}
+  export NODE_PORT=$(kubectl get svc {{ .Release.Name }}-deepdata -o jsonpath='{.spec.ports[0].nodePort}')
+  export NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if eq .Values.service.type "LoadBalancer" }}
+  export SERVICE_IP=$(kubectl get svc {{ .Release.Name }}-deepdata -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  echo http://$SERVICE_IP:{{ .Values.service.port }}
+{{- end }}
+
+2. Check health:
+  curl http://localhost:{{ .Values.service.port }}/health
+
+3. Insert a vector:
+  curl -X POST http://localhost:{{ .Values.service.port }}/insert \
+    -H 'Content-Type: application/json' \
+    -d '{"text": "hello world", "collection": "default"}'
+
+4. Query vectors:
+  curl -X POST http://localhost:{{ .Values.service.port }}/query \
+    -H 'Content-Type: application/json' \
+    -d '{"text": "hello", "collection": "default", "top_k": 5}'

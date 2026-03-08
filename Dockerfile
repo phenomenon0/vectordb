@@ -1,3 +1,8 @@
+# ============================================================================
+# DeepData Vector Database — Multi-stage Docker Build
+# ============================================================================
+
+# --- Build stage ---
 FROM golang:1.24-bookworm AS builder
 
 WORKDIR /src
@@ -9,33 +14,38 @@ RUN go mod download
 # Copy source
 COPY . .
 
-# Build vectordb binary (static, no CGO for portability)
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
-    -o /out/vectordb ./cmd/deepdata/
+# Build with CGO enabled (required for go-sqlite3 cost tracker)
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && \
+    CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/deepdata ./cmd/deepdata/
 
-# --- Runtime ---
+# --- Runtime stage ---
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
-RUN useradd -r -s /bin/false -d /data vectordb && \
-    mkdir -p /data && chown vectordb:vectordb /data
+RUN useradd -r -s /bin/false -d /data deepdata && \
+    mkdir -p /data && chown deepdata:deepdata /data
 
-COPY --from=builder /out/vectordb /usr/local/bin/vectordb
+COPY --from=builder /out/deepdata /usr/local/bin/deepdata
 
-USER vectordb
+USER deepdata
 WORKDIR /data
 
 # Default environment
 ENV PORT=8080
-ENV DATA_DIR=/data
-ENV LOG_LEVEL=info
+ENV VECTORDB_BASE_DIR=/data
+ENV VECTORDB_MODE=local
+ENV LOG_FORMAT=json
+ENV USE_HASH_EMBEDDER=1
+ENV VECTOR_CAPACITY=1000
+ENV HYDRATION_COUNT=0
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:${PORT}/health || exit 1
 
-ENTRYPOINT ["vectordb"]
+ENTRYPOINT ["deepdata"]

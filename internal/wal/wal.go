@@ -225,11 +225,20 @@ func (w *WAL) recover() error {
 	sort.Slice(segments, func(i, j int) bool { return segments[i] < segments[j] })
 	w.segmentNum = segments[len(segments)-1]
 
-	// Scan the latest segment to find the last LSN
-	latestPath := w.segmentPath(w.segmentNum)
-	lastLSN, err := w.scanSegmentForLastLSN(latestPath)
-	if err != nil {
-		return fmt.Errorf("failed to scan latest segment: %w", err)
+	// Scan segments in reverse order to find the last LSN.
+	// The latest segment may be empty (e.g., crash right after rotation),
+	// so we walk backwards until we find a segment with entries.
+	var lastLSN uint64
+	for i := len(segments) - 1; i >= 0; i-- {
+		path := w.segmentPath(segments[i])
+		lsn, err := w.scanSegmentForLastLSN(path)
+		if err != nil {
+			continue
+		}
+		if lsn > 0 {
+			lastLSN = lsn
+			break
+		}
 	}
 	w.lsn = lastLSN
 

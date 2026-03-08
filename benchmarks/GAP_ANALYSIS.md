@@ -25,12 +25,12 @@ Last updated: 2026-03-08
 | **Data Management** | | | | | | |
 | Export/Import | Yes | Yes | Yes | Yes | Yes | Yes |
 | Delete | Yes | Yes | Yes | Yes | Yes | Yes |
-| Multi-tenancy | Partial | Yes | Yes | Yes | Yes | Yes |
+| Multi-tenancy | Yes | Yes | Yes | Yes | Yes | Yes |
 | **Operations** | | | | | | |
 | Horizontal scaling | No | Yes | Yes | Yes | No | Yes |
 | Replication | No | Yes | Yes | Yes | No | Yes |
-| WAL/durability | Partial | Yes | Yes | Yes | Yes | Yes |
-| Monitoring/metrics | Partial | Yes | Yes | Yes | Partial | Yes |
+| WAL/durability | Yes | Yes | Yes | Yes | Yes | Yes |
+| Monitoring/metrics | Yes | Yes | Yes | Yes | Partial | Yes |
 
 ## Performance Comparison (Directional)
 
@@ -154,15 +154,15 @@ Note: HNSW recall fixed (2026-03-08). Four bugs found and fixed: (1) pointer typ
 
 2. **No replication** — Single point of failure. Qdrant, Milvus, and Weaviate all support automatic replication.
 
-3. **WAL durability** — Partial implementation. Crash recovery not fully tested under concurrent write loads.
+3. ~~**WAL durability**~~ DONE — 16 crash recovery tests added, LSN recovery bug fixed.
 
 ### Important Gaps (limiting adoption)
 
-4. **Multi-tenancy** — No native tenant isolation. Competitors offer collection-level or namespace-level isolation with separate resource accounting.
+4. ~~**Multi-tenancy**~~ DONE — TenantManager with namespace isolation, V3 tenant-aware API routes.
 
-5. **Monitoring** — No Prometheus/OpenTelemetry metrics export. SRE teams expect standard observability.
+5. ~~**Monitoring**~~ DONE — 7 Prometheus metrics (deepdata_*), /metrics endpoint, handler instrumentation.
 
-6. **Cloud-native deployment** — No Kubernetes operator, Helm chart, or Docker Compose setup.
+6. ~~**Cloud-native deployment**~~ DONE — Dockerfile, docker-compose.yml, Helm chart at deploy/helm/deepdata/.
 
 7. **Client SDKs** — Go client only. Competitors offer Python, JavaScript, Java, Rust SDKs.
 
@@ -192,9 +192,9 @@ Note: HNSW recall fixed (2026-03-08). Four bugs found and fixed: (1) pointer typ
 |----------|--------|--------|
 | P0 | ~~Fix HNSW ef_search bug~~ DONE — recall 0.51 → 0.99+ (4 bugs fixed) | Recall now competitive |
 | P0 | ~~Fix uint8 quantizer training~~ DONE — auto-train works | Scalar quant benchmarks enabled |
-| P0 | Complete WAL crash recovery testing | Required for production trust |
-| P1 | Add Prometheus metrics endpoint | SRE adoption requirement |
-| P1 | Implement collection-level multi-tenancy | Enterprise requirement |
+| P0 | ~~WAL crash recovery testing~~ DONE — 16 tests, LSN bug fix | Production trust established |
+| P1 | ~~Prometheus metrics~~ DONE — 7 metrics, /metrics endpoint | SRE-ready |
+| P1 | ~~Multi-tenancy~~ DONE — TenantManager, V3 API | Enterprise-ready |
 | P2 | Python SDK | 80%+ of vector DB users use Python |
-| P2 | Docker Compose + basic Helm chart | Cloud-native deployment |
+| P2 | ~~Docker/Helm~~ DONE — Dockerfile, compose, Helm chart | Cloud-native ready |
 | P3 | Distributed mode (sharding) | Scale beyond single machine |

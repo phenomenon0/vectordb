@@ -1,0 +1,44 @@
+# Build artifacts
+bin/
+deepdata
+*.exe
+
+# Data files (never bake into image)
+data/
+*.gob
+*.wal
+*.db
+
+# Development
+.git
+.github
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Tests and benchmarks
+benchmarks/
+tests/
+*_test.go
+
+# Documentation
+docs/
+*.md
+!go.mod
+!go.sum
+
+# Desktop app
+desktop/
+
+# Scripts
+scripts/
+
+# Tasks
+tasks/
+
+# Miscellaneous
+.env
+.env.*
+imgui.ini

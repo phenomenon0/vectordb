@@ -308,8 +308,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		logging.Default().Insert(r.Context(), id, req.Collection, len(vec), time.Since(start))
+		insertDur := time.Since(start)
+		logging.Default().Insert(r.Context(), id, req.Collection, len(vec), insertDur)
 		telemetry.RecordOK(span)
+		telemetry.InsertRequestsTotal.WithLabelValues("dense").Inc()
+		telemetry.InsertDurationSeconds.WithLabelValues("dense").Observe(insertDur.Seconds())
 		if err := encodeResponse(w, r, map[string]any{"id": id}); err != nil {
 			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
@@ -804,9 +807,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Record search results in span
+		searchDur := time.Since(searchStart)
 		telemetry.RecordSearchResults(span, len(respIDs), 0) // latency tracked by HTTP middleware
 		telemetry.RecordOK(span)
-		logging.Default().Search(r.Context(), req.Collection, req.TopK, len(respIDs), time.Since(searchStart))
+		telemetry.SearchRequestsTotal.WithLabelValues(req.Mode).Inc()
+		telemetry.SearchDurationSeconds.WithLabelValues(req.Mode).Observe(searchDur.Seconds())
+		logging.Default().Search(r.Context(), req.Collection, req.TopK, len(respIDs), searchDur)
 
 		// Select codec based on Accept header (JSON default, Cowrie opt-in)
 		responseCodec := codec.FromRequest(r)

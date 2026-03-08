@@ -1,0 +1,13 @@
+apiVersion: v2
+name: deepdata
+description: DeepData vector database — HNSW-based vector search with persistence
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - vectordb
+  - vector-search
+  - hnsw
+  - embeddings
+maintainers:
+  - name: phenomenon0
