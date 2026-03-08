@@ -166,12 +166,17 @@ func (n *layerNode[K]) search(
 		}
 	}
 
-	// Return only the best k results from the efSearch-sized result set.
-	all := result.Slice()
-	if len(all) > k {
-		all = all[:k]
+	// Return the best k results from the efSearch-sized result set.
+	// Pop from min-heap gives us elements in sorted order (closest first).
+	count := k
+	if result.Len() < count {
+		count = result.Len()
 	}
-	return all
+	out := make([]searchCandidate[K], count)
+	for i := 0; i < count; i++ {
+		out[i] = result.Pop()
+	}
+	return out
 }
 
 func (n *layerNode[K]) replenish(m int) {
