@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/phenomenon0/vectordb/internal/index"
 )
 
 func TestStoreAddSearchMetaAndDelete(t *testing.T) {
@@ -902,4 +906,120 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+type failingIndex struct {
+	addErr error
+}
+
+func (f *failingIndex) Name() string { return "failing" }
+
+func (f *failingIndex) Add(ctx context.Context, id uint64, vector []float32) error {
+	return f.addErr
+}
+
+func (f *failingIndex) Search(ctx context.Context, query []float32, k int, params index.SearchParams) ([]index.Result, error) {
+	return nil, nil
+}
+
+func (f *failingIndex) Delete(ctx context.Context, id uint64) error { return nil }
+
+func (f *failingIndex) Stats() index.IndexStats { return index.IndexStats{} }
+
+func (f *failingIndex) Export() ([]byte, error) { return nil, nil }
+
+func (f *failingIndex) Import(data []byte) error { return nil }
+
+func assertStoreEmpty(t *testing.T, vs *VectorStore) {
+	t.Helper()
+
+	if vs.Count != 0 {
+		t.Fatalf("expected empty store count, got %d", vs.Count)
+	}
+	if len(vs.Data) != 0 || len(vs.Docs) != 0 || len(vs.IDs) != 0 || len(vs.Seqs) != 0 {
+		t.Fatalf("expected no stored vectors, got data=%d docs=%d ids=%d seqs=%d", len(vs.Data), len(vs.Docs), len(vs.IDs), len(vs.Seqs))
+	}
+	if len(vs.idToIx) != 0 || len(vs.Meta) != 0 || len(vs.Coll) != 0 || len(vs.TenantID) != 0 {
+		t.Fatalf("expected no document mappings, got idToIx=%d meta=%d coll=%d tenants=%d", len(vs.idToIx), len(vs.Meta), len(vs.Coll), len(vs.TenantID))
+	}
+	if len(vs.lexTF) != 0 || len(vs.docLen) != 0 || len(vs.df) != 0 || vs.sumDocL != 0 {
+		t.Fatalf("expected lexical state rollback, got lexTF=%d docLen=%d df=%d sumDocL=%d", len(vs.lexTF), len(vs.docLen), len(vs.df), vs.sumDocL)
+	}
+}
+
+func TestAddRollsBackStateOnIndexFailure(t *testing.T) {
+	vs := NewVectorStore(10, 3)
+	vs.indexes["default"] = &failingIndex{addErr: errors.New("index add failure")}
+
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc", "id1", map[string]string{"tag": "a"}, "default", ""); err == nil {
+		t.Fatal("expected add to fail when index add fails")
+	}
+
+	assertStoreEmpty(t, vs)
+	if vs.next != 0 {
+		t.Fatalf("expected next counter rollback, got %d", vs.next)
+	}
+}
+
+func TestAddRollsBackStateOnWALError(t *testing.T) {
+	vs := NewVectorStore(10, 3)
+	vs.walPath = "/invalid/path/wal.log"
+
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc", "", map[string]string{"tag": "a"}, "default", ""); err == nil {
+		t.Fatal("expected add to fail when WAL append fails")
+	}
+
+	assertStoreEmpty(t, vs)
+	if vs.next != 0 {
+		t.Fatalf("expected generated ID counter rollback, got %d", vs.next)
+	}
+}
+
+func TestUpsertNewIDRollsBackStateOnWALError(t *testing.T) {
+	vs := NewVectorStore(10, 3)
+	vs.walPath = "/invalid/path/wal.log"
+
+	if _, err := vs.Upsert([]float32{1, 0, 0}, "doc", "id-upsert", map[string]string{"tag": "a"}, "default", ""); err == nil {
+		t.Fatal("expected upsert insert path to fail when WAL append fails")
+	}
+
+	assertStoreEmpty(t, vs)
+}
+
+func TestUpsertMovingCollectionRemovesOldIndexEntry(t *testing.T) {
+	vs := NewVectorStore(100, 3)
+
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-old", "move-id", nil, "old-coll", ""); err != nil {
+		t.Fatalf("failed to seed old collection: %v", err)
+	}
+
+	if _, err := vs.Upsert([]float32{0, 1, 0}, "doc-new", "move-id", nil, "new-coll", ""); err != nil {
+		t.Fatalf("failed to move document to new collection: %v", err)
+	}
+
+	if coll := vs.Coll[hashID("move-id")]; coll != "new-coll" {
+		t.Fatalf("expected collection to move to new-coll, got %q", coll)
+	}
+	if _, ok := vs.indexes["new-coll"]; !ok {
+		t.Fatal("expected new collection index to be created")
+	}
+
+	oldResults := vs.SearchANNWithParams([]float32{1, 0, 0}, 10, "old-coll", 0)
+	for _, ix := range oldResults {
+		if vs.GetID(ix) == "move-id" {
+			t.Fatal("moved document is still searchable in old collection")
+		}
+	}
+
+	newResults := vs.SearchANNWithParams([]float32{0, 1, 0}, 10, "new-coll", 0)
+	found := false
+	for _, ix := range newResults {
+		if vs.GetID(ix) == "move-id" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("moved document is not searchable in new collection")
+	}
 }

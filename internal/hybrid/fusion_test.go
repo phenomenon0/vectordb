@@ -140,6 +140,39 @@ func TestFuseWeighted_Normalization(t *testing.T) {
 	}
 }
 
+func TestFuseWeighted_SingletonResultSetContributes(t *testing.T) {
+	resultSets := []ResultSet{
+		{
+			Results: []SearchResult{
+				{DocID: 1, Score: 42.0},
+			},
+			Weight: 0.7,
+		},
+		{
+			Results: []SearchResult{
+				{DocID: 2, Score: 0.2},
+			},
+			Weight: 0.3,
+		},
+	}
+
+	fused := fuseWeighted(resultSets, 10)
+	if len(fused) != 2 {
+		t.Fatalf("expected 2 fused results, got %d", len(fused))
+	}
+
+	if fused[0].DocID != 1 {
+		t.Fatalf("expected singleton weighted result to rank first, got doc%d", fused[0].DocID)
+	}
+
+	if math.Abs(float64(fused[0].Score-0.7)) > 0.0001 {
+		t.Fatalf("expected singleton weighted score to preserve full weight, got %f", fused[0].Score)
+	}
+	if math.Abs(float64(fused[1].Score-0.3)) > 0.0001 {
+		t.Fatalf("expected second singleton weighted score to preserve full weight, got %f", fused[1].Score)
+	}
+}
+
 func TestFuseLinear(t *testing.T) {
 	results1 := []SearchResult{
 		{DocID: 1, Score: 10.0},

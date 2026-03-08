@@ -15,16 +15,16 @@ import (
 type FLATIndex struct {
 	mu sync.RWMutex
 
-	dim     int                      // Vector dimension
-	vectors map[uint64][]float32     // ID -> vector storage (unquantized)
-	deleted map[uint64]bool          // Tombstone deletions
-	count   int                      // Total vectors added
+	dim     int                  // Vector dimension
+	vectors map[uint64][]float32 // ID -> vector storage (unquantized)
+	deleted map[uint64]bool      // Tombstone deletions
+	count   int                  // Total vectors added
 
 	metric string // "cosine" or "euclidean"
 
 	// Optional quantization
-	quantizer     Quantizer           // Quantizer for compression
-	quantizedData map[uint64][]byte  // ID -> quantized vector storage
+	quantizer     Quantizer         // Quantizer for compression
+	quantizedData map[uint64][]byte // ID -> quantized vector storage
 }
 
 // NewFLATIndex creates a new FLAT index
@@ -87,18 +87,11 @@ func (flat *FLATIndex) Add(ctx context.Context, id uint64, vector []float32) err
 	flat.mu.Lock()
 	defer flat.mu.Unlock()
 
-	// If quantization is enabled, quantize and store compressed data
-	if flat.quantizer != nil {
-		quantized, err := flat.quantizer.Quantize(vector)
-		if err != nil {
-			return fmt.Errorf("failed to quantize vector: %w", err)
-		}
-		flat.quantizedData[id] = quantized
-	} else {
-		// Store unquantized vector copy
-		vecCopy := make([]float32, flat.dim)
-		copy(vecCopy, vector)
-		flat.vectors[id] = vecCopy
+	vecCopy := make([]float32, flat.dim)
+	copy(vecCopy, vector)
+
+	if err := flat.storeVectorLocked(id, vecCopy); err != nil {
+		return err
 	}
 
 	delete(flat.deleted, id)
@@ -117,37 +110,28 @@ func (flat *FLATIndex) Search(ctx context.Context, query []float32, k int, param
 	defer flat.mu.RUnlock()
 
 	// Collect non-deleted vectors
-	var activeVectors [][]float32
-	var activeIDs []uint64
+	activeVectors := make([][]float32, 0, len(flat.vectors)+len(flat.quantizedData))
+	activeIDs := make([]uint64, 0, len(flat.vectors)+len(flat.quantizedData))
+
+	for id, vec := range flat.vectors {
+		if flat.deleted[id] {
+			continue
+		}
+		activeVectors = append(activeVectors, vec)
+		activeIDs = append(activeIDs, id)
+	}
 
 	if flat.quantizer != nil {
-		// Dequantize vectors for search
-		activeVectors = make([][]float32, 0, len(flat.quantizedData))
-		activeIDs = make([]uint64, 0, len(flat.quantizedData))
-
 		for id, quantized := range flat.quantizedData {
 			if flat.deleted[id] {
 				continue
 			}
 
-			// Dequantize vector
 			vec, err := flat.quantizer.Dequantize(quantized)
 			if err != nil {
 				return nil, fmt.Errorf("failed to dequantize vector %d: %w", id, err)
 			}
 
-			activeVectors = append(activeVectors, vec)
-			activeIDs = append(activeIDs, id)
-		}
-	} else {
-		// Use unquantized vectors
-		activeVectors = make([][]float32, 0, len(flat.vectors))
-		activeIDs = make([]uint64, 0, len(flat.vectors))
-
-		for id, vec := range flat.vectors {
-			if flat.deleted[id] {
-				continue
-			}
 			activeVectors = append(activeVectors, vec)
 			activeIDs = append(activeIDs, id)
 		}
@@ -260,58 +244,125 @@ func (flat *FLATIndex) Export() ([]byte, error) {
 	flat.mu.RLock()
 	defer flat.mu.RUnlock()
 
-	// Export format:
-	// [4 bytes: dim] [4 bytes: count]
-	// [4 bytes: metric length] [metric string]
-	// [4 bytes: num vectors]
-	// For each vector: [8 bytes: id] [vector data] [1 byte: deleted]
-
-	buf := make([]byte, 0, flat.estimateMemory())
-
-	writeUint32 := func(v uint32) {
-		b := make([]byte, 4)
-		binary.LittleEndian.PutUint32(b, v)
-		buf = append(buf, b...)
+	type vectorEntry struct {
+		ID        uint64    `json:"id"`
+		Vector    []float32 `json:"vector,omitempty"`
+		Quantized []byte    `json:"quantized,omitempty"`
+		Deleted   bool      `json:"deleted,omitempty"`
 	}
 
-	// Header
-	writeUint32(uint32(flat.dim))
-	writeUint32(uint32(flat.count))
-
-	// Metric
-	metricBytes := []byte(flat.metric)
-	writeUint32(uint32(len(metricBytes)))
-	buf = append(buf, metricBytes...)
-
-	// Vectors
-	writeUint32(uint32(len(flat.vectors)))
-
-	for id, vec := range flat.vectors {
-		// ID
-		idBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(idBytes, id)
-		buf = append(buf, idBytes...)
-
-		// Vector data
-		for _, v := range vec {
-			vBytes := make([]byte, 4)
-			binary.LittleEndian.PutUint32(vBytes, math.Float32bits(v))
-			buf = append(buf, vBytes...)
-		}
-
-		// Deleted flag
-		if flat.deleted[id] {
-			buf = append(buf, 1)
-		} else {
-			buf = append(buf, 0)
-		}
+	type exportFormat struct {
+		Version   int             `json:"version"`
+		Dim       int             `json:"dim"`
+		Count     int             `json:"count"`
+		Metric    string          `json:"metric"`
+		Quantizer *quantizerState `json:"quantizer,omitempty"`
+		Vectors   []vectorEntry   `json:"vectors"`
 	}
 
-	return buf, nil
+	quantizerState, err := exportQuantizerState(flat.quantizer)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := flat.sortedIDsLocked()
+	vectors := make([]vectorEntry, 0, len(ids))
+	for _, id := range ids {
+		entry := vectorEntry{
+			ID:      id,
+			Deleted: flat.deleted[id],
+		}
+		if vec, ok := flat.vectors[id]; ok {
+			entry.Vector = append([]float32(nil), vec...)
+		}
+		if quantized, ok := flat.quantizedData[id]; ok {
+			entry.Quantized = append([]byte(nil), quantized...)
+		}
+		vectors = append(vectors, entry)
+	}
+
+	return json.Marshal(exportFormat{
+		Version:   2,
+		Dim:       flat.dim,
+		Count:     flat.count,
+		Metric:    flat.metric,
+		Quantizer: quantizerState,
+		Vectors:   vectors,
+	})
 }
 
 // Import deserializes the FLAT index
 func (flat *FLATIndex) Import(data []byte) error {
+	if len(data) > 0 && data[0] == '{' {
+		return flat.importJSON(data)
+	}
+	return flat.importLegacyBinary(data)
+}
+
+func (flat *FLATIndex) importJSON(data []byte) error {
+	type vectorEntry struct {
+		ID        uint64    `json:"id"`
+		Vector    []float32 `json:"vector,omitempty"`
+		Quantized []byte    `json:"quantized,omitempty"`
+		Deleted   bool      `json:"deleted,omitempty"`
+	}
+
+	type importFormat struct {
+		Version   int             `json:"version"`
+		Dim       int             `json:"dim"`
+		Count     int             `json:"count"`
+		Metric    string          `json:"metric"`
+		Quantizer *quantizerState `json:"quantizer,omitempty"`
+		Vectors   []vectorEntry   `json:"vectors"`
+	}
+
+	var imp importFormat
+	if err := json.Unmarshal(data, &imp); err != nil {
+		return fmt.Errorf("failed to unmarshal FLAT index: %w", err)
+	}
+	if imp.Version != 2 {
+		return fmt.Errorf("unsupported FLAT export version: %d", imp.Version)
+	}
+
+	quantizer, err := importQuantizerState(imp.Dim, imp.Quantizer)
+	if err != nil {
+		return err
+	}
+
+	flat.mu.Lock()
+	defer flat.mu.Unlock()
+
+	flat.dim = imp.Dim
+	flat.count = imp.Count
+	flat.metric = imp.Metric
+	flat.quantizer = quantizer
+	flat.vectors = make(map[uint64][]float32, len(imp.Vectors))
+	flat.deleted = make(map[uint64]bool, len(imp.Vectors))
+	if quantizer != nil {
+		flat.quantizedData = make(map[uint64][]byte, len(imp.Vectors))
+	} else {
+		flat.quantizedData = nil
+	}
+
+	for _, entry := range imp.Vectors {
+		if len(entry.Vector) > 0 {
+			flat.vectors[entry.ID] = append([]float32(nil), entry.Vector...)
+		}
+		if len(entry.Quantized) > 0 {
+			if flat.quantizedData == nil {
+				flat.quantizedData = make(map[uint64][]byte, len(imp.Vectors))
+			}
+			flat.quantizedData[entry.ID] = append([]byte(nil), entry.Quantized...)
+		}
+		if entry.Deleted {
+			flat.deleted[entry.ID] = true
+		}
+	}
+
+	return nil
+}
+
+func (flat *FLATIndex) importLegacyBinary(data []byte) error {
 	if len(data) < 16 {
 		return fmt.Errorf("invalid FLAT index data: too short")
 	}
@@ -340,6 +391,8 @@ func (flat *FLATIndex) Import(data []byte) error {
 	numVectors := int(readUint32())
 	flat.vectors = make(map[uint64][]float32, numVectors)
 	flat.deleted = make(map[uint64]bool)
+	flat.quantizer = nil
+	flat.quantizedData = nil
 
 	// Vectors
 	for i := 0; i < numVectors; i++ {
@@ -379,22 +432,99 @@ func (flat *FLATIndex) computeDistance(a, b []float32) float32 {
 
 // estimateMemory estimates memory usage in bytes
 func (flat *FLATIndex) estimateMemory() int {
-	var vectorMem int
-
-	if flat.quantizer != nil {
-		// Quantized data: ID (8 bytes) + quantized vector size
-		for _, data := range flat.quantizedData {
-			vectorMem += 8 + len(data)
-		}
-	} else {
-		// Unquantized vectors: ID (8 bytes) + vector data (dim * 4 bytes)
-		vectorMem = len(flat.vectors) * (8 + flat.dim*4)
+	vectorMem := len(flat.vectors) * (8 + flat.dim*4)
+	for _, data := range flat.quantizedData {
+		vectorMem += 8 + len(data)
 	}
 
 	// Deleted map: ID (8 bytes) + bool (1 byte) overhead
 	deletedMem := len(flat.deleted) * 9
 
 	return vectorMem + deletedMem
+}
+
+func (flat *FLATIndex) storeVectorLocked(id uint64, vec []float32) error {
+	if flat.quantizer == nil {
+		flat.vectors[id] = vec
+		return nil
+	}
+
+	if quantizerNeedsTraining(flat.quantizer) {
+		flat.vectors[id] = vec
+		return flat.maybeTrainQuantizerLocked()
+	}
+
+	quantized, err := flat.quantizer.Quantize(vec)
+	if err != nil {
+		return fmt.Errorf("failed to quantize vector: %w", err)
+	}
+	if flat.quantizedData == nil {
+		flat.quantizedData = make(map[uint64][]byte)
+	}
+	flat.quantizedData[id] = quantized
+	delete(flat.vectors, id)
+	return nil
+}
+
+func (flat *FLATIndex) maybeTrainQuantizerLocked() error {
+	if flat.quantizer == nil || !quantizerNeedsTraining(flat.quantizer) {
+		return nil
+	}
+	if len(flat.vectors) < quantizerMinTrainingVectors(flat.quantizer) {
+		return nil
+	}
+
+	if err := trainQuantizerWithDefaults(flat.quantizer, flat.flattenVectorsLocked()); err != nil {
+		return fmt.Errorf("failed to train quantizer: %w", err)
+	}
+	if flat.quantizedData == nil {
+		flat.quantizedData = make(map[uint64][]byte, len(flat.vectors))
+	}
+	for _, id := range flat.sortedVectorIDsLocked() {
+		quantized, err := flat.quantizer.Quantize(flat.vectors[id])
+		if err != nil {
+			return fmt.Errorf("failed to quantize vector %d: %w", id, err)
+		}
+		flat.quantizedData[id] = quantized
+		delete(flat.vectors, id)
+	}
+
+	return nil
+}
+
+func (flat *FLATIndex) flattenVectorsLocked() []float32 {
+	ids := flat.sortedVectorIDsLocked()
+	flattened := make([]float32, 0, len(ids)*flat.dim)
+	for _, id := range ids {
+		flattened = append(flattened, flat.vectors[id]...)
+	}
+	return flattened
+}
+
+func (flat *FLATIndex) sortedVectorIDsLocked() []uint64 {
+	ids := make([]uint64, 0, len(flat.vectors))
+	for id := range flat.vectors {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func (flat *FLATIndex) sortedIDsLocked() []uint64 {
+	idSet := make(map[uint64]struct{}, len(flat.vectors)+len(flat.quantizedData))
+	for id := range flat.vectors {
+		idSet[id] = struct{}{}
+	}
+	for id := range flat.quantizedData {
+		idSet[id] = struct{}{}
+	}
+
+	ids := make([]uint64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 // ExportJSON exports index metadata as JSON (for debugging)

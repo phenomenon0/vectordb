@@ -146,14 +146,12 @@ func fuseWeighted(resultSets []ResultSet, topK int) []SearchResult {
 		maxScore := rs.Results[0].Score
 		scoreRange := maxScore - minScore
 
-		// Handle edge case: all scores are the same
-		if scoreRange == 0 {
-			scoreRange = 1.0
-		}
-
 		// Add weighted normalized scores
 		for _, result := range rs.Results {
-			normalizedScore := (result.Score - minScore) / scoreRange
+			normalizedScore := float32(1.0)
+			if scoreRange != 0 {
+				normalizedScore = (result.Score - minScore) / scoreRange
+			}
 			weightedScore := normalizedScore * rs.Weight
 
 			scores[result.DocID] += weightedScore

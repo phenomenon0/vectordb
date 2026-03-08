@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"sort"
 	"sync"
 
-	"github.com/phenomenon0/vectordb/internal/filter"
 	"github.com/coder/hnsw"
+	"github.com/phenomenon0/vectordb/internal/filter"
 )
 
 // HNSWIndex wraps the github.com/coder/hnsw implementation
@@ -39,9 +40,10 @@ type HNSWIndex struct {
 	metadata map[uint64]map[string]interface{}
 
 	// Configuration
-	m        int     // Connections per node (default: 16)
-	ml       float64 // Level multiplier (default: 0.25)
-	efSearch int     // Search beam width (default: 64)
+	m              int     // Connections per node (default: 16)
+	ml             float64 // Level multiplier (default: 0.25)
+	efSearch       int     // Search beam width (default: 64)
+	efConstruction int     // Construction beam width (default: 200)
 
 	// Optional quantization (for vector storage, graph remains full precision)
 	quantizer     Quantizer         // Quantizer for compressing stored vectors
@@ -71,9 +73,7 @@ func NewHNSWIndex(dim int, config map[string]interface{}) (Index, error) {
 	m := GetConfigInt(config, "m", 16)
 	ml := GetConfigFloat(config, "ml", 0.25)
 	efSearch := GetConfigInt(config, "ef_search", 64)
-	// Note: ef_construction is read here for completeness but github.com/coder/hnsw
-	// doesn't expose it as a configurable field
-	_ = GetConfigInt(config, "ef_construction", 200)
+	efConstruction := GetConfigInt(config, "ef_construction", 200)
 
 	// Validate configuration
 	if m < 2 || m > 100 {
@@ -88,20 +88,20 @@ func NewHNSWIndex(dim int, config map[string]interface{}) (Index, error) {
 	g.Distance = hnsw.CosineDistance
 	g.M = m
 	g.Ml = ml
-	g.EfSearch = efSearch
-	// Note: github.com/coder/hnsw doesn't expose EfConstruction directly
-	// It's hardcoded in the Add implementation
+	// Use ef_construction during graph building for higher quality
+	g.EfSearch = efConstruction
 
 	hnswIdx := &HNSWIndex{
-		graph:    g,
-		dim:      dim,
-		idToIdx:  make(map[uint64]int),
-		vectors:  make(map[uint64][]float32),
-		deleted:  make(map[uint64]bool),
-		metadata: make(map[uint64]map[string]interface{}),
-		m:        m,
-		ml:       ml,
-		efSearch: efSearch,
+		graph:          g,
+		dim:            dim,
+		idToIdx:        make(map[uint64]int),
+		vectors:        make(map[uint64][]float32),
+		deleted:        make(map[uint64]bool),
+		metadata:       make(map[uint64]map[string]interface{}),
+		m:              m,
+		ml:             ml,
+		efSearch:       efSearch,
+		efConstruction: efConstruction,
 	}
 
 	// Check for quantization config
@@ -162,15 +162,8 @@ func (h *HNSWIndex) Add(ctx context.Context, id uint64, vector []float32) error 
 		// Update the vector in place in the graph (more efficient than Delete+Add)
 		h.graph.Update(id, vecCopy)
 
-		// Update stored vector
-		if h.quantizer != nil {
-			quantized, err := h.quantizer.Quantize(vecCopy)
-			if err != nil {
-				return fmt.Errorf("failed to quantize vector: %w", err)
-			}
-			h.quantizedData[id] = quantized
-		} else {
-			h.vectors[id] = vecCopy
+		if err := h.storeVectorLocked(id, vecCopy); err != nil {
+			return err
 		}
 
 		return nil
@@ -188,17 +181,8 @@ func (h *HNSWIndex) Add(ctx context.Context, id uint64, vector []float32) error 
 	// Add to HNSW graph (graph always uses full precision for accuracy)
 	h.graph.Add(hnsw.MakeNode(id, vecCopy))
 
-	// Store vector: quantized if quantizer is configured, otherwise full precision
-	if h.quantizer != nil {
-		// Quantize and store compressed data
-		quantized, err := h.quantizer.Quantize(vecCopy)
-		if err != nil {
-			return fmt.Errorf("failed to quantize vector: %w", err)
-		}
-		h.quantizedData[id] = quantized
-	} else {
-		// Store unquantized vector
-		h.vectors[id] = vecCopy
+	if err := h.storeVectorLocked(id, vecCopy); err != nil {
+		return err
 	}
 
 	// Update mappings
@@ -292,15 +276,8 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 			// Add to graph
 			h.graph.Add(hnsw.MakeNode(id, vecCopy))
 
-			// Store vector (quantized or full precision)
-			if h.quantizer != nil {
-				quantized, err := h.quantizer.Quantize(vecCopy)
-				if err != nil {
-					return fmt.Errorf("failed to quantize vector %d: %w", id, err)
-				}
-				h.quantizedData[id] = quantized
-			} else {
-				h.vectors[id] = vecCopy
+			if err := h.storeVectorLocked(id, vecCopy); err != nil {
+				return fmt.Errorf("failed to store vector %d: %w", id, err)
 			}
 
 			// Update mappings
@@ -315,6 +292,10 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 		if i+batchSize < len(ids) {
 			runtime.Gosched()
 		}
+	}
+
+	if err := h.maybeTrainQuantizerLocked(); err != nil {
+		return err
 	}
 
 	return nil
@@ -347,17 +328,20 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, params S
 	// Extract ef_search parameter and filter if provided
 	efSearch := h.efSearch
 	var f filter.Filter
-	if hnswParams, ok := params.(HNSWSearchParams); ok {
-		if hnswParams.EfSearch > 0 {
-			efSearch = hnswParams.EfSearch
+	switch p := params.(type) {
+	case HNSWSearchParams:
+		if p.EfSearch > 0 {
+			efSearch = p.EfSearch
 		}
-		f = hnswParams.Filter
+		f = p.Filter
+	case *HNSWSearchParams:
+		if p != nil {
+			if p.EfSearch > 0 {
+				efSearch = p.EfSearch
+			}
+			f = p.Filter
+		}
 	}
-
-	// Temporarily set ef_search
-	oldEfSearch := h.graph.EfSearch
-	h.graph.EfSearch = efSearch
-	defer func() { h.graph.EfSearch = oldEfSearch }()
 
 	var nodes []hnsw.Node[uint64]
 
@@ -385,7 +369,7 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, params S
 			if fetchK > h.count {
 				fetchK = h.count
 			}
-			nodes = h.graph.SearchFiltered(query, fetchK, filterFn)
+			nodes = h.graph.SearchWithEf(query, fetchK, efSearch, filterFn)
 			if len(nodes) >= k {
 				break
 			}
@@ -407,7 +391,7 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, params S
 				}
 			}
 		}
-		nodes = h.graph.Search(query, fetchK)
+		nodes = h.graph.SearchWithEf(query, fetchK, efSearch, nil)
 	}
 
 	// Collect results (filter already applied for filtered search)
@@ -511,25 +495,19 @@ func (h *HNSWIndex) Stats() IndexStats {
 	// - Mappings: count * (8 + 8) bytes
 	graphMem := int64(h.m * 2 * 8 * h.count)
 
-	// Vector storage memory (quantized or unquantized)
-	var vectorMem int64
-	if h.quantizer != nil {
-		// Quantized storage: ID + compressed vector
-		for _, data := range h.quantizedData {
-			vectorMem += int64(8 + len(data))
-		}
-	} else {
-		// Unquantized storage: ID + float32 array
-		vectorMem = int64(len(h.vectors) * (8 + h.dim*4))
+	vectorMem := int64(len(h.vectors) * (8 + h.dim*4))
+	for _, data := range h.quantizedData {
+		vectorMem += int64(8 + len(data))
 	}
 
 	mappingMem := int64(h.count * 16)
 	totalMem := graphMem + vectorMem + mappingMem
 
 	extra := map[string]interface{}{
-		"m":         h.m,
-		"ml":        h.ml,
-		"ef_search": h.efSearch,
+		"m":               h.m,
+		"ml":              h.ml,
+		"ef_search":       h.efSearch,
+		"ef_construction": h.efConstruction,
 	}
 
 	// Add quantization info if enabled
@@ -577,25 +555,44 @@ func (h *HNSWIndex) Export() ([]byte, error) {
 
 	// Define export types
 	type vectorEntry struct {
-		ID     uint64    `json:"id"`
-		Vector []float32 `json:"vector"`
+		ID        uint64                 `json:"id"`
+		Vector    []float32              `json:"vector,omitempty"`
+		Quantized []byte                 `json:"quantized,omitempty"`
+		Metadata  map[string]interface{} `json:"metadata,omitempty"`
+		Deleted   bool                   `json:"deleted,omitempty"`
 	}
 
 	type exportFormat struct {
-		Version int                    `json:"version"`
-		Dim     int                    `json:"dim"`
-		Config  map[string]interface{} `json:"config"`
-		Vectors []vectorEntry          `json:"vectors"`
-		Deleted []uint64               `json:"deleted"`
+		Version   int                    `json:"version"`
+		Dim       int                    `json:"dim"`
+		Config    map[string]interface{} `json:"config"`
+		Quantizer *quantizerState        `json:"quantizer,omitempty"`
+		Vectors   []vectorEntry          `json:"vectors"`
+		Deleted   []uint64               `json:"deleted,omitempty"`
 	}
 
-	// Collect vectors
-	vectors := make([]vectorEntry, 0, len(h.vectors))
-	for id, vec := range h.vectors {
-		vectors = append(vectors, vectorEntry{
-			ID:     id,
-			Vector: vec,
-		})
+	quantizerState, err := exportQuantizerState(h.quantizer)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := h.sortedIDsLocked()
+	vectors := make([]vectorEntry, 0, len(ids))
+	for _, id := range ids {
+		entry := vectorEntry{
+			ID:      id,
+			Deleted: h.deleted[id],
+		}
+		if vec, ok := h.vectors[id]; ok {
+			entry.Vector = append([]float32(nil), vec...)
+		}
+		if quantized, ok := h.quantizedData[id]; ok {
+			entry.Quantized = append([]byte(nil), quantized...)
+		}
+		if metadata, ok := h.metadata[id]; ok {
+			entry.Metadata = copyMetadataMap(metadata)
+		}
+		vectors = append(vectors, entry)
 	}
 
 	// Collect deleted IDs
@@ -605,15 +602,17 @@ func (h *HNSWIndex) Export() ([]byte, error) {
 	}
 
 	data := exportFormat{
-		Version: 1,
+		Version: 2,
 		Dim:     h.dim,
 		Config: map[string]interface{}{
-			"m":         h.m,
-			"ml":        h.ml,
-			"ef_search": h.efSearch,
+			"m":               h.m,
+			"ml":              h.ml,
+			"ef_search":       h.efSearch,
+			"ef_construction": h.efConstruction,
 		},
-		Vectors: vectors,
-		Deleted: deleted,
+		Quantizer: quantizerState,
+		Vectors:   vectors,
+		Deleted:   deleted,
 	}
 
 	return json.Marshal(data)
@@ -624,16 +623,20 @@ func (h *HNSWIndex) Export() ([]byte, error) {
 // Thread-safety: NOT safe for concurrent access (replaces entire index)
 func (h *HNSWIndex) Import(data []byte) error {
 	type vectorEntry struct {
-		ID     uint64    `json:"id"`
-		Vector []float32 `json:"vector"`
+		ID        uint64                 `json:"id"`
+		Vector    []float32              `json:"vector,omitempty"`
+		Quantized []byte                 `json:"quantized,omitempty"`
+		Metadata  map[string]interface{} `json:"metadata,omitempty"`
+		Deleted   bool                   `json:"deleted,omitempty"`
 	}
 
 	type importFormat struct {
-		Version int                    `json:"version"`
-		Dim     int                    `json:"dim"`
-		Config  map[string]interface{} `json:"config"`
-		Vectors []vectorEntry          `json:"vectors"`
-		Deleted []uint64               `json:"deleted"`
+		Version   int                    `json:"version"`
+		Dim       int                    `json:"dim"`
+		Config    map[string]interface{} `json:"config"`
+		Quantizer *quantizerState        `json:"quantizer,omitempty"`
+		Vectors   []vectorEntry          `json:"vectors"`
+		Deleted   []uint64               `json:"deleted,omitempty"`
 	}
 
 	var imp importFormat
@@ -641,7 +644,7 @@ func (h *HNSWIndex) Import(data []byte) error {
 		return fmt.Errorf("failed to unmarshal HNSW index: %w", err)
 	}
 
-	if imp.Version != 1 {
+	if imp.Version != 1 && imp.Version != 2 {
 		return fmt.Errorf("unsupported HNSW export version: %d", imp.Version)
 	}
 
@@ -652,34 +655,68 @@ func (h *HNSWIndex) Import(data []byte) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	quantizer, err := importQuantizerState(imp.Dim, imp.Quantizer)
+	if err != nil {
+		return err
+	}
+
 	// Clear existing data
 	h.graph = hnsw.NewGraph[uint64]()
 	h.graph.Distance = hnsw.CosineDistance
 	h.graph.M = GetConfigInt(imp.Config, "m", 16)
 	h.graph.Ml = GetConfigFloat(imp.Config, "ml", 0.25)
-	h.graph.EfSearch = GetConfigInt(imp.Config, "ef_search", 64)
+	h.graph.EfSearch = GetConfigInt(imp.Config, "ef_construction", 200)
 
 	h.idToIdx = make(map[uint64]int)
 	h.vectors = make(map[uint64][]float32)
+	h.quantizedData = make(map[uint64][]byte)
 	h.deleted = make(map[uint64]bool)
+	h.metadata = make(map[uint64]map[string]interface{})
+	h.quantizer = quantizer
 	h.count = 0
 
 	// Rebuild index
 	for _, entry := range imp.Vectors {
-		// Store vector
-		h.vectors[entry.ID] = entry.Vector
+		rawVector := entry.Vector
+		if len(rawVector) == 0 && len(entry.Quantized) > 0 {
+			if h.quantizer == nil {
+				return fmt.Errorf("quantized vector present for ID %d without quantizer state", entry.ID)
+			}
+			var err error
+			rawVector, err = h.quantizer.Dequantize(entry.Quantized)
+			if err != nil {
+				return fmt.Errorf("failed to dequantize vector %d: %w", entry.ID, err)
+			}
+		}
+		if len(rawVector) == 0 {
+			return fmt.Errorf("missing vector payload for ID %d", entry.ID)
+		}
 
-		// Add to graph using MakeNode
-		h.graph.Add(hnsw.MakeNode(entry.ID, entry.Vector))
+		vectorCopy := append([]float32(nil), rawVector...)
+		h.graph.Add(hnsw.MakeNode(entry.ID, vectorCopy))
+
+		if len(entry.Quantized) > 0 {
+			h.quantizedData[entry.ID] = append([]byte(nil), entry.Quantized...)
+		} else {
+			h.vectors[entry.ID] = vectorCopy
+		}
+		if entry.Metadata != nil {
+			h.metadata[entry.ID] = copyMetadataMap(entry.Metadata)
+		}
 
 		// Update mappings
 		h.idToIdx[entry.ID] = h.count
 		h.count++
+
+		if imp.Version == 2 && entry.Deleted {
+			h.deleted[entry.ID] = true
+		}
 	}
 
-	// Restore deleted markers
-	for _, id := range imp.Deleted {
-		h.deleted[id] = true
+	if imp.Version == 1 {
+		for _, id := range imp.Deleted {
+			h.deleted[id] = true
+		}
 	}
 
 	return nil
@@ -703,20 +740,33 @@ func (h *HNSWIndex) Compact() (int, error) {
 	newGraph.Distance = hnsw.CosineDistance
 	newGraph.M = h.m
 	newGraph.Ml = h.ml
-	newGraph.EfSearch = h.efSearch
+	newGraph.EfSearch = h.efConstruction
 
 	newIdToIdx := make(map[uint64]int)
 	newVectors := make(map[uint64][]float32)
+	newQuantized := make(map[uint64][]byte)
+	newMetadata := make(map[uint64]map[string]interface{})
 	newCount := 0
 
-	// Rebuild with only active vectors
-	for id, vec := range h.vectors {
+	for _, id := range h.sortedIDsLocked() {
 		if h.deleted[id] {
 			continue // Skip deleted
 		}
 
-		newVectors[id] = vec
+		vec, err := h.loadVectorLocked(id)
+		if err != nil {
+			return 0, err
+		}
 		newGraph.Add(hnsw.MakeNode(id, vec))
+		if raw, ok := h.vectors[id]; ok {
+			newVectors[id] = append([]float32(nil), raw...)
+		}
+		if quantized, ok := h.quantizedData[id]; ok {
+			newQuantized[id] = append([]byte(nil), quantized...)
+		}
+		if metadata, ok := h.metadata[id]; ok {
+			newMetadata[id] = copyMetadataMap(metadata)
+		}
 		newIdToIdx[id] = newCount
 		newCount++
 	}
@@ -725,10 +775,120 @@ func (h *HNSWIndex) Compact() (int, error) {
 	h.graph = newGraph
 	h.idToIdx = newIdToIdx
 	h.vectors = newVectors
+	h.quantizedData = newQuantized
+	h.metadata = newMetadata
 	h.deleted = make(map[uint64]bool)
 	h.count = newCount
 
 	return deletedCount, nil
+}
+
+func (h *HNSWIndex) storeVectorLocked(id uint64, vec []float32) error {
+	if h.quantizer == nil {
+		h.vectors[id] = vec
+		return nil
+	}
+
+	if quantizerNeedsTraining(h.quantizer) {
+		h.vectors[id] = vec
+		delete(h.quantizedData, id)
+		return h.maybeTrainQuantizerLocked()
+	}
+
+	quantized, err := h.quantizer.Quantize(vec)
+	if err != nil {
+		return fmt.Errorf("failed to quantize vector: %w", err)
+	}
+	if h.quantizedData == nil {
+		h.quantizedData = make(map[uint64][]byte)
+	}
+	h.quantizedData[id] = quantized
+	delete(h.vectors, id)
+	return nil
+}
+
+func (h *HNSWIndex) maybeTrainQuantizerLocked() error {
+	if h.quantizer == nil || !quantizerNeedsTraining(h.quantizer) {
+		return nil
+	}
+	if len(h.vectors) < quantizerMinTrainingVectors(h.quantizer) {
+		return nil
+	}
+
+	if err := trainQuantizerWithDefaults(h.quantizer, h.flattenVectorsLocked()); err != nil {
+		return fmt.Errorf("failed to train quantizer: %w", err)
+	}
+	if h.quantizedData == nil {
+		h.quantizedData = make(map[uint64][]byte, len(h.vectors))
+	}
+	for _, id := range h.sortedVectorIDsLocked() {
+		quantized, err := h.quantizer.Quantize(h.vectors[id])
+		if err != nil {
+			return fmt.Errorf("failed to quantize vector %d: %w", id, err)
+		}
+		h.quantizedData[id] = quantized
+		delete(h.vectors, id)
+	}
+
+	return nil
+}
+
+func (h *HNSWIndex) flattenVectorsLocked() []float32 {
+	ids := h.sortedVectorIDsLocked()
+	flattened := make([]float32, 0, len(ids)*h.dim)
+	for _, id := range ids {
+		flattened = append(flattened, h.vectors[id]...)
+	}
+	return flattened
+}
+
+func (h *HNSWIndex) sortedVectorIDsLocked() []uint64 {
+	ids := make([]uint64, 0, len(h.vectors))
+	for id := range h.vectors {
+		ids = append(ids, id)
+	}
+	return sortUint64s(ids)
+}
+
+func (h *HNSWIndex) sortedIDsLocked() []uint64 {
+	ids := make([]uint64, 0, len(h.idToIdx))
+	for id := range h.idToIdx {
+		ids = append(ids, id)
+	}
+	return sortUint64s(ids)
+}
+
+func (h *HNSWIndex) loadVectorLocked(id uint64) ([]float32, error) {
+	if vec, ok := h.vectors[id]; ok {
+		return append([]float32(nil), vec...), nil
+	}
+	if quantized, ok := h.quantizedData[id]; ok {
+		if h.quantizer == nil {
+			return nil, fmt.Errorf("vector %d is quantized but quantizer is missing", id)
+		}
+		vec, err := h.quantizer.Dequantize(quantized)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dequantize vector %d: %w", id, err)
+		}
+		return vec, nil
+	}
+	return nil, fmt.Errorf("vector %d not found", id)
+}
+
+func copyMetadataMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func sortUint64s(ids []uint64) []uint64 {
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 // init registers HNSW index type with the global factory

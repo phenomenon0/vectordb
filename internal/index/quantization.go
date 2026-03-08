@@ -34,6 +34,16 @@ type Quantizer interface {
 	BytesPerVector() int
 }
 
+type quantizerState struct {
+	Type         string        `json:"type,omitempty"`
+	Dim          int           `json:"dim,omitempty"`
+	Uint8Min     []float32     `json:"uint8_min,omitempty"`
+	Uint8Max     []float32     `json:"uint8_max,omitempty"`
+	ProductM     int           `json:"product_m,omitempty"`
+	ProductKSub  int           `json:"product_ksub,omitempty"`
+	ProductCodes [][][]float32 `json:"product_codebooks,omitempty"`
+}
+
 // ======================================================================================
 // Float16 Quantization (50% memory savings)
 // ======================================================================================
@@ -451,6 +461,135 @@ func (q *ProductQuantizer) SetCodebooks(codebooks [][][]float32) error {
 	q.trained = true
 
 	return nil
+}
+
+func quantizerNeedsTraining(q Quantizer) bool {
+	switch quantizer := q.(type) {
+	case *Uint8Quantizer:
+		return !quantizer.trained
+	case *ProductQuantizer:
+		return !quantizer.trained
+	default:
+		return false
+	}
+}
+
+func quantizerMinTrainingVectors(q Quantizer) int {
+	switch quantizer := q.(type) {
+	case *Uint8Quantizer:
+		return 1
+	case *ProductQuantizer:
+		return quantizer.ksub
+	default:
+		return 0
+	}
+}
+
+func trainQuantizerWithDefaults(q Quantizer, vectors []float32) error {
+	switch quantizer := q.(type) {
+	case *Uint8Quantizer:
+		return quantizer.Train(vectors)
+	case *ProductQuantizer:
+		return quantizer.Train(vectors, 20)
+	default:
+		return nil
+	}
+}
+
+func exportQuantizerState(q Quantizer) (*quantizerState, error) {
+	switch quantizer := q.(type) {
+	case nil:
+		return nil, nil
+	case *Float16Quantizer:
+		return &quantizerState{
+			Type: "float16",
+			Dim:  quantizer.dim,
+		}, nil
+	case *Uint8Quantizer:
+		state := &quantizerState{
+			Type: "uint8",
+			Dim:  quantizer.dim,
+		}
+		if quantizer.trained {
+			state.Uint8Min = append([]float32(nil), quantizer.min...)
+			state.Uint8Max = append([]float32(nil), quantizer.max...)
+		}
+		return state, nil
+	case *ProductQuantizer:
+		state := &quantizerState{
+			Type:        "pq",
+			Dim:         quantizer.dim,
+			ProductM:    quantizer.m,
+			ProductKSub: quantizer.ksub,
+		}
+		if quantizer.trained {
+			state.ProductCodes = copyProductCodebooks(quantizer.codebooks)
+		}
+		return state, nil
+	default:
+		return nil, fmt.Errorf("unsupported quantizer type %T", q)
+	}
+}
+
+func importQuantizerState(dim int, state *quantizerState) (Quantizer, error) {
+	if state == nil || state.Type == "" {
+		return nil, nil
+	}
+
+	switch state.Type {
+	case "float16":
+		return NewFloat16Quantizer(dim), nil
+	case "uint8":
+		q := NewUint8Quantizer(dim)
+		if len(state.Uint8Min) > 0 || len(state.Uint8Max) > 0 {
+			if err := q.SetCodebook(append([]float32(nil), state.Uint8Min...), append([]float32(nil), state.Uint8Max...)); err != nil {
+				return nil, err
+			}
+		}
+		return q, nil
+	case "pq":
+		q, err := NewProductQuantizer(dim, state.ProductM, state.ProductKSub)
+		if err != nil {
+			return nil, err
+		}
+		if len(state.ProductCodes) > 0 {
+			if err := q.SetCodebooks(copyProductCodebooks(state.ProductCodes)); err != nil {
+				return nil, err
+			}
+		}
+		return q, nil
+	default:
+		return nil, fmt.Errorf("unsupported quantizer state type %q", state.Type)
+	}
+}
+
+func copyProductCodebooks(src [][][]float32) [][][]float32 {
+	if src == nil {
+		return nil
+	}
+
+	dst := make([][][]float32, len(src))
+	for i := range src {
+		dst[i] = make([][]float32, len(src[i]))
+		for j := range src[i] {
+			dst[i][j] = append([]float32(nil), src[i][j]...)
+		}
+	}
+
+	return dst
+}
+
+func copy2DFloat32s(src [][]float32) [][]float32 {
+	if src == nil {
+		return nil
+	}
+
+	dst := make([][]float32, len(src))
+	for i := range src {
+		dst[i] = append([]float32(nil), src[i]...)
+	}
+
+	return dst
 }
 
 // ======================================================================================

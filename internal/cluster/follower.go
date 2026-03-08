@@ -264,31 +264,43 @@ func (fr *FollowerReplicator) poll() error {
 	// We're catching up
 	fr.setStatus(StatusSyncing)
 
-	// Apply entries in batches
-	batch := entries
-	if fr.config.BatchSize > 0 && len(entries) > fr.config.BatchSize {
-		batch = entries[:fr.config.BatchSize]
+	batchSize := len(entries)
+	if fr.config.BatchSize > 0 && batchSize > fr.config.BatchSize {
+		batchSize = fr.config.BatchSize
 	}
 
-	applyStart := time.Now()
-	if err := fr.shard.ApplyEntries(batch); err != nil {
-		return fmt.Errorf("apply failed: %w", err)
-	}
-	applyDuration := time.Since(applyStart)
+	var totalApplied uint64
+	var totalApplyDuration time.Duration
+	for startIdx := 0; startIdx < len(entries); startIdx += batchSize {
+		endIdx := startIdx + batchSize
+		if endIdx > len(entries) {
+			endIdx = len(entries)
+		}
+		batch := entries[startIdx:endIdx]
 
-	// Update stats
+		applyStart := time.Now()
+		if err := fr.shard.ApplyEntries(batch); err != nil {
+			return fmt.Errorf("apply failed: %w", err)
+		}
+		totalApplyDuration += time.Since(applyStart)
+		totalApplied += uint64(len(batch))
+
+		if len(batch) > 0 {
+			lastSeq := batch[len(batch)-1].Seq
+			fr.walClient.Advance(lastSeq)
+
+			fr.mu.Lock()
+			fr.lastAppliedSeq = lastSeq
+			fr.mu.Unlock()
+		}
+	}
+
 	fr.mu.Lock()
-	fr.stats.EntriesApplied += uint64(len(batch))
-	fr.stats.LastApplyDuration = applyDuration
-	if len(batch) > 0 {
-		fr.lastAppliedSeq = batch[len(batch)-1].Seq
-	}
+	fr.stats.EntriesApplied += totalApplied
+	fr.stats.LastApplyDuration = totalApplyDuration
 	fr.mu.Unlock()
 
-	// Check if we're now streaming (caught up)
-	if len(entries) <= fr.config.BatchSize {
-		fr.setStatus(StatusStreaming)
-	}
+	fr.setStatus(StatusStreaming)
 
 	return nil
 }
@@ -331,10 +343,7 @@ func (fr *FollowerReplicator) GetLag() uint64 {
 	fr.mu.RLock()
 	defer fr.mu.RUnlock()
 
-	if fr.primarySeq <= fr.lastAppliedSeq {
-		return 0
-	}
-	return fr.primarySeq - fr.lastAppliedSeq
+	return replicationLag(fr.primarySeq, fr.lastAppliedSeq)
 }
 
 // GetStats returns replication statistics
@@ -347,7 +356,7 @@ func (fr *FollowerReplicator) GetStats() map[string]any {
 		"primary_addr":        fr.config.PrimaryAddr,
 		"last_applied_seq":    fr.lastAppliedSeq,
 		"primary_seq":         fr.primarySeq,
-		"lag":                 fr.primarySeq - fr.lastAppliedSeq,
+		"lag":                 replicationLag(fr.primarySeq, fr.lastAppliedSeq),
 		"entries_applied":     fr.stats.EntriesApplied,
 		"bytes_received":      fr.stats.BytesReceived,
 		"last_apply_duration": fr.stats.LastApplyDuration.String(),
@@ -423,8 +432,12 @@ func (fr *FollowerReplicator) RequestFullSync(ctx context.Context) error {
 	// 6. Update replication state
 	fr.mu.Lock()
 	fr.lastAppliedSeq = snapshot.Sequence
+	if snapshot.Sequence > fr.primarySeq {
+		fr.primarySeq = snapshot.Sequence
+	}
 	fr.stats.EntriesApplied += uint64(len(snapshot.Vectors))
 	fr.mu.Unlock()
+	fr.walClient.Advance(snapshot.Sequence)
 
 	fmt.Printf("[FollowerReplicator] Full sync complete, resuming from seq=%d\n", snapshot.Sequence)
 
@@ -459,7 +472,7 @@ func (fr *FollowerReplicator) FollowerHealthCheck() bool {
 	}
 
 	// Unhealthy if lag is too high
-	if fr.primarySeq-fr.lastAppliedSeq > 10000 {
+	if replicationLag(fr.primarySeq, fr.lastAppliedSeq) > 10000 {
 		return false
 	}
 
@@ -479,4 +492,11 @@ func (fr *FollowerReplicator) UpdatePrimarySequence(seq uint64) {
 	if seq > fr.primarySeq {
 		fr.primarySeq = seq
 	}
+}
+
+func replicationLag(primarySeq uint64, lastAppliedSeq uint64) uint64 {
+	if primarySeq <= lastAppliedSeq {
+		return 0
+	}
+	return primarySeq - lastAppliedSeq
 }

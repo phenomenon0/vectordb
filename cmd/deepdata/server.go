@@ -665,16 +665,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		} else {
 			ids = store.SearchANNWithParams(qVec, req.TopK, req.Collection, req.EfSearch)
 		}
-		docs := make([]string, 0, len(ids))
-		respIDs := make([]string, 0, len(ids))
-		respMeta := make([]map[string]string, 0, len(ids))
-		respScores := make([]float32, 0, len(ids))
-		type scored struct {
-			docIdx int
-			score  float64
-			seq    uint64
-		}
-		scoresOrdered := make([]scored, 0, len(ids))
+		resultItems := make([]queryResultItem, 0, len(ids))
 		rangeCandidates := store.candidateIDsForRange(req.MetaRanges)
 
 		for _, idx := range ids {
@@ -720,25 +711,27 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			if req.Collection != "" && store.Coll[hid] != req.Collection {
 				continue
 			}
-			docs = append(docs, store.GetDoc(idx))
-			respIDs = append(respIDs, store.GetID(idx))
+			item := queryResultItem{
+				doc: store.GetDoc(idx),
+				id:  store.GetID(idx),
+			}
 			if req.IncludeMeta {
 				cp := make(map[string]string, len(meta))
 				for k, v := range meta {
 					cp[k] = v
 				}
-				respMeta = append(respMeta, cp)
+				item.meta = cp
 			}
 			switch req.ScoreMode {
 			case "hybrid":
-				respScores = append(respScores, float32(store.hybridScore(hid, qVec, qTokens, req.HybridAlpha)))
+				item.score = float32(store.hybridScore(hid, qVec, qTokens, req.HybridAlpha))
 			case "lexical":
-				respScores = append(respScores, float32(store.bm25(hid, qTokens)))
+				item.score = float32(store.bm25(hid, qTokens))
 			default: // vector
 				if idx*store.Dim < len(store.Data) && (idx+1)*store.Dim <= len(store.Data) {
-					respScores = append(respScores, DotProduct(qVec, store.Data[idx*store.Dim:(idx+1)*store.Dim]))
+					item.score = DotProduct(qVec, store.Data[idx*store.Dim:(idx+1)*store.Dim])
 				} else {
-					respScores = append(respScores, 0) // Fallback for missing data
+					item.score = 0 // Fallback for missing data
 				}
 			}
 			// Safely get sequence number with bounds check
@@ -748,81 +741,66 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			} else {
 				seq = uint64(idx) // Fallback to index as sequence
 			}
-			scoresOrdered = append(scoresOrdered, scored{docIdx: len(docs) - 1, score: float64(respScores[len(respScores)-1]), seq: seq})
+			item.seq = seq
+			resultItems = append(resultItems, item)
 		}
-		if len(scoresOrdered) > 0 {
-			sort.Slice(scoresOrdered, func(i, j int) bool {
-				if scoresOrdered[i].score == scoresOrdered[j].score {
-					return scoresOrdered[i].seq < scoresOrdered[j].seq
+		if len(resultItems) > 0 {
+			sort.Slice(resultItems, func(i, j int) bool {
+				if resultItems[i].score == resultItems[j].score {
+					return resultItems[i].seq < resultItems[j].seq
 				}
-				return scoresOrdered[i].score > scoresOrdered[j].score
+				return resultItems[i].score > resultItems[j].score
 			})
-			reDocs := make([]string, 0, len(scoresOrdered))
-			reIDs := make([]string, 0, len(scoresOrdered))
-			reScores := make([]float32, 0, len(scoresOrdered))
-			var reMeta []map[string]string
-			if req.IncludeMeta {
-				reMeta = make([]map[string]string, 0, len(scoresOrdered))
-			}
-			for _, s := range scoresOrdered {
-				reDocs = append(reDocs, docs[s.docIdx])
-				reIDs = append(reIDs, respIDs[s.docIdx])
-				reScores = append(reScores, float32(s.score))
-				if req.IncludeMeta {
-					reMeta = append(reMeta, respMeta[s.docIdx])
-				}
-			}
-			docs = reDocs
-			respIDs = reIDs
-			respScores = reScores
-			if req.IncludeMeta {
-				respMeta = reMeta
-			}
 		}
-		start := req.Offset
-		if start > len(docs) {
-			start = len(docs)
+
+		start := offset
+		if start > len(resultItems) {
+			start = len(resultItems)
 		}
 		end := start + pageSize
-		if end > len(docs) {
-			end = len(docs)
+		if end > len(resultItems) {
+			end = len(resultItems)
 		}
-		docs = docs[start:end]
-		respIDs = respIDs[start:end]
-		if len(respScores) > 0 {
-			respScores = respScores[start:end]
-		} else {
-			respScores = nil
-		}
-		if req.IncludeMeta && len(respMeta) > 0 {
-			respMeta = respMeta[start:end]
-		} else {
-			respMeta = nil
+		pageItems := make([]queryResultItem, 0, end-start)
+		if start < end {
+			pageItems = append(pageItems, resultItems[start:end]...)
 		}
 
 		nextPage := ""
-		if end < len(respIDs) {
-			var lastSeq uint64
-			// Bounds check: ensure end-1 is valid for the ids slice
-			if end > 0 && end-1 < len(ids) {
-				lastIdx := ids[end-1]
-				if lastIdx < len(store.Seqs) {
-					lastSeq = store.Seqs[lastIdx]
-				} else {
-					lastSeq = uint64(lastIdx)
-				}
-			}
+		if end < len(resultItems) && len(pageItems) > 0 {
+			lastSeq := pageItems[len(pageItems)-1].seq
 			nextPage = encodePageToken(offset+pageSize, hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode), lastSeq)
 		}
 
-		rDocs, rerankScores, stats, err := reranker.Rerank(req.Query, docs, req.Limit)
+		pageDocs := make([]string, 0, len(pageItems))
+		for _, item := range pageItems {
+			pageDocs = append(pageDocs, item.doc)
+		}
+
+		rDocs, rerankScores, stats, err := reranker.Rerank(req.Query, pageDocs, req.Limit)
 		if err != nil {
 			telemetry.RecordError(span, err)
 			http.Error(w, "rerank error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		pageItems = reorderQueryResultItems(pageItems, rDocs)
+
+		respIDs := make([]string, 0, len(pageItems))
+		respMeta := make([]map[string]string, 0, len(pageItems))
+		respScores := make([]float32, 0, len(pageItems))
+		for _, item := range pageItems {
+			respIDs = append(respIDs, item.id)
+			respScores = append(respScores, item.score)
+			if req.IncludeMeta {
+				respMeta = append(respMeta, item.meta)
+			}
+		}
 		if len(respScores) == 0 {
 			respScores = rerankScores
+		}
+		if !req.IncludeMeta {
+			respMeta = nil
 		}
 
 		// Record search results in span
@@ -2059,12 +2037,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		se.Swap(newEmb)
 
 		sendResponse(w, r, map[string]any{
-			"ok":            true,
-			"type":          req.Type,
-			"model":         CurrentMode.EmbedderModel,
-			"dimension":     newDim,
+			"ok":                true,
+			"type":              req.Type,
+			"model":             CurrentMode.EmbedderModel,
+			"dimension":         newDim,
 			"dimension_changed": oldDim != newDim,
-			"warning":       func() string {
+			"warning": func() string {
 				if oldDim != newDim {
 					return fmt.Sprintf("dimension changed from %d to %d — existing vectors will not be compatible", oldDim, newDim)
 				}
@@ -2533,6 +2511,38 @@ func encodePageToken(offset int, filterHash string, lastSeq uint64) string {
 	cur := pageCursor{Offset: offset, FilterHash: filterHash, LastSeq: lastSeq}
 	b, _ := json.Marshal(cur)
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+type queryResultItem struct {
+	doc   string
+	id    string
+	meta  map[string]string
+	score float32
+	seq   uint64
+}
+
+func reorderQueryResultItems(items []queryResultItem, rerankedDocs []string) []queryResultItem {
+	if len(items) == 0 || len(rerankedDocs) == 0 {
+		return items[:0]
+	}
+
+	positionsByDoc := make(map[string][]int, len(items))
+	for i, item := range items {
+		positionsByDoc[item.doc] = append(positionsByDoc[item.doc], i)
+	}
+
+	reordered := make([]queryResultItem, 0, len(rerankedDocs))
+	for _, doc := range rerankedDocs {
+		positions := positionsByDoc[doc]
+		if len(positions) == 0 {
+			continue
+		}
+		pos := positions[0]
+		positionsByDoc[doc] = positions[1:]
+		reordered = append(reordered, items[pos])
+	}
+
+	return reordered
 }
 
 func decodePageToken(tok string) (pageCursor, error) {

@@ -225,23 +225,31 @@ func (wsc *WALStreamClient) PullLatest() ([]WalEntry, error) {
 		return nil, fmt.Errorf("failed to decode WAL response: %w", err)
 	}
 
-	// Update last seq
-	if len(response.Entries) > 0 {
-		wsc.lastSeq = response.Entries[len(response.Entries)-1].Seq
-	}
-
 	return response.Entries, nil
+}
+
+// Advance records the latest WAL sequence that was durably applied locally.
+func (wsc *WALStreamClient) Advance(seq uint64) {
+	if seq > wsc.lastSeq {
+		wsc.lastSeq = seq
+	}
 }
 
 // ApplyEntries applies WAL entries to the local store
 func (s *ShardServer) ApplyEntries(entries []WalEntry) error {
 	for _, entry := range entries {
 		switch entry.Op {
-		case "insert", "upsert":
+		case "insert":
 			// Add to store
 			_, err := s.store.Add(entry.Vec, entry.Doc, entry.ID, entry.Meta, entry.Coll, entry.Tenant)
 			if err != nil {
 				return fmt.Errorf("failed to apply insert (seq %d): %w", entry.Seq, err)
+			}
+
+		case "upsert":
+			_, err := s.store.Upsert(entry.Vec, entry.Doc, entry.ID, entry.Meta, entry.Coll, entry.Tenant)
+			if err != nil {
+				return fmt.Errorf("failed to apply upsert (seq %d): %w", entry.Seq, err)
 			}
 
 		case "delete":

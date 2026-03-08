@@ -1,8 +1,11 @@
 package index
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -683,10 +686,19 @@ func (d *DiskANNIndex) Search(ctx context.Context, query []float32, k int, param
 	// Extract filter from params if provided
 	var filterFunc filter.Filter
 	// DiskANN doesn't have specific search params yet, but check anyway for future compatibility
-	if hnswParams, ok := params.(HNSWSearchParams); ok {
-		filterFunc = hnswParams.Filter
-	} else if ivfParams, ok := params.(IVFSearchParams); ok {
-		filterFunc = ivfParams.Filter
+	switch p := params.(type) {
+	case HNSWSearchParams:
+		filterFunc = p.Filter
+	case *HNSWSearchParams:
+		if p != nil {
+			filterFunc = p.Filter
+		}
+	case IVFSearchParams:
+		filterFunc = p.Filter
+	case *IVFSearchParams:
+		if p != nil {
+			filterFunc = p.Filter
+		}
 	}
 
 	// Use greedy search with efSearch expansion
@@ -830,6 +842,186 @@ func (d *DiskANNIndex) Stats() IndexStats {
 	}
 }
 
+const diskANNExportMagic = "DANN2"
+
+type diskANNVectorRecord struct {
+	ID       uint64
+	InMemory bool
+	Vector   []float32
+}
+
+type diskANNExportPayload struct {
+	Dim            int
+	Count          int
+	MemoryLimit    int
+	MaxDegree      int
+	EfConstruction int
+	EfSearch       int
+	Metric         string
+	Prefetch       bool
+	CompactOnClose bool
+	MaxMmapSize    int64
+
+	Quantization QuantizationType
+	Uint8Min     []float32
+	Uint8Max     []float32
+	PQCodebooks  [][][]float32
+	PQM          int
+	PQKSub       int
+
+	Graph    map[uint64][]uint64
+	Deleted  map[uint64]bool
+	Metadata map[uint64][]byte
+	Vectors  []diskANNVectorRecord
+}
+
+func (d *DiskANNIndex) exportPayloadLocked() (*diskANNExportPayload, error) {
+	records, err := d.exportVectorRecordsLocked()
+	if err != nil {
+		return nil, err
+	}
+
+	payload := &diskANNExportPayload{
+		Dim:            d.dim,
+		Count:          d.count,
+		MemoryLimit:    d.memoryLimit,
+		MaxDegree:      d.maxDegree,
+		EfConstruction: d.efConstruction,
+		EfSearch:       d.efSearch,
+		Metric:         d.metric,
+		Prefetch:       d.prefetchEnabled,
+		CompactOnClose: d.compactOnClose,
+		MaxMmapSize:    d.maxMmapSize,
+		Quantization:   QuantizationNone,
+		Graph:          cloneDiskANNGraph(d.graph),
+		Deleted:        cloneDiskANNDeleted(d.deleted),
+		Metadata:       make(map[uint64][]byte, len(d.metadata)),
+		Vectors:        records,
+	}
+
+	for id, meta := range d.metadata {
+		data, err := json.Marshal(meta)
+		if err != nil {
+			return nil, fmt.Errorf("marshal metadata for %d: %w", id, err)
+		}
+		payload.Metadata[id] = data
+	}
+
+	switch q := d.quantizer.(type) {
+	case *Float16Quantizer:
+		payload.Quantization = q.Type()
+	case *Uint8Quantizer:
+		payload.Quantization = q.Type()
+		min, max := q.GetCodebook()
+		payload.Uint8Min = append([]float32(nil), min...)
+		payload.Uint8Max = append([]float32(nil), max...)
+	case *ProductQuantizer:
+		payload.Quantization = q.Type()
+		payload.PQCodebooks = clonePQCodebooks(q.GetCodebooks())
+		payload.PQM = q.m
+		payload.PQKSub = q.ksub
+	}
+
+	return payload, nil
+}
+
+func (d *DiskANNIndex) exportVectorRecordsLocked() ([]diskANNVectorRecord, error) {
+	idSet := make(map[uint64]struct{}, len(d.memoryVectors)+len(d.quantizedMemory)+len(d.diskOffsetIndex)+len(d.unquantizedOffsetIndex))
+	for id := range d.memoryVectors {
+		idSet[id] = struct{}{}
+	}
+	for id := range d.quantizedMemory {
+		idSet[id] = struct{}{}
+	}
+	for id := range d.diskOffsetIndex {
+		idSet[id] = struct{}{}
+	}
+	for id := range d.unquantizedOffsetIndex {
+		idSet[id] = struct{}{}
+	}
+
+	ids := make([]uint64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	records := make([]diskANNVectorRecord, 0, len(ids))
+	for _, id := range ids {
+		vec, err := d.vectorForExportLocked(id)
+		if err != nil {
+			return nil, fmt.Errorf("export vector %d: %w", id, err)
+		}
+		records = append(records, diskANNVectorRecord{
+			ID:       id,
+			InMemory: d.vectorStoredInMemoryLocked(id),
+			Vector:   vec,
+		})
+	}
+
+	return records, nil
+}
+
+func (d *DiskANNIndex) vectorStoredInMemoryLocked(id uint64) bool {
+	if _, ok := d.memoryVectors[id]; ok {
+		return true
+	}
+	_, ok := d.quantizedMemory[id]
+	return ok
+}
+
+func (d *DiskANNIndex) vectorForExportLocked(id uint64) ([]float32, error) {
+	if vec, ok := d.memoryVectors[id]; ok {
+		cp := make([]float32, len(vec))
+		copy(cp, vec)
+		return cp, nil
+	}
+
+	if quantized, ok := d.quantizedMemory[id]; ok {
+		vec, err := d.quantizer.Dequantize(quantized)
+		if err != nil {
+			return nil, fmt.Errorf("dequantize memory vector: %w", err)
+		}
+		return append([]float32(nil), vec...), nil
+	}
+
+	vec, err := d.readFromDisk(id)
+	if err != nil {
+		return nil, err
+	}
+	return append([]float32(nil), vec...), nil
+}
+
+func cloneDiskANNGraph(src map[uint64][]uint64) map[uint64][]uint64 {
+	dst := make(map[uint64][]uint64, len(src))
+	for id, neighbors := range src {
+		dst[id] = append([]uint64(nil), neighbors...)
+	}
+	return dst
+}
+
+func cloneDiskANNDeleted(src map[uint64]bool) map[uint64]bool {
+	dst := make(map[uint64]bool, len(src))
+	for id, deleted := range src {
+		dst[id] = deleted
+	}
+	return dst
+}
+
+func clonePQCodebooks(src [][][]float32) [][][]float32 {
+	if src == nil {
+		return nil
+	}
+	dst := make([][][]float32, len(src))
+	for i := range src {
+		dst[i] = make([][]float32, len(src[i]))
+		for j := range src[i] {
+			dst[i][j] = append([]float32(nil), src[i][j]...)
+		}
+	}
+	return dst
+}
+
 // Export serializes the DiskANN index
 func (d *DiskANNIndex) Export() ([]byte, error) {
 	d.mu.RLock()
@@ -840,63 +1032,176 @@ func (d *DiskANNIndex) Export() ([]byte, error) {
 		return nil, fmt.Errorf("failed to sync mmap: %w", err)
 	}
 
-	// Export metadata (graph + config)
-	// The actual vectors are in the mmap file
-	buf := make([]byte, 0, 1024*1024)
-
-	writeUint32 := func(v uint32) {
-		b := make([]byte, 4)
-		binary.LittleEndian.PutUint32(b, v)
-		buf = append(buf, b...)
+	payload, err := d.exportPayloadLocked()
+	if err != nil {
+		return nil, err
 	}
 
-	writeUint64 := func(v uint64) {
-		b := make([]byte, 8)
-		binary.LittleEndian.PutUint64(b, v)
-		buf = append(buf, b...)
+	var encoded bytes.Buffer
+	encoded.WriteString(diskANNExportMagic)
+	if err := gob.NewEncoder(&encoded).Encode(payload); err != nil {
+		return nil, fmt.Errorf("encode diskann export: %w", err)
 	}
 
-	// Header
-	writeUint32(uint32(d.dim))
-	writeUint32(uint32(d.count))
-	writeUint32(uint32(d.memoryLimit))
-	writeUint32(uint32(d.maxDegree))
-	writeUint32(uint32(d.efConstruction))
-	writeUint32(uint32(d.efSearch))
-
-	// Metric
-	metricBytes := []byte(d.metric)
-	writeUint32(uint32(len(metricBytes)))
-	buf = append(buf, metricBytes...)
-
-	// Index path
-	pathBytes := []byte(d.indexPath)
-	writeUint32(uint32(len(pathBytes)))
-	buf = append(buf, pathBytes...)
-
-	// Graph structure
-	writeUint32(uint32(len(d.graph)))
-	for id, neighbors := range d.graph {
-		writeUint64(id)
-		writeUint32(uint32(len(neighbors)))
-		for _, nID := range neighbors {
-			writeUint64(nID)
-		}
-	}
-
-	// Deleted set
-	writeUint32(uint32(len(d.deleted)))
-	for id := range d.deleted {
-		writeUint64(id)
-	}
-
-	return buf, nil
+	return encoded.Bytes(), nil
 }
 
 // Import deserializes the DiskANN index
 func (d *DiskANNIndex) Import(data []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	if bytes.HasPrefix(data, []byte(diskANNExportMagic)) {
+		var payload diskANNExportPayload
+		if err := gob.NewDecoder(bytes.NewReader(data[len(diskANNExportMagic):])).Decode(&payload); err != nil {
+			return fmt.Errorf("decode diskann export: %w", err)
+		}
+		return d.importPayloadLocked(&payload)
+	}
+
+	return d.importLegacyLocked(data)
+}
+
+func (d *DiskANNIndex) importPayloadLocked(payload *diskANNExportPayload) error {
+	currentIndexPath := d.indexPath
+	currentReadOnly := d.mmapReadOnly
+
+	d.dim = payload.Dim
+	d.count = payload.Count
+	d.memoryLimit = payload.MemoryLimit
+	d.maxDegree = payload.MaxDegree
+	d.efConstruction = payload.EfConstruction
+	d.efSearch = payload.EfSearch
+	d.metric = payload.Metric
+	d.prefetchEnabled = payload.Prefetch
+	d.compactOnClose = payload.CompactOnClose
+	d.maxMmapSize = payload.MaxMmapSize
+	d.indexPath = currentIndexPath
+	d.mmapReadOnly = currentReadOnly
+
+	if err := d.restoreQuantizerLocked(payload); err != nil {
+		return err
+	}
+	if err := d.resetStorageForImportLocked(); err != nil {
+		return err
+	}
+
+	d.graph = cloneDiskANNGraph(payload.Graph)
+	d.deleted = cloneDiskANNDeleted(payload.Deleted)
+	d.metadata = make(map[uint64]map[string]interface{}, len(payload.Metadata))
+	for id, raw := range payload.Metadata {
+		var meta map[string]interface{}
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			return fmt.Errorf("unmarshal metadata for %d: %w", id, err)
+		}
+		d.metadata[id] = meta
+	}
+
+	for _, record := range payload.Vectors {
+		vecCopy := append([]float32(nil), record.Vector...)
+		if record.InMemory {
+			if d.quantizer != nil {
+				quantized, err := d.quantizer.Quantize(vecCopy)
+				if err != nil {
+					return fmt.Errorf("restore in-memory vector %d: %w", record.ID, err)
+				}
+				d.quantizedMemory[record.ID] = quantized
+			} else {
+				d.memoryVectors[record.ID] = vecCopy
+			}
+			continue
+		}
+
+		if err := d.writeToDisk(record.ID, vecCopy); err != nil {
+			return fmt.Errorf("restore disk vector %d: %w", record.ID, err)
+		}
+	}
+
+	return nil
+}
+
+func (d *DiskANNIndex) restoreQuantizerLocked(payload *diskANNExportPayload) error {
+	switch payload.Quantization {
+	case QuantizationNone:
+		d.quantizer = nil
+		d.quantizedMemory = nil
+		d.diskOffsetIndex = nil
+	case QuantizationFloat16:
+		d.quantizer = NewFloat16Quantizer(payload.Dim)
+		d.quantizedMemory = make(map[uint64][]byte)
+		d.diskOffsetIndex = make(map[uint64]int64)
+	case QuantizationUint8:
+		q := NewUint8Quantizer(payload.Dim)
+		if err := q.SetCodebook(append([]float32(nil), payload.Uint8Min...), append([]float32(nil), payload.Uint8Max...)); err != nil {
+			return fmt.Errorf("restore uint8 quantizer: %w", err)
+		}
+		d.quantizer = q
+		d.quantizedMemory = make(map[uint64][]byte)
+		d.diskOffsetIndex = make(map[uint64]int64)
+	case QuantizationProduct:
+		q, err := NewProductQuantizer(payload.Dim, payload.PQM, payload.PQKSub)
+		if err != nil {
+			return fmt.Errorf("create pq quantizer: %w", err)
+		}
+		if err := q.SetCodebooks(clonePQCodebooks(payload.PQCodebooks)); err != nil {
+			return fmt.Errorf("restore pq quantizer: %w", err)
+		}
+		d.quantizer = q
+		d.quantizedMemory = make(map[uint64][]byte)
+		d.diskOffsetIndex = make(map[uint64]int64)
+	default:
+		return fmt.Errorf("unsupported quantization type %d", payload.Quantization)
+	}
+
+	return nil
+}
+
+func (d *DiskANNIndex) resetStorageForImportLocked() error {
+	if d.mmapData != nil {
+		if err := mmapUnmap(d.mmapData); err != nil {
+			return fmt.Errorf("failed to unmap existing mmap: %w", err)
+		}
+		d.mmapData = nil
+	}
+	if d.mmapFile != nil {
+		if err := d.mmapFile.Close(); err != nil {
+			return fmt.Errorf("failed to close existing mmap file: %w", err)
+		}
+		d.mmapFile = nil
+	}
+	if err := os.Remove(d.indexPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to reset diskann file: %w", err)
+	}
+
+	cacheCapacity := d.memoryLimit * 3
+	if cacheCapacity < 1 {
+		cacheCapacity = 1
+	}
+	bytesPerVector := int64(d.dim*4 + 100)
+	maxBytes := int64(cacheCapacity) * bytesPerVector
+
+	d.lruCache = NewLRUCache(cacheCapacity, maxBytes)
+	d.memoryVectors = make(map[uint64][]float32)
+	d.graph = make(map[uint64][]uint64)
+	d.deleted = make(map[uint64]bool)
+	d.metadata = make(map[uint64]map[string]interface{})
+	d.unquantizedOffsetIndex = make(map[uint64]int64)
+	if d.quantizer != nil {
+		d.quantizedMemory = make(map[uint64][]byte)
+		d.diskOffsetIndex = make(map[uint64]int64)
+	} else {
+		d.quantizedMemory = nil
+		d.diskOffsetIndex = nil
+	}
+	d.diskReads = 0
+	d.memoryHits = 0
+	d.cacheHitRate = 0
+	d.mmapOffset = 0
+
+	return d.initMmap()
+}
+
+func (d *DiskANNIndex) importLegacyLocked(data []byte) error {
 
 	dataLen := len(data)
 	offset := 0
@@ -983,10 +1288,9 @@ func (d *DiskANNIndex) Import(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("reading path: %w", err)
 	}
-	d.indexPath = string(pathBytes)
+	_ = pathBytes
 
-	// Reinitialize mmap with saved path
-	if err := d.initMmap(); err != nil {
+	if err := d.resetStorageForImportLocked(); err != nil {
 		return fmt.Errorf("failed to reinit mmap: %w", err)
 	}
 

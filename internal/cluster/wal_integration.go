@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -166,69 +167,71 @@ type WALRecoveryHandler interface {
 	OnDeleteCollection(ctx context.Context, entry *wal.Entry) error
 }
 
+var ErrCollectionReplayUnsupported = errors.New("collection WAL replay unsupported by Store interface")
+
+func dispatchReplayEntry(ctx context.Context, handler WALRecoveryHandler, entry *wal.Entry) error {
+	switch entry.Op {
+	case wal.OpInsert:
+		return handler.OnInsert(ctx, entry)
+	case wal.OpUpdate:
+		return handler.OnUpdate(ctx, entry)
+	case wal.OpDelete:
+		return handler.OnDelete(ctx, entry)
+	case wal.OpBatchInsert:
+		return handler.OnBatchInsert(ctx, entry)
+	case wal.OpCreateCollection:
+		return handler.OnCreateCollection(ctx, entry)
+	case wal.OpDeleteCollection:
+		return handler.OnDeleteCollection(ctx, entry)
+	default:
+		return fmt.Errorf("unsupported WAL operation: %s", entry.Op)
+	}
+}
+
 // Replay replays all WAL entries using the provided handler.
 func (wa *WALAdapter) Replay(ctx context.Context, handler WALRecoveryHandler) error {
-	return wal.Replay(wa.config.Dir, func(entry *wal.Entry) bool {
+	var replayErr error
+	err := wal.Replay(wa.config.Dir, func(entry *wal.Entry) bool {
 		select {
 		case <-ctx.Done():
+			replayErr = ctx.Err()
 			return false
 		default:
 		}
 
-		var err error
-		switch entry.Op {
-		case wal.OpInsert:
-			err = handler.OnInsert(ctx, entry)
-		case wal.OpUpdate:
-			err = handler.OnUpdate(ctx, entry)
-		case wal.OpDelete:
-			err = handler.OnDelete(ctx, entry)
-		case wal.OpBatchInsert:
-			err = handler.OnBatchInsert(ctx, entry)
-		case wal.OpCreateCollection:
-			err = handler.OnCreateCollection(ctx, entry)
-		case wal.OpDeleteCollection:
-			err = handler.OnDeleteCollection(ctx, entry)
-		}
-
-		// Continue on errors (log them)
-		if err != nil {
-			fmt.Printf("WAL replay error (LSN %d, op %s): %v\n", entry.LSN, entry.Op, err)
+		if err := dispatchReplayEntry(ctx, handler, entry); err != nil {
+			replayErr = fmt.Errorf("WAL replay error (LSN %d, op %s): %w", entry.LSN, entry.Op, err)
+			return false
 		}
 		return true
 	})
+	if err != nil {
+		return err
+	}
+	return replayErr
 }
 
 // ReplayFrom replays WAL entries starting from a specific LSN.
 func (wa *WALAdapter) ReplayFrom(ctx context.Context, fromLSN uint64, handler WALRecoveryHandler) error {
-	return wal.ReplayFrom(wa.config.Dir, fromLSN, func(entry *wal.Entry) bool {
+	var replayErr error
+	err := wal.ReplayFrom(wa.config.Dir, fromLSN, func(entry *wal.Entry) bool {
 		select {
 		case <-ctx.Done():
+			replayErr = ctx.Err()
 			return false
 		default:
 		}
 
-		var err error
-		switch entry.Op {
-		case wal.OpInsert:
-			err = handler.OnInsert(ctx, entry)
-		case wal.OpUpdate:
-			err = handler.OnUpdate(ctx, entry)
-		case wal.OpDelete:
-			err = handler.OnDelete(ctx, entry)
-		case wal.OpBatchInsert:
-			err = handler.OnBatchInsert(ctx, entry)
-		case wal.OpCreateCollection:
-			err = handler.OnCreateCollection(ctx, entry)
-		case wal.OpDeleteCollection:
-			err = handler.OnDeleteCollection(ctx, entry)
-		}
-
-		if err != nil {
-			fmt.Printf("WAL replay error (LSN %d, op %s): %v\n", entry.LSN, entry.Op, err)
+		if err := dispatchReplayEntry(ctx, handler, entry); err != nil {
+			replayErr = fmt.Errorf("WAL replay error (LSN %d, op %s): %w", entry.LSN, entry.Op, err)
+			return false
 		}
 		return true
 	})
+	if err != nil {
+		return err
+	}
+	return replayErr
 }
 
 // StoreRecoveryHandler implements WALRecoveryHandler for the Store interface.
@@ -272,31 +275,12 @@ func (h *StoreRecoveryHandler) OnBatchInsert(ctx context.Context, entry *wal.Ent
 
 // OnCreateCollection handles collection creation during recovery.
 func (h *StoreRecoveryHandler) OnCreateCollection(ctx context.Context, entry *wal.Entry) error {
-	// Collection creation is handled lazily in Store
-	return nil
+	return fmt.Errorf("%w: create %q", ErrCollectionReplayUnsupported, entry.Collection)
 }
 
 // OnDeleteCollection handles collection deletion during recovery.
 func (h *StoreRecoveryHandler) OnDeleteCollection(ctx context.Context, entry *wal.Entry) error {
-	// Delete all vectors in the collection
-	// This needs the store to provide a way to iterate collections.
-	// For now, use StoreLock + StoreColl + StoreDeleted pattern
-	h.store.StoreLock()
-	defer h.store.StoreUnlock()
-
-	coll := h.store.StoreColl()
-	for hid, c := range coll {
-		if c == entry.Collection {
-			// We need to mark as deleted. Use the store's internal method.
-			// Since we can't modify the Deleted map directly through the interface,
-			// we use DeleteByID on each matching vector.
-			// However, we already hold the lock so this could deadlock.
-			// The proper fix is to have a DeleteByCollection method on Store.
-			// For now, collect IDs and delete after unlock.
-			_ = hid // TODO: Add DeleteByCollection to Store interface
-		}
-	}
-	return nil
+	return fmt.Errorf("%w: delete %q", ErrCollectionReplayUnsupported, entry.Collection)
 }
 
 // ReadAllEntries reads all WAL entries without applying them.

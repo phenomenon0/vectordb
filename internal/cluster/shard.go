@@ -352,6 +352,7 @@ func (s *ShardServer) syncFromPrimary() error {
 	if err := s.ApplyEntries(entries); err != nil {
 		return fmt.Errorf("failed to apply WAL entries: %w", err)
 	}
+	s.walStreamClient.Advance(entries[len(entries)-1].Seq)
 
 	fmt.Printf("Replica sync: Applied %d WAL entries (latest seq: %d)\n",
 		len(entries), entries[len(entries)-1].Seq)
@@ -516,6 +517,10 @@ func (s *ShardServer) CreateSnapshot() *Snapshot {
 func (s *ShardServer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := AuthorizeWALStream(s.store, r); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
 

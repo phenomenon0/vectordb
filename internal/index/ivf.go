@@ -18,15 +18,15 @@ import (
 type IVFIndex struct {
 	mu sync.RWMutex
 
-	dim       int                        // Vector dimension
-	nlist     int                        // Number of clusters (centroids)
-	nprobe    int                        // Number of clusters to search
-	centroids [][]float32                // Cluster centers [nlist][dim]
-	postings  map[int][]uint64           // Inverted lists: cluster_id -> vector IDs
-	vectors   map[uint64][]float32       // ID -> vector storage (unquantized)
-	deleted   map[uint64]bool            // Tombstone deletions
-	clusterID map[uint64]int             // ID -> assigned cluster
-	count     int                        // Total vectors added
+	dim       int                  // Vector dimension
+	nlist     int                  // Number of clusters (centroids)
+	nprobe    int                  // Number of clusters to search
+	centroids [][]float32          // Cluster centers [nlist][dim]
+	postings  map[int][]uint64     // Inverted lists: cluster_id -> vector IDs
+	vectors   map[uint64][]float32 // ID -> vector storage (unquantized)
+	deleted   map[uint64]bool      // Tombstone deletions
+	clusterID map[uint64]int       // ID -> assigned cluster
+	count     int                  // Total vectors added
 
 	// Metadata storage (for filtered search)
 	metadata map[uint64]map[string]interface{}
@@ -37,8 +37,8 @@ type IVFIndex struct {
 	clusterSizes []int // Size of each cluster
 
 	// Optional quantization
-	quantizer     Quantizer          // Quantizer for compression
-	quantizedData map[uint64][]byte  // ID -> quantized vector storage
+	quantizer     Quantizer         // Quantizer for compression
+	quantizedData map[uint64][]byte // ID -> quantized vector storage
 }
 
 // NewIVFIndex creates a new IVF index
@@ -48,8 +48,8 @@ func NewIVFIndex(dim int, config map[string]interface{}) (Index, error) {
 	}
 
 	// Parse configuration
-	nlist := GetConfigInt(config, "nlist", 100)     // Default: 100 clusters
-	nprobe := GetConfigInt(config, "nprobe", 10)    // Default: search 10 clusters
+	nlist := GetConfigInt(config, "nlist", 100)  // Default: 100 clusters
+	nprobe := GetConfigInt(config, "nprobe", 10) // Default: search 10 clusters
 	metric := GetConfigString(config, "metric", "cosine")
 
 	if nlist <= 0 {
@@ -133,25 +133,21 @@ func (ivf *IVFIndex) Add(ctx context.Context, id uint64, vector []float32) error
 			if err := ivf.trainCentroids(); err != nil {
 				return fmt.Errorf("failed to train centroids: %w", err)
 			}
-			// After training, quantize existing vectors if quantizer is configured
 			if ivf.quantizer != nil {
-				if err := ivf.quantizeExistingVectors(); err != nil {
-					return fmt.Errorf("failed to quantize existing vectors: %w", err)
+				if quantizerNeedsTraining(ivf.quantizer) {
+					if err := ivf.maybeTrainQuantizerLocked(); err != nil {
+						return err
+					}
+				} else {
+					if err := ivf.quantizeExistingVectors(); err != nil {
+						return fmt.Errorf("failed to quantize existing vectors: %w", err)
+					}
 				}
 			}
 		}
 	} else {
-		// Centroids trained - store based on quantization config
-		if ivf.quantizer != nil {
-			// Quantize and store compressed data
-			quantized, err := ivf.quantizer.Quantize(vecCopy)
-			if err != nil {
-				return fmt.Errorf("failed to quantize vector: %w", err)
-			}
-			ivf.quantizedData[id] = quantized
-		} else {
-			// Store unquantized
-			ivf.vectors[id] = vecCopy
+		if err := ivf.storeVectorLocked(id, vecCopy); err != nil {
+			return err
 		}
 	}
 
@@ -214,7 +210,8 @@ func (ivf *IVFIndex) Search(ctx context.Context, query []float32, k int, params 
 	// Get nprobe and filter from params if provided
 	nprobe := ivf.nprobe
 	var filter filter.Filter
-	if p, ok := params.(IVFSearchParams); ok {
+	switch p := params.(type) {
+	case IVFSearchParams:
 		if p.NProbe > 0 {
 			nprobe = p.NProbe
 			if nprobe > ivf.nlist {
@@ -222,6 +219,16 @@ func (ivf *IVFIndex) Search(ctx context.Context, query []float32, k int, params 
 			}
 		}
 		filter = p.Filter
+	case *IVFSearchParams:
+		if p != nil {
+			if p.NProbe > 0 {
+				nprobe = p.NProbe
+				if nprobe > ivf.nlist {
+					nprobe = ivf.nlist
+				}
+			}
+			filter = p.Filter
+		}
 	}
 
 	// Find nprobe nearest clusters
@@ -248,46 +255,22 @@ func (ivf *IVFIndex) Search(ctx context.Context, query []float32, k int, params 
 	candidateIDs := make([]uint64, 0, len(candidates))
 	candidateMetadata := make([]map[string]interface{}, 0, len(candidates))
 
-	if ivf.quantizer != nil {
-		// Dequantize vectors for search
-		for id := range candidates {
-			// Apply metadata filter if provided
-			if filter != nil {
-				meta := ivf.metadata[id]
-				if meta == nil || !filter.Evaluate(meta) {
-					continue // Skip vectors that don't match filter
-				}
-			}
-
-			quantized, ok := ivf.quantizedData[id]
-			if !ok {
+	for id := range candidates {
+		if filter != nil {
+			meta := ivf.metadata[id]
+			if meta == nil || !filter.Evaluate(meta) {
 				continue
 			}
-
-			vec, err := ivf.quantizer.Dequantize(quantized)
-			if err != nil {
-				return nil, fmt.Errorf("failed to dequantize vector %d: %w", id, err)
-			}
-
-			candidateVectors = append(candidateVectors, vec)
-			candidateIDs = append(candidateIDs, id)
-			candidateMetadata = append(candidateMetadata, ivf.metadata[id])
 		}
-	} else {
-		// Use unquantized vectors
-		for id := range candidates {
-			// Apply metadata filter if provided
-			if filter != nil {
-				meta := ivf.metadata[id]
-				if meta == nil || !filter.Evaluate(meta) {
-					continue // Skip vectors that don't match filter
-				}
-			}
 
-			candidateVectors = append(candidateVectors, ivf.vectors[id])
-			candidateIDs = append(candidateIDs, id)
-			candidateMetadata = append(candidateMetadata, ivf.metadata[id])
+		vec, err := ivf.loadVectorLocked(id)
+		if err != nil {
+			return nil, err
 		}
+
+		candidateVectors = append(candidateVectors, vec)
+		candidateIDs = append(candidateIDs, id)
+		candidateMetadata = append(candidateMetadata, ivf.metadata[id])
 	}
 
 	var distances []float32
@@ -335,7 +318,9 @@ func (ivf *IVFIndex) Delete(ctx context.Context, id uint64) error {
 	defer ivf.mu.Unlock()
 
 	if _, exists := ivf.vectors[id]; !exists {
-		return fmt.Errorf("vector %d not found", id)
+		if _, existsQuantized := ivf.quantizedData[id]; !existsQuantized {
+			return fmt.Errorf("vector %d not found", id)
+		}
 	}
 
 	ivf.deleted[id] = true
@@ -395,84 +380,153 @@ func (ivf *IVFIndex) Export() ([]byte, error) {
 	ivf.mu.RLock()
 	defer ivf.mu.RUnlock()
 
-	// Export format:
-	// [4 bytes: dim] [4 bytes: nlist] [4 bytes: nprobe] [4 bytes: count]
-	// [4 bytes: metric length] [metric string]
-	// [1 byte: centroids trained?]
-	// If trained: [centroids data]
-	// [4 bytes: num vectors]
-	// For each vector: [8 bytes: id] [4 bytes: cluster] [vector data] [1 byte: deleted]
-
-	buf := make([]byte, 0, ivf.estimateMemory())
-
-	// Header
-	writeUint32 := func(v uint32) {
-		b := make([]byte, 4)
-		binary.LittleEndian.PutUint32(b, v)
-		buf = append(buf, b...)
+	type vectorEntry struct {
+		ID        uint64                 `json:"id"`
+		ClusterID int                    `json:"cluster_id"`
+		Vector    []float32              `json:"vector,omitempty"`
+		Quantized []byte                 `json:"quantized,omitempty"`
+		Metadata  map[string]interface{} `json:"metadata,omitempty"`
+		Deleted   bool                   `json:"deleted,omitempty"`
 	}
 
-	writeUint32(uint32(ivf.dim))
-	writeUint32(uint32(ivf.nlist))
-	writeUint32(uint32(ivf.nprobe))
-	writeUint32(uint32(ivf.count))
-
-	// Metric
-	metricBytes := []byte(ivf.metric)
-	writeUint32(uint32(len(metricBytes)))
-	buf = append(buf, metricBytes...)
-
-	// Centroids
-	if ivf.centroids != nil {
-		buf = append(buf, 1) // Trained flag
-		for _, centroid := range ivf.centroids {
-			for _, v := range centroid {
-				b := make([]byte, 4)
-				binary.LittleEndian.PutUint32(b, math.Float32bits(v))
-				buf = append(buf, b...)
-			}
-		}
-	} else {
-		buf = append(buf, 0) // Not trained
+	type exportFormat struct {
+		Version   int             `json:"version"`
+		Dim       int             `json:"dim"`
+		NList     int             `json:"nlist"`
+		NProbe    int             `json:"nprobe"`
+		Count     int             `json:"count"`
+		Metric    string          `json:"metric"`
+		Centroids [][]float32     `json:"centroids,omitempty"`
+		Quantizer *quantizerState `json:"quantizer,omitempty"`
+		Vectors   []vectorEntry   `json:"vectors"`
 	}
 
-	// Vectors
-	writeUint32(uint32(len(ivf.vectors)))
-	for id, vec := range ivf.vectors {
-		// ID
-		idBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(idBytes, id)
-		buf = append(buf, idBytes...)
-
-		// Cluster ID
-		clusterIdx := -1
-		if cid, ok := ivf.clusterID[id]; ok {
-			clusterIdx = cid
-		}
-		clusterBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(clusterBytes, uint32(clusterIdx))
-		buf = append(buf, clusterBytes...)
-
-		// Vector data
-		for _, v := range vec {
-			vBytes := make([]byte, 4)
-			binary.LittleEndian.PutUint32(vBytes, math.Float32bits(v))
-			buf = append(buf, vBytes...)
-		}
-
-		// Deleted flag
-		if ivf.deleted[id] {
-			buf = append(buf, 1)
-		} else {
-			buf = append(buf, 0)
-		}
+	quantizerState, err := exportQuantizerState(ivf.quantizer)
+	if err != nil {
+		return nil, err
 	}
 
-	return buf, nil
+	ids := ivf.sortedIDsLocked()
+	vectors := make([]vectorEntry, 0, len(ids))
+	for _, id := range ids {
+		entry := vectorEntry{
+			ID:        id,
+			ClusterID: -1,
+			Deleted:   ivf.deleted[id],
+		}
+		if clusterID, ok := ivf.clusterID[id]; ok {
+			entry.ClusterID = clusterID
+		}
+		if vec, ok := ivf.vectors[id]; ok {
+			entry.Vector = append([]float32(nil), vec...)
+		}
+		if quantized, ok := ivf.quantizedData[id]; ok {
+			entry.Quantized = append([]byte(nil), quantized...)
+		}
+		if metadata, ok := ivf.metadata[id]; ok {
+			entry.Metadata = copyMetadataMap(metadata)
+		}
+		vectors = append(vectors, entry)
+	}
+
+	return json.Marshal(exportFormat{
+		Version:   2,
+		Dim:       ivf.dim,
+		NList:     ivf.nlist,
+		NProbe:    ivf.nprobe,
+		Count:     ivf.count,
+		Metric:    ivf.metric,
+		Centroids: copy2DFloat32s(ivf.centroids),
+		Quantizer: quantizerState,
+		Vectors:   vectors,
+	})
 }
 
 // Import deserializes the IVF index
 func (ivf *IVFIndex) Import(data []byte) error {
+	if len(data) > 0 && data[0] == '{' {
+		return ivf.importJSON(data)
+	}
+	return ivf.importLegacyBinary(data)
+}
+
+func (ivf *IVFIndex) importJSON(data []byte) error {
+	type vectorEntry struct {
+		ID        uint64                 `json:"id"`
+		ClusterID int                    `json:"cluster_id"`
+		Vector    []float32              `json:"vector,omitempty"`
+		Quantized []byte                 `json:"quantized,omitempty"`
+		Metadata  map[string]interface{} `json:"metadata,omitempty"`
+		Deleted   bool                   `json:"deleted,omitempty"`
+	}
+
+	type importFormat struct {
+		Version   int             `json:"version"`
+		Dim       int             `json:"dim"`
+		NList     int             `json:"nlist"`
+		NProbe    int             `json:"nprobe"`
+		Count     int             `json:"count"`
+		Metric    string          `json:"metric"`
+		Centroids [][]float32     `json:"centroids,omitempty"`
+		Quantizer *quantizerState `json:"quantizer,omitempty"`
+		Vectors   []vectorEntry   `json:"vectors"`
+	}
+
+	var imp importFormat
+	if err := json.Unmarshal(data, &imp); err != nil {
+		return fmt.Errorf("failed to unmarshal IVF index: %w", err)
+	}
+	if imp.Version != 2 {
+		return fmt.Errorf("unsupported IVF export version: %d", imp.Version)
+	}
+
+	quantizer, err := importQuantizerState(imp.Dim, imp.Quantizer)
+	if err != nil {
+		return err
+	}
+
+	ivf.mu.Lock()
+	defer ivf.mu.Unlock()
+
+	ivf.dim = imp.Dim
+	ivf.nlist = imp.NList
+	ivf.nprobe = imp.NProbe
+	ivf.count = imp.Count
+	ivf.metric = imp.Metric
+	ivf.centroids = copy2DFloat32s(imp.Centroids)
+	ivf.quantizer = quantizer
+	ivf.vectors = make(map[uint64][]float32, len(imp.Vectors))
+	ivf.quantizedData = make(map[uint64][]byte, len(imp.Vectors))
+	ivf.postings = make(map[int][]uint64)
+	ivf.clusterID = make(map[uint64]int, len(imp.Vectors))
+	ivf.deleted = make(map[uint64]bool, len(imp.Vectors))
+	ivf.metadata = make(map[uint64]map[string]interface{}, len(imp.Vectors))
+	ivf.clusterSizes = make([]int, ivf.nlist)
+
+	for _, entry := range imp.Vectors {
+		if entry.ClusterID >= 0 {
+			ivf.clusterID[entry.ID] = entry.ClusterID
+			ivf.postings[entry.ClusterID] = append(ivf.postings[entry.ClusterID], entry.ID)
+			ivf.clusterSizes[entry.ClusterID]++
+		}
+		if len(entry.Vector) > 0 {
+			ivf.vectors[entry.ID] = append([]float32(nil), entry.Vector...)
+		}
+		if len(entry.Quantized) > 0 {
+			ivf.quantizedData[entry.ID] = append([]byte(nil), entry.Quantized...)
+		}
+		if entry.Metadata != nil {
+			ivf.metadata[entry.ID] = copyMetadataMap(entry.Metadata)
+		}
+		if entry.Deleted {
+			ivf.deleted[entry.ID] = true
+		}
+	}
+
+	return nil
+}
+
+func (ivf *IVFIndex) importLegacyBinary(data []byte) error {
 	if len(data) < 20 {
 		return fmt.Errorf("invalid IVF index data: too short")
 	}
@@ -519,9 +573,12 @@ func (ivf *IVFIndex) Import(data []byte) error {
 	// Initialize maps
 	numVectors := int(readUint32())
 	ivf.vectors = make(map[uint64][]float32, numVectors)
+	ivf.quantizedData = nil
+	ivf.quantizer = nil
 	ivf.postings = make(map[int][]uint64)
 	ivf.clusterID = make(map[uint64]int, numVectors)
 	ivf.deleted = make(map[uint64]bool)
+	ivf.metadata = make(map[uint64]map[string]interface{})
 	ivf.clusterSizes = make([]int, ivf.nlist)
 
 	// Vectors
@@ -599,8 +656,12 @@ func (ivf *IVFIndex) quantizeExistingVectors() error {
 		return nil
 	}
 
-	// Quantize all existing vectors
-	for id, vec := range ivf.vectors {
+	if ivf.quantizedData == nil {
+		ivf.quantizedData = make(map[uint64][]byte, len(ivf.vectors))
+	}
+
+	for _, id := range ivf.sortedVectorIDsLocked() {
+		vec := ivf.vectors[id]
 		quantized, err := ivf.quantizer.Quantize(vec)
 		if err != nil {
 			return fmt.Errorf("failed to quantize vector %d: %w", id, err)
@@ -612,6 +673,94 @@ func (ivf *IVFIndex) quantizeExistingVectors() error {
 	ivf.vectors = make(map[uint64][]float32)
 
 	return nil
+}
+
+func (ivf *IVFIndex) storeVectorLocked(id uint64, vec []float32) error {
+	if ivf.quantizer == nil {
+		ivf.vectors[id] = vec
+		return nil
+	}
+
+	if quantizerNeedsTraining(ivf.quantizer) {
+		ivf.vectors[id] = vec
+		delete(ivf.quantizedData, id)
+		return ivf.maybeTrainQuantizerLocked()
+	}
+
+	quantized, err := ivf.quantizer.Quantize(vec)
+	if err != nil {
+		return fmt.Errorf("failed to quantize vector: %w", err)
+	}
+	if ivf.quantizedData == nil {
+		ivf.quantizedData = make(map[uint64][]byte)
+	}
+	ivf.quantizedData[id] = quantized
+	delete(ivf.vectors, id)
+	return nil
+}
+
+func (ivf *IVFIndex) maybeTrainQuantizerLocked() error {
+	if ivf.quantizer == nil || !quantizerNeedsTraining(ivf.quantizer) {
+		return nil
+	}
+	if len(ivf.vectors) < quantizerMinTrainingVectors(ivf.quantizer) {
+		return nil
+	}
+
+	if err := trainQuantizerWithDefaults(ivf.quantizer, ivf.flattenVectorsLocked()); err != nil {
+		return fmt.Errorf("failed to train quantizer: %w", err)
+	}
+	return ivf.quantizeExistingVectors()
+}
+
+func (ivf *IVFIndex) flattenVectorsLocked() []float32 {
+	ids := ivf.sortedVectorIDsLocked()
+	flattened := make([]float32, 0, len(ids)*ivf.dim)
+	for _, id := range ids {
+		flattened = append(flattened, ivf.vectors[id]...)
+	}
+	return flattened
+}
+
+func (ivf *IVFIndex) sortedVectorIDsLocked() []uint64 {
+	ids := make([]uint64, 0, len(ivf.vectors))
+	for id := range ivf.vectors {
+		ids = append(ids, id)
+	}
+	return sortUint64s(ids)
+}
+
+func (ivf *IVFIndex) sortedIDsLocked() []uint64 {
+	idSet := make(map[uint64]struct{}, len(ivf.vectors)+len(ivf.quantizedData))
+	for id := range ivf.vectors {
+		idSet[id] = struct{}{}
+	}
+	for id := range ivf.quantizedData {
+		idSet[id] = struct{}{}
+	}
+
+	ids := make([]uint64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	return sortUint64s(ids)
+}
+
+func (ivf *IVFIndex) loadVectorLocked(id uint64) ([]float32, error) {
+	if vec, ok := ivf.vectors[id]; ok {
+		return append([]float32(nil), vec...), nil
+	}
+	if quantized, ok := ivf.quantizedData[id]; ok {
+		if ivf.quantizer == nil {
+			return nil, fmt.Errorf("vector %d is quantized but quantizer is missing", id)
+		}
+		vec, err := ivf.quantizer.Dequantize(quantized)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dequantize vector %d: %w", id, err)
+		}
+		return vec, nil
+	}
+	return nil, fmt.Errorf("vector %d not found", id)
 }
 
 // findNearestCluster finds the nearest centroid to a vector
@@ -742,16 +891,9 @@ func (ivf *IVFIndex) bruteForceSearch(query []float32, k int) ([]Result, error) 
 
 // estimateMemory estimates memory usage in bytes
 func (ivf *IVFIndex) estimateMemory() int {
-	// Vectors (quantized or unquantized)
-	var vectorMem int
-	if ivf.quantizer != nil {
-		// Quantized data: ID + compressed vector
-		for _, data := range ivf.quantizedData {
-			vectorMem += 8 + len(data)
-		}
-	} else {
-		// Unquantized vectors: ID + float32 array
-		vectorMem = len(ivf.vectors) * (8 + ivf.dim*4)
+	vectorMem := len(ivf.vectors) * (8 + ivf.dim*4)
+	for _, data := range ivf.quantizedData {
+		vectorMem += 8 + len(data)
 	}
 
 	// Centroids

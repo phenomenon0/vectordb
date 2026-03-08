@@ -92,8 +92,15 @@ func (n *layerNode[K]) search(
 	distance DistanceFunc,
 	filter FilterFunc[K], // Optional filter applied during traversal
 ) []searchCandidate[K] {
-	// This is a basic greedy algorithm to find the entry point at the given level
-	// that is closest to the target node.
+	// Standard HNSW search: result set is efSearch-sized (not k-sized).
+	// A larger result set keeps the "worst accepted" distance higher,
+	// preventing premature termination and allowing broader exploration.
+	// We return only the best k results at the end.
+	resultCap := efSearch
+	if resultCap < k {
+		resultCap = k
+	}
+
 	candidates := heap.Heap[searchCandidate[K]]{}
 	candidates.Init(make([]searchCandidate[K], 0, efSearch))
 	candidates.Push(
@@ -106,7 +113,7 @@ func (n *layerNode[K]) search(
 		result  = heap.Heap[searchCandidate[K]]{}
 		visited = make(map[K]bool)
 	)
-	result.Init(make([]searchCandidate[K], 0, k))
+	result.Init(make([]searchCandidate[K], 0, resultCap))
 
 	// Begin with the entry node in the result set (if it passes filter).
 	entryCandidate := candidates.Min()
@@ -116,11 +123,15 @@ func (n *layerNode[K]) search(
 	visited[n.Key] = true
 
 	for candidates.Len() > 0 {
-		var (
-			current  = candidates.Pop().node
-			improved = false
-		)
+		popped := candidates.Pop()
 
+		// Termination: if the best candidate (just popped from min-heap)
+		// is farther than the worst in our result set, no improvement possible.
+		if result.Len() >= resultCap && popped.dist >= result.Max().dist {
+			break
+		}
+
+		current := popped.node
 		// We iterate the map in a sorted, deterministic fashion for
 		// tests.
 		neighborKeys := maps.Keys(current.neighbors)
@@ -146,23 +157,21 @@ func (n *layerNode[K]) search(
 				continue // Skip filtered nodes for results, but still traverse
 			}
 
-			improved = improved || (result.Len() > 0 && dist < result.Min().dist)
-			if result.Len() < k {
+			if result.Len() < resultCap {
 				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
 			} else if dist < result.Max().dist {
 				result.PopLast()
 				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
 			}
 		}
-
-		// Termination condition: no improvement in distance and at least
-		// kMin candidates in the result set.
-		if !improved && result.Len() >= k {
-			break
-		}
 	}
 
-	return result.Slice()
+	// Return only the best k results from the efSearch-sized result set.
+	all := result.Slice()
+	if len(all) > k {
+		all = all[:k]
+	}
+	return all
 }
 
 func (n *layerNode[K]) replenish(m int) {
@@ -433,7 +442,7 @@ func (g *Graph[K]) Add(nodes ...Node[K]) {
 
 // Search finds the k nearest neighbors from the target node.
 func (h *Graph[K]) Search(near Vector, k int) []Node[K] {
-	return h.SearchFiltered(near, k, nil)
+	return h.SearchWithEf(near, k, h.EfSearch, nil)
 }
 
 // SearchFiltered finds the k nearest neighbors from the target node,
@@ -443,16 +452,18 @@ func (h *Graph[K]) Search(near Vector, k int) []Node[K] {
 // The filter is applied DURING graph traversal, not after, which provides
 // significant speedup (5-20x) for selective filters compared to post-filtering.
 func (h *Graph[K]) SearchFiltered(near Vector, k int, filter FilterFunc[K]) []Node[K] {
+	return h.SearchWithEf(near, k, h.EfSearch, filter)
+}
+
+// SearchWithEf finds the k nearest neighbors using the specified efSearch beam width.
+// This is safe for concurrent use — efSearch is passed as a parameter, not read from the graph.
+func (h *Graph[K]) SearchWithEf(near Vector, k int, efSearch int, filter FilterFunc[K]) []Node[K] {
 	h.assertDims(near)
 	if len(h.layers) == 0 {
 		return nil
 	}
 
-	var (
-		efSearch = h.EfSearch
-
-		elevator *K
-	)
+	var elevator *K
 
 	for layer := len(h.layers) - 1; layer >= 0; layer-- {
 		searchPoint := h.layers[layer].entry()
