@@ -3,6 +3,7 @@ package scenarios
 import (
 	"context"
 	"math/rand"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,7 +43,7 @@ func BenchmarkConcurrent_SearchScale(b *testing.B) {
 	workerCounts := []int{1, 4, 8, 16, 32}
 
 	for _, workers := range workerCounts {
-		b.Run("workers="+itoa2(workers), func(b *testing.B) {
+		b.Run("workers="+strconv.Itoa(workers), func(b *testing.B) {
 			var totalOps atomic.Int64
 			var totalLatency atomic.Int64
 			perWorker := b.N / workers
@@ -196,7 +197,7 @@ func BenchmarkConcurrent_LatencyUnderLoad(b *testing.B) {
 
 	// Measure single-threaded baseline then multi-threaded
 	for _, workers := range []int{1, 8} {
-		b.Run("workers="+itoa2(workers), func(b *testing.B) {
+		b.Run("workers="+strconv.Itoa(workers), func(b *testing.B) {
 			var mu sync.Mutex
 			allLatencies := make([]time.Duration, 0, b.N)
 			perWorker := b.N / workers

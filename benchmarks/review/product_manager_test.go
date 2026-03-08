@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/phenomenon0/vectordb/internal/index"
@@ -34,10 +36,10 @@ func TestProductManagerReview(t *testing.T) {
 
 		if missing == 0 {
 			review.Pass("index_types", "All 4 core index types available (HNSW, IVF, FLAT, DiskANN)", SeverityHigh,
-				joinTypes(supported))
+				strings.Join(supported, ", "))
 		} else {
 			review.Fail("index_types", "All 4 core index types available", SeverityHigh,
-				joinTypes(supported))
+				strings.Join(supported, ", "))
 		}
 	})
 
@@ -72,7 +74,7 @@ func TestProductManagerReview(t *testing.T) {
 
 		if working >= 3 {
 			review.Pass("quantization", "At least 3 quantization modes available", SeverityMedium,
-				joinTypes([]string{"checked: none, float16, uint8, binary"}))
+				"checked: none, float16, uint8, binary")
 		} else {
 			review.Fail("quantization", "At least 3 quantization modes available", SeverityMedium,
 				"Insufficient quantization support")
@@ -97,7 +99,11 @@ func TestProductManagerReview(t *testing.T) {
 
 	// Check 4: Stats API provides useful info
 	t.Run("stats_api", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", 64, map[string]interface{}{"m": 16})
+		idx, err := index.Create("hnsw", 64, map[string]interface{}{"m": 16})
+		if err != nil {
+			review.Fail("stats_api", "Index creation for stats check", SeverityLow, err.Error())
+			return
+		}
 		stats := idx.Stats()
 
 		hasName := stats.Name != ""
@@ -164,7 +170,10 @@ func TestProductManagerReview(t *testing.T) {
 			for d := range vec {
 				vec[d] = float32(d) / 64.0
 			}
-			idx.Add(ctx, 0, vec)
+			if err := idx.Add(ctx, 0, vec); err != nil {
+				t.Logf("%s: add failed: %v", c.IndexType, err)
+				continue
+			}
 			_, err = idx.Search(ctx, vec, 1, c.Params)
 			if err == nil {
 				working++
@@ -177,7 +186,7 @@ func TestProductManagerReview(t *testing.T) {
 			review.Pass("feature_matrix", "All index types support add+search lifecycle", SeverityHigh, "")
 		} else {
 			review.Fail("feature_matrix", "All index types support add+search lifecycle", SeverityHigh,
-				joinTypes([]string{joinTypes([]string{"working:", itoa3(working), "/", itoa3(len(combinations))})}))
+				"working: "+strconv.Itoa(working)+"/"+strconv.Itoa(len(combinations)))
 		}
 	})
 
@@ -199,25 +208,3 @@ func findProjectRoot() string {
 	}
 }
 
-func joinTypes(types []string) string {
-	result := ""
-	for i, t := range types {
-		if i > 0 {
-			result += ", "
-		}
-		result += t
-	}
-	return result
-}
-
-func itoa3(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
-}

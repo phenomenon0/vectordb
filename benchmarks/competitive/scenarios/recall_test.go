@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/phenomenon0/vectordb/benchmarks/competitive"
@@ -91,7 +92,7 @@ func runRecallSuite(t *testing.T, indexType string, baseConfig map[string]interf
 		}
 
 		for _, sweep := range sweeps {
-			name := indexType + "/" + itoa(dim) + "d/" + sweep.Label
+			name := indexType + "/" + strconv.Itoa(dim) + "d/" + sweep.Label
 			t.Run(name, func(t *testing.T) {
 				r1, r10, r100, err := competitive.MeasureRecall(idx, queries, gt.Neighbors, 100, sweep.Params)
 				if err != nil {
@@ -140,10 +141,10 @@ func BenchmarkRecall_HNSW_EfSweep(b *testing.B) {
 	}
 
 	for _, ef := range []int{16, 32, 64, 128, 256} {
-		b.Run("ef="+itoa2(ef), func(b *testing.B) {
+		b.Run("ef="+strconv.Itoa(ef), func(b *testing.B) {
 			params := &index.HNSWSearchParams{EfSearch: ef}
 			scenario := competitive.BenchmarkScenario{
-				Name:         "recall_hnsw_ef" + itoa2(ef),
+				Name:         "recall_hnsw_ef" + strconv.Itoa(ef),
 				IndexType:    "hnsw",
 				Dimension:    dim,
 				Scale:        scale,
@@ -162,14 +163,3 @@ func BenchmarkRecall_HNSW_EfSweep(b *testing.B) {
 	}
 }
 
-func itoa2(n int) string {
-	s := ""
-	if n == 0 {
-		return "0"
-	}
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
-}

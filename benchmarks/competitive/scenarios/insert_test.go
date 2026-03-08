@@ -3,6 +3,7 @@ package scenarios
 import (
 	"context"
 	"math/rand"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,7 +21,7 @@ func BenchmarkInsert_Single(b *testing.B) {
 	for _, dim := range []int{128, 768} {
 		vectors := testdata.GenerateClusteredVectors(b.N+1000, dim, 20, 0.15, rng)
 		for _, idx := range denseIndexes() {
-			name := idx.Name + "_" + itoa(dim) + "d"
+			name := idx.Name + "_" + strconv.Itoa(dim) + "d"
 			b.Run(name, func(b *testing.B) {
 				competitive.MeasureInsertThroughput(b, idx.Type, dim, idx.Config, vectors)
 			})
@@ -35,7 +36,7 @@ func BenchmarkInsert_Batch(b *testing.B) {
 	vectors := testdata.GenerateClusteredVectors(100_000, dim, 30, 0.15, rng)
 
 	for _, batch := range batchSizes {
-		b.Run("batch="+itoa2(batch), func(b *testing.B) {
+		b.Run("batch="+strconv.Itoa(batch), func(b *testing.B) {
 			ctx := context.Background()
 			idx, err := index.Create("hnsw", dim, map[string]interface{}{
 				"m": 16, "ef_construction": 200,
@@ -72,7 +73,7 @@ func BenchmarkInsert_Parallel(b *testing.B) {
 	workerCounts := []int{1, 4, 8, 16}
 
 	for _, workers := range workerCounts {
-		b.Run("workers="+itoa2(workers), func(b *testing.B) {
+		b.Run("workers="+strconv.Itoa(workers), func(b *testing.B) {
 			ctx := context.Background()
 			idx, err := index.Create("hnsw", dim, map[string]interface{}{
 				"m": 16, "ef_construction": 200,

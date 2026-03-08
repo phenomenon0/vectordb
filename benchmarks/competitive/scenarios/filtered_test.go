@@ -34,7 +34,8 @@ func BenchmarkFiltered_HNSW(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	metadata := testdata.GenerateUniformMetadata(scale, rng)
+	// TODO: attach metadata to vectors when index supports metadata storage.
+	// metadata := testdata.GenerateUniformMetadata(scale, rng)
 	for i, v := range vectors {
 		if err := idx.Add(ctx, uint64(i), v); err != nil {
 			b.Fatal(err)
@@ -51,8 +52,6 @@ func BenchmarkFiltered_HNSW(b *testing.B) {
 		{"50pct", filter.Lt("score", 50.0), "50%"},
 		{"90pct", filter.Lt("score", 90.0), "90%"},
 	}
-
-	_ = metadata // metadata used for filter evaluation context
 
 	for _, sel := range selectivities {
 		b.Run("selectivity="+sel.Pct, func(b *testing.B) {

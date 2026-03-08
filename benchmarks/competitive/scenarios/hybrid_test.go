@@ -130,15 +130,22 @@ func BenchmarkHybrid_WeightSweep(b *testing.B) {
 	sparseQueries := testdata.GenerateSparseQueries(50, vocabSize, 5, 15, rng)
 
 	ctx := context.Background()
-	denseIdx, _ := index.Create("hnsw", dim, map[string]interface{}{
+	denseIdx, err := index.Create("hnsw", dim, map[string]interface{}{
 		"m": 16, "ef_search": 64, "ef_construction": 200,
 	})
+	if err != nil {
+		b.Fatal(err)
+	}
 	for i, v := range vectors {
-		_ = denseIdx.Add(ctx, uint64(i), v)
+		if err := denseIdx.Add(ctx, uint64(i), v); err != nil {
+			b.Fatalf("inserting dense vector %d: %v", i, err)
+		}
 	}
 	sparseIdx := sparse.NewInvertedIndex(vocabSize)
 	for i, doc := range sparseDocs {
-		_ = sparseIdx.Add(ctx, uint64(i), doc)
+		if err := sparseIdx.Add(ctx, uint64(i), doc); err != nil {
+			b.Fatalf("inserting sparse doc %d: %v", i, err)
+		}
 	}
 
 	weights := []struct {
@@ -162,9 +169,15 @@ func BenchmarkHybrid_WeightSweep(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				denseResults, _ := denseIdx.Search(ctx, denseQueries[i%len(denseQueries)], 20,
+				denseResults, err := denseIdx.Search(ctx, denseQueries[i%len(denseQueries)], 20,
 					&index.HNSWSearchParams{EfSearch: 64})
-				sparseResults, _ := sparseIdx.Search(ctx, sparseQueries[i%len(sparseQueries)], 20)
+				if err != nil {
+					b.Fatal(err)
+				}
+				sparseResults, err := sparseIdx.Search(ctx, sparseQueries[i%len(sparseQueries)], 20)
+				if err != nil {
+					b.Fatal(err)
+				}
 
 				denseH := make([]hybrid.SearchResult, len(denseResults))
 				for j, r := range denseResults {
@@ -174,7 +187,9 @@ func BenchmarkHybrid_WeightSweep(b *testing.B) {
 				for j, r := range sparseResults {
 					sparseH[j] = hybrid.SearchResult{DocID: r.DocID, Score: r.Score}
 				}
-				hybrid.HybridSearch(denseH, sparseH, params, 10)
+				if _, err := hybrid.HybridSearch(denseH, sparseH, params, 10); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}

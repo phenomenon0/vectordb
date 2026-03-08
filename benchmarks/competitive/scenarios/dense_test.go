@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"math/rand"
+	"strconv"
 	"testing"
 
 	"github.com/phenomenon0/vectordb/benchmarks/competitive"
@@ -75,7 +76,7 @@ func BenchmarkDense(b *testing.B) {
 			for _, idx := range denseIndexes() {
 				for _, q := range quantizers() {
 					config := mergeConfig(idx.Config, q.Config)
-					name := idx.Name + "_" + q.Name + "_" + itoa(dim) + "d_" + sc.Name
+					name := idx.Name + "_" + q.Name + "_" + strconv.Itoa(dim) + "d_" + sc.Name
 
 					b.Run(name, func(b *testing.B) {
 						scenario := competitive.BenchmarkScenario{
@@ -126,15 +127,3 @@ func mergeConfig(base map[string]interface{}, quantConfig map[string]interface{}
 	return merged
 }
 
-func itoa(n int) string {
-	switch n {
-	case 128:
-		return "128"
-	case 768:
-		return "768"
-	case 1536:
-		return "1536"
-	default:
-		return "?"
-	}
-}

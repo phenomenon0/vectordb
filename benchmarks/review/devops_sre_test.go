@@ -37,7 +37,9 @@ func TestDevOpsSREReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, v := range vectors {
-		idx.Add(ctx, uint64(i), v)
+		if err := idx.Add(ctx, uint64(i), v); err != nil {
+			t.Fatalf("inserting vector %d: %v", i, err)
+		}
 	}
 
 	// Check 1: P99/P50 ratio < 10x

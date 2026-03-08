@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"math/rand"
+	"strconv"
 	"testing"
 
 	"github.com/phenomenon0/vectordb/benchmarks/competitive"
@@ -38,7 +39,7 @@ func TestMemoryFootprint(t *testing.T) {
 		vectors := testdata.GenerateClusteredVectors(scale, dim, 20, 0.15, rng)
 
 		for _, tc := range cases {
-			name := tc.Index + "_" + tc.Quant + "_" + itoa(dim) + "d"
+			name := tc.Index + "_" + tc.Quant + "_" + strconv.Itoa(dim) + "d"
 			t.Run(name, func(t *testing.T) {
 				memMB, bytesPerVec, err := competitive.MeasureMemory(tc.Index, dim, tc.Config, vectors)
 				if err != nil {
@@ -68,7 +69,7 @@ func BenchmarkMemory(b *testing.B) {
 		for _, dim := range []int{128, 768} {
 			vectors := testdata.GenerateClusteredVectors(sc.Count, dim, sc.Clusters, sc.Spread, rng)
 
-			name := "HNSW_" + itoa(dim) + "d_" + sc.Name
+			name := "HNSW_" + strconv.Itoa(dim) + "d_" + sc.Name
 			b.Run(name, func(b *testing.B) {
 				memMB, bytesPerVec, err := competitive.MeasureMemory("hnsw", dim,
 					map[string]interface{}{"m": 16, "ef_construction": 200}, vectors)

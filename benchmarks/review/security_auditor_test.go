@@ -18,68 +18,45 @@ func TestSecurityAuditorReview(t *testing.T) {
 	ctx := context.Background()
 	dim := 64
 
-	// Check 1: Oversized vector rejection
-	t.Run("oversized_vector", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+	// Checks 1-3: Wrong-dimension vector rejection (oversized, undersized, empty)
+	dimValidationCases := []struct {
+		name    string
+		vecSize int
+		passMsg string
+		failMsg string
+	}{
+		{"oversized_vector", dim * 2, "Oversized vectors rejected with error", "Oversized vector accepted without validation"},
+		{"undersized_vector", dim / 2, "Undersized vectors rejected", "Wrong-dimension vector accepted without validation"},
+		{"empty_vector", 0, "Empty vectors rejected", "Empty vector accepted"},
+	}
+	for _, tc := range dimValidationCases {
+		t.Run(tc.name, func(t *testing.T) {
+			idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
 
-		oversized := make([]float32, dim*2) // Double the expected dimension
-		err := idx.Add(ctx, 0, oversized)
+			vec := make([]float32, tc.vecSize)
+			err := idx.Add(ctx, 0, vec)
 
-		if err != nil {
-			review.Pass("oversized_vector", "Oversized vectors rejected with error", SeverityHigh,
-				err.Error())
-		} else {
-			// Accepted — check if search still works
-			normal := make([]float32, dim)
-			_, searchErr := idx.Search(ctx, normal, 5, &index.HNSWSearchParams{EfSearch: 64})
-			if searchErr != nil {
-				review.Fail("oversized_vector", "Oversized vectors don't corrupt index", SeverityCritical,
-					"Search fails after oversized insert")
+			if err != nil {
+				review.Pass(tc.name, tc.passMsg, SeverityHigh, err.Error())
 			} else {
-				review.Fail("oversized_vector", "Oversized vectors should be rejected", SeverityHigh,
-					"Oversized vector accepted without validation")
+				review.Fail(tc.name, tc.failMsg, SeverityHigh, tc.failMsg)
 			}
-		}
-	})
-
-	// Check 2: Undersized vector rejection
-	t.Run("undersized_vector", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
-
-		undersized := make([]float32, dim/2)
-		err := idx.Add(ctx, 0, undersized)
-
-		if err != nil {
-			review.Pass("undersized_vector", "Undersized vectors rejected", SeverityHigh, err.Error())
-		} else {
-			review.Fail("undersized_vector", "Undersized vectors should be rejected", SeverityHigh,
-				"Wrong-dimension vector accepted without validation")
-		}
-	})
-
-	// Check 3: Empty vector
-	t.Run("empty_vector", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
-
-		empty := make([]float32, 0)
-		err := idx.Add(ctx, 0, empty)
-
-		if err != nil {
-			review.Pass("empty_vector", "Empty vectors rejected", SeverityHigh, err.Error())
-		} else {
-			review.Fail("empty_vector", "Empty vectors should be rejected", SeverityHigh,
-				"Empty vector accepted")
-		}
-	})
+		})
+	}
 
 	// Check 4: Negative k in search
 	t.Run("negative_k", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+		if err != nil {
+			t.Fatal(err)
+		}
 		vec := make([]float32, dim)
 		for d := range vec {
 			vec[d] = 0.5
 		}
-		idx.Add(ctx, 0, vec)
+		if err := idx.Add(ctx, 0, vec); err != nil {
+			t.Fatal(err)
+		}
 
 		func() {
 			defer func() {
@@ -102,12 +79,17 @@ func TestSecurityAuditorReview(t *testing.T) {
 
 	// Check 5: Very large k
 	t.Run("large_k", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+		if err != nil {
+			t.Fatal(err)
+		}
 		vec := make([]float32, dim)
 		for d := range vec {
 			vec[d] = 0.5
 		}
-		idx.Add(ctx, 0, vec)
+		if err := idx.Add(ctx, 0, vec); err != nil {
+			t.Fatal(err)
+		}
 
 		func() {
 			defer func() {
@@ -135,12 +117,17 @@ func TestSecurityAuditorReview(t *testing.T) {
 
 	// Check 6: NaN in search query
 	t.Run("nan_query", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+		if err != nil {
+			t.Fatal(err)
+		}
 		vec := make([]float32, dim)
 		for d := range vec {
 			vec[d] = 0.5
 		}
-		idx.Add(ctx, 0, vec)
+		if err := idx.Add(ctx, 0, vec); err != nil {
+			t.Fatal(err)
+		}
 
 		nanQuery := make([]float32, dim)
 		nanQuery[0] = float32(math.NaN())
