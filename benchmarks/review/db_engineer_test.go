@@ -63,11 +63,16 @@ func TestDBEngineerReview(t *testing.T) {
 
 	// Check 2: Delete then search should not return deleted vectors
 	t.Run("delete_search_correctness", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{
 			"m": 16, "ef_search": 200, "ef_construction": 200,
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i, v := range vectors[:100] {
-			idx.Add(ctx, uint64(i), v)
+			if err := idx.Add(ctx, uint64(i), v); err != nil {
+				t.Fatalf("inserting vector %d: %v", i, err)
+			}
 		}
 
 		// Delete first 10
@@ -96,12 +101,17 @@ func TestDBEngineerReview(t *testing.T) {
 
 	// Check 3: Concurrent read/write safety
 	t.Run("concurrent_rw_safety", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{
 			"m": 16, "ef_search": 64, "ef_construction": 200,
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		// Pre-populate
 		for i := 0; i < 100; i++ {
-			idx.Add(ctx, uint64(i), vectors[i%len(vectors)])
+			if err := idx.Add(ctx, uint64(i), vectors[i%len(vectors)]); err != nil {
+				t.Fatalf("inserting vector %d: %v", i, err)
+			}
 		}
 
 		var wg sync.WaitGroup
@@ -165,11 +175,18 @@ func TestDBEngineerReview(t *testing.T) {
 
 	// Check 4: Export/Import round-trip
 	t.Run("export_import_roundtrip", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{
 			"m": 16, "ef_search": 100, "ef_construction": 200,
 		})
+		if err != nil {
+			review.Fail("export_import", "Index creation", SeverityMedium, err.Error())
+			return
+		}
 		for i := 0; i < 50; i++ {
-			idx.Add(ctx, uint64(i), vectors[i])
+			if err := idx.Add(ctx, uint64(i), vectors[i]); err != nil {
+				review.Fail("export_import", "Vector insertion", SeverityMedium, err.Error())
+				return
+			}
 		}
 
 		exported, err := idx.Export()
@@ -178,9 +195,13 @@ func TestDBEngineerReview(t *testing.T) {
 			return
 		}
 
-		idx2, _ := index.Create("hnsw", dim, map[string]interface{}{
+		idx2, err := index.Create("hnsw", dim, map[string]interface{}{
 			"m": 16, "ef_search": 100, "ef_construction": 200,
 		})
+		if err != nil {
+			review.Fail("export_import", "Index creation for import", SeverityMedium, err.Error())
+			return
+		}
 		err = idx2.Import(exported)
 		if err != nil {
 			review.Fail("export_import", "Index imports successfully", SeverityMedium, err.Error())
@@ -199,9 +220,12 @@ func TestDBEngineerReview(t *testing.T) {
 
 	// Check 5: NaN/Inf vector handling
 	t.Run("nan_inf_handling", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{
 			"m": 16, "ef_search": 64,
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		nanVec := make([]float32, dim)
 		nanVec[0] = float32(math.NaN())
@@ -231,17 +255,22 @@ func TestDBEngineerReview(t *testing.T) {
 
 	// Check 6: Zero vector
 	t.Run("zero_vector", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{
 			"m": 16, "ef_search": 64,
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i := 0; i < 20; i++ {
-			idx.Add(ctx, uint64(i), vectors[i])
+			if err := idx.Add(ctx, uint64(i), vectors[i]); err != nil {
+				t.Fatalf("inserting vector %d: %v", i, err)
+			}
 		}
 
 		zeroVec := make([]float32, dim)
-		err := idx.Add(ctx, 999, zeroVec)
-		if err != nil {
-			review.Pass("zero_vector", "Zero vector handled with error", SeverityLow, err.Error())
+		addErr := idx.Add(ctx, 999, zeroVec)
+		if addErr != nil {
+			review.Pass("zero_vector", "Zero vector handled with error", SeverityLow, addErr.Error())
 		} else {
 			_, searchErr := idx.Search(ctx, zeroVec, 5, &index.HNSWSearchParams{EfSearch: 64})
 			if searchErr != nil {
@@ -256,28 +285,45 @@ func TestDBEngineerReview(t *testing.T) {
 
 	// Check 7: Duplicate ID overwrite
 	t.Run("duplicate_id", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{
 			"m": 16, "ef_search": 200, "ef_construction": 200,
 		})
-		idx.Add(ctx, 0, vectors[0])
-		idx.Add(ctx, 0, vectors[1]) // Overwrite with different vector
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := idx.Add(ctx, 0, vectors[0]); err != nil {
+			t.Fatal(err)
+		}
+		overwriteErr := idx.Add(ctx, 0, vectors[1]) // Attempt to overwrite with different vector
 
-		results, _ := idx.Search(ctx, vectors[1], 1, &index.HNSWSearchParams{EfSearch: 200})
-		if len(results) > 0 && results[0].ID == 0 {
-			review.Pass("duplicate_id", "Duplicate ID overwrites previous vector", SeverityMedium, "")
+		if overwriteErr != nil {
+			// Index rejects duplicate IDs — valid behavior
+			review.Pass("duplicate_id", "Duplicate ID rejected with error", SeverityMedium,
+				overwriteErr.Error())
 		} else {
-			review.Fail("duplicate_id", "Duplicate ID handling", SeverityMedium,
-				"Duplicate ID behavior unclear — may cause data inconsistency")
+			// Index accepted the overwrite — verify the new vector is returned
+			results, _ := idx.Search(ctx, vectors[1], 1, &index.HNSWSearchParams{EfSearch: 200})
+			if len(results) > 0 && results[0].ID == 0 {
+				review.Pass("duplicate_id", "Duplicate ID overwrites previous vector", SeverityMedium, "")
+			} else {
+				review.Fail("duplicate_id", "Duplicate ID handling", SeverityMedium,
+					"Duplicate ID behavior unclear — may cause data inconsistency")
+			}
 		}
 	})
 
 	// Check 8: Stats accuracy
 	t.Run("stats_accuracy", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{
 			"m": 16, "ef_construction": 200,
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i := 0; i < 50; i++ {
-			idx.Add(ctx, uint64(i), vectors[i])
+			if err := idx.Add(ctx, uint64(i), vectors[i]); err != nil {
+				t.Fatalf("inserting vector %d: %v", i, err)
+			}
 		}
 		stats := idx.Stats()
 		if stats.Count == 50 {

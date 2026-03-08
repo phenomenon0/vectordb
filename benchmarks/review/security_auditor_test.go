@@ -31,10 +31,13 @@ func TestSecurityAuditorReview(t *testing.T) {
 	}
 	for _, tc := range dimValidationCases {
 		t.Run(tc.name, func(t *testing.T) {
-			idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+			idx, err := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			vec := make([]float32, tc.vecSize)
-			err := idx.Add(ctx, 0, vec)
+			err = idx.Add(ctx, 0, vec)
 
 			if err != nil {
 				review.Pass(tc.name, tc.passMsg, SeverityHigh, err.Error())
@@ -152,12 +155,17 @@ func TestSecurityAuditorReview(t *testing.T) {
 
 	// Check 7: Nil search params
 	t.Run("nil_search_params", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{"m": 16})
+		if err != nil {
+			t.Fatal(err)
+		}
 		vec := make([]float32, dim)
 		for d := range vec {
 			vec[d] = 0.5
 		}
-		idx.Add(ctx, 0, vec)
+		if err := idx.Add(ctx, 0, vec); err != nil {
+			t.Fatal(err)
+		}
 
 		func() {
 			defer func() {
@@ -186,12 +194,17 @@ func TestSecurityAuditorReview(t *testing.T) {
 			strings.Repeat("A", 1_000_000), // 1MB string
 		}
 
-		idx, _ := index.Create("flat", dim, map[string]interface{}{"metric": "cosine"})
+		idx, err := index.Create("flat", dim, map[string]interface{}{"metric": "cosine"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		vec := make([]float32, dim)
 		for d := range vec {
 			vec[d] = 0.5
 		}
-		idx.Add(ctx, 0, vec)
+		if err := idx.Add(ctx, 0, vec); err != nil {
+			t.Fatal(err)
+		}
 
 		crashed := false
 		for _, s := range maliciousStrings {
@@ -217,14 +230,19 @@ func TestSecurityAuditorReview(t *testing.T) {
 
 	// Check 9: Concurrent delete safety
 	t.Run("concurrent_delete", func(t *testing.T) {
-		idx, _ := index.Create("hnsw", dim, map[string]interface{}{"m": 16, "ef_search": 64})
+		idx, err := index.Create("hnsw", dim, map[string]interface{}{"m": 16, "ef_search": 64})
+		if err != nil {
+			t.Fatal(err)
+		}
 		vecs := make([][]float32, 100)
 		for i := range vecs {
 			vecs[i] = make([]float32, dim)
 			for d := range vecs[i] {
 				vecs[i][d] = float32(i*dim+d) / float32(100*dim)
 			}
-			idx.Add(ctx, uint64(i), vecs[i])
+			if err := idx.Add(ctx, uint64(i), vecs[i]); err != nil {
+				t.Fatalf("inserting vector %d: %v", i, err)
+			}
 		}
 
 		func() {

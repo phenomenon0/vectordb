@@ -192,7 +192,9 @@ func BenchmarkConcurrent_LatencyUnderLoad(b *testing.B) {
 		b.Fatal(err)
 	}
 	for i, v := range vectors {
-		_ = idx.Add(ctx, uint64(i), v)
+		if err := idx.Add(ctx, uint64(i), v); err != nil {
+			b.Fatalf("inserting vector %d: %v", i, err)
+		}
 	}
 
 	// Measure single-threaded baseline then multi-threaded
