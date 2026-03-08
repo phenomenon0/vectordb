@@ -135,7 +135,7 @@ func TestCollection_AddDense(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := coll.Add(ctx, doc); err != nil {
+	if err := coll.Add(ctx, &doc); err != nil {
 		t.Fatalf("failed to add document: %v", err)
 	}
 
@@ -182,7 +182,7 @@ func TestCollection_AddSparse(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := coll.Add(ctx, doc); err != nil {
+	if err := coll.Add(ctx, &doc); err != nil {
 		t.Fatalf("failed to add document: %v", err)
 	}
 
@@ -232,7 +232,7 @@ func TestCollection_AddMultiVector(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := coll.Add(ctx, doc); err != nil {
+	if err := coll.Add(ctx, &doc); err != nil {
 		t.Fatalf("failed to add document: %v", err)
 	}
 
@@ -283,7 +283,7 @@ func TestCollection_SearchDense(t *testing.T) {
 	}
 
 	for _, doc := range docs {
-		if err := coll.Add(ctx, doc); err != nil {
+		if err := coll.Add(ctx, &doc); err != nil {
 			t.Fatalf("failed to add document: %v", err)
 		}
 	}
@@ -351,7 +351,7 @@ func TestCollection_SearchSparse(t *testing.T) {
 	}
 
 	for _, doc := range docs {
-		if err := coll.Add(ctx, doc); err != nil {
+		if err := coll.Add(ctx, &doc); err != nil {
 			t.Fatalf("failed to add document: %v", err)
 		}
 	}
@@ -423,7 +423,7 @@ func TestCollection_SearchHybrid(t *testing.T) {
 	}
 
 	for _, doc := range docs {
-		if err := coll.Add(ctx, doc); err != nil {
+		if err := coll.Add(ctx, &doc); err != nil {
 			t.Fatalf("failed to add document: %v", err)
 		}
 	}
@@ -525,7 +525,7 @@ func TestCollection_Delete(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := coll.Add(ctx, doc); err != nil {
+	if err := coll.Add(ctx, &doc); err != nil {
 		t.Fatalf("failed to add document: %v", err)
 	}
 
@@ -573,7 +573,7 @@ func TestCollection_GetDocument(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := coll.Add(ctx, doc); err != nil {
+	if err := coll.Add(ctx, &doc); err != nil {
 		t.Fatalf("failed to add document: %v", err)
 	}
 
@@ -612,7 +612,7 @@ func TestCollection_ValidationErrors(t *testing.T) {
 	doc1 := Document{
 		Vectors: map[string]interface{}{},
 	}
-	if err := coll.Add(ctx, doc1); err == nil {
+	if err := coll.Add(ctx, &doc1); err == nil {
 		t.Error("should error on missing vector field")
 	}
 
@@ -622,7 +622,7 @@ func TestCollection_ValidationErrors(t *testing.T) {
 			"embedding": "not a vector",
 		},
 	}
-	if err := coll.Add(ctx, doc2); err == nil {
+	if err := coll.Add(ctx, &doc2); err == nil {
 		t.Error("should error on wrong vector type")
 	}
 
@@ -633,7 +633,7 @@ func TestCollection_ValidationErrors(t *testing.T) {
 			"extra":     []float32{1.0, 2.0},
 		},
 	}
-	if err := coll.Add(ctx, doc3); err == nil {
+	if err := coll.Add(ctx, &doc3); err == nil {
 		t.Error("should error on extra field")
 	}
 }
@@ -666,7 +666,7 @@ func BenchmarkCollection_AddDense(b *testing.B) {
 				"embedding": vec,
 			},
 		}
-		_ = coll.Add(ctx, doc)
+		_ = coll.Add(ctx, &doc)
 	}
 }
 
@@ -713,7 +713,7 @@ func BenchmarkCollection_AddMultiVector(b *testing.B) {
 				"keywords":  sparseVec,
 			},
 		}
-		_ = coll.Add(ctx, doc)
+		_ = coll.Add(ctx, &doc)
 	}
 }
 
@@ -760,7 +760,7 @@ func BenchmarkCollection_SearchHybrid(b *testing.B) {
 				"keywords":  sparseVec,
 			},
 		}
-		_ = coll.Add(ctx, doc)
+		_ = coll.Add(ctx, &doc)
 	}
 
 	// Prepare query

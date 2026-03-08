@@ -235,31 +235,35 @@ func (wsc *WALStreamClient) Advance(seq uint64) {
 	}
 }
 
-// ApplyEntries applies WAL entries to the local store
-func (s *ShardServer) ApplyEntries(entries []WalEntry) error {
+// ApplyEntries applies WAL entries to the local store.
+// Returns (lastAppliedSeq, error). On partial failure, lastAppliedSeq is
+// the sequence number of the last successfully applied entry, allowing the
+// caller to advance the cursor past completed work instead of replaying
+// the entire batch.
+func (s *ShardServer) ApplyEntries(entries []WalEntry) (uint64, error) {
+	var lastApplied uint64
 	for _, entry := range entries {
 		switch entry.Op {
 		case "insert":
-			// Add to store
 			_, err := s.store.Add(entry.Vec, entry.Doc, entry.ID, entry.Meta, entry.Coll, entry.Tenant)
 			if err != nil {
-				return fmt.Errorf("failed to apply insert (seq %d): %w", entry.Seq, err)
+				return lastApplied, fmt.Errorf("failed to apply insert (seq %d): %w", entry.Seq, err)
 			}
 
 		case "upsert":
 			_, err := s.store.Upsert(entry.Vec, entry.Doc, entry.ID, entry.Meta, entry.Coll, entry.Tenant)
 			if err != nil {
-				return fmt.Errorf("failed to apply upsert (seq %d): %w", entry.Seq, err)
+				return lastApplied, fmt.Errorf("failed to apply upsert (seq %d): %w", entry.Seq, err)
 			}
 
 		case "delete":
-			// Delete from store
 			s.store.DeleteByID(entry.ID)
 
 		default:
-			return fmt.Errorf("unknown WAL operation: %s", entry.Op)
+			return lastApplied, fmt.Errorf("unknown WAL operation: %s", entry.Op)
 		}
+		lastApplied = entry.Seq
 	}
 
-	return nil
+	return lastApplied, nil
 }

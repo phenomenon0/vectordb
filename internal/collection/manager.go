@@ -164,7 +164,8 @@ type CollectionInfo struct {
 // AddDocument adds a document to a collection.
 //
 // Convenience method that gets the collection and adds the document.
-func (cm *CollectionManager) AddDocument(ctx context.Context, collectionName string, doc Document) error {
+// Takes *Document so that server-assigned IDs are visible to the caller.
+func (cm *CollectionManager) AddDocument(ctx context.Context, collectionName string, doc *Document) error {
 	coll, err := cm.GetCollection(collectionName)
 	if err != nil {
 		return err

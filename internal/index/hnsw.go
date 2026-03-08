@@ -660,12 +660,25 @@ func (h *HNSWIndex) Import(data []byte) error {
 		return err
 	}
 
-	// Clear existing data
+	// Clear existing data and restore config from imported state.
+	// FIX #4: Copy imported config to both graph AND receiver fields.
+	// Previously only graph fields were set; h.m, h.ml, h.efSearch, h.efConstruction
+	// remained stale, causing Stats(), Compact(), and search to use wrong values.
+	importedM := GetConfigInt(imp.Config, "m", 16)
+	importedMl := GetConfigFloat(imp.Config, "ml", 0.25)
+	importedEfConstruction := GetConfigInt(imp.Config, "ef_construction", 200)
+	importedEfSearch := GetConfigInt(imp.Config, "ef_search", 64)
+
+	h.m = importedM
+	h.ml = importedMl
+	h.efSearch = importedEfSearch
+	h.efConstruction = importedEfConstruction
+
 	h.graph = hnsw.NewGraph[uint64]()
 	h.graph.Distance = hnsw.CosineDistance
-	h.graph.M = GetConfigInt(imp.Config, "m", 16)
-	h.graph.Ml = GetConfigFloat(imp.Config, "ml", 0.25)
-	h.graph.EfSearch = GetConfigInt(imp.Config, "ef_construction", 200)
+	h.graph.M = importedM
+	h.graph.Ml = importedMl
+	h.graph.EfSearch = importedEfConstruction
 
 	h.idToIdx = make(map[uint64]int)
 	h.vectors = make(map[uint64][]float32)

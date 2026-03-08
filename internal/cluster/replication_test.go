@@ -261,7 +261,7 @@ func TestApplyEntriesUsesUpsertForUpserts(t *testing.T) {
 		{Seq: 1, Op: "insert", ID: "doc-1", Doc: "one", Vec: []float32{1, 2}, Coll: "default"},
 		{Seq: 2, Op: "upsert", ID: "doc-1", Doc: "two", Vec: []float32{3, 4}, Coll: "default"},
 	}
-	if err := shard.ApplyEntries(entries); err != nil {
+	if _, err := shard.ApplyEntries(entries); err != nil {
 		t.Fatalf("ApplyEntries failed: %v", err)
 	}
 	if store.addCalls != 1 {

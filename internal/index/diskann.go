@@ -1022,10 +1022,12 @@ func clonePQCodebooks(src [][][]float32) [][][]float32 {
 	return dst
 }
 
-// Export serializes the DiskANN index
+// Export serializes the DiskANN index.
+// Uses a write lock because the linear-scan fallback in readFromDisk
+// mutates unquantizedOffsetIndex (FIX #6: was RLock, causing data race).
 func (d *DiskANNIndex) Export() ([]byte, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	// Flush mmap to ensure disk consistency
 	if err := mmapSync(d.mmapData); err != nil {

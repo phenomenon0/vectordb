@@ -146,7 +146,8 @@ func (c *Collection) createSparseIndex(field VectorField) error {
 // Add adds a document to the collection.
 //
 // The document must have vectors for all fields defined in the schema.
-func (c *Collection) Add(ctx context.Context, doc Document) error {
+// Takes *Document so that assigned IDs are visible to the caller.
+func (c *Collection) Add(ctx context.Context, doc *Document) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -181,7 +182,7 @@ func (c *Collection) Add(ctx context.Context, doc Document) error {
 	}
 
 	// Store document
-	c.documents[doc.ID] = &doc
+	c.documents[doc.ID] = doc
 
 	return nil
 }
@@ -554,7 +555,7 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, metada
 // BatchAdd adds multiple documents to the collection.
 func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
 	for i := range docs {
-		if err := c.Add(ctx, docs[i]); err != nil {
+		if err := c.Add(ctx, &docs[i]); err != nil {
 			return fmt.Errorf("failed to add document %d: %w", i, err)
 		}
 	}

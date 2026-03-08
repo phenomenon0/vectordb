@@ -279,20 +279,31 @@ func (fr *FollowerReplicator) poll() error {
 		batch := entries[startIdx:endIdx]
 
 		applyStart := time.Now()
-		if err := fr.shard.ApplyEntries(batch); err != nil {
-			return fmt.Errorf("apply failed: %w", err)
-		}
+		lastApplied, err := fr.shard.ApplyEntries(batch)
 		totalApplyDuration += time.Since(applyStart)
-		totalApplied += uint64(len(batch))
 
-		if len(batch) > 0 {
-			lastSeq := batch[len(batch)-1].Seq
-			fr.walClient.Advance(lastSeq)
-
+		// FIX #3: Always advance the cursor to the last successfully applied
+		// entry, even on partial failure. This prevents the wedge where retry
+		// replays already-applied entries and gets stuck on duplicate-ID errors.
+		if lastApplied > 0 {
+			fr.walClient.Advance(lastApplied)
 			fr.mu.Lock()
-			fr.lastAppliedSeq = lastSeq
+			fr.lastAppliedSeq = lastApplied
 			fr.mu.Unlock()
 		}
+
+		if err != nil {
+			// Count only the entries that were actually applied
+			applied := uint64(0)
+			for _, e := range batch {
+				if e.Seq <= lastApplied {
+					applied++
+				}
+			}
+			totalApplied += applied
+			return fmt.Errorf("apply failed at seq %d (advanced cursor to %d): %w", lastApplied+1, lastApplied, err)
+		}
+		totalApplied += uint64(len(batch))
 	}
 
 	fr.mu.Lock()

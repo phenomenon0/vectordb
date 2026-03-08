@@ -132,7 +132,7 @@ func (mt *MigrationTool) MigrateDocuments(ctx context.Context, config MigrationC
 			return fmt.Errorf("failed to convert document %s: %w", v1Doc.ID, err)
 		}
 
-		if err := mt.manager.AddDocument(ctx, config.TargetCollection, v2Doc); err != nil {
+		if err := mt.manager.AddDocument(ctx, config.TargetCollection, &v2Doc); err != nil {
 			return fmt.Errorf("failed to add document %s: %w", v1Doc.ID, err)
 		}
 	}

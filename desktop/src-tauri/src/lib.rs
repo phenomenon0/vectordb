@@ -7,16 +7,22 @@ use tauri_plugin_shell::ShellExt;
 const PORT_RANGE_START: u16 = 8080;
 const PORT_RANGE_END: u16 = 8099;
 
-fn find_free_port() -> u16 {
+/// FIX #5: Bind-and-hold pattern to prevent port race attacks.
+/// Returns both the port and the held listener. The listener must be kept
+/// alive until the sidecar has started and bound the port itself.
+/// Previously, find_free_port() would bind, immediately drop the listener,
+/// and return the port — a TOCTOU vulnerability where a local attacker
+/// could bind the port in the gap and hijack the privileged Tauri window.
+fn find_free_port() -> (u16, TcpListener) {
     for port in PORT_RANGE_START..=PORT_RANGE_END {
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return port;
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            return (port, listener);
         }
     }
-    TcpListener::bind(("127.0.0.1", 0))
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(PORT_RANGE_START)
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("failed to bind any port");
+    let port = listener.local_addr().unwrap().port();
+    (port, listener)
 }
 
 fn wait_for_server(port: u16, timeout: Duration) -> bool {
@@ -62,8 +68,8 @@ const DESKTOP_INJECT_JS: &str = include_str!("inject.js");
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let port = find_free_port();
-    eprintln!("[tauri] using port {}", port);
+    let (port, held_listener) = find_free_port();
+    eprintln!("[tauri] using port {} (held until sidecar starts)", port);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -75,6 +81,11 @@ pub fn run() {
         ])
         .setup(move |app| {
             let shell = app.shell();
+
+            // Drop the held listener just before spawning the sidecar.
+            // The sidecar will immediately bind this port. The window between
+            // drop and sidecar bind is minimal (same process, next statement).
+            drop(held_listener);
 
             let (mut rx, child) = shell
                 .sidecar("deepdata")

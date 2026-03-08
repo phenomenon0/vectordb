@@ -626,7 +626,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if req.Limit == 0 || req.Limit > req.TopK {
 			req.Limit = req.TopK
 		}
+		// Normalize and validate mode to prevent unbounded Prometheus label cardinality
 		if req.Mode == "" {
+			req.Mode = "ann"
+		}
+		switch req.Mode {
+		case "ann", "scan", "lex":
+			// valid
+		default:
+			// Unknown mode: treat as ANN but don't propagate arbitrary strings to metrics
 			req.Mode = "ann"
 		}
 		if req.HybridAlpha == 0 {

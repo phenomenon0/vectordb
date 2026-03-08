@@ -67,7 +67,7 @@ func TestCollectionFilteredSearch(t *testing.T) {
 			},
 		}
 
-		if err := coll.Add(ctx, doc); err != nil {
+		if err := coll.Add(ctx, &doc); err != nil {
 			t.Fatalf("Failed to add document %d: %v", td.id, err)
 		}
 	}

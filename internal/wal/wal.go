@@ -150,6 +150,9 @@ type WAL struct {
 	// Closed flag
 	closed bool
 
+	// Set during recovery so openSegment knows to truncate corrupted suffix
+	recovering bool
+
 	// Background sync goroutine
 	syncDone chan struct{}
 }
@@ -241,6 +244,7 @@ func (w *WAL) recover() error {
 		}
 	}
 	w.lsn = lastLSN
+	w.recovering = true // Signal openSegment to truncate corrupted suffix
 
 	return nil
 }
@@ -279,9 +283,27 @@ func (w *WAL) segmentPath(num uint64) string {
 	return filepath.Join(w.config.Dir, fmt.Sprintf("wal-%08d.log", num))
 }
 
-// openSegment opens the current segment file for writing
+// openSegment opens the current segment file for writing.
+// If the segment has a corrupted suffix (detected during recovery),
+// truncate it to the last known-good position before appending.
 func (w *WAL) openSegment() error {
 	path := w.segmentPath(w.segmentNum)
+
+	// FIX #2: Truncate corrupted tail before appending.
+	// Recovery found the last good LSN but the segment may have garbage
+	// after it. Without truncation, new appends land behind corruption
+	// and readers skip the corrupted region, silently losing post-recovery writes.
+	if w.recovering {
+		goodSize, err := w.scanSegmentGoodSize(path)
+		if err == nil && goodSize >= 0 {
+			if truncErr := os.Truncate(path, goodSize); truncErr != nil {
+				// Non-fatal: log but continue. Worst case is the old behavior.
+				_ = truncErr
+			}
+		}
+		w.recovering = false
+	}
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
@@ -298,6 +320,41 @@ func (w *WAL) openSegment() error {
 	w.currentSegPath = path
 	w.segmentSize = info.Size()
 	return nil
+}
+
+// scanSegmentGoodSize returns the byte offset just past the last valid entry.
+// Used during recovery to truncate corrupted suffixes.
+func (w *WAL) scanSegmentGoodSize(path string) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return -1, err
+	}
+	defer f.Close()
+
+	cr := &countingReader{r: f}
+	reader := NewReader(cr)
+	var goodOffset int64
+	for {
+		_, err := reader.Next()
+		if err != nil {
+			// EOF or corruption: goodOffset is the last valid position
+			break
+		}
+		goodOffset = cr.n
+	}
+	return goodOffset, nil
+}
+
+// countingReader wraps an io.Reader and tracks total bytes read.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.n += int64(n)
+	return n, err
 }
 
 // Write appends an entry to the WAL

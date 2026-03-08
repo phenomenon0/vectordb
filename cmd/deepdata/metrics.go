@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -268,8 +269,36 @@ func (mc *MetricsCollector) HTTPMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(wrapped, r)
 
 		duration := time.Since(start)
-		mc.RecordHTTPRequest(r.Method, r.URL.Path, wrapped.statusCode, duration)
+		// FIX #11: Normalize path to prevent unbounded Prometheus label cardinality.
+		// Dynamic path segments (tenant IDs, collection names) are replaced with
+		// placeholders so attackers can't generate infinite time series.
+		mc.RecordHTTPRequest(r.Method, normalizeMetricsPath(r.URL.Path), wrapped.statusCode, duration)
 	})
+}
+
+// normalizeMetricsPath replaces dynamic path segments with placeholders
+// to prevent unbounded Prometheus label cardinality.
+func normalizeMetricsPath(path string) string {
+	// Fast path for v1 endpoints (no dynamic segments)
+	if !strings.Contains(path, "/v2/") && !strings.Contains(path, "/v3/") {
+		return path
+	}
+
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		// /v2/collections/{name} → /v2/collections/:name
+		if i >= 3 && len(parts) > 2 && parts[i-1] == "collections" {
+			parts[i] = ":name"
+		}
+		// /v3/tenants/{id}/... → /v3/tenants/:id/...
+		if i >= 3 && len(parts) > 2 && parts[i-1] == "tenants" {
+			parts[i] = ":id"
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 // responseWriter wraps http.ResponseWriter to capture status code

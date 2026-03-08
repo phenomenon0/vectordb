@@ -10,6 +10,7 @@ import (
 	"github.com/phenomenon0/vectordb/internal/encoding"
 	"github.com/phenomenon0/vectordb/internal/graph"
 	"github.com/phenomenon0/vectordb/internal/hybrid"
+	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
@@ -277,7 +278,7 @@ func (s *CollectionHTTPServer) handleInsert(w http.ResponseWriter, r *http.Reque
 
 	// Add to collection
 	ctx := r.Context()
-	if err := s.manager.AddDocument(ctx, req.CollectionName, doc); err != nil {
+	if err := s.manager.AddDocument(ctx, req.CollectionName, &doc); err != nil {
 		http.Error(w, fmt.Sprintf("failed to add document: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -406,8 +407,13 @@ func (s *CollectionHTTPServer) handleBatchInsert(w http.ResponseWriter, r *http.
 			}
 		}
 
-		// Skip if we hit an error during vector conversion
+		// Skip if we hit an error during vector conversion.
+		// FIX #7: When ContinueOnError=false, a break from the inner field loop
+		// must also break the outer doc loop, not just continue to the next doc.
 		if _, hasError := errors[i]; hasError {
+			if !req.ContinueOnError {
+				break
+			}
 			continue
 		}
 
@@ -418,7 +424,7 @@ func (s *CollectionHTTPServer) handleBatchInsert(w http.ResponseWriter, r *http.
 		}
 
 		// Add to collection
-		if err := s.manager.AddDocument(ctx, collectionName, doc); err != nil {
+		if err := s.manager.AddDocument(ctx, collectionName, &doc); err != nil {
 			errors[i] = err.Error()
 			if !req.ContinueOnError {
 				break
@@ -711,14 +717,18 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 
 	tenantID := parts[0]
 
-	// Also accept X-Tenant-ID header as override (useful for proxied requests)
-	if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
-		tenantID = headerTenant
-	}
-
 	// Validate tenant ID format
 	if !isValidTenantID(tenantID) {
 		http.Error(w, "invalid tenant ID: must be 1-64 alphanumeric/hyphen/underscore characters", http.StatusBadRequest)
+		return
+	}
+
+	// SECURITY: Authorize tenant access against the authenticated TenantContext.
+	// The guard middleware injects the authenticated context; we must not allow
+	// a valid token for tenant A to act on tenant B's data.
+	tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
+	if ok && !tenantCtx.IsAdmin && tenantCtx.TenantID != tenantID {
+		http.Error(w, fmt.Sprintf("forbidden: token for tenant %q cannot access tenant %q", tenantCtx.TenantID, tenantID), http.StatusForbidden)
 		return
 	}
 
@@ -958,7 +968,7 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 		}
 
 		ctx := r.Context()
-		if err := s.tenantManager.AddDocument(ctx, tenantID, collectionName, doc); err != nil {
+		if err := s.tenantManager.AddDocument(ctx, tenantID, collectionName, &doc); err != nil {
 			http.Error(w, fmt.Sprintf("failed to add document: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -1028,10 +1038,11 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 		req.TopK = 10
 	}
 
-	// Convert query vectors
+	// Convert query vectors (dense and sparse)
 	queries := make(map[string]interface{})
 	for fieldName, vectorData := range req.Queries {
 		if vecSlice, ok := vectorData.([]interface{}); ok {
+			// Dense vector format
 			denseVec := make([]float32, len(vecSlice))
 			for i, v := range vecSlice {
 				if f, ok := v.(float64); ok {
@@ -1039,6 +1050,35 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 				}
 			}
 			queries[fieldName] = denseVec
+		} else if vecMap, ok := vectorData.(map[string]interface{}); ok {
+			// FIX #8: Sparse vector format (consistent with insert path)
+			if _, hasIndices := vecMap["indices"]; hasIndices {
+				indicesSlice, ok1 := vecMap["indices"].([]interface{})
+				values, ok2 := vecMap["values"].([]interface{})
+				dim, ok3 := vecMap["dim"].(float64)
+				if !ok1 || !ok2 || !ok3 {
+					http.Error(w, fmt.Sprintf("invalid sparse query vector for field %s", fieldName), http.StatusBadRequest)
+					return
+				}
+				uint32Indices := make([]uint32, len(indicesSlice))
+				for i, v := range indicesSlice {
+					if f, ok := v.(float64); ok {
+						uint32Indices[i] = uint32(f)
+					}
+				}
+				float32Values := make([]float32, len(values))
+				for i, v := range values {
+					if f, ok := v.(float64); ok {
+						float32Values[i] = float32(f)
+					}
+				}
+				sparseVec, err := sparse.NewSparseVector(uint32Indices, float32Values, int(dim))
+				if err != nil {
+					http.Error(w, fmt.Sprintf("invalid sparse query vector: %v", err), http.StatusBadRequest)
+					return
+				}
+				queries[fieldName] = sparseVec
+			}
 		}
 	}
 

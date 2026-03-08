@@ -310,7 +310,7 @@ func TestCollectionManager_AddDocument(t *testing.T) {
 		},
 	}
 
-	err = cm.AddDocument(ctx, "test", doc)
+	err = cm.AddDocument(ctx, "test", &doc)
 	if err != nil {
 		t.Fatalf("AddDocument failed: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestCollectionManager_DeleteDocument(t *testing.T) {
 		},
 	}
 
-	err = cm.AddDocument(ctx, "test", doc)
+	err = cm.AddDocument(ctx, "test", &doc)
 	if err != nil {
 		t.Fatalf("AddDocument failed: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestCollectionManager_GetDocument(t *testing.T) {
 		},
 	}
 
-	err = cm.AddDocument(ctx, "test", doc)
+	err = cm.AddDocument(ctx, "test", &doc)
 	if err != nil {
 		t.Fatalf("AddDocument failed: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestCollectionManager_GetStats(t *testing.T) {
 					"embedding": []float32{float32(j), 0.0, 0.0, 0.0},
 				},
 			}
-			cm.AddDocument(ctx, fmt.Sprintf("coll%d", i), doc)
+			cm.AddDocument(ctx, fmt.Sprintf("coll%d", i), &doc)
 		}
 	}
 
@@ -767,7 +767,7 @@ func BenchmarkCollectionManager_AddDocument(b *testing.B) {
 				"embedding": vec,
 			},
 		}
-		_ = cm.AddDocument(ctx, "bench", doc)
+		_ = cm.AddDocument(ctx, "bench", &doc)
 	}
 }
 
@@ -801,7 +801,7 @@ func BenchmarkCollectionManager_SearchCollection(b *testing.B) {
 				"embedding": vec,
 			},
 		}
-		cm.AddDocument(ctx, "bench", doc)
+		cm.AddDocument(ctx, "bench", &doc)
 	}
 
 	// Prepare query

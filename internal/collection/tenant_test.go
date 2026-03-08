@@ -26,9 +26,9 @@ func testSchema(name string, dim int) CollectionSchema {
 }
 
 // helper to create a document with a zero vector of the given dimension.
-func testDoc(dim int) Document {
+func testDoc(dim int) *Document {
 	vec := make([]float32, dim)
-	return Document{
+	return &Document{
 		Vectors:  map[string]interface{}{"embedding": vec},
 		Metadata: map[string]interface{}{"source": "test"},
 	}

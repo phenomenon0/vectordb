@@ -143,7 +143,8 @@ func (tm *TenantManager) GetCollectionInfo(tenantID, collectionName string) (*Co
 }
 
 // AddDocument adds a document to a tenant's collection.
-func (tm *TenantManager) AddDocument(ctx context.Context, tenantID, collectionName string, doc Document) error {
+// Takes *Document so that server-assigned IDs are visible to the caller.
+func (tm *TenantManager) AddDocument(ctx context.Context, tenantID, collectionName string, doc *Document) error {
 	if tenantID == "" {
 		return fmt.Errorf("tenant ID cannot be empty")
 	}

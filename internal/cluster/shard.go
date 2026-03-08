@@ -349,10 +349,13 @@ func (s *ShardServer) syncFromPrimary() error {
 	}
 
 	// Apply entries to local store
-	if err := s.ApplyEntries(entries); err != nil {
+	lastApplied, err := s.ApplyEntries(entries)
+	if lastApplied > 0 {
+		s.walStreamClient.Advance(lastApplied)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to apply WAL entries: %w", err)
 	}
-	s.walStreamClient.Advance(entries[len(entries)-1].Seq)
 
 	fmt.Printf("Replica sync: Applied %d WAL entries (latest seq: %d)\n",
 		len(entries), entries[len(entries)-1].Seq)
