@@ -27,8 +27,7 @@ func TestMemoryFootprint(t *testing.T) {
 	cases := []memCase{
 		{"hnsw", map[string]interface{}{"m": 16, "ef_construction": 200}, "none"},
 		{"hnsw", map[string]interface{}{"m": 16, "ef_construction": 200, "quantization": map[string]interface{}{"type": "float16"}}, "fp16"},
-		// uint8 quantization requires training; skip in automated benchmarks
-		// {"hnsw", map[string]interface{}{"m": 16, "ef_construction": 200, "quantization": map[string]interface{}{"type": "uint8"}}, "uint8"},
+		{"hnsw", map[string]interface{}{"m": 16, "ef_construction": 200, "quantization": map[string]interface{}{"type": "uint8"}}, "uint8"},
 		{"ivf", map[string]interface{}{"nlist": 100, "metric": "cosine"}, "none"},
 		{"ivf", map[string]interface{}{"nlist": 100, "metric": "cosine", "quantization": map[string]interface{}{"type": "float16"}}, "fp16"},
 		{"flat", map[string]interface{}{"metric": "cosine"}, "none"},
