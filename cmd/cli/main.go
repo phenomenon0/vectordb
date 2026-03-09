@@ -12,8 +12,9 @@
 //	delete        Delete a document by ID
 //	collections   List collections
 //	stats         Show server statistics
-//	import        Bulk import from JSONL file
-//	export        Export collection to JSONL file
+//	import           Bulk import from JSONL file
+//	import-obsidian  Import Obsidian vault with graph metadata
+//	export           Export collection to JSONL file
 //	compact       Trigger index compaction
 //	gentoken      Generate a JWT token
 package main
@@ -26,7 +27,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -60,6 +66,8 @@ func main() {
 		cmdStats()
 	case "import":
 		cmdImport()
+	case "import-obsidian":
+		cmdImportObsidian()
 	case "export":
 		cmdExport()
 	case "compact":
@@ -89,8 +97,9 @@ Commands:
   delete        Delete a document by ID (--id)
   collections   List all collections with stats
   stats         Show detailed server statistics
-  import        Bulk import from JSONL file (--file, --collection)
-  export        Export collection to JSONL (--collection, --output)
+  import           Bulk import from JSONL file (--file, --collection)
+  import-obsidian  Import Obsidian vault or markdown folder (--vault)
+  export           Export collection to JSONL (--collection, --output)
   compact       Trigger index compaction
   gentoken      Generate a JWT authentication token
   version       Print version
@@ -518,6 +527,682 @@ func cmdGentoken() {
 		fmt.Println(string(b))
 	} else {
 		fmt.Println(signed)
+	}
+}
+
+// --- Obsidian Import ---
+
+type obsidianNote struct {
+	ID            string
+	Content       string
+	Meta          map[string]string
+	OutgoingLinks []string
+	FileSize      int64
+	ModTime       time.Time
+}
+
+// noteName returns the bare note name (filename without .md extension).
+func noteName(id string) string {
+	return strings.TrimSuffix(filepath.Base(id), ".md")
+}
+
+var (
+	reWikiLink  = regexp.MustCompile(`\[\[([^\]|]+)(?:\|[^\]]+)?\]\]`)
+	reInlineTag = regexp.MustCompile(`(?:^|\s)#([\w\-/]+)`)
+	reZettelID  = regexp.MustCompile(`^\d{12,14}`)
+)
+
+// syncState tracks file mtimes for incremental sync.
+type syncState struct {
+	Mtimes map[string]time.Time `json:"mtimes"`
+}
+
+func loadSyncState(path string) syncState {
+	var s syncState
+	s.Mtimes = make(map[string]time.Time)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return s
+	}
+	json.Unmarshal(data, &s)
+	if s.Mtimes == nil {
+		s.Mtimes = make(map[string]time.Time)
+	}
+	return s
+}
+
+func saveSyncState(path string, s syncState) error {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// importStats tracks summary statistics for an import run.
+type importStats struct {
+	Total       int
+	Folders     map[string]bool
+	Tags        map[string]bool
+	Links       int
+	Backlinks   int
+	LargestPath string
+	LargestSize int64
+}
+
+func (s *importStats) collect(notes []obsidianNote) {
+	s.Folders = make(map[string]bool)
+	s.Tags = make(map[string]bool)
+	s.Total = len(notes)
+	for _, note := range notes {
+		if f := note.Meta["folder"]; f != "" && f != "." {
+			s.Folders[f] = true
+		}
+		if t := note.Meta["tags"]; t != "" {
+			for _, tag := range strings.Split(t, ",") {
+				s.Tags[tag] = true
+			}
+		}
+		s.Links += len(note.OutgoingLinks)
+		if bl := note.Meta["backlinks"]; bl != "" {
+			s.Backlinks += len(strings.Split(bl, ","))
+		}
+		if note.FileSize > s.LargestSize {
+			s.LargestSize = note.FileSize
+			s.LargestPath = note.ID
+		}
+	}
+}
+
+func (s *importStats) print(vaultName, collection string) {
+	fmt.Printf("imported %d notes from vault %q into collection %q\n", s.Total, vaultName, collection)
+	fmt.Printf("  folders: %d | tags: %d unique | links: %d | backlinks: %d\n",
+		len(s.Folders), len(s.Tags), s.Links, s.Backlinks)
+	if s.LargestPath != "" {
+		sizeStr := fmt.Sprintf("%dB", s.LargestSize)
+		if s.LargestSize >= 1024 {
+			sizeStr = fmt.Sprintf("%dKB", s.LargestSize/1024)
+		}
+		fmt.Printf("  largest: %q (%s)\n", s.LargestPath, sizeStr)
+	}
+}
+
+func cmdImportObsidian() {
+	fs := flag.NewFlagSet("import-obsidian", flag.ExitOnError)
+	vault := fs.String("vault", "", "Path to Obsidian vault or markdown folder (required)")
+	collection := fs.String("collection", "obsidian", "Target collection")
+	batchSize := fs.Int("batch-size", 100, "Docs per batch insert")
+	upsert := fs.Bool("upsert", false, "Update existing docs (idempotent re-import)")
+	stripFM := fs.Bool("strip-frontmatter", false, "Remove YAML frontmatter from doc text")
+	direct := fs.Bool("direct", false, "Force direct file reading (auto-detected if not set)")
+	exclude := fs.String("exclude", ".obsidian,.git,.trash,.space,.views", "Dirs to skip (direct mode)")
+	watch := fs.Bool("watch", false, "Watch for changes and re-sync automatically")
+	watchInterval := fs.Duration("watch-interval", 30*time.Second, "Interval between watch polls")
+	incremental := fs.Bool("incremental", false, "Skip unchanged files (by mtime)")
+	stateFile := fs.String("state-file", "", "Sync state file path (default: <vault>/.deepdata-sync)")
+	prune := fs.Bool("prune", false, "Delete orphaned docs not in vault")
+	fs.Parse(os.Args[1:])
+
+	if *vault == "" {
+		fmt.Fprintln(os.Stderr, "error: --vault is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	vaultPath, err := filepath.Abs(*vault)
+	if err != nil {
+		fatal("resolve vault path", err)
+	}
+	info, err := os.Stat(vaultPath)
+	if err != nil || !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "error: vault path %q is not a directory\n", vaultPath)
+		os.Exit(1)
+	}
+
+	// Auto-detect: is this an Obsidian vault or a plain markdown folder?
+	_, obsidianDirErr := os.Stat(filepath.Join(vaultPath, ".obsidian"))
+	isObsidianVault := obsidianDirErr == nil
+	source := "obsidian"
+	if !isObsidianVault {
+		source = "markdown"
+	}
+
+	// Auto-detect direct mode: use direct if explicitly requested, if it's
+	// a plain folder, or if the obsidian CLI isn't available.
+	useDirect := *direct || !isObsidianVault
+	if !useDirect && !*direct {
+		if _, err := exec.LookPath("obsidian"); err != nil {
+			useDirect = true
+		}
+	}
+
+	vaultName := filepath.Base(vaultPath)
+	excludeSet := make(map[string]bool)
+	for _, d := range strings.Split(*exclude, ",") {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			excludeSet[d] = true
+		}
+	}
+
+	// Resolve state file path for incremental sync
+	syncFilePath := *stateFile
+	if syncFilePath == "" {
+		syncFilePath = filepath.Join(vaultPath, ".deepdata-sync")
+	}
+
+	if useDirect {
+		if isObsidianVault {
+			fmt.Fprintf(os.Stderr, "reading vault %q directly (obsidian CLI not used)\n", vaultName)
+		} else {
+			fmt.Fprintf(os.Stderr, "reading markdown folder %q\n", vaultName)
+		}
+	}
+
+	// Single shared client for all operations in this run.
+	c := newClient()
+
+	// Build the import function used by both single-run and watch mode.
+	doImport := func(prevMtimes map[string]time.Time) map[string]time.Time {
+		// Pass 1: Collect notes
+		var notes []obsidianNote
+		var collectErr error
+		if useDirect {
+			notes, collectErr = collectNotesDirect(vaultPath, vaultName, source, excludeSet, *stripFM)
+		} else {
+			notes, collectErr = collectNotesFromObsidianCLI(vaultPath, vaultName, *stripFM)
+			if collectErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: obsidian CLI failed: %v\nfalling back to direct file reading\n", collectErr)
+				notes, collectErr = collectNotesDirect(vaultPath, vaultName, source, excludeSet, *stripFM)
+			}
+		}
+		if collectErr != nil {
+			fmt.Fprintf(os.Stderr, "error: collect notes: %v\n", collectErr)
+			return prevMtimes
+		}
+
+		if len(notes) == 0 {
+			fmt.Println("no notes found in vault")
+			return prevMtimes
+		}
+
+		// Build current mtime map from stored ModTime (no re-stat)
+		currentMtimes := make(map[string]time.Time, len(notes))
+		for _, note := range notes {
+			currentMtimes[note.ID] = note.ModTime
+		}
+
+		// Incremental: filter to changed/new notes only
+		var toUpsert []obsidianNote
+		if *incremental && len(prevMtimes) > 0 {
+			// Find changed or new files
+			changedSet := make(map[string]bool)
+			for _, note := range notes {
+				prev, existed := prevMtimes[note.ID]
+				if !existed || !note.ModTime.Equal(prev) {
+					changedSet[note.ID] = true
+				}
+			}
+
+			if len(changedSet) == 0 {
+				// Check for deletions even if no changes
+				deleted := 0
+				if *prune {
+					deleted = pruneOrphans(c, notes, *collection)
+				}
+				if deleted > 0 {
+					fmt.Printf("no changed notes, pruned %d orphans\n", deleted)
+				} else {
+					fmt.Println("no changes detected")
+				}
+				saveSyncState(syncFilePath, syncState{Mtimes: currentMtimes})
+				return currentMtimes
+			}
+
+			// Compute backlinks on full set (backlinks depend on global state)
+			computeBacklinks(notes)
+
+			// Pre-compute set of changed note names for O(1) lookup
+			changedNames := make(map[string]bool, len(changedSet))
+			for cid := range changedSet {
+				changedNames[noteName(cid)] = true
+			}
+
+			// Collect changed notes + their backlink-affected neighbors
+			for _, note := range notes {
+				if changedSet[note.ID] {
+					toUpsert = append(toUpsert, note)
+					continue
+				}
+				// If any of this note's backlinks are from a changed note,
+				// its backlink metadata needs re-upserting
+				if bl := note.Meta["backlinks"]; bl != "" {
+					for _, link := range strings.Split(bl, ",") {
+						if changedNames[link] {
+							toUpsert = append(toUpsert, note)
+							break
+						}
+					}
+				}
+			}
+
+			newCount := 0
+			for id := range changedSet {
+				if _, existed := prevMtimes[id]; !existed {
+					newCount++
+				}
+			}
+			fmt.Fprintf(os.Stderr, "incremental: %d changed, %d new\n", len(changedSet)-newCount, newCount)
+		} else {
+			// Full import
+			computeBacklinks(notes)
+			toUpsert = notes
+			fmt.Fprintf(os.Stderr, "collected %d notes\n", len(notes))
+		}
+
+		// Batch insert
+		total, err := batchUpsertNotes(c, toUpsert, *collection, *batchSize, *upsert || *incremental)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: batch insert: %v\n", err)
+			return prevMtimes
+		}
+
+		// Prune orphaned docs
+		pruned := 0
+		if *prune {
+			pruned = pruneOrphans(c, notes, *collection)
+		}
+
+		// Save sync state
+		saveSyncState(syncFilePath, syncState{Mtimes: currentMtimes})
+
+		// Print summary stats
+		var stats importStats
+		stats.collect(notes)
+		if *incremental && len(prevMtimes) > 0 {
+			fmt.Printf("synced %d notes to collection %q", total, *collection)
+			if pruned > 0 {
+				fmt.Printf(", pruned %d orphans", pruned)
+			}
+			fmt.Println()
+		} else {
+			stats.print(vaultName, *collection)
+			if pruned > 0 {
+				fmt.Printf("  pruned: %d orphaned docs\n", pruned)
+			}
+		}
+
+		return currentMtimes
+	}
+
+	// Watch mode: loop with interval
+	if *watch {
+		// Enable incremental and upsert implicitly in watch mode
+		*incremental = true
+		*upsert = true
+
+		// Load previous state for incremental first cycle
+		state := loadSyncState(syncFilePath)
+		prevMtimes := state.Mtimes
+
+		fmt.Fprintf(os.Stderr, "watching vault %q (interval: %s) — press Ctrl+C to stop\n", vaultName, *watchInterval)
+
+		// Initial sync (incremental if state exists, full otherwise)
+		prevMtimes = doImport(prevMtimes)
+
+		// Set up signal handler
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+		ticker := time.NewTicker(*watchInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				prevMtimes = doImport(prevMtimes)
+			case <-sigCh:
+				fmt.Fprintf(os.Stderr, "\nstopping watch\n")
+				return
+			}
+		}
+	}
+
+	// Single run mode
+	var prevMtimes map[string]time.Time
+	if *incremental {
+		state := loadSyncState(syncFilePath)
+		prevMtimes = state.Mtimes
+	}
+	doImport(prevMtimes)
+}
+
+// batchUpsertNotes inserts notes in batches, returning the total count inserted.
+func batchUpsertNotes(c *client.Client, notes []obsidianNote, collection string, batchSize int, upsert bool) (int, error) {
+	var batch []client.BatchDoc
+	total := 0
+	for _, note := range notes {
+		batch = append(batch, client.BatchDoc{
+			ID:         note.ID,
+			Doc:        note.Content,
+			Meta:       note.Meta,
+			Collection: collection,
+		})
+		if len(batch) >= batchSize {
+			if _, err := c.BatchInsert(ctx(), client.BatchInsertRequest{Docs: batch, Upsert: upsert}); err != nil {
+				return total, err
+			}
+			total += len(batch)
+			fmt.Fprintf(os.Stderr, "\r  imported %d/%d notes...", total, len(notes))
+			batch = batch[:0]
+		}
+	}
+	if len(batch) > 0 {
+		if _, err := c.BatchInsert(ctx(), client.BatchInsertRequest{Docs: batch, Upsert: upsert}); err != nil {
+			return total, err
+		}
+		total += len(batch)
+	}
+	fmt.Fprintf(os.Stderr, "\r")
+	return total, nil
+}
+
+// pruneOrphans deletes docs from the collection that no longer have a matching
+// file in the vault. Returns the number of pruned docs.
+func pruneOrphans(c *client.Client, currentNotes []obsidianNote, collection string) int {
+	// Build set of current note IDs (relative paths)
+	currentIDs := make(map[string]bool, len(currentNotes))
+	for _, note := range currentNotes {
+		currentIDs[note.ID] = true
+	}
+
+	pruned := 0
+	offset := 0
+	limit := 500
+
+	for {
+		resp, err := c.Scroll(ctx(), client.ScrollRequest{
+			Collection: collection,
+			Limit:      limit,
+			Offset:     offset,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: prune scroll failed: %v\n", err)
+			break
+		}
+		if len(resp.IDs) == 0 {
+			break
+		}
+
+		for i, id := range resp.IDs {
+			// Check if this doc has obsidian/markdown source metadata
+			var docSource string
+			if i < len(resp.Meta) && resp.Meta[i] != nil {
+				docSource = resp.Meta[i]["source"]
+			}
+			if docSource != "obsidian" && docSource != "markdown" {
+				continue
+			}
+			// Check if the doc's ID (which is the relative path) still exists in vault
+			if !currentIDs[id] {
+				if _, err := c.Delete(ctx(), client.DeleteRequest{ID: id}); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to prune %s: %v\n", id, err)
+				} else {
+					pruned++
+				}
+			}
+		}
+
+		if resp.Next <= offset || len(resp.IDs) < limit {
+			break
+		}
+		offset = resp.Next
+	}
+
+	return pruned
+}
+
+func collectNotesDirect(vaultPath, vaultName, source string, excludeSet map[string]bool, stripFM bool) ([]obsidianNote, error) {
+	var notes []obsidianNote
+	err := filepath.WalkDir(vaultPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable
+		}
+		if d.IsDir() {
+			if excludeSet[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".md" {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if info.Size() == 0 || info.Size() > 1<<20 {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(vaultPath, path)
+		note := parseObsidianNote(rel, string(data), vaultName, source, info.ModTime(), info.Size(), stripFM)
+		notes = append(notes, note)
+		return nil
+	})
+	return notes, err
+}
+
+func collectNotesFromObsidianCLI(vaultPath, vaultName string, stripFM bool) ([]obsidianNote, error) {
+	// Try to list notes via obsidian CLI search
+	cmd := exec.Command("obsidian", "search", `query=*`, "format=json")
+	cmd.Env = append(os.Environ(), "OBSIDIAN_VAULT="+vaultPath)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("obsidian CLI failed (is Obsidian running?): %w\ntip: use --direct to read files without Obsidian", err)
+	}
+
+	var searchResults []struct {
+		File string `json:"file"`
+	}
+	if err := json.Unmarshal(out, &searchResults); err != nil {
+		return nil, fmt.Errorf("parse obsidian search output: %w", err)
+	}
+
+	var notes []obsidianNote
+	for _, sr := range searchResults {
+		if filepath.Ext(sr.File) != ".md" {
+			continue
+		}
+		// Read file content via obsidian CLI
+		readCmd := exec.Command("obsidian", "read", "file="+sr.File)
+		readCmd.Env = append(os.Environ(), "OBSIDIAN_VAULT="+vaultPath)
+		content, err := readCmd.Output()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", sr.File, err)
+			continue
+		}
+		if len(content) == 0 || len(content) > 1<<20 {
+			continue
+		}
+
+		fullPath := filepath.Join(vaultPath, sr.File)
+		var modTime time.Time
+		var fileSize int64
+		if info, err := os.Stat(fullPath); err == nil {
+			modTime = info.ModTime()
+			fileSize = info.Size()
+		}
+
+		note := parseObsidianNote(sr.File, string(content), vaultName, "obsidian", modTime, fileSize, stripFM)
+		notes = append(notes, note)
+	}
+	return notes, nil
+}
+
+func parseObsidianNote(relPath, content, vaultName, source string, modTime time.Time, fileSize int64, stripFM bool) obsidianNote {
+	meta := map[string]string{
+		"source": source,
+		"vault":  vaultName,
+		"path":   relPath,
+		"folder": filepath.Dir(relPath),
+	}
+
+	baseName := noteName(relPath)
+	meta["title"] = baseName
+
+	// Parse YAML frontmatter (single pass)
+	body := content
+	var fmTags []string
+	if strings.HasPrefix(content, "---\n") {
+		endIdx := strings.Index(content[4:], "\n---")
+		if endIdx >= 0 {
+			fmBlock := content[4 : 4+endIdx]
+			body = content[4+endIdx+4:] // after closing ---\n
+
+			inTags := false
+			for _, line := range strings.Split(fmBlock, "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+
+				// Handle multi-line tag list items
+				if inTags {
+					if strings.HasPrefix(trimmed, "- ") {
+						t := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+						t = strings.TrimPrefix(t, "#")
+						if t != "" {
+							fmTags = append(fmTags, t)
+						}
+						continue
+					}
+					inTags = false
+				}
+
+				k, v, ok := strings.Cut(trimmed, ":")
+				if !ok {
+					continue
+				}
+				k = strings.TrimSpace(k)
+				v = strings.TrimSpace(v)
+				switch k {
+				case "title":
+					meta["title"] = strings.Trim(v, "\"'")
+				case "author":
+					meta["author"] = strings.NewReplacer("[[", "", "]]", "").Replace(strings.Trim(v, "\"'"))
+				case "created", "date":
+					meta["created"] = strings.Trim(v, "\"'")
+				case "zettelkasten_id", "uid", "zettel":
+					meta["zettelkasten_id"] = strings.Trim(v, "\"'")
+				case "tags":
+					// tags can be: [a, b, c] or a, b, c (inline) or empty (multi-line follows)
+					v = strings.Trim(v, "[]\"'")
+					if v == "" {
+						inTags = true // next lines are "- tag" items
+					} else {
+						for _, t := range strings.Split(v, ",") {
+							t = strings.TrimSpace(t)
+							t = strings.TrimPrefix(t, "#")
+							if t != "" {
+								fmTags = append(fmTags, t)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Extract inline #tags from body (skip headings: lines starting with #)
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") && (len(trimmed) < 2 || trimmed[1] == ' ' || trimmed[1] == '#') {
+			continue // heading
+		}
+		for _, m := range reInlineTag.FindAllStringSubmatch(line, -1) {
+			fmTags = append(fmTags, m[1])
+		}
+	}
+
+	// Deduplicate tags
+	if len(fmTags) > 0 {
+		seen := make(map[string]bool)
+		var unique []string
+		for _, t := range fmTags {
+			lower := strings.ToLower(t)
+			if !seen[lower] {
+				seen[lower] = true
+				unique = append(unique, t)
+			}
+		}
+		meta["tags"] = strings.Join(unique, ",")
+	}
+
+	// Extract [[wiki-links]]
+	var outgoing []string
+	seen := make(map[string]bool)
+	for _, m := range reWikiLink.FindAllStringSubmatch(body, -1) {
+		link := strings.TrimSpace(m[1])
+		// Strip path prefix if present (e.g., folder/note -> note)
+		if idx := strings.LastIndex(link, "/"); idx >= 0 {
+			link = link[idx+1:]
+		}
+		if !seen[link] {
+			seen[link] = true
+			outgoing = append(outgoing, link)
+		}
+	}
+	if len(outgoing) > 0 {
+		meta["outgoing_links"] = strings.Join(outgoing, ",")
+	}
+
+	// Detect Zettelkasten ID from filename if not in frontmatter
+	if meta["zettelkasten_id"] == "" {
+		if m := reZettelID.FindString(baseName); m != "" {
+			meta["zettelkasten_id"] = m
+		}
+	}
+
+	// Created from modTime if not in frontmatter
+	if meta["created"] == "" && !modTime.IsZero() {
+		meta["created"] = modTime.Format("2006-01-02")
+	}
+
+	// Optionally strip frontmatter from content
+	docContent := content
+	if stripFM {
+		docContent = body
+	}
+
+	return obsidianNote{
+		ID:            relPath,
+		Content:       docContent,
+		Meta:          meta,
+		OutgoingLinks: outgoing,
+		FileSize:      fileSize,
+		ModTime:       modTime,
+	}
+}
+
+func computeBacklinks(notes []obsidianNote) {
+	// Build reverse map: link target name -> list of source note names
+	backlinks := map[string][]string{}
+	for _, note := range notes {
+		name := noteName(note.ID)
+		for _, link := range note.OutgoingLinks {
+			backlinks[link] = append(backlinks[link], name)
+		}
+	}
+	// Apply to each note
+	for i, note := range notes {
+		name := noteName(note.ID)
+		if bl := backlinks[name]; len(bl) > 0 {
+			notes[i].Meta["backlinks"] = strings.Join(bl, ",")
+		}
 	}
 }
 
