@@ -155,10 +155,10 @@ func (h *Graph[K]) Export(w io.Writer) error {
 				return fmt.Errorf("encode node data: %w", err)
 			}
 
-			for neighbor := range node.neighbors {
-				_, err = binaryWrite(w, neighbor)
+			for _, neighbor := range node.neighbors {
+				_, err = binaryWrite(w, neighbor.Key)
 				if err != nil {
-					return fmt.Errorf("encode neighbor %v: %w", neighbor, err)
+					return fmt.Errorf("encode neighbor %v: %w", neighbor.Key, err)
 				}
 			}
 		}
@@ -210,7 +210,11 @@ func (h *Graph[K]) Import(r io.Reader) error {
 			return err
 		}
 
+		// First pass: create all nodes and read neighbor keys
 		nodes := make(map[K]*layerNode[K], nNodes)
+		allNodes := make([]*layerNode[K], 0, nNodes)
+		allNeighborKeys := make([][]K, 0, nNodes)
+
 		for j := 0; j < nNodes; j++ {
 			var key K
 			var vec Vector
@@ -220,14 +224,12 @@ func (h *Graph[K]) Import(r io.Reader) error {
 				return fmt.Errorf("decoding node %d: %w", j, err)
 			}
 
-			neighbors := make([]K, nNeighbors)
+			neighborKeys := make([]K, nNeighbors)
 			for k := 0; k < nNeighbors; k++ {
-				var neighbor K
-				_, err = binaryRead(r, &neighbor)
+				_, err = binaryRead(r, &neighborKeys[k])
 				if err != nil {
 					return fmt.Errorf("decoding neighbor %d for node %d: %w", k, j, err)
 				}
-				neighbors[k] = neighbor
 			}
 
 			node := &layerNode[K]{
@@ -235,20 +237,24 @@ func (h *Graph[K]) Import(r io.Reader) error {
 					Key:   key,
 					Value: vec,
 				},
-				neighbors: make(map[K]*layerNode[K]),
 			}
 
 			nodes[key] = node
-			for _, neighbor := range neighbors {
-				node.neighbors[neighbor] = nil
+			allNodes = append(allNodes, node)
+			allNeighborKeys = append(allNeighborKeys, neighborKeys)
+		}
+
+		// Second pass: resolve neighbor keys to pointers
+		for idx, node := range allNodes {
+			keys := allNeighborKeys[idx]
+			node.neighbors = make([]*layerNode[K], 0, len(keys))
+			for _, key := range keys {
+				if neighbor, ok := nodes[key]; ok {
+					node.neighbors = append(node.neighbors, neighbor)
+				}
 			}
 		}
-		// Fill in neighbor pointers
-		for _, node := range nodes {
-			for key := range node.neighbors {
-				node.neighbors[key] = nodes[key]
-			}
-		}
+
 		h.layers[i] = &layer[K]{nodes: nodes}
 	}
 

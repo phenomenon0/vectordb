@@ -42,8 +42,8 @@ func NewCollection(schema CollectionSchema) (*Collection, error) {
 		return nil, fmt.Errorf("invalid schema: %w", err)
 	}
 
-	// Read default ef_search from environment (fallback: 64)
-	defaultEf := 64
+	// Read default ef_search from environment (fallback: 200)
+	defaultEf := 200
 	if envEf := os.Getenv("HNSW_EFSEARCH"); envEf != "" {
 		if parsed, err := strconv.Atoi(envEf); err == nil && parsed > 0 {
 			defaultEf = parsed
@@ -818,8 +818,17 @@ func (c *Collection) BulkAddDense(ctx context.Context, fieldName string, ids []u
 		}
 	}
 
-	// Batch insert if supported
-	if batcher, ok := idx.(index.BatchAdder); ok {
+	// Batch insert: prefer NoCopyBatchAdder (skips redundant vector copy)
+	// since BulkAddDense callers (binary import) already provide fresh slices.
+	if ncBatcher, ok := idx.(index.NoCopyBatchAdder); ok {
+		batch := make(map[uint64][]float32, len(ids))
+		for i, id := range ids {
+			batch[id] = vectors[i]
+		}
+		if err := ncBatcher.BatchAddNoCopy(ctx, batch); err != nil {
+			return fmt.Errorf("batch add to index %s: %w", fieldName, err)
+		}
+	} else if batcher, ok := idx.(index.BatchAdder); ok {
 		batch := make(map[uint64][]float32, len(ids))
 		for i, id := range ids {
 			batch[id] = vectors[i]

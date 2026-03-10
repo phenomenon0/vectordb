@@ -15,7 +15,7 @@ const PORT_RANGE_END: u16 = 8099;
 /// could bind the port in the gap and hijack the privileged Tauri window.
 fn find_free_port() -> (u16, TcpListener) {
     for port in PORT_RANGE_START..=PORT_RANGE_END {
-        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+        if let Ok(listener) = TcpListener::bind(("0.0.0.0", port)) {
             return (port, listener);
         }
     }

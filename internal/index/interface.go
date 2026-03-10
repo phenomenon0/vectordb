@@ -144,6 +144,14 @@ type BatchAdder interface {
 	BatchAdd(ctx context.Context, vectors map[uint64][]float32) error
 }
 
+// NoCopyBatchAdder is an optional interface for indexes that can accept
+// vectors without copying. The caller must guarantee ownership transfer
+// (i.e., the slices will not be modified after the call).
+// Used by binary import paths where vectors are already freshly decoded.
+type NoCopyBatchAdder interface {
+	BatchAddNoCopy(ctx context.Context, vectors map[uint64][]float32) error
+}
+
 // Factory creates index instances by type name
 // This will be implemented in factory.go
 type Factory interface {

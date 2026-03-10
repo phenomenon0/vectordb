@@ -34,10 +34,13 @@ func BenchmarkFiltered_HNSW(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	// TODO: attach metadata to vectors when index supports metadata storage.
-	// metadata := testdata.GenerateUniformMetadata(scale, rng)
+	metadata := testdata.GenerateUniformMetadata(scale, rng)
+	hnswIdx := idx.(*index.HNSWIndex)
 	for i, v := range vectors {
-		if err := idx.Add(ctx, uint64(i), v); err != nil {
+		if err := hnswIdx.Add(ctx, uint64(i), v); err != nil {
+			b.Fatal(err)
+		}
+		if err := hnswIdx.SetMetadata(uint64(i), metadata[i]); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -90,8 +93,13 @@ func BenchmarkFiltered_IVF(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	metadata := testdata.GenerateUniformMetadata(scale, rng)
+	ivfIdx := idx.(*index.IVFIndex)
 	for i, v := range vectors {
-		if err := idx.Add(ctx, uint64(i), v); err != nil {
+		if err := ivfIdx.Add(ctx, uint64(i), v); err != nil {
+			b.Fatal(err)
+		}
+		if err := ivfIdx.SetMetadata(uint64(i), metadata[i]); err != nil {
 			b.Fatal(err)
 		}
 	}

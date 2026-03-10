@@ -78,7 +78,7 @@ func NewHNSWIndex(dim int, config map[string]interface{}) (Index, error) {
 	// Extract configuration
 	m := GetConfigInt(config, "m", 16)
 	ml := GetConfigFloat(config, "ml", 0.25)
-	efSearch := GetConfigInt(config, "ef_search", 64)
+	efSearch := GetConfigInt(config, "ef_search", 200)
 	efConstruction := GetConfigInt(config, "ef_construction", 200)
 
 	// Validate configuration
@@ -265,11 +265,10 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 			end = len(ids)
 		}
 
-		// Process batch
-		for j := i; j < end; j++ {
-			id := ids[j]
-			vec := vectors[id]
-
+		// Build all nodes for this batch, then add in one variadic call
+		batchIDs := ids[i:end]
+		nodes := make([]hnsw.Node[uint64], 0, len(batchIDs))
+		for _, id := range batchIDs {
 			// Check if already exists
 			if _, exists := h.idToIdx[id]; exists {
 				return fmt.Errorf("vector with ID %d already exists", id)
@@ -277,16 +276,18 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 
 			// Make a copy
 			vecCopy := make([]float32, h.dim)
-			copy(vecCopy, vec)
+			copy(vecCopy, vectors[id])
+			nodes = append(nodes, hnsw.MakeNode(id, vecCopy))
+		}
 
-			// Add to graph
-			h.graph.Add(hnsw.MakeNode(id, vecCopy))
+		// Single variadic call — saves per-node function overhead
+		h.graph.Add(nodes...)
 
-			if err := h.storeVectorLocked(id, vecCopy); err != nil {
+		// Update mappings and store vectors
+		for idx, id := range batchIDs {
+			if err := h.storeVectorLocked(id, nodes[idx].Value); err != nil {
 				return fmt.Errorf("failed to store vector %d: %w", id, err)
 			}
-
-			// Update mappings
 			h.idToIdx[id] = h.count
 			h.count++
 			processed++
@@ -295,6 +296,71 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 		// Yield CPU between batches to allow other goroutines to run
 		// Note: We do NOT release the lock here as that would allow readers
 		// to see a partially-inserted batch (inconsistent state)
+		if i+batchSize < len(ids) {
+			runtime.Gosched()
+		}
+	}
+
+	if err := h.maybeTrainQuantizerLocked(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// BatchAddNoCopy inserts multiple vectors without copying them.
+// The caller must guarantee ownership transfer — the slices must not be
+// modified after this call. Used by binary import where vectors are freshly decoded.
+func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]float32) error {
+	for id, vec := range vectors {
+		if len(vec) != h.dim {
+			return fmt.Errorf("vector %d dimension mismatch: expected %d, got %d", id, h.dim, len(vec))
+		}
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	total := len(vectors)
+	processed := 0
+	batchSize := 1000
+
+	ids := make([]uint64, 0, total)
+	for id := range vectors {
+		ids = append(ids, id)
+	}
+
+	for i := 0; i < len(ids); i += batchSize {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		end := i + batchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+
+		batchIDs := ids[i:end]
+		nodes := make([]hnsw.Node[uint64], 0, len(batchIDs))
+		for _, id := range batchIDs {
+			if _, exists := h.idToIdx[id]; exists {
+				return fmt.Errorf("vector with ID %d already exists", id)
+			}
+			// No copy — caller guarantees ownership
+			nodes = append(nodes, hnsw.MakeNode(id, vectors[id]))
+		}
+
+		h.graph.Add(nodes...)
+
+		for idx, id := range batchIDs {
+			if err := h.storeVectorLocked(id, nodes[idx].Value); err != nil {
+				return fmt.Errorf("failed to store vector %d: %w", id, err)
+			}
+			h.idToIdx[id] = h.count
+			h.count++
+			processed++
+		}
+
 		if i+batchSize < len(ids) {
 			runtime.Gosched()
 		}

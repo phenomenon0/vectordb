@@ -151,3 +151,108 @@ l2_reduce:
 	VMOVSS	X0, ret+24(FP)
 	VZEROUPPER
 	RET
+
+// func cosineComponentsAVX2(a, b unsafe.Pointer, n int) (dot, normA, normB float32)
+//
+// Computes dot(a,b), dot(a,a), dot(b,b) in a single pass through memory.
+// n MUST be a multiple of 8. Caller handles the tail.
+//
+// Uses 2-way unrolling (16 elements per loop iteration) when n >= 16,
+// falls back to 8-element loop otherwise.
+//
+// Register allocation:
+//   Y0, Y1   = dot(a,b) accumulators (2-way)
+//   Y2, Y3   = dot(a,a) accumulators (2-way)
+//   Y4, Y5   = dot(b,b) accumulators (2-way)
+//   Y6, Y7   = a[i] loads
+//   Y8, Y9   = b[i] loads
+TEXT ·cosineComponentsAVX2(SB), NOSPLIT, $0-36
+	MOVQ	a+0(FP), SI       // SI = &a[0]
+	MOVQ	b+8(FP), DI       // DI = &b[0]
+	MOVQ	n+16(FP), CX      // CX = n (multiple of 8)
+
+	// Zero 6 accumulators
+	VXORPS	Y0, Y0, Y0        // dot0
+	VXORPS	Y1, Y1, Y1        // dot1
+	VXORPS	Y2, Y2, Y2        // normA0
+	VXORPS	Y3, Y3, Y3        // normA1
+	VXORPS	Y4, Y4, Y4        // normB0
+	VXORPS	Y5, Y5, Y5        // normB1
+
+	// Check if we can do 2-way unrolled (16 elements per iter)
+	MOVQ	CX, DX
+	SHRQ	$4, DX             // DX = n/16
+	JZ		cos_loop8_setup
+
+cos_loop16:
+	// First 8 elements
+	VMOVUPS	0(SI), Y6         // a[0..7]
+	VMOVUPS	0(DI), Y8         // b[0..7]
+	VFMADD231PS	Y6, Y8, Y0    // dot0 += a * b
+	VFMADD231PS	Y6, Y6, Y2    // normA0 += a * a
+	VFMADD231PS	Y8, Y8, Y4    // normB0 += b * b
+
+	// Second 8 elements
+	VMOVUPS	32(SI), Y7        // a[8..15]
+	VMOVUPS	32(DI), Y9        // b[8..15]
+	VFMADD231PS	Y7, Y9, Y1    // dot1 += a * b
+	VFMADD231PS	Y7, Y7, Y3    // normA1 += a * a
+	VFMADD231PS	Y9, Y9, Y5    // normB1 += b * b
+
+	ADDQ	$64, SI
+	ADDQ	$64, DI
+	DECQ	DX
+	JNZ		cos_loop16
+
+	// Merge 2-way accumulators -> single set
+	VADDPS	Y1, Y0, Y0        // dot
+	VADDPS	Y3, Y2, Y2        // normA
+	VADDPS	Y5, Y4, Y4        // normB
+
+cos_loop8_setup:
+	// Remaining elements in groups of 8
+	ANDQ	$15, CX            // CX = n % 16
+	SHRQ	$3, CX             // CX = remaining / 8
+	JZ		cos_reduce
+
+cos_loop8:
+	VMOVUPS	(SI), Y6          // a[i..i+7]
+	VMOVUPS	(DI), Y8          // b[i..i+7]
+	VFMADD231PS	Y6, Y8, Y0    // dot += a * b
+	VFMADD231PS	Y6, Y6, Y2    // normA += a * a
+	VFMADD231PS	Y8, Y8, Y4    // normB += b * b
+	ADDQ	$32, SI
+	ADDQ	$32, DI
+	DECQ	CX
+	JNZ		cos_loop8
+
+cos_reduce:
+	// Horizontal sum of Y0 (dot) -> X0[0]
+	VEXTRACTF128	$1, Y0, X1
+	VADDPS	X1, X0, X0
+	VMOVHLPS	X0, X1, X1
+	VADDPS	X1, X0, X0
+	VPSHUFD	$0x55, X0, X1
+	VADDSS	X1, X0, X0
+	VMOVSS	X0, dot+24(FP)
+
+	// Horizontal sum of Y2 (normA) -> X2[0]
+	VEXTRACTF128	$1, Y2, X3
+	VADDPS	X3, X2, X2
+	VMOVHLPS	X2, X3, X3
+	VADDPS	X3, X2, X2
+	VPSHUFD	$0x55, X2, X3
+	VADDSS	X3, X2, X2
+	VMOVSS	X2, normA+28(FP)
+
+	// Horizontal sum of Y4 (normB) -> X4[0]
+	VEXTRACTF128	$1, Y4, X5
+	VADDPS	X5, X4, X4
+	VMOVHLPS	X4, X5, X5
+	VADDPS	X5, X4, X4
+	VPSHUFD	$0x55, X4, X5
+	VADDSS	X5, X4, X4
+	VMOVSS	X4, normB+32(FP)
+
+	VZEROUPPER
+	RET

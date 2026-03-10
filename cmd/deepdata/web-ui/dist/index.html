@@ -8,6 +8,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/monokai-sublime.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
     :root {
       --bg-0: #0a0a0a;
@@ -173,7 +176,48 @@
     .scroll-y { overflow-y: auto; max-height: 320px; }
 
     /* ---- Search page ---- */
-    .search-layout { display: grid; grid-template-columns: 320px 1fr; gap: 12px; }
+    .search-topbar {
+      display: flex; gap: 8px; align-items: end; flex-wrap: wrap;
+      background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 10px 14px; margin-bottom: 12px;
+    }
+    .search-topbar .form-group { margin-bottom: 0; }
+    .search-topbar .form-group label { font-size: 10px; }
+    .search-results-grid {
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .result-card {
+      background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 12px 16px; cursor: pointer; transition: border-color .15s, background .15s;
+    }
+    .result-card:hover { border-color: var(--border-h); background: var(--bg-2); }
+    .result-card .result-card-top {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    }
+    .result-card .result-card-icon { font-size: 14px; flex-shrink: 0; }
+    .result-card .result-card-path {
+      font-family: var(--font-mono); font-size: 12px; color: var(--fg);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+    }
+    .result-card .result-card-score {
+      font-family: var(--font-mono); font-size: 11px; color: var(--accent);
+      background: rgba(59,130,246,.1); padding: 1px 6px; border-radius: var(--radius); flex-shrink: 0;
+    }
+    .result-card .result-card-tag {
+      font-size: 10px; color: var(--fg-3); font-family: var(--font-mono);
+      background: var(--bg-3); padding: 1px 5px; border-radius: var(--radius); flex-shrink: 0;
+    }
+    .result-card .result-card-snippet {
+      font-size: 12px; color: var(--fg-2); line-height: 1.5;
+      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .result-card .result-card-thumb {
+      width: 48px; height: 48px; object-fit: cover; border-radius: var(--radius);
+      float: right; margin-left: 10px;
+    }
+    .search-highlight { background: rgba(234,179,8,.25); border-radius: 2px; padding: 0 1px; }
+
+    /* Legacy result-row kept for explorer */
     .result-row {
       padding: 8px 10px; border-bottom: 1px solid var(--border); cursor: pointer;
     }
@@ -281,9 +325,182 @@
     .template-card .template-name { font-family: var(--font-display); font-size: 12px; font-weight: 500; color: var(--fg); }
     .template-card .template-desc { font-size: 11px; color: var(--fg-2); margin: 4px 0; }
 
+    /* ---- Viewer Pane ---- */
+    .viewer-pane {
+      background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius);
+      display: flex; flex-direction: column; max-height: calc(100vh - 100px); overflow: hidden;
+    }
+    .viewer-toolbar {
+      display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+      font-size: 12px; min-height: 40px;
+    }
+    .viewer-toolbar .viewer-filename {
+      font-family: var(--font-mono); font-size: 12px; color: var(--fg);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+    }
+    .viewer-content {
+      flex: 1; overflow-y: auto; padding: 0; position: relative;
+    }
+    .viewer-md {
+      padding: 16px 20px; font-size: 13px; line-height: 1.7; color: var(--fg);
+    }
+    .viewer-md h1, .viewer-md h2, .viewer-md h3, .viewer-md h4, .viewer-md h5, .viewer-md h6 {
+      font-family: var(--font-display); color: var(--fg); margin: 20px 0 8px; font-weight: 600;
+    }
+    .viewer-md h1 { font-size: 22px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .viewer-md h2 { font-size: 18px; }
+    .viewer-md h3 { font-size: 15px; }
+    .viewer-md p { margin: 8px 0; }
+    .viewer-md ul, .viewer-md ol { margin: 8px 0; padding-left: 24px; }
+    .viewer-md li { margin: 4px 0; }
+    .viewer-md a { color: var(--accent); text-decoration: none; }
+    .viewer-md a:hover { text-decoration: underline; }
+    .viewer-md code {
+      font-family: var(--font-mono); font-size: 12px; background: var(--bg-3);
+      padding: 1px 5px; border-radius: 3px; color: var(--orange);
+    }
+    .viewer-md pre {
+      background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 12px; margin: 12px 0; overflow-x: auto;
+    }
+    .viewer-md pre code { background: none; padding: 0; color: var(--fg); font-size: 12px; }
+    .viewer-md blockquote {
+      border-left: 3px solid var(--accent); padding: 4px 16px; margin: 8px 0;
+      color: var(--fg-2); background: rgba(59,130,246,.04);
+    }
+    .viewer-md table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+    .viewer-md th, .viewer-md td {
+      border: 1px solid var(--border); padding: 6px 10px; font-size: 12px; text-align: left;
+    }
+    .viewer-md th { background: var(--bg-2); font-weight: 500; }
+    .viewer-md img { max-width: 100%; border-radius: var(--radius); }
+    .viewer-md hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+    .viewer-md .wiki-link {
+      color: var(--purple); cursor: pointer; text-decoration: none;
+      border-bottom: 1px dashed var(--purple);
+    }
+    .viewer-md .wiki-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* Image viewer */
+    .viewer-img-container {
+      width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+      overflow: hidden; cursor: grab; background: var(--bg-0);
+    }
+    .viewer-img-container:active { cursor: grabbing; }
+    .viewer-img-container img {
+      max-width: none; transform-origin: center center; user-select: none; pointer-events: none;
+    }
+
+    /* Audio/Video */
+    .viewer-media { padding: 20px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+    .viewer-media audio, .viewer-media video {
+      width: 100%; max-width: 100%; border-radius: var(--radius);
+      background: var(--bg-0); outline: none;
+    }
+    .viewer-media video { max-height: 60vh; }
+
+    /* Plain text viewer */
+    .viewer-text {
+      padding: 16px 20px; font-family: var(--font-mono); font-size: 12px;
+      white-space: pre-wrap; word-break: break-word; color: var(--fg-2); line-height: 1.6;
+    }
+
+    /* Annotation sidebar */
+    .annotation-sidebar {
+      border-top: 1px solid var(--border); flex-shrink: 0;
+      max-height: 250px; overflow-y: auto; padding: 8px 12px;
+    }
+    .annotation-item {
+      padding: 6px 8px; border-left: 3px solid var(--accent); margin-bottom: 6px;
+      background: var(--bg-2); border-radius: 0 var(--radius) var(--radius) 0; font-size: 11px;
+    }
+    .annotation-item .ann-text { color: var(--fg-2); margin-top: 2px; }
+    .annotation-item .ann-quote { color: var(--purple); font-style: italic; margin-top: 2px; font-size: 10px; }
+    .annotation-form {
+      display: flex; gap: 6px; padding: 6px 0;
+    }
+
+    /* Image annotation overlays */
+    .img-annotation-pin {
+      position: absolute; width: 20px; height: 20px; border-radius: 50%;
+      border: 2px solid; transform: translate(-50%, -50%); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; font-size: 9px; color: #fff;
+    }
+    .img-annotation-region {
+      position: absolute; border: 2px dashed; border-radius: 2px; cursor: pointer;
+      background: rgba(59,130,246,.08);
+    }
+
+    /* Timestamp markers */
+    .timestamp-marker {
+      display: inline-block; padding: 2px 6px; border-radius: var(--radius);
+      font-size: 10px; font-family: var(--font-mono); cursor: pointer;
+      background: rgba(59,130,246,.12); color: var(--accent); margin: 2px;
+    }
+    .timestamp-marker:hover { background: rgba(59,130,246,.25); }
+
+    /* Vault browser */
+    .vault-tree-item {
+      display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+      font-size: 12px; cursor: pointer; border-radius: var(--radius);
+    }
+    .vault-tree-item:hover { background: var(--bg-2); }
+    .vault-tree-item .vt-icon { font-size: 14px; flex-shrink: 0; width: 18px; text-align: center; }
+    .vault-tree-item .vt-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vault-tree-item .vt-size { font-family: var(--font-mono); font-size: 10px; color: var(--fg-3); }
+
+    /* Result row active state */
+    .result-row.active { background: var(--bg-3); border-left: 2px solid var(--accent); }
+
+    /* ---- Viewer Overlay (full-page) ---- */
+    .viewer-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      z-index: 150; background: var(--bg-0);
+      display: flex; flex-direction: column;
+      animation: fadeIn .15s ease;
+    }
+    .viewer-overlay-header {
+      height: 44px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 16px; background: var(--bg-1);
+      border-bottom: 1px solid var(--border);
+    }
+    .viewer-overlay-header .viewer-back-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 10px; border-radius: var(--radius); font-size: 12px;
+      font-family: var(--font-body); cursor: pointer;
+      border: 1px solid var(--border); background: var(--bg-2); color: var(--fg);
+    }
+    .viewer-overlay-header .viewer-back-btn:hover { background: var(--bg-3); }
+    .viewer-overlay-header .viewer-nav {
+      display: flex; align-items: center; gap: 4px;
+      font-family: var(--font-mono); font-size: 12px; color: var(--fg-2);
+    }
+    .viewer-overlay-header .viewer-nav button {
+      padding: 2px 8px; border-radius: var(--radius); font-size: 12px;
+      cursor: pointer; border: 1px solid var(--border); background: var(--bg-2); color: var(--fg);
+    }
+    .viewer-overlay-header .viewer-nav button:hover { background: var(--bg-3); }
+    .viewer-overlay-header .viewer-nav button:disabled { opacity: .3; cursor: default; }
+    .viewer-overlay-content {
+      flex: 1; overflow-y: auto; position: relative;
+    }
+    .viewer-overlay-content .viewer-md {
+      max-width: 720px; margin: 0 auto;
+    }
+    .viewer-overlay .annotation-sidebar {
+      position: fixed; top: 44px; right: 0; bottom: 0; width: 300px;
+      background: var(--bg-1); border-left: 1px solid var(--border);
+      overflow-y: auto; padding: 12px; z-index: 160;
+      animation: slideInRight .15s ease;
+    }
+    @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
+
     @media (max-width: 900px) {
-      .search-layout { grid-template-columns: 1fr; }
+      .search-topbar { flex-direction: column; }
       .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .viewer-overlay .annotation-sidebar { width: 100%; top: auto; height: 50vh; border-left: none; border-top: 1px solid var(--border); }
     }
 
     /* ---- Onboarding Overlay ---- */
@@ -679,96 +896,215 @@
       <button class="btn btn-sm" :class="{ 'btn-primary': dataSection === 'search' }" @click="dataSection = 'search'">Search</button>
       <button class="btn btn-sm" :class="{ 'btn-primary': dataSection === 'explorer' }" @click="dataSection = 'explorer'; loadDocs()">Explorer</button>
       <button class="btn btn-sm" :class="{ 'btn-primary': dataSection === 'collections' }" @click="dataSection = 'collections'; loadV2Collections()">Collections</button>
+      <button class="btn btn-sm" :class="{ 'btn-primary': dataSection === 'vault' }" @click="dataSection = 'vault'; browseVault()">Vault</button>
     </div>
 
   <!-- Search sub-section -->
   <div x-show="dataSection === 'search'" x-cloak>
-    <div class="search-layout">
-      <!-- Query panel -->
-      <div class="flex flex-col gap-10">
-        <div class="card">
-          <div class="form-group mb-8">
-            <label>Query</label>
-            <textarea class="textarea" x-model="searchQuery" placeholder="Enter search query..." rows="3"></textarea>
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:1">
-              <label>Collection</label>
-              <select class="select" x-model="searchCollection">
-                <option value="">All (default)</option>
-                <template x-for="c in (health.collections || [])" :key="c.name">
-                  <option :value="c.name" x-text="c.name + ' (' + c.vector_count + ')'"></option>
-                </template>
-              </select>
-            </div>
-            <div class="form-group" style="width:70px">
-              <label>Top K</label>
-              <input class="input" type="number" x-model.number="searchTopK" min="1" max="100">
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:1">
-              <label>Mode</label>
-              <select class="select" x-model="searchMode">
-                <option value="vector">Vector</option>
-                <option value="hybrid">Hybrid</option>
-                <option value="keyword">Keyword</option>
-              </select>
-            </div>
-            <div class="form-group" style="width:70px">
-              <label>Alpha</label>
-              <input class="input" type="number" x-model.number="searchAlpha" min="0" max="1" step="0.1">
-            </div>
-          </div>
-
-          <!-- Filters (collapsed) -->
-          <div class="mt-8">
-            <button class="btn btn-sm" @click="showFilters = !showFilters" x-text="showFilters ? '- filters' : '+ filters'"></button>
-            <div x-show="showFilters" class="mt-8">
-              <div class="form-group mb-8">
-                <label>Metadata filter (JSON)</label>
-                <input class="input" x-model="searchMeta" placeholder='{"key": "value"}'>
-              </div>
-            </div>
-          </div>
-
-          <div class="mt-8">
-            <button class="btn btn-primary" @click="doSearch()" :disabled="searching">
-              <span x-show="!searching">Search</span>
-              <span x-show="searching">...</span>
-            </button>
-          </div>
-        </div>
+    <!-- Query topbar -->
+    <div class="search-topbar">
+      <div class="form-group" style="flex:2; min-width:200px">
+        <label>Query</label>
+        <input class="input" x-model="searchQuery" placeholder="Enter search query..." @keydown.enter="doSearch()">
       </div>
+      <div class="form-group" style="min-width:140px">
+        <label>Collection</label>
+        <select class="select" x-model="searchCollection">
+          <option value="">All (default)</option>
+          <template x-for="c in (health.collections || [])" :key="c.name">
+            <option :value="c.name" x-text="c.name + ' (' + c.vector_count + ')'"></option>
+          </template>
+        </select>
+      </div>
+      <div class="form-group" style="width:60px">
+        <label>Top K</label>
+        <input class="input" type="number" x-model.number="searchTopK" min="1" max="100">
+      </div>
+      <div class="form-group" style="width:90px">
+        <label>Mode</label>
+        <select class="select" x-model="searchMode">
+          <option value="vector">Vector</option>
+          <option value="hybrid">Hybrid</option>
+          <option value="keyword">Keyword</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" @click="doSearch()" :disabled="searching" style="height:30px">
+        <span x-show="!searching">Search</span>
+        <span x-show="searching">...</span>
+      </button>
+      <button class="btn btn-sm" @click="showFilters = !showFilters" x-text="showFilters ? '- filters' : '+ filters'" style="height:30px"></button>
+    </div>
+    <!-- Expanded filters -->
+    <div x-show="showFilters" class="search-topbar" style="margin-top:-8px; padding-top:6px">
+      <div class="form-group" style="flex:1; min-width:200px">
+        <label>Metadata filter (JSON)</label>
+        <input class="input" x-model="searchMeta" placeholder='{"key": "value"}'>
+      </div>
+      <div class="form-group" style="width:70px">
+        <label>Alpha</label>
+        <input class="input" type="number" x-model.number="searchAlpha" min="0" max="1" step="0.1">
+      </div>
+    </div>
 
-      <!-- Results panel -->
-      <div class="card" style="min-height: 200px">
-        <div class="card-header">
-          <span>Results</span>
-          <span class="mono text-xs text-muted" x-show="searchLatency">
-            <span x-text="searchResults.length"></span> results in <span x-text="searchLatency"></span>ms
-          </span>
+    <!-- Results info -->
+    <div class="flex items-center justify-between mb-8" x-show="searchResults.length || searchLatency">
+      <span class="mono text-xs text-muted">
+        <span x-text="searchResults.length"></span> results <span x-show="searchLatency">in <span x-text="searchLatency"></span>ms</span>
+      </span>
+    </div>
+
+    <!-- Result cards -->
+    <div class="search-results-grid" x-ref="searchResultsList">
+      <div x-show="!searchResults.length && !searching" class="text-muted text-xs" style="padding: 40px 0; text-align: center;">
+        Run a query to see results
+      </div>
+      <template x-for="(r, i) in searchResults" :key="i">
+        <div class="result-card" @click="openViewer(r, i)">
+          <div class="result-card-top">
+            <span class="result-card-icon" x-text="detectModality(r.metadata?.path || r.id) === 'markdown' ? '📄' : detectModality(r.metadata?.path || r.id) === 'image' ? '🖼' : detectModality(r.metadata?.path || r.id) === 'audio' ? '🎵' : detectModality(r.metadata?.path || r.id) === 'video' ? '🎬' : '📝'"></span>
+            <span class="result-card-path" x-text="r.metadata?.path || r.id || '(no path)'"></span>
+            <span class="result-card-score" x-text="r.score?.toFixed(4) || '-'"></span>
+            <span class="result-card-tag" x-text="(r.metadata?.path || r.id || '').split('.').pop() || 'txt'"></span>
+          </div>
+          <template x-if="detectModality(r.metadata?.path || r.id) === 'image'">
+            <img class="result-card-thumb" :src="apiBase + '/vault/file?path=' + encodeURIComponent(r.metadata?.path || '')">
+          </template>
+          <div class="result-card-snippet" x-html="highlightTerms(extractSnippet(r.text || r.document || '', searchQuery), searchQuery)"></div>
         </div>
-        <div x-show="!searchResults.length" class="text-muted text-xs" style="padding: 20px 0; text-align: center;">
-          Run a query to see results
-        </div>
-        <div class="scroll-y" style="max-height: 600px">
-          <template x-for="(r, i) in searchResults" :key="i">
+      </template>
+    </div>
+  </div>
+
+  <!-- Viewer Overlay (full-page) -->
+  <div class="viewer-overlay" x-show="viewerOpen" x-cloak
+       @keydown.escape.window="if(viewerOpen) closeViewer()"
+       @keydown.arrow-left.window="if(viewerOpen) viewerPrev()"
+       @keydown.arrow-right.window="if(viewerOpen) viewerNext()">
+    <!-- Header -->
+    <div class="viewer-overlay-header">
+      <button class="viewer-back-btn" @click="closeViewer()">← Back</button>
+      <span style="font-size:14px" x-text="viewerModality === 'markdown' ? '📄' : viewerModality === 'image' ? '🖼' : viewerModality === 'audio' ? '🎵' : viewerModality === 'video' ? '🎬' : '📝'"></span>
+      <span class="viewer-filename" style="flex:1; font-family:var(--font-mono); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" x-text="viewerResult?.metadata?.path || viewerResult?.id || 'Document'"></span>
+      <span class="badge badge-blue" x-show="viewerResult?.score" x-text="viewerResult?.score?.toFixed(4)"></span>
+      <div class="viewer-nav" x-show="searchResults.length > 1">
+        <button @click="viewerPrev()" :disabled="viewerIndex <= 0">◀</button>
+        <span x-text="(viewerIndex + 1) + '/' + searchResults.length"></span>
+        <button @click="viewerNext()" :disabled="viewerIndex >= searchResults.length - 1">▶</button>
+      </div>
+      <button class="btn btn-sm" @click="showAnnotations = !showAnnotations" :class="{ 'btn-primary': showAnnotations }">Ann</button>
+      <button class="btn btn-sm" @click="navigator.clipboard.writeText(viewerResult?.metadata?.path || viewerResult?.id || ''); toast('Path copied', 'success')">Copy</button>
+      <button class="btn btn-sm" x-show="viewerResult?.metadata?.vault" @click="window.open('obsidian://open?vault=' + encodeURIComponent(viewerResult?.metadata?.vault || '') + '&file=' + encodeURIComponent(viewerResult?.metadata?.path || ''))">Obsidian</button>
+    </div>
+
+    <!-- Content area -->
+    <div class="viewer-overlay-content">
+      <!-- Loading -->
+      <div x-show="viewerLoading" style="padding:40px; text-align:center; color:var(--fg-2)">Loading...</div>
+
+      <!-- Markdown -->
+      <template x-if="viewerModality === 'markdown' && !viewerLoading">
+        <div class="viewer-md" x-html="renderMarkdown(viewerContent || '')" @click="handleViewerClick($event)"></div>
+      </template>
+
+      <!-- Image -->
+      <template x-if="viewerModality === 'image' && !viewerLoading">
+        <div class="viewer-img-container" style="position:relative"
+          @wheel.prevent="imgZoom($event.deltaY > 0 ? -0.1 : 0.1)"
+          @mousedown.prevent="imgDragging = true; imgLastX = $event.clientX; imgLastY = $event.clientY"
+          @mousemove="if(imgDragging) { imgPan($event.clientX - imgLastX, $event.clientY - imgLastY); imgLastX = $event.clientX; imgLastY = $event.clientY; }"
+          @mouseup="imgDragging = false"
+          @mouseleave="imgDragging = false"
+          @dblclick="imgReset()"
+          @click="if(annotationMode === 'pin') startImagePin($event)">
+          <img :src="viewerContent" :style="'transform: scale(' + imgScale + ') translate(' + imgX + 'px, ' + imgY + 'px)'">
+          <!-- Image annotation overlays -->
+          <template x-for="ann in (annotations[viewerResult?.metadata?.path || viewerResult?.id] || [])" :key="ann.id">
             <div>
-              <div class="result-row flex items-center" @click="r._expanded = !r._expanded">
-                <span class="text-muted mono" style="min-width:24px">#<span x-text="i+1"></span></span>
-                <span class="score" x-text="r.score?.toFixed(4) || '-'"></span>
-                <span class="mono text-xs truncate" style="max-width:120px" x-text="r.id || r.doc_id || ''"></span>
-                <span class="text-muted text-xs truncate" style="margin-left:8px; flex:1" x-text="(r.text || r.document || '').substring(0, 80)"></span>
-              </div>
-              <div x-show="r._expanded" class="result-expanded">
-                <div class="mb-8"><strong class="text-xs text-muted">ID:</strong> <span class="mono" x-text="r.id || r.doc_id"></span></div>
-                <div class="mb-8 pre-wrap" x-text="r.text || r.document || ''"></div>
-                <div x-show="r.metadata" class="mono text-xs text-muted pre-wrap" x-text="JSON.stringify(r.metadata, null, 2)"></div>
-              </div>
+              <div x-show="ann.pin" class="img-annotation-pin"
+                :style="'left:' + (ann.pin?.x*100) + '%; top:' + (ann.pin?.y*100) + '%; border-color:' + (ann.color || '#3b82f6')"
+                @click.stop="activeAnnotation = ann" :title="ann.note"></div>
+              <div x-show="ann.region" class="img-annotation-region"
+                :style="'left:' + (ann.region?.x*100) + '%; top:' + (ann.region?.y*100) + '%; width:' + (ann.region?.w*100) + '%; height:' + (ann.region?.h*100) + '%; border-color:' + (ann.color || '#3b82f6')"
+                @click.stop="activeAnnotation = ann" :title="ann.note"></div>
             </div>
           </template>
         </div>
+      </template>
+
+      <!-- Audio -->
+      <template x-if="viewerModality === 'audio' && !viewerLoading">
+        <div class="viewer-media">
+          <audio controls :src="viewerContent" x-ref="audioPlayer" style="width:100%"></audio>
+          <div class="flex gap-8" style="flex-wrap:wrap">
+            <template x-for="ann in (annotations[viewerResult?.metadata?.path || viewerResult?.id] || []).filter(a => a.timestamp !== undefined)" :key="ann.id">
+              <span class="timestamp-marker" @click="if($refs.audioPlayer) $refs.audioPlayer.currentTime = ann.timestamp"
+                x-text="fmtTimestamp(ann.timestamp) + (ann.note ? ' — ' + ann.note : '')"></span>
+            </template>
+          </div>
+          <div class="flex gap-8">
+            <button class="btn btn-sm" @click="addTimestampAnnotation('audio')">+ Timestamp Note</button>
+            <button class="btn btn-sm" @click="transcribeMedia()" :disabled="transcribing">
+              <span x-text="transcribing ? 'Transcribing...' : '🎙 Transcribe (Whisper)'"></span>
+            </button>
+          </div>
+          <div x-show="transcription" class="viewer-text" style="max-height:300px; overflow-y:auto; margin-top:8px; font-size:12px;" x-text="transcription"></div>
+        </div>
+      </template>
+
+      <!-- Video -->
+      <template x-if="viewerModality === 'video' && !viewerLoading">
+        <div class="viewer-media">
+          <video controls :src="viewerContent" x-ref="videoPlayer"></video>
+          <div class="flex gap-8" style="flex-wrap:wrap">
+            <template x-for="ann in (annotations[viewerResult?.metadata?.path || viewerResult?.id] || []).filter(a => a.timestamp !== undefined)" :key="ann.id">
+              <span class="timestamp-marker" @click="if($refs.videoPlayer) $refs.videoPlayer.currentTime = ann.timestamp"
+                x-text="fmtTimestamp(ann.timestamp) + (ann.note ? ' — ' + ann.note : '')"></span>
+            </template>
+          </div>
+          <div class="flex gap-8">
+            <button class="btn btn-sm" @click="addTimestampAnnotation('video')">+ Timestamp Note</button>
+            <button class="btn btn-sm" @click="transcribeMedia()" :disabled="transcribing">
+              <span x-text="transcribing ? 'Transcribing...' : '🎙 Transcribe (Whisper)'"></span>
+            </button>
+          </div>
+          <div x-show="transcription" class="viewer-text" style="max-height:300px; overflow-y:auto; margin-top:8px; font-size:12px;" x-text="transcription"></div>
+        </div>
+      </template>
+
+      <!-- Plain text fallback -->
+      <template x-if="viewerModality === 'text' && !viewerLoading">
+        <div class="viewer-text" x-text="viewerContent"></div>
+      </template>
+    </div>
+
+    <!-- Annotation sidebar (slide-in) -->
+    <div class="annotation-sidebar" x-show="showAnnotations" x-cloak>
+      <div class="flex items-center justify-between mb-8">
+        <span class="text-xs text-muted" style="font-family:var(--font-display)">Annotations</span>
+        <div class="flex gap-4">
+          <template x-if="viewerModality === 'markdown' || viewerModality === 'text'">
+            <button class="btn btn-sm" :class="{ 'btn-primary': annotationMode === 'highlight' }" @click="annotationMode = annotationMode === 'highlight' ? null : 'highlight'" title="Highlight text">Hi</button>
+          </template>
+          <template x-if="viewerModality === 'image'">
+            <button class="btn btn-sm" :class="{ 'btn-primary': annotationMode === 'pin' }" @click="annotationMode = annotationMode === 'pin' ? null : 'pin'" title="Pin on image">Pin</button>
+          </template>
+        </div>
+      </div>
+      <template x-for="ann in (annotations[viewerResult?.metadata?.path || viewerResult?.id] || [])" :key="ann.id">
+        <div class="annotation-item" :style="'border-left-color:' + (ann.color || 'var(--accent)')">
+          <div class="flex items-center justify-between">
+            <span class="text-xs" x-text="ann.note || '(no note)'"></span>
+            <button class="btn btn-sm btn-danger" style="padding:0 4px; font-size:9px; line-height:1" @click="deleteAnnotation(ann.doc_id, ann.id)">×</button>
+          </div>
+          <div x-show="ann.highlighted_text" class="ann-quote" x-text="ann.highlighted_text"></div>
+          <div x-show="ann.timestamp !== undefined" class="ann-quote" x-text="'@ ' + fmtTimestamp(ann.timestamp || 0)"></div>
+        </div>
+      </template>
+      <!-- New annotation form -->
+      <div class="annotation-form" x-show="annotationMode === 'highlight'">
+        <input class="input" x-model="annotationNote" placeholder="Note..." style="flex:1; font-size:11px">
+        <input type="color" x-model="annotationColor" style="width:24px; height:24px; padding:0; border:none; cursor:pointer">
+        <button class="btn btn-sm btn-primary" @click="startTextHighlight()">Save</button>
       </div>
     </div>
   </div>
@@ -888,6 +1224,34 @@
           <tr x-show="!v2Collections.length"><td colspan="5" class="text-muted">none</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Vault Browser sub-section -->
+  <div x-show="dataSection === 'vault'" x-cloak>
+    <div class="card">
+      <div class="card-header">
+        <div class="flex items-center gap-8">
+          <span>Vault Browser</span>
+          <span class="text-xs text-muted mono" x-text="vaultBrowseDir === '.' ? '/' : vaultBrowseDir"></span>
+        </div>
+        <div class="flex gap-4">
+          <button class="btn btn-sm" x-show="vaultBrowseDir !== '.'" @click="vaultBrowseDir = vaultBrowseDir.includes('/') ? vaultBrowseDir.substring(0, vaultBrowseDir.lastIndexOf('/')) : '.'; browseVault()">← Up</button>
+          <button class="btn btn-sm" @click="browseVault()">Refresh</button>
+        </div>
+      </div>
+      <div style="max-height:600px; overflow-y:auto">
+        <template x-for="f in vaultFiles" :key="f.path">
+          <div class="vault-tree-item" @click="f.is_dir ? (vaultBrowseDir = f.path, browseVault()) : openVaultFile(f)">
+            <span class="vt-icon" x-text="f.is_dir ? '📁' : detectModality(f.name) === 'markdown' ? '📄' : detectModality(f.name) === 'image' ? '🖼' : detectModality(f.name) === 'audio' ? '🎵' : detectModality(f.name) === 'video' ? '🎬' : '📝'"></span>
+            <span class="vt-name" x-text="f.name"></span>
+            <span class="vt-size" x-show="!f.is_dir" x-text="fmtBytes(f.size)"></span>
+          </div>
+        </template>
+        <div x-show="!vaultFiles.length" class="text-muted text-xs" style="padding:20px 0; text-align:center;">
+          No vault configured or empty directory
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1616,6 +1980,33 @@ function app() {
     showChatSystem: false,
     chatCollection: '',
 
+    // Viewer
+    viewerOpen: false,
+    viewerResult: null,
+    viewerContent: null,
+    viewerModality: null,
+    viewerLoading: false,
+    viewerIndex: -1,
+
+    // Image viewer
+    imgScale: 1, imgX: 0, imgY: 0, imgDragging: false, imgLastX: 0, imgLastY: 0,
+
+    // Transcription
+    transcribing: false,
+    transcription: '',
+
+    // Annotations
+    annotations: {},
+    annotationMode: null,
+    activeAnnotation: null,
+    showAnnotations: false,
+    annotationNote: '',
+    annotationColor: '#3b82f6',
+
+    // Vault browser
+    vaultFiles: [],
+    vaultBrowseDir: '.',
+
     // Agent-GO (optional, collapsed)
     agentGoUrl: localStorage.getItem('agentGoUrl') || 'http://localhost:4243',
     agentGoConnected: false,
@@ -1772,15 +2163,15 @@ function app() {
         query: this.searchQuery,
         top_k: this.searchTopK,
         collection: this.searchCollection || '',
+        include_meta: true,
       };
 
       if (this.searchMode === 'hybrid') {
-        path = '/v2/search';
-        body.mode = 'hybrid';
-        body.alpha = this.searchAlpha;
+        body.score_mode = 'hybrid';
+        body.hybrid_alpha = this.searchAlpha;
       } else if (this.searchMode === 'keyword') {
-        path = '/v2/search';
-        body.mode = 'keyword';
+        body.score_mode = 'lexical';
+        body.mode = 'lex';
       }
 
       if (this.searchMeta) {
@@ -1795,6 +2186,302 @@ function app() {
       } else {
         this.toast('Search failed: ' + (r.data?.error || r.status), 'error');
       }
+    },
+
+    // ---- Viewer ----
+    detectModality(path) {
+      if (!path) return 'text';
+      const ext = path.split('.').pop().toLowerCase();
+      if (ext === 'md') return 'markdown';
+      if (['png','jpg','jpeg','gif','webp','svg','bmp','ico'].includes(ext)) return 'image';
+      if (['mp3','wav','ogg','m4a','flac','aac','wma'].includes(ext)) return 'audio';
+      if (['mp4','webm','mov','avi','mkv'].includes(ext)) return 'video';
+      return 'text';
+    },
+
+    async openViewer(r, index) {
+      this.viewerResult = r;
+      this.viewerIndex = (index !== undefined) ? index : this.searchResults.indexOf(r);
+      const path = r.metadata?.path || '';
+      this.viewerModality = this.detectModality(path);
+      this.viewerOpen = true;
+      this.viewerLoading = true;
+      this.viewerContent = null;
+      this.activeAnnotation = null;
+      this.imgReset();
+
+      const docId = path || r.id || r.doc_id || '';
+      await this.loadAnnotations(docId);
+
+      if (path) {
+        await this.loadViewerContent(path);
+      } else {
+        // No file path — show inline text
+        this.viewerModality = 'text';
+        this.viewerContent = r.text || r.document || '';
+        this.viewerLoading = false;
+      }
+    },
+
+    viewerNext() {
+      if (this.viewerIndex < this.searchResults.length - 1) {
+        this.openViewer(this.searchResults[this.viewerIndex + 1], this.viewerIndex + 1);
+      }
+    },
+
+    viewerPrev() {
+      if (this.viewerIndex > 0) {
+        this.openViewer(this.searchResults[this.viewerIndex - 1], this.viewerIndex - 1);
+      }
+    },
+
+    async loadViewerContent(path) {
+      const modality = this.viewerModality;
+      try {
+        if (modality === 'markdown' || modality === 'text') {
+          const resp = await fetch(this.apiBase + '/vault/file?path=' + encodeURIComponent(path));
+          if (!resp.ok) {
+            this.viewerContent = this.viewerResult?.text || this.viewerResult?.document || 'Failed to load file';
+            this.viewerModality = 'text';
+          } else {
+            let text = await resp.text();
+            // Strip macOS resource fork / binary garbage (non-printable control chars)
+            text = text.replace(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/g, '');
+            // Strip Apple extended attribute blocks if present
+            text = text.replace(/.*?This resource fork intentionally left blank\s*/s, '');
+            text = text.replace(/com\.apple\.\w+/g, '');
+            this.viewerContent = text.trim();
+          }
+        } else {
+          this.viewerContent = this.apiBase + '/vault/file?path=' + encodeURIComponent(path);
+        }
+      } catch (e) {
+        this.viewerContent = this.viewerResult?.text || this.viewerResult?.document || 'Error: ' + e.message;
+        this.viewerModality = 'text';
+      }
+      this.viewerLoading = false;
+    },
+
+    closeViewer() {
+      this.viewerOpen = false;
+      this.viewerResult = null;
+      this.viewerContent = null;
+      this.viewerModality = null;
+      this.viewerLoading = false;
+      this.viewerIndex = -1;
+      this.annotationMode = null;
+      this.activeAnnotation = null;
+      this.transcription = '';
+      this.transcribing = false;
+    },
+
+    renderMarkdown(text) {
+      if (!text || typeof marked === 'undefined') return text || '';
+      // Process wiki-links [[Page]] and [[Page|Display]]
+      const processed = text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, display) => {
+        return '<a class="wiki-link" data-wiki-target="' + target.replace(/"/g, '&quot;') + '">' + (display || target) + '</a>';
+      });
+      try {
+        // Configure marked with highlight.js renderer
+        const renderer = new marked.Renderer();
+        renderer.code = function(obj) {
+          // marked v12: code({text, lang})
+          const code = typeof obj === 'string' ? obj : (obj.text || obj);
+          const lang = typeof obj === 'string' ? arguments[1] : (obj.lang || '');
+          if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
+            const highlighted = hljs.highlight(code, { language: lang }).value;
+            return '<pre><code class="hljs language-' + lang + '">' + highlighted + '</code></pre>';
+          }
+          const escaped = String(code).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          return '<pre><code>' + escaped + '</code></pre>';
+        };
+        const html = marked.parse(processed, { breaks: true, gfm: true, renderer });
+        return html;
+      } catch (e) {
+        return '<pre>' + text + '</pre>';
+      }
+    },
+
+    handleViewerClick(e) {
+      // Handle wiki-link clicks in rendered markdown
+      const link = e.target.closest('.wiki-link');
+      if (link) {
+        e.preventDefault();
+        const target = link.dataset.wikiTarget;
+        if (target) {
+          this.searchQuery = target;
+          this.doSearch();
+        }
+      }
+    },
+
+    // Image zoom/pan
+    imgZoom(delta) {
+      this.imgScale = Math.max(0.1, Math.min(10, this.imgScale + delta));
+    },
+    imgPan(dx, dy) {
+      this.imgX += dx / this.imgScale;
+      this.imgY += dy / this.imgScale;
+    },
+    imgReset() {
+      this.imgScale = 1; this.imgX = 0; this.imgY = 0; this.imgDragging = false;
+    },
+
+    // ---- Annotations ----
+    async loadAnnotations(docId) {
+      if (!docId) return;
+      const r = await this.api('GET', '/vault/annotations?doc_id=' + encodeURIComponent(docId));
+      if (r.ok) {
+        this.annotations[docId] = r.data.annotations || [];
+      }
+    },
+
+    async saveAnnotation(ann) {
+      const r = await this.api('POST', '/vault/annotations', ann);
+      if (r.ok) {
+        const docId = ann.doc_id;
+        if (!this.annotations[docId]) this.annotations[docId] = [];
+        this.annotations[docId].push(ann);
+        // Force reactivity
+        this.annotations = { ...this.annotations };
+        this.annotationNote = '';
+        this.toast('Annotation saved', 'success');
+      } else {
+        this.toast('Failed to save annotation', 'error');
+      }
+    },
+
+    async deleteAnnotation(docId, annId) {
+      const r = await this.api('DELETE', '/vault/annotations?doc_id=' + encodeURIComponent(docId) + '&id=' + encodeURIComponent(annId));
+      if (r.ok) {
+        this.annotations[docId] = (this.annotations[docId] || []).filter(a => a.id !== annId);
+        this.annotations = { ...this.annotations };
+        this.toast('Annotation deleted', 'success');
+      }
+    },
+
+    startTextHighlight() {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) {
+        this.toast('Select text first', 'error');
+        return;
+      }
+      const text = sel.toString();
+      const docId = this.viewerResult?.metadata?.path || this.viewerResult?.id || '';
+      const ann = {
+        id: crypto.randomUUID(),
+        doc_id: docId,
+        modality: this.viewerModality,
+        created_at: new Date().toISOString(),
+        note: this.annotationNote || '',
+        color: this.annotationColor,
+        highlighted_text: text.substring(0, 500),
+        text_start: 0,
+        text_end: text.length,
+      };
+      this.saveAnnotation(ann);
+      sel.removeAllRanges();
+    },
+
+    startImagePin(e) {
+      const container = e.currentTarget;
+      const rect = container.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;
+      const y = (e.clientY - rect.top) / rect.height;
+      const docId = this.viewerResult?.metadata?.path || this.viewerResult?.id || '';
+      const note = prompt('Pin note:');
+      if (note === null) return;
+      const ann = {
+        id: crypto.randomUUID(),
+        doc_id: docId,
+        modality: 'image',
+        created_at: new Date().toISOString(),
+        note: note,
+        color: this.annotationColor,
+        pin: { x, y },
+      };
+      this.saveAnnotation(ann);
+      this.annotationMode = null;
+    },
+
+    addTimestampAnnotation(type) {
+      const player = type === 'audio' ? this.$refs.audioPlayer : this.$refs.videoPlayer;
+      if (!player) return;
+      const ts = player.currentTime;
+      const docId = this.viewerResult?.metadata?.path || this.viewerResult?.id || '';
+      const note = prompt('Note for ' + this.fmtTimestamp(ts) + ':');
+      if (note === null) return;
+      const ann = {
+        id: crypto.randomUUID(),
+        doc_id: docId,
+        modality: type,
+        created_at: new Date().toISOString(),
+        note: note,
+        color: this.annotationColor,
+        timestamp: ts,
+      };
+      this.saveAnnotation(ann);
+    },
+
+    fmtTimestamp(s) {
+      if (s === undefined || s === null) return '0:00';
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      return m + ':' + (sec < 10 ? '0' : '') + sec;
+    },
+
+    // ---- Transcription ----
+    async transcribeMedia() {
+      const path = this.viewerResult?.metadata?.path;
+      if (!path) { this.toast('No file path for transcription', 'error'); return; }
+      this.transcribing = true;
+      this.transcription = '';
+      try {
+        const resp = await fetch(this.apiBase + '/vault/transcribe?path=' + encodeURIComponent(path), { method: 'POST' });
+        if (!resp.ok) {
+          const err = await resp.text();
+          this.toast('Transcription failed: ' + err, 'error');
+          this.transcribing = false;
+          return;
+        }
+        const data = await resp.json();
+        this.transcription = data.text || '';
+        // If segments available, create timestamp annotations
+        if (data.segments && data.segments.length > 0) {
+          this.toast('Transcribed ' + data.segments.length + ' segments', 'success');
+        } else {
+          this.toast('Transcription complete', 'success');
+        }
+      } catch (e) {
+        this.toast('Transcription error: ' + e.message, 'error');
+      }
+      this.transcribing = false;
+    },
+
+    // ---- Vault Browser ----
+    async browseVault() {
+      const r = await this.api('GET', '/vault/browse?dir=' + encodeURIComponent(this.vaultBrowseDir));
+      if (r.ok) {
+        this.vaultFiles = r.data.files || [];
+      } else {
+        this.vaultFiles = [];
+        if (r.status === 404) {
+          this.toast('No vault configured. Enable Obsidian sync in Settings first.', 'error');
+        }
+      }
+    },
+
+    openVaultFile(f) {
+      // Open a vault file in the viewer by constructing a synthetic result
+      const synth = {
+        id: f.path,
+        text: '',
+        document: '',
+        metadata: { path: f.path },
+        score: null,
+      };
+      this.dataSection = 'search';
+      this.$nextTick(() => this.openViewer(synth));
     },
 
     // ---- Explorer ----
@@ -2320,6 +3007,69 @@ When the user asks about their data, reference the actual collections and counts
         case 'failed': case 'error': return 'badge-red';
         default: return 'badge-purple';
       }
+    },
+
+    // ---- Snippet helpers ----
+    extractSnippet(text, query, windowSize = 300) {
+      if (!text) return '';
+      // Strip binary garbage / non-printable chars (keep newlines, tabs, normal space)
+      let clean = text.replace(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/g, '');
+      // Strip Unicode replacement characters and other garbage
+      clean = clean.replace(/[\uFFFD\uFFFE\uFFFF]/g, '');
+      // Strip remaining non-printable Unicode (C0/C1 control + format chars)
+      clean = clean.replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '');
+      // Strip macOS resource fork artifacts
+      clean = clean.replace(/.*?This resource fork intentionally left blank\s*/s, '');
+      clean = clean.replace(/com\.apple\.\w+/g, '');
+      // Collapse excessive whitespace
+      clean = clean.replace(/\s+/g, ' ').trim();
+      if (!clean) return '';
+
+      const tokens = (query || '').toLowerCase().split(/\s+/).filter(Boolean);
+      if (!tokens.length) return clean.substring(0, windowSize) + (clean.length > windowSize ? '…' : '');
+
+      const lower = clean.toLowerCase();
+      let bestPos = -1;
+      for (const tok of tokens) {
+        const idx = lower.indexOf(tok);
+        if (idx !== -1) { bestPos = idx; break; }
+      }
+
+      if (bestPos === -1) {
+        return clean.substring(0, windowSize) + (clean.length > windowSize ? '…' : '');
+      }
+
+      let start = Math.max(0, bestPos - Math.floor(windowSize / 2));
+      let end = Math.min(clean.length, start + windowSize);
+      // Trim to word boundaries
+      if (start > 0) {
+        const sp = clean.indexOf(' ', start);
+        if (sp !== -1 && sp < start + 30) start = sp + 1;
+      }
+      if (end < clean.length) {
+        const sp = clean.lastIndexOf(' ', end);
+        if (sp > end - 30) end = sp;
+      }
+
+      let snippet = clean.substring(start, end).trim();
+      if (start > 0) snippet = '…' + snippet;
+      if (end < clean.length) snippet = snippet + '…';
+      return snippet;
+    },
+
+    highlightTerms(snippet, query) {
+      if (!snippet || !query) return snippet || '';
+      const tokens = query.split(/\s+/).filter(Boolean);
+      if (!tokens.length) return this.escapeHtml(snippet);
+      const escaped = tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      const re = new RegExp('(' + escaped.join('|') + ')', 'gi');
+      // Escape HTML first, then apply highlights
+      const safe = this.escapeHtml(snippet);
+      return safe.replace(re, '<mark class="search-highlight">$1</mark>');
+    },
+
+    escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     },
 
     // ---- Formatters ----

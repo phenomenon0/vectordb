@@ -47,6 +47,20 @@ func (f *EmbedderFactory) CreateEmbedder() (Embedder, error) {
 // OpenAI is only selected when explicitly requested via EMBEDDER_TYPE=openai.
 // Default local behavior remains ONNX > Ollama > Hash.
 func (f *EmbedderFactory) createLocalEmbedder() (Embedder, error) {
+	if strings.EqualFold(os.Getenv("EMBEDDER_TYPE"), "hash") {
+		dim := 384
+		if d := os.Getenv("EMBED_DIM"); d != "" {
+			if v, err := strconv.Atoi(d); err == nil {
+				dim = v
+			}
+		}
+		fmt.Printf(">>> [LOCAL] Using hash embedder (%dd)\n", dim)
+		f.mode.Dimension = dim
+		f.mode.EmbedderType = "hash"
+		f.mode.EmbedderModel = fmt.Sprintf("hash-%d", dim)
+		return NewHashEmbedder(dim), nil
+	}
+
 	if strings.EqualFold(os.Getenv("EMBEDDER_TYPE"), "openai") {
 		apiKey := os.Getenv("OPENAI_API_KEY")
 		if apiKey == "" {
