@@ -17,3 +17,5 @@ models/bge-small-en-v1.5/model.onnx
 # Desktop app
 desktop/node_modules/
 desktop/src-tauri/target/
+__pycache__/
+*.pyc
