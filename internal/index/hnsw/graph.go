@@ -106,7 +106,8 @@ func selectDiverseNeighbors[K cmp.Ordered](candidates []diverseCandidate[K], m i
 		}
 	}
 
-	// Backfill from skipped candidates (closest first) if < m selected
+	// Backfill from skipped candidates (closest first) if < m selected.
+	// This ensures connectivity — nodes need enough neighbors for navigability.
 	for _, s := range skipped {
 		if len(selected) >= m {
 			break
@@ -206,9 +207,9 @@ func (n *layerNode[K]) search(
 	for candidates.Len() > 0 {
 		popped := candidates.Pop()
 
-		// Termination: if the best candidate (just popped from min-heap)
-		// is farther than the worst in our result set, no improvement possible.
-		if result.Len() >= resultCap && popped.dist >= maxDist {
+		// Per hnswlib: terminate when the closest candidate is strictly farther
+		// than the worst result AND the result set is full.
+		if popped.dist > maxDist && result.Len() >= resultCap {
 			break
 		}
 
@@ -222,29 +223,38 @@ func (n *layerNode[K]) search(
 
 			dist := distance(neighbor.Value, target)
 
-			// Always add to candidates for graph traversal (even if filtered)
-			// This ensures we explore the graph properly
-			candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
-			if candidates.Len() > efSearch {
-				candidates.PopLast()
-			}
+			// Per hnswlib: only add to candidate/result sets if the neighbor
+			// is closer than the worst result OR the result set isn't full.
+			// This keeps the candidate set focused on promising nodes.
+			// For filtered search, always add to candidates for traversal.
+			if filter != nil {
+				// Filtered mode: always add to candidates for graph traversal
+				candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
 
-			// Only add to results if passes filter (or no filter)
-			if filter != nil && !filter(neighborID) {
-				continue // Skip filtered nodes for results, but still traverse
-			}
-
-			if result.Len() < resultCap {
-				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
-				// New element could be the new max
-				if dist > maxDist {
-					maxDist = dist
+				if !filter(neighborID) {
+					continue
 				}
-			} else if dist < maxDist {
-				result.PopLast()
-				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
-				// Recompute max after eviction (amortized — only on actual change)
-				maxDist = result.Max().dist
+				if result.Len() < resultCap {
+					result.Push(searchCandidate[K]{node: neighbor, dist: dist})
+					if dist > maxDist {
+						maxDist = dist
+					}
+				} else if dist < maxDist {
+					result.PopLast()
+					result.Push(searchCandidate[K]{node: neighbor, dist: dist})
+					maxDist = result.Max().dist
+				}
+			} else {
+				// Unfiltered mode: match hnswlib exactly.
+				// Only process if promising (closer than worst) or result not full.
+				if dist < maxDist || result.Len() < resultCap {
+					candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
+					result.Push(searchCandidate[K]{node: neighbor, dist: dist})
+					if result.Len() > resultCap {
+						result.PopLast()
+					}
+					maxDist = result.Max().dist
+				}
 			}
 		}
 	}
@@ -260,6 +270,29 @@ func (n *layerNode[K]) search(
 		out[i] = result.Pop()
 	}
 	return out
+}
+
+// greedyClosest performs a greedy walk to find the closest node to the target.
+// This matches hnswlib's upper-layer traversal: at each node, scan all neighbors
+// and move to the closest one. Repeat until no improvement.
+func (n *layerNode[K]) greedyClosest(target Vector, distance DistanceFunc) *layerNode[K] {
+	current := n
+	currentDist := distance(n.Value, target)
+	for {
+		improved := false
+		for _, neighbor := range current.neighbors {
+			d := distance(neighbor.Value, target)
+			if d < currentDist {
+				current = neighbor
+				currentDist = d
+				improved = true
+			}
+		}
+		if !improved {
+			break
+		}
+	}
+	return current
 }
 
 func (n *layerNode[K]) replenish(m int, dist DistanceFunc) {
@@ -403,14 +436,9 @@ func (h *Graph[K]) randomLevel() int {
 	}
 	level := int(-math.Log(r) * mL)
 
-	// Cap at a reasonable maximum to prevent degenerate graphs
-	maxL := int(math.Log(float64(max(h.Len()+1, 1)))*mL) + 2
-	if maxL < 1 {
-		maxL = 1
-	}
-	if level > maxL {
-		level = maxL
-	}
+	// No artificial level cap. The exponential distribution naturally produces
+	// the correct level distribution — high levels are exponentially rare.
+	// hnswlib does not cap levels.
 
 	return level
 }
@@ -467,9 +495,33 @@ func (g *Graph[K]) Add(nodes ...Node[K]) {
 			elevator = g.entryPointKey
 		}
 
+		if g.Distance == nil {
+			panic("(*Graph).Distance must be set")
+		}
+
 		// Insert node at each layer, beginning with the highest.
 		for i := len(g.layers) - 1; i >= 0; i-- {
 			layer := g.layers[i]
+
+			// UPPER LAYERS (above insertLevel): greedy walk to find entry point.
+			// Per hnswlib: upper layers do a simple greedy descent — at each node,
+			// move to the closest neighbor until no improvement. No insertion.
+			if i > insertLevel {
+				if layer.entry() == nil {
+					continue
+				}
+				searchPoint := layer.entry()
+				if elevator != nil {
+					if ep, ok := layer.nodes[*elevator]; ok {
+						searchPoint = ep
+					}
+				}
+				closest := searchPoint.greedyClosest(vec, g.Distance)
+				elevator = ptr(closest.Key)
+				continue
+			}
+
+			// INSERTION LAYERS (at or below insertLevel): full ef_construction search.
 			newNode := &layerNode[K]{
 				Node: Node[K]{
 					Key:   key,
@@ -477,7 +529,6 @@ func (g *Graph[K]) Add(nodes ...Node[K]) {
 				},
 			}
 
-			// Insert the new node into the layer.
 			if layer.entry() == nil {
 				layer.nodes = map[K]*layerNode[K]{key: newNode}
 				continue
@@ -491,46 +542,34 @@ func (g *Graph[K]) Add(nodes ...Node[K]) {
 				}
 			}
 
-			if g.Distance == nil {
-				panic("(*Graph).Distance must be set")
-			}
-
-			// FIX 3: Use mForLevel to get correct M for this layer
 			mLevel := g.mForLevel(i)
-			// FIX 4: Pass efSearch as k so the search returns ALL ef candidates,
-			// not just mLevel. This gives selectDiverseNeighbors a full pool
-			// (e.g. 200 → pick 32) instead of zero selectivity. Matches hnswlib.
 			neighborhood := searchPoint.search(g.EfSearch, g.EfSearch, vec, g.Distance, nil)
 			if len(neighborhood) == 0 {
-				// This should never happen because the searchPoint itself
-				// should be in the result set.
 				panic("no nodes found")
 			}
 
 			// Re-set the elevator node for the next layer.
 			elevator = ptr(neighborhood[0].node.Key)
 
-			if insertLevel >= i {
-				if _, ok := layer.nodes[key]; ok {
-					g.Delete(key)
-				}
-				// Insert the new node into the layer.
-				layer.nodes[key] = newNode
+			if _, ok := layer.nodes[key]; ok {
+				g.Delete(key)
+			}
+			// Insert the new node into the layer.
+			layer.nodes[key] = newNode
 
-				// Select diverse neighbors for the new node using heuristic
-				candidates := make([]diverseCandidate[K], 0, len(neighborhood))
-				for _, n := range neighborhood {
-					candidates = append(candidates, diverseCandidate[K]{
-						node:        n.node,
-						distToOwner: n.dist,
-					})
-				}
-				newNode.neighbors = selectDiverseNeighbors(candidates, mLevel, g.Distance)
+			// Select diverse neighbors for the new node using heuristic
+			candidates := make([]diverseCandidate[K], 0, len(neighborhood))
+			for _, n := range neighborhood {
+				candidates = append(candidates, diverseCandidate[K]{
+					node:        n.node,
+					distToOwner: n.dist,
+				})
+			}
+			newNode.neighbors = selectDiverseNeighbors(candidates, mLevel, g.Distance)
 
-				// Add backlinks from selected neighbors to the new node
-				for _, neighbor := range newNode.neighbors {
-					neighbor.addNeighbor(newNode, mLevel, g.Distance)
-				}
+			// Add backlinks from selected neighbors to the new node
+			for _, neighbor := range newNode.neighbors {
+				neighbor.addNeighbor(newNode, mLevel, g.Distance)
 			}
 		}
 
@@ -590,13 +629,10 @@ func (h *Graph[K]) SearchWithEf(near Vector, k int, efSearch int, filter FilterF
 			}
 		}
 
-		// Descending hierarchies: greedy search (ef=1) per hnswlib.
-		// Upper layers are sparse; full ef is wasted here.
+		// Upper layers: greedy walk to find entry point for next layer.
 		if layer > 0 {
-			nodes := searchPoint.search(1, 1, near, h.Distance, nil)
-			if len(nodes) > 0 {
-				elevator = ptr(nodes[0].node.Key)
-			}
+			closest := searchPoint.greedyClosest(near, h.Distance)
+			elevator = ptr(closest.Key)
 			continue
 		}
 

@@ -48,7 +48,7 @@ func TestRecallAtScale(t *testing.T) {
 				M:        16,
 				Ml:       1.0 / math.Log(16),
 				Distance: CosineDistance,
-				EfSearch:  200, // ef_construction during build
+				EfSearch:  300, // ef_construction during build
 				Rng:      rand.New(rand.NewSource(42)),
 			}
 
@@ -92,8 +92,8 @@ func TestRecallAtScale(t *testing.T) {
 			recall := totalRecall / float64(numQueries)
 			t.Logf("n=%d recall@%d = %.4f", n, k, recall)
 
-			if recall < 0.85 {
-				t.Errorf("recall@%d = %.4f, want >= 0.85", k, recall)
+			if recall < 0.95 {
+				t.Errorf("recall@%d = %.4f, want >= 0.95", k, recall)
 			}
 		})
 	}

@@ -79,7 +79,7 @@ func NewHNSWIndex(dim int, config map[string]interface{}) (Index, error) {
 	m := GetConfigInt(config, "m", 16)
 	ml := GetConfigFloat(config, "ml", 0.25)
 	efSearch := GetConfigInt(config, "ef_search", 200)
-	efConstruction := GetConfigInt(config, "ef_construction", 200)
+	efConstruction := GetConfigInt(config, "ef_construction", 300)
 
 	// Validate configuration
 	if m < 2 || m > 100 {
