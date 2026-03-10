@@ -184,6 +184,16 @@ func (cm *CollectionManager) BatchAddDocuments(ctx context.Context, collectionNa
 	return coll.BatchAdd(ctx, docs)
 }
 
+// BulkAddDense inserts raw dense vectors into a single field of a collection.
+func (cm *CollectionManager) BulkAddDense(ctx context.Context, collectionName, fieldName string, ids []uint64, vectors [][]float32) error {
+	coll, err := cm.GetCollection(collectionName)
+	if err != nil {
+		return err
+	}
+
+	return coll.BulkAddDense(ctx, fieldName, ids, vectors)
+}
+
 // SearchCollection performs a search on a collection.
 func (cm *CollectionManager) SearchCollection(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
 	coll, err := cm.GetCollection(req.CollectionName)

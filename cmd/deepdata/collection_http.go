@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"unsafe"
 
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/encoding"
@@ -102,6 +106,9 @@ func (s *CollectionHTTPServer) RegisterHandlers(mux *http.ServeMux, guard func(h
 	mux.HandleFunc("/v2/insert/batch", guard(s.handleBatchInsert)) // True batch insert
 	mux.HandleFunc("/v2/search", guard(s.handleSearch))
 	mux.HandleFunc("/v2/delete", guard(s.handleDelete))
+
+	// Binary bulk import (zero-copy dense vectors)
+	mux.HandleFunc("/v2/import", guard(s.handleBinaryImport))
 
 	// Multi-tenant endpoints (v3)
 	// Tenant collection management
@@ -1222,5 +1229,108 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 		Documents:          resp.Documents,
 		Scores:             resp.Scores,
 		CandidatesExamined: resp.CandidatesExamined,
+	})
+}
+
+// handleBinaryImport handles POST /v2/import for high-throughput binary vector import.
+//
+// Wire format (little-endian, numpy-compatible):
+//
+//	[uint32: count] [uint32: dim]
+//	[uint64: id₁] [float32 × dim: vector₁]
+//	[uint64: id₂] [float32 × dim: vector₂]
+//	...
+//
+// Query params: collection, field
+// Content-Type: application/octet-stream
+func (s *CollectionHTTPServer) handleBinaryImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	collectionName := r.URL.Query().Get("collection")
+	fieldName := r.URL.Query().Get("field")
+	if collectionName == "" || fieldName == "" {
+		http.Error(w, "collection and field query params required", http.StatusBadRequest)
+		return
+	}
+
+	// Cap request body at 500MB to prevent OOM
+	const maxBodySize = 500 * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+
+	// Read 8-byte header: [uint32 count][uint32 dim]
+	var header [8]byte
+	if _, err := io.ReadFull(r.Body, header[:]); err != nil {
+		http.Error(w, fmt.Sprintf("failed to read header: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	count := binary.LittleEndian.Uint32(header[0:4])
+	dim := binary.LittleEndian.Uint32(header[4:8])
+
+	if count == 0 {
+		http.Error(w, "count must be > 0", http.StatusBadRequest)
+		return
+	}
+	if dim == 0 || dim > 65536 {
+		http.Error(w, "dim must be in [1, 65536]", http.StatusBadRequest)
+		return
+	}
+
+	// Each record: 8 bytes (uint64 id) + dim*4 bytes (float32 vector)
+	recordSize := 8 + uint64(dim)*4
+	expectedSize := uint64(count) * recordSize
+	if expectedSize > maxBodySize {
+		http.Error(w, fmt.Sprintf("payload too large: %d bytes", expectedSize), http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	// Read full payload
+	body := make([]byte, expectedSize)
+	if _, err := io.ReadFull(r.Body, body); err != nil {
+		http.Error(w, fmt.Sprintf("failed to read body: %v, expected %d bytes", err, expectedSize), http.StatusBadRequest)
+		return
+	}
+
+	// Decode vectors: zero-copy reinterpret on little-endian (amd64/arm64)
+	ids := make([]uint64, count)
+	vectors := make([][]float32, count)
+
+	for i := uint32(0); i < count; i++ {
+		offset := uint64(i) * recordSize
+
+		// Read ID (little-endian uint64)
+		ids[i] = binary.LittleEndian.Uint64(body[offset : offset+8])
+
+		// Zero-copy decode float32 slice from body bytes.
+		// Safe on little-endian architectures (amd64, arm64).
+		// The body slice is kept alive for the duration of this handler.
+		vecBytes := body[offset+8 : offset+8+uint64(dim)*4]
+
+		// Alignment check: if the slice is 4-byte aligned, use unsafe reinterpret
+		if uintptr(unsafe.Pointer(&vecBytes[0]))%4 == 0 {
+			vectors[i] = unsafe.Slice((*float32)(unsafe.Pointer(&vecBytes[0])), dim)
+		} else {
+			// Fallback: copy for unaligned data
+			vec := make([]float32, dim)
+			for j := uint32(0); j < dim; j++ {
+				vec[j] = math.Float32frombits(binary.LittleEndian.Uint32(vecBytes[j*4 : j*4+4]))
+			}
+			vectors[i] = vec
+		}
+	}
+
+	// Insert via BulkAddDense
+	if err := s.manager.BulkAddDense(r.Context(), collectionName, fieldName, ids, vectors); err != nil {
+		http.Error(w, fmt.Sprintf("bulk import failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "success",
+		"inserted": count,
 	})
 }

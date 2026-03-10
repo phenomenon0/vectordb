@@ -30,6 +30,9 @@ import (
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/storage"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 // ======================================================================================
@@ -2245,24 +2248,7 @@ func main() {
 	store.walMaxOps = envInt("WAL_MAX_OPS", 1000)
 
 	if !loaded {
-		// Make hydration count configurable for low-memory deployments
-		hydrationCount := 100 // Reduced from 100000 for low-memory deployment
-		if envHydrate := os.Getenv("HYDRATION_COUNT"); envHydrate != "" {
-			if v, err := strconv.Atoi(envHydrate); err == nil && v >= 0 {
-				hydrationCount = v
-			}
-		}
-
-		logger.Info("hydrating index", "count", hydrationCount)
-		for i := 0; i < hydrationCount; i++ {
-			vec, _ := swappableEmbedder.Embed(fmt.Sprintf("doc-%d", i))
-			if _, err := store.Add(vec, fmt.Sprintf("doc-%d content about memory locality and vector search.", i), "", nil, "default", ""); err != nil {
-				logger.Warn("failed to add vector", "index", i, "error", err)
-			}
-		}
-		if err := store.Save(indexPath); err != nil {
-			logger.Warn("failed to save index", "error", err)
-		}
+		logger.Info("fresh index initialized", "capacity", initialCapacity, "dimension", swappableEmbedder.Dim())
 	}
 	logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
 
@@ -2272,9 +2258,21 @@ func main() {
 	// HTTP API with graceful shutdown
 	handler := newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
 	addr := fmt.Sprintf(":%d", envInt("PORT", 8080))
+
+	// Wrap handler with h2c (HTTP/2 cleartext) for connection multiplexing
+	// without TLS. HTTP/1.1 clients continue to work transparently.
+	// Set HTTP_H2C=0 to disable.
+	var finalHandler http.Handler = handler
+	if os.Getenv("HTTP_H2C") != "0" {
+		finalHandler = h2c.NewHandler(handler, &http2.Server{})
+	}
+
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: handler,
+		Addr:              addr,
+		Handler:           finalHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {

@@ -705,12 +705,148 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 }
 
 // BatchAdd adds multiple documents to the collection.
+// When the underlying index implements index.BatchAdder, vectors are inserted
+// in a single batch call (one lock cycle) instead of per-document.
 func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Phase 1: Assign IDs and validate all documents up front.
 	for i := range docs {
-		if err := c.Add(ctx, &docs[i]); err != nil {
-			return fmt.Errorf("failed to add document %d: %w", i, err)
+		if docs[i].ID == 0 {
+			docs[i].ID = c.nextID
+			c.nextID++
+		}
+		if err := docs[i].Validate(&c.schema); err != nil {
+			return fmt.Errorf("document %d validation failed: %w", i, err)
 		}
 	}
+
+	// Phase 2: For each field, collect vectors and batch-insert if possible.
+	for _, field := range c.schema.Fields {
+		if field.Type == VectorTypeDense {
+			idx, ok := c.indexes[field.Name]
+			if !ok {
+				return fmt.Errorf("index not found for field: %s", field.Name)
+			}
+
+			// Try batch path
+			if batcher, ok := idx.(index.BatchAdder); ok {
+				batch := make(map[uint64][]float32, len(docs))
+				for i := range docs {
+					vec, err := coerceDenseVector(docs[i].Vectors[field.Name])
+					if err != nil {
+						return fmt.Errorf("doc %d field %s: %w", i, field.Name, err)
+					}
+					batch[docs[i].ID] = vec
+				}
+				if err := batcher.BatchAdd(ctx, batch); err != nil {
+					return fmt.Errorf("batch add to index %s: %w", field.Name, err)
+				}
+			} else {
+				// Fallback: per-vector add (still under the single collection lock)
+				for i := range docs {
+					vec, err := coerceDenseVector(docs[i].Vectors[field.Name])
+					if err != nil {
+						return fmt.Errorf("doc %d field %s: %w", i, field.Name, err)
+					}
+					if err := idx.Add(ctx, docs[i].ID, vec); err != nil {
+						return fmt.Errorf("doc %d add to index %s: %w", i, field.Name, err)
+					}
+				}
+			}
+		} else if field.Type == VectorTypeSparse {
+			sparseIdx, ok := c.sparse[field.Name]
+			if !ok {
+				return fmt.Errorf("sparse index not found for field: %s", field.Name)
+			}
+			for i := range docs {
+				sv, err := coerceSparseVector(docs[i].Vectors[field.Name])
+				if err != nil {
+					return fmt.Errorf("doc %d field %s: %w", i, field.Name, err)
+				}
+				if err := sparseIdx.Add(ctx, docs[i].ID, sv); err != nil {
+					return fmt.Errorf("doc %d add to sparse index %s: %w", i, field.Name, err)
+				}
+			}
+		}
+	}
+
+	// Phase 3: Set metadata and store documents.
+	for i := range docs {
+		if docs[i].Metadata != nil && len(docs[i].Metadata) > 0 {
+			for _, field := range c.schema.Fields {
+				if err := c.setIndexMetadata(field, docs[i].ID, docs[i].Metadata); err != nil {
+					return fmt.Errorf("doc %d metadata for %s: %w", i, field.Name, err)
+				}
+			}
+		}
+		c.documents[docs[i].ID] = &docs[i]
+	}
+
+	return nil
+}
+
+// BulkAddDense inserts raw dense vectors into a single field without full Document overhead.
+// IDs and vectors must be the same length. Minimal Document records are created (ID only).
+func (c *Collection) BulkAddDense(ctx context.Context, fieldName string, ids []uint64, vectors [][]float32) error {
+	if len(ids) != len(vectors) {
+		return fmt.Errorf("ids length %d != vectors length %d", len(ids), len(vectors))
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Validate field exists and is dense
+	field := c.schema.GetField(fieldName)
+	if field == nil {
+		return fmt.Errorf("field not found: %s", fieldName)
+	}
+	if field.Type != VectorTypeDense {
+		return fmt.Errorf("field %s is not dense", fieldName)
+	}
+
+	idx, ok := c.indexes[fieldName]
+	if !ok {
+		return fmt.Errorf("index not found for field: %s", fieldName)
+	}
+
+	// Validate dimensions
+	for i, v := range vectors {
+		if len(v) != field.Dim {
+			return fmt.Errorf("vector %d dimension mismatch: expected %d, got %d", i, field.Dim, len(v))
+		}
+	}
+
+	// Batch insert if supported
+	if batcher, ok := idx.(index.BatchAdder); ok {
+		batch := make(map[uint64][]float32, len(ids))
+		for i, id := range ids {
+			batch[id] = vectors[i]
+		}
+		if err := batcher.BatchAdd(ctx, batch); err != nil {
+			return fmt.Errorf("batch add to index %s: %w", fieldName, err)
+		}
+	} else {
+		for i, id := range ids {
+			if err := idx.Add(ctx, id, vectors[i]); err != nil {
+				return fmt.Errorf("vector %d add to index %s: %w", i, fieldName, err)
+			}
+		}
+	}
+
+	// Create minimal document records
+	for i, id := range ids {
+		c.documents[id] = &Document{
+			ID:      id,
+			Vectors: map[string]interface{}{fieldName: vectors[i]},
+		}
+		// Update nextID to stay ahead
+		if id >= c.nextID {
+			c.nextID = id + 1
+		}
+	}
+
 	return nil
 }
 

@@ -138,6 +138,12 @@ type IndexStats struct {
 	Extra map[string]interface{} // Additional index-specific stats
 }
 
+// BatchAdder is an optional interface for indexes supporting efficient bulk insertion.
+// Implementations that support this avoid per-vector lock acquisition overhead.
+type BatchAdder interface {
+	BatchAdd(ctx context.Context, vectors map[uint64][]float32) error
+}
+
 // Factory creates index instances by type name
 // This will be implemented in factory.go
 type Factory interface {
