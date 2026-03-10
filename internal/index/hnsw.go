@@ -10,7 +10,13 @@ import (
 
 	"github.com/coder/hnsw"
 	"github.com/phenomenon0/vectordb/internal/filter"
+	"github.com/phenomenon0/vectordb/internal/index/simd"
 )
+
+// simdCosineDistance wraps simd.CosineDistanceF32 as an hnsw.DistanceFunc.
+// Uses AVX2+FMA assembly on amd64 for single-pass dot+norms computation,
+// replacing the default vek32.CosineSimilarity which does separate passes.
+var simdCosineDistance hnsw.DistanceFunc = simd.CosineDistanceF32
 
 // HNSWIndex wraps the github.com/coder/hnsw implementation
 // to conform to the Index interface.
@@ -85,7 +91,7 @@ func NewHNSWIndex(dim int, config map[string]interface{}) (Index, error) {
 
 	// Create HNSW graph
 	g := hnsw.NewGraph[uint64]()
-	g.Distance = hnsw.CosineDistance
+	g.Distance = simdCosineDistance
 	g.M = m
 	g.Ml = ml
 	// Use ef_construction during graph building for higher quality
@@ -675,7 +681,7 @@ func (h *HNSWIndex) Import(data []byte) error {
 	h.efConstruction = importedEfConstruction
 
 	h.graph = hnsw.NewGraph[uint64]()
-	h.graph.Distance = hnsw.CosineDistance
+	h.graph.Distance = simdCosineDistance
 	h.graph.M = importedM
 	h.graph.Ml = importedMl
 	h.graph.EfSearch = importedEfConstruction
@@ -750,7 +756,7 @@ func (h *HNSWIndex) Compact() (int, error) {
 
 	// Create new graph
 	newGraph := hnsw.NewGraph[uint64]()
-	newGraph.Distance = hnsw.CosineDistance
+	newGraph.Distance = simdCosineDistance
 	newGraph.M = h.m
 	newGraph.Ml = h.ml
 	newGraph.EfSearch = h.efConstruction
@@ -904,9 +910,13 @@ func sortUint64s(ids []uint64) []uint64 {
 	return ids
 }
 
-// init registers HNSW index type with the global factory
+// init registers HNSW index type with the global factory and
+// registers our SIMD cosine distance for graph serialization.
 func init() {
 	Register("hnsw", func(dim int, config map[string]interface{}) (Index, error) {
 		return NewHNSWIndex(dim, config)
 	})
+	// Override the "cosine" distance function so encode/decode round-trips
+	// correctly with our SIMD implementation.
+	hnsw.RegisterDistanceFunc("cosine", simdCosineDistance)
 }

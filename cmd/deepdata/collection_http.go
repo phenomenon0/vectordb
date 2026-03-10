@@ -17,47 +17,6 @@ import (
 	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
-// Vector buffer pools keyed by common dimensions to avoid per-search allocations.
-var vectorPoolsByDim = [...]sync.Pool{
-	{New: func() interface{} { return make([]float32, 0, 128) }},  // 128d
-	{New: func() interface{} { return make([]float32, 0, 384) }},  // 384d
-	{New: func() interface{} { return make([]float32, 0, 768) }},  // 768d
-	{New: func() interface{} { return make([]float32, 0, 1536) }}, // 1536d
-}
-
-// dimPoolIndex maps a dimension to the corresponding pool index, or -1 if none.
-func dimPoolIndex(dim int) int {
-	switch dim {
-	case 128:
-		return 0
-	case 384:
-		return 1
-	case 768:
-		return 2
-	case 1536:
-		return 3
-	default:
-		return -1
-	}
-}
-
-// getVectorBuf returns a []float32 buffer with the given length.
-// Uses sync.Pool for common dimensions.
-func getVectorBuf(dim int) []float32 {
-	if idx := dimPoolIndex(dim); idx >= 0 {
-		buf := vectorPoolsByDim[idx].Get().([]float32)
-		return buf[:dim]
-	}
-	return make([]float32, dim)
-}
-
-// putVectorBuf returns a buffer to the pool if it matches a common dimension.
-func putVectorBuf(buf []float32) {
-	if idx := dimPoolIndex(cap(buf)); idx >= 0 {
-		vectorPoolsByDim[idx].Put(buf[:0])
-	}
-}
-
 // JSON response buffer pool for encoding.
 var jsonBufPool = sync.Pool{
 	New: func() interface{} { return new(bytes.Buffer) },

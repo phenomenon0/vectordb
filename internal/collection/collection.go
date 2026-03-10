@@ -204,7 +204,11 @@ func (c *Collection) Add(ctx context.Context, doc *Document) error {
 func coerceDenseVector(vector interface{}) ([]float32, error) {
 	switch v := vector.(type) {
 	case []float32:
-		return v, nil // zero-alloc fast path: caller already owns the slice
+		// Zero-alloc fast path: returns the input slice directly.
+		// Safe because: (1) HTTP handlers create a fresh []float32 per request,
+		// (2) HNSW Search does not mutate the query vector, and
+		// (3) HNSW Add makes a defensive copy in idx.Add().
+		return v, nil
 	case []float64:
 		out := make([]float32, len(v))
 		for i, value := range v {
