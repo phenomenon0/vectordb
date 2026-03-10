@@ -1,0 +1,175 @@
+{
+  "deepdata": {
+    "insert": {
+      "total_docs": 562,
+      "elapsed_sec": 0.815,
+      "inserts_per_sec": 689.4
+    },
+    "search": {
+      "recall_at_1": 1.0,
+      "recall_at_10": 0.99,
+      "recall_at_100": 0.9602,
+      "latency_p50_ms": 21.58,
+      "latency_p95_ms": 24.27,
+      "latency_p99_ms": 26.17,
+      "qps": 287.6
+    },
+    "filtered": {
+      "filter": {
+        "package": "index"
+      },
+      "recall_at_10": 0.992,
+      "latency_p50_ms": 22.27,
+      "latency_p95_ms": 25.1
+    },
+    "hybrid": {
+      "hybrid_recall_at_10": 0.99,
+      "hybrid_latency_p50_ms": 21.54,
+      "hybrid_latency_p95_ms": 23.83
+    },
+    "graph": {
+      "note": "Graph-boosted search is a DeepData-only feature. Requires entity extraction (LLM calls) and knowledge graph build. No competitor equivalent exists for head-to-head comparison.",
+      "status": "documented_differentiator"
+    },
+    "memory": {
+      "corpus_size": 562,
+      "api_memory_bytes": 1242645
+    }
+  },
+  "weaviate": {
+    "insert": {
+      "total_docs": 562,
+      "elapsed_sec": 12.535,
+      "inserts_per_sec": 44.8
+    },
+    "search": {
+      "recall_at_1": 1.0,
+      "recall_at_10": 1.0,
+      "recall_at_100": 0.9946,
+      "latency_p50_ms": 1.49,
+      "latency_p95_ms": 2.08,
+      "latency_p99_ms": 3.06,
+      "qps": 1809.4
+    },
+    "filtered": {
+      "filter": {
+        "package": "index"
+      },
+      "recall_at_10": 1.0,
+      "latency_p50_ms": 1.07,
+      "latency_p95_ms": 1.25
+    },
+    "hybrid": {
+      "hybrid_recall_at_10": 0.82,
+      "hybrid_latency_p50_ms": 1.62,
+      "hybrid_latency_p95_ms": 1.94
+    },
+    "graph": {
+      "status": "not_supported"
+    },
+    "memory": {
+      "corpus_size": 562
+    }
+  },
+  "milvus": {
+    "insert": {
+      "total_docs": 562,
+      "elapsed_sec": 116.252,
+      "inserts_per_sec": 4.8
+    },
+    "search": {
+      "recall_at_1": 1.0,
+      "recall_at_10": 1.0,
+      "recall_at_100": 1.0,
+      "latency_p50_ms": 4.49,
+      "latency_p95_ms": 5.55,
+      "latency_p99_ms": 729.3,
+      "qps": 262.1
+    },
+    "filtered": {
+      "filter": {
+        "package": "index"
+      },
+      "recall_at_10": 1.0,
+      "latency_p50_ms": 3.48,
+      "latency_p95_ms": 3.87
+    },
+    "hybrid": {
+      "hybrid_recall_at_10": 1.0,
+      "hybrid_latency_p50_ms": 3.63,
+      "hybrid_latency_p95_ms": 4.31
+    },
+    "graph": {
+      "status": "not_supported"
+    },
+    "memory": {
+      "corpus_size": 562
+    }
+  },
+  "qdrant": {
+    "insert": {
+      "total_docs": 562,
+      "elapsed_sec": 0.243,
+      "inserts_per_sec": 2313.9
+    },
+    "search": {
+      "recall_at_1": 1.0,
+      "recall_at_10": 1.0,
+      "recall_at_100": 1.0,
+      "latency_p50_ms": 1.83,
+      "latency_p95_ms": 3.21,
+      "latency_p99_ms": 3.23,
+      "qps": 813.1
+    },
+    "filtered": {
+      "filter": {
+        "package": "index"
+      },
+      "recall_at_10": 1.0,
+      "latency_p50_ms": 1.72,
+      "latency_p95_ms": 2.04
+    },
+    "hybrid": {
+      "status": "not_supported"
+    },
+    "graph": {
+      "status": "not_supported"
+    },
+    "memory": {
+      "corpus_size": 562
+    }
+  },
+  "chromadb": {
+    "insert": {
+      "total_docs": 562,
+      "elapsed_sec": 1.212,
+      "inserts_per_sec": 463.8
+    },
+    "search": {
+      "recall_at_1": 1.0,
+      "recall_at_10": 0.998,
+      "recall_at_100": 0.996,
+      "latency_p50_ms": 1.68,
+      "latency_p95_ms": 1.95,
+      "latency_p99_ms": 13.23,
+      "qps": 683.1
+    },
+    "filtered": {
+      "filter": {
+        "package": "index"
+      },
+      "recall_at_10": 1.0,
+      "latency_p50_ms": 2.25,
+      "latency_p95_ms": 2.65
+    },
+    "hybrid": {
+      "status": "not_supported"
+    },
+    "graph": {
+      "status": "not_supported"
+    },
+    "memory": {
+      "corpus_size": 562
+    }
+  }
+}
