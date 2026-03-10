@@ -3,6 +3,8 @@ package collection
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 
 	"github.com/phenomenon0/vectordb/internal/filter"
@@ -29,6 +31,9 @@ type Collection struct {
 	// Document storage
 	documents map[uint64]*Document // doc_id -> document
 	nextID    uint64
+
+	// Default ef_search for HNSW (from env HNSW_EFSEARCH or 64)
+	defaultEfSearch int
 }
 
 // NewCollection creates a new multi-vector collection.
@@ -37,12 +42,21 @@ func NewCollection(schema CollectionSchema) (*Collection, error) {
 		return nil, fmt.Errorf("invalid schema: %w", err)
 	}
 
+	// Read default ef_search from environment (fallback: 64)
+	defaultEf := 64
+	if envEf := os.Getenv("HNSW_EFSEARCH"); envEf != "" {
+		if parsed, err := strconv.Atoi(envEf); err == nil && parsed > 0 {
+			defaultEf = parsed
+		}
+	}
+
 	c := &Collection{
-		schema:    schema,
-		indexes:   make(map[string]index.Index),
-		sparse:    make(map[string]*sparse.InvertedIndex),
-		documents: make(map[uint64]*Document),
-		nextID:    1,
+		schema:          schema,
+		indexes:         make(map[string]index.Index),
+		sparse:          make(map[string]*sparse.InvertedIndex),
+		documents:       make(map[uint64]*Document),
+		nextID:          1,
+		defaultEfSearch: defaultEf,
 	}
 
 	// Initialize indexes for each field
@@ -187,13 +201,141 @@ func (c *Collection) Add(ctx context.Context, doc *Document) error {
 	return nil
 }
 
+func coerceDenseVector(vector interface{}) ([]float32, error) {
+	switch v := vector.(type) {
+	case []float32:
+		return v, nil // zero-alloc fast path: caller already owns the slice
+	case []float64:
+		out := make([]float32, len(v))
+		for i, value := range v {
+			out[i] = float32(value)
+		}
+		return out, nil
+	case []interface{}:
+		out := make([]float32, len(v))
+		for i, value := range v {
+			switch n := value.(type) {
+			case float64:
+				out[i] = float32(n)
+			case float32:
+				out[i] = n
+			case int:
+				out[i] = float32(n)
+			default:
+				return nil, fmt.Errorf("invalid dense vector element type %T", value)
+			}
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("expected dense vector, got %T", vector)
+	}
+}
+
+func coerceUint32Slice(value interface{}) ([]uint32, error) {
+	switch v := value.(type) {
+	case []uint32:
+		out := make([]uint32, len(v))
+		copy(out, v)
+		return out, nil
+	case []interface{}:
+		out := make([]uint32, len(v))
+		for i, item := range v {
+			switch n := item.(type) {
+			case float64:
+				out[i] = uint32(n)
+			case float32:
+				out[i] = uint32(n)
+			case int:
+				out[i] = uint32(n)
+			default:
+				return nil, fmt.Errorf("invalid uint32 slice element type %T", item)
+			}
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("expected []uint32-compatible value, got %T", value)
+	}
+}
+
+func coerceFloat32Slice(value interface{}) ([]float32, error) {
+	switch v := value.(type) {
+	case []float32:
+		out := make([]float32, len(v))
+		copy(out, v)
+		return out, nil
+	case []float64:
+		out := make([]float32, len(v))
+		for i, item := range v {
+			out[i] = float32(item)
+		}
+		return out, nil
+	case []interface{}:
+		out := make([]float32, len(v))
+		for i, item := range v {
+			switch n := item.(type) {
+			case float64:
+				out[i] = float32(n)
+			case float32:
+				out[i] = n
+			case int:
+				out[i] = float32(n)
+			default:
+				return nil, fmt.Errorf("invalid float32 slice element type %T", item)
+			}
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("expected []float32-compatible value, got %T", value)
+	}
+}
+
+func coerceInt(value interface{}) (int, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case float64:
+		return int(v), nil
+	case float32:
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("expected int-compatible value, got %T", value)
+	}
+}
+
+func coerceSparseVector(vector interface{}) (*sparse.SparseVector, error) {
+	switch v := vector.(type) {
+	case *sparse.SparseVector:
+		return v, nil
+	case map[string]interface{}:
+		indices, err := coerceUint32Slice(v["indices"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid sparse indices: %w", err)
+		}
+		values, err := coerceFloat32Slice(v["values"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid sparse values: %w", err)
+		}
+		dim, err := coerceInt(v["dim"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid sparse dimension: %w", err)
+		}
+		sparseVec, err := sparse.NewSparseVector(indices, values, dim)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create sparse vector: %w", err)
+		}
+		return sparseVec, nil
+	default:
+		return nil, fmt.Errorf("expected *SparseVector or map, got %T", vector)
+	}
+}
+
 // addToIndex adds a vector to the appropriate index.
 func (c *Collection) addToIndex(ctx context.Context, field VectorField, docID uint64, vector interface{}) error {
 	switch field.Type {
 	case VectorTypeDense:
-		denseVec, ok := vector.([]float32)
-		if !ok {
-			return fmt.Errorf("expected []float32 for dense field %s, got %T", field.Name, vector)
+		denseVec, err := coerceDenseVector(vector)
+		if err != nil {
+			return fmt.Errorf("invalid dense field %s: %w", field.Name, err)
 		}
 
 		idx, ok := c.indexes[field.Name]
@@ -204,26 +346,9 @@ func (c *Collection) addToIndex(ctx context.Context, field VectorField, docID ui
 		return idx.Add(ctx, docID, denseVec)
 
 	case VectorTypeSparse:
-		// Accept either *SparseVector or map format
-		var sparseVec *sparse.SparseVector
-		switch v := vector.(type) {
-		case *sparse.SparseVector:
-			sparseVec = v
-		case map[string]interface{}:
-			// Parse from map format: {indices: [...], values: [...], dim: X}
-			indices, ok1 := v["indices"].([]uint32)
-			values, ok2 := v["values"].([]float32)
-			dim, ok3 := v["dim"].(int)
-			if !ok1 || !ok2 || !ok3 {
-				return fmt.Errorf("invalid sparse vector format for field %s", field.Name)
-			}
-			var err error
-			sparseVec, err = sparse.NewSparseVector(indices, values, dim)
-			if err != nil {
-				return fmt.Errorf("failed to create sparse vector: %w", err)
-			}
-		default:
-			return fmt.Errorf("expected *SparseVector or map for sparse field %s, got %T", field.Name, vector)
+		sparseVec, err := coerceSparseVector(vector)
+		if err != nil {
+			return fmt.Errorf("invalid sparse field %s: %w", field.Name, err)
 		}
 
 		idx, ok := c.sparse[field.Name]
@@ -289,16 +414,27 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 		}
 	}
 
+	includeVectors := true
+	if req.IncludeVectors != nil {
+		includeVectors = *req.IncludeVectors
+	}
+
+	// Resolve ef_search: request override > server default
+	efSearch := c.defaultEfSearch
+	if req.EfSearch > 0 {
+		efSearch = req.EfSearch
+	}
+
 	// Single-field search
 	if len(req.Queries) == 1 {
 		for fieldName, queryVec := range req.Queries {
-			return c.searchSingleField(ctx, fieldName, queryVec, req.TopK, metadataFilter)
+			return c.searchSingleField(ctx, fieldName, queryVec, req.TopK, efSearch, includeVectors, metadataFilter)
 		}
 	}
 
 	// Multi-field hybrid search
 	if req.HybridParams != nil {
-		return c.searchHybrid(ctx, req, metadataFilter)
+		return c.searchHybrid(ctx, req, efSearch, includeVectors, metadataFilter)
 	}
 
 	// Multiple fields without fusion (return error)
@@ -306,7 +442,7 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 }
 
 // searchSingleField performs a search on a single vector field.
-func (c *Collection) searchSingleField(ctx context.Context, fieldName string, queryVec interface{}, k int, metadataFilter filter.Filter) (*SearchResponse, error) {
+func (c *Collection) searchSingleField(ctx context.Context, fieldName string, queryVec interface{}, k int, efSearch int, includeVectors bool, metadataFilter filter.Filter) (*SearchResponse, error) {
 	field := c.schema.GetField(fieldName)
 	if field == nil {
 		return nil, fmt.Errorf("field not found: %s", fieldName)
@@ -316,9 +452,9 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 
 	switch field.Type {
 	case VectorTypeDense:
-		denseQuery, ok := queryVec.([]float32)
-		if !ok {
-			return nil, fmt.Errorf("expected []float32 for dense query, got %T", queryVec)
+		denseQuery, err := coerceDenseVector(queryVec)
+		if err != nil {
+			return nil, fmt.Errorf("invalid dense query for %s: %w", fieldName, err)
 		}
 
 		idx, ok := c.indexes[fieldName]
@@ -331,7 +467,7 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 		switch field.Index.Type {
 		case IndexTypeHNSW:
 			params = index.HNSWSearchParams{
-				EfSearch: 64, // Default value
+				EfSearch: efSearch,
 				Filter:   metadataFilter,
 			}
 		case IndexTypeIVF:
@@ -361,9 +497,9 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 		}
 
 	case VectorTypeSparse:
-		sparseQuery, ok := queryVec.(*sparse.SparseVector)
-		if !ok {
-			return nil, fmt.Errorf("expected *SparseVector for sparse query, got %T", queryVec)
+		sparseQuery, err := coerceSparseVector(queryVec)
+		if err != nil {
+			return nil, fmt.Errorf("invalid sparse query for %s: %w", fieldName, err)
 		}
 
 		idx, ok := c.sparse[fieldName]
@@ -389,25 +525,31 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 		return nil, fmt.Errorf("unsupported vector type: %d", field.Type)
 	}
 
-	// Retrieve documents
-	docs := make([]Document, len(results))
-	scores := make([]float32, len(results))
-	for i, r := range results {
-		if doc, ok := c.documents[r.DocID]; ok {
-			docs[i] = *doc
+	// Retrieve documents in a single tight loop for cache-friendly access.
+	// Pre-allocate both slices at once to reduce allocator pressure.
+	n := len(results)
+	docs := make([]Document, n)
+	scores := make([]float32, n)
+	for i := 0; i < n; i++ {
+		scores[i] = results[i].Score
+		if doc, ok := c.documents[results[i].DocID]; ok {
+			docs[i].ID = doc.ID
+			docs[i].Metadata = doc.Metadata
+			if includeVectors {
+				docs[i].Vectors = doc.Vectors
+			}
 		}
-		scores[i] = r.Score
 	}
 
 	return &SearchResponse{
 		Documents:          docs,
 		Scores:             scores,
-		CandidatesExamined: len(results),
+		CandidatesExamined: n,
 	}, nil
 }
 
 // searchHybrid performs hybrid search across multiple vector fields.
-func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, metadataFilter filter.Filter) (*SearchResponse, error) {
+func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSearch int, includeVectors bool, metadataFilter filter.Filter) (*SearchResponse, error) {
 	if len(req.Queries) != 2 {
 		return nil, fmt.Errorf("hybrid search currently supports exactly 2 fields")
 	}
@@ -428,17 +570,17 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, metada
 		case VectorTypeDense:
 			denseField = fieldName
 			denseFieldConfig = *field
-			var ok bool
-			denseQuery, ok = queryVec.([]float32)
-			if !ok {
-				return nil, fmt.Errorf("expected []float32 for dense query, got %T", queryVec)
+			var err error
+			denseQuery, err = coerceDenseVector(queryVec)
+			if err != nil {
+				return nil, fmt.Errorf("invalid dense query for %s: %w", fieldName, err)
 			}
 		case VectorTypeSparse:
 			sparseField = fieldName
-			var ok bool
-			sparseQuery, ok = queryVec.(*sparse.SparseVector)
-			if !ok {
-				return nil, fmt.Errorf("expected *SparseVector for sparse query, got %T", queryVec)
+			var err error
+			sparseQuery, err = coerceSparseVector(queryVec)
+			if err != nil {
+				return nil, fmt.Errorf("invalid sparse query for %s: %w", fieldName, err)
 			}
 		}
 	}
@@ -453,7 +595,7 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, metada
 		switch denseFieldConfig.Index.Type {
 		case IndexTypeHNSW:
 			params = index.HNSWSearchParams{
-				EfSearch: 64, // Default value
+				EfSearch: efSearch,
 				Filter:   metadataFilter,
 			}
 		case IndexTypeIVF:
@@ -535,12 +677,18 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, metada
 		return nil, fmt.Errorf("fusion failed: %w", err)
 	}
 
-	// Retrieve documents
+	// Retrieve documents (lightweight copy: skip vectors unless requested)
 	docs := make([]Document, len(fusedResults))
 	scores := make([]float32, len(fusedResults))
 	for i, r := range fusedResults {
 		if doc, ok := c.documents[r.DocID]; ok {
-			docs[i] = *doc
+			docs[i] = Document{
+				ID:       doc.ID,
+				Metadata: doc.Metadata,
+			}
+			if includeVectors {
+				docs[i].Vectors = doc.Vectors
+			}
 		}
 		scores[i] = r.Score
 	}

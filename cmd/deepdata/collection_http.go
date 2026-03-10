@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/encoding"
@@ -14,11 +17,106 @@ import (
 	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
+// Vector buffer pools keyed by common dimensions to avoid per-search allocations.
+var vectorPoolsByDim = [...]sync.Pool{
+	{New: func() interface{} { return make([]float32, 0, 128) }},  // 128d
+	{New: func() interface{} { return make([]float32, 0, 384) }},  // 384d
+	{New: func() interface{} { return make([]float32, 0, 768) }},  // 768d
+	{New: func() interface{} { return make([]float32, 0, 1536) }}, // 1536d
+}
+
+// dimPoolIndex maps a dimension to the corresponding pool index, or -1 if none.
+func dimPoolIndex(dim int) int {
+	switch dim {
+	case 128:
+		return 0
+	case 384:
+		return 1
+	case 768:
+		return 2
+	case 1536:
+		return 3
+	default:
+		return -1
+	}
+}
+
+// getVectorBuf returns a []float32 buffer with the given length.
+// Uses sync.Pool for common dimensions.
+func getVectorBuf(dim int) []float32 {
+	if idx := dimPoolIndex(dim); idx >= 0 {
+		buf := vectorPoolsByDim[idx].Get().([]float32)
+		return buf[:dim]
+	}
+	return make([]float32, dim)
+}
+
+// putVectorBuf returns a buffer to the pool if it matches a common dimension.
+func putVectorBuf(buf []float32) {
+	if idx := dimPoolIndex(cap(buf)); idx >= 0 {
+		vectorPoolsByDim[idx].Put(buf[:0])
+	}
+}
+
+// JSON response buffer pool for encoding.
+var jsonBufPool = sync.Pool{
+	New: func() interface{} { return new(bytes.Buffer) },
+}
+
+// decodeDenseVectorFast decodes a JSON array of numbers directly into []float32,
+// avoiding the intermediate []interface{} allocation that json.Unmarshal produces.
+func decodeDenseVectorFast(raw json.RawMessage) ([]float32, error) {
+	// Quick validation and count elements by scanning for commas
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) < 2 || trimmed[0] != '[' || trimmed[len(trimmed)-1] != ']' {
+		return nil, fmt.Errorf("expected JSON array for dense vector")
+	}
+
+	// Estimate dimension from byte length (avg ~8 bytes per float: "0.1234,")
+	estimatedDim := len(trimmed) / 6
+	if estimatedDim < 8 {
+		estimatedDim = 8
+	}
+
+	// Decode directly using json.Decoder to stream numbers
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	// Read opening '['
+	if _, err := dec.Token(); err != nil {
+		return nil, fmt.Errorf("invalid dense vector array: %w", err)
+	}
+
+	result := make([]float32, 0, estimatedDim)
+	for dec.More() {
+		var f float64
+		if err := dec.Decode(&f); err != nil {
+			return nil, fmt.Errorf("invalid dense vector element: %w", err)
+		}
+		result = append(result, float32(f))
+	}
+	return result, nil
+}
+
+// searchRequestRaw is used for two-phase JSON decoding of search requests.
+// The queries field is kept as raw JSON so vectors can be decoded directly
+// into []float32 without the []interface{} intermediate.
+type searchRequestRaw struct {
+	CollectionName string                          `json:"collection"`
+	Queries        map[string]json.RawMessage      `json:"queries"`
+	QueryText      string                          `json:"query_text"`
+	TopK           int                             `json:"top_k"`
+	EfSearch       int                             `json:"ef_search,omitempty"`
+	IncludeVectors *bool                           `json:"include_vectors,omitempty"`
+	Offset         int                             `json:"offset,omitempty"`
+	Filters        map[string]interface{}          `json:"filters,omitempty"`
+	HybridParams   *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
+	GraphWeight    float32                         `json:"graph_weight,omitempty"`
+}
+
 // CollectionHTTPServer wraps CollectionManager for HTTP API access
 type CollectionHTTPServer struct {
 	manager       *vcollection.CollectionManager
-	tenantManager *vcollection.TenantManager   // Multi-tenant collection manager
-	graphIndex    *graph.GraphIndex             // Optional GraphRAG index for graph-boosted search
+	tenantManager *vcollection.TenantManager // Multi-tenant collection manager
+	graphIndex    *graph.GraphIndex          // Optional GraphRAG index for graph-boosted search
 }
 
 // NewCollectionHTTPServer creates a new HTTP server wrapper for CollectionManager
@@ -444,16 +542,48 @@ func (s *CollectionHTTPServer) handleBatchInsert(w http.ResponseWriter, r *http.
 	})
 }
 
+// searchJSONResponse is a typed struct for JSON encoding search results.
+// Using a struct instead of map[string]interface{} lets the JSON encoder
+// use the cached struct codec path, avoiding runtime reflection overhead.
+type searchJSONResponse struct {
+	Status             string                 `json:"status"`
+	Documents          []vcollection.Document `json:"documents"`
+	Scores             []float32              `json:"scores"`
+	CandidatesExamined int                    `json:"candidates_examined"`
+}
+
+// tenantSearchJSONResponse is a typed struct for tenant search JSON encoding.
+type tenantSearchJSONResponse struct {
+	Status             string                 `json:"status"`
+	TenantID           string                 `json:"tenant_id"`
+	Documents          []vcollection.Document `json:"documents"`
+	Scores             []float32              `json:"scores"`
+	CandidatesExamined int                    `json:"candidates_examined"`
+}
+
 // SearchRequest for hybrid search
 type SearchRequest struct {
 	CollectionName string                          `json:"collection"`
-	Queries        map[string]interface{}          `json:"queries"`      // field name -> query vector
-	QueryText      string                          `json:"query_text"`   // text query for GraphRAG entity matching
+	Queries        map[string]interface{}          `json:"queries"`    // field name -> query vector
+	QueryText      string                          `json:"query_text"` // text query for GraphRAG entity matching
 	TopK           int                             `json:"top_k"`
+	EfSearch       int                             `json:"ef_search,omitempty"`       // HNSW ef_search override (0 = server default)
+	IncludeVectors *bool                           `json:"include_vectors,omitempty"` // include vectors in response (nil = default true)
 	Offset         int                             `json:"offset,omitempty"`
 	Filters        map[string]interface{}          `json:"filters,omitempty"`
 	HybridParams   *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
 	GraphWeight    float32                         `json:"graph_weight,omitempty"` // weight for graph signal (0 = disabled)
+}
+
+func resolveIncludeVectors(bodyValue *bool, raw string) (*bool, error) {
+	if raw == "" {
+		return bodyValue, nil
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return nil, fmt.Errorf("include_vectors must be true or false")
+	}
+	return &parsed, nil
 }
 
 // handleSearch performs search (dense, sparse, or hybrid)
@@ -463,7 +593,9 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var req SearchRequest
+	// Two-phase decode: parse structure first, then decode vectors directly
+	// into []float32 via json.RawMessage, avoiding []interface{} intermediate.
+	var req searchRequestRaw
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
 		return
@@ -493,37 +625,42 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Convert query vectors to proper format (same logic as insert)
-	queries := make(map[string]interface{})
-	for fieldName, vectorData := range req.Queries {
-		// Check if it's a sparse vector
-		if vecMap, ok := vectorData.(map[string]interface{}); ok {
+	// Decode query vectors directly into typed slices
+	queries := make(map[string]interface{}, len(req.Queries))
+	for fieldName, rawVec := range req.Queries {
+		trimmed := bytes.TrimSpace(rawVec)
+		if len(trimmed) == 0 {
+			http.Error(w, fmt.Sprintf("empty query vector for field %s", fieldName), http.StatusBadRequest)
+			return
+		}
+
+		// Sparse vector: JSON object with "indices" key
+		if trimmed[0] == '{' {
+			var vecMap map[string]interface{}
+			if err := json.Unmarshal(rawVec, &vecMap); err != nil {
+				http.Error(w, fmt.Sprintf("invalid sparse query for field %s: %v", fieldName, err), http.StatusBadRequest)
+				return
+			}
 			if indices, hasIndices := vecMap["indices"]; hasIndices {
-				// Sparse vector format
 				indicesSlice, ok1 := indices.([]interface{})
 				values, ok2 := vecMap["values"].([]interface{})
 				dim, ok3 := vecMap["dim"].(float64)
-
 				if !ok1 || !ok2 || !ok3 {
 					http.Error(w, fmt.Sprintf("invalid sparse query vector for field %s", fieldName), http.StatusBadRequest)
 					return
 				}
-
-				// Convert to uint32 and float32
 				uint32Indices := make([]uint32, len(indicesSlice))
 				for i, v := range indicesSlice {
 					if f, ok := v.(float64); ok {
 						uint32Indices[i] = uint32(f)
 					}
 				}
-
 				float32Values := make([]float32, len(values))
 				for i, v := range values {
 					if f, ok := v.(float64); ok {
 						float32Values[i] = float32(f)
 					}
 				}
-
 				sparseVec, err := sparse.NewSparseVector(uint32Indices, float32Values, int(dim))
 				if err != nil {
 					http.Error(w, fmt.Sprintf("invalid sparse query: %v", err), http.StatusBadRequest)
@@ -534,16 +671,21 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 			}
 		}
 
-		// Dense vector format
-		if vecSlice, ok := vectorData.([]interface{}); ok {
-			denseVec := make([]float32, len(vecSlice))
-			for i, v := range vecSlice {
-				if f, ok := v.(float64); ok {
-					denseVec[i] = float32(f)
-				}
+		// Dense vector: JSON array — decode directly to []float32
+		if trimmed[0] == '[' {
+			denseVec, err := decodeDenseVectorFast(rawVec)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid dense query for field %s: %v", fieldName, err), http.StatusBadRequest)
+				return
 			}
 			queries[fieldName] = denseVec
 		}
+	}
+
+	includeVectors, err := resolveIncludeVectors(req.IncludeVectors, r.URL.Query().Get("include_vectors"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// Build search request
@@ -551,6 +693,8 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 		CollectionName: req.CollectionName,
 		Queries:        queries,
 		TopK:           effectiveTopK,
+		EfSearch:       req.EfSearch,
+		IncludeVectors: includeVectors,
 		Filters:        req.Filters,
 		HybridParams:   req.HybridParams,
 	}
@@ -642,14 +786,19 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Return results as JSON (default)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":              "success",
-		"documents":           documents,
-		"scores":              scores,
-		"candidates_examined": resp.CandidatesExamined,
+	// Return results as JSON (default) — typed struct + pooled buffer
+	buf := jsonBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	enc := json.NewEncoder(buf)
+	enc.Encode(searchJSONResponse{
+		Status:             "success",
+		Documents:          documents,
+		Scores:             scores,
+		CandidatesExamined: resp.CandidatesExamined,
 	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(buf.Bytes())
+	jsonBufPool.Put(buf)
 }
 
 // DeleteRequest for document deletion
@@ -1020,10 +1169,12 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 	}
 
 	var req struct {
-		Queries      map[string]interface{}          `json:"queries"`
-		TopK         int                             `json:"top_k"`
-		Filters      map[string]interface{}          `json:"filters,omitempty"`
-		HybridParams *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
+		Queries        map[string]interface{}          `json:"queries"`
+		TopK           int                             `json:"top_k"`
+		EfSearch       int                             `json:"ef_search,omitempty"`
+		IncludeVectors *bool                           `json:"include_vectors,omitempty"`
+		Filters        map[string]interface{}          `json:"filters,omitempty"`
+		HybridParams   *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
@@ -1082,10 +1233,18 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 		}
 	}
 
+	includeVectors, err := resolveIncludeVectors(req.IncludeVectors, r.URL.Query().Get("include_vectors"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	searchReq := vcollection.SearchRequest{
 		CollectionName: collectionName,
 		Queries:        queries,
 		TopK:           req.TopK,
+		EfSearch:       req.EfSearch,
+		IncludeVectors: includeVectors,
 		Filters:        req.Filters,
 		HybridParams:   req.HybridParams,
 	}
@@ -1098,11 +1257,11 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":              "success",
-		"tenant_id":           tenantID,
-		"documents":           resp.Documents,
-		"scores":              resp.Scores,
-		"candidates_examined": resp.CandidatesExamined,
+	json.NewEncoder(w).Encode(tenantSearchJSONResponse{
+		Status:             "success",
+		TenantID:           tenantID,
+		Documents:          resp.Documents,
+		Scores:             resp.Scores,
+		CandidatesExamined: resp.CandidatesExamined,
 	})
 }

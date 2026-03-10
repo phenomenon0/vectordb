@@ -2,10 +2,14 @@ package collection
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/phenomenon0/vectordb/internal/sparse"
 )
+
+func boolPtr(v bool) *bool { return &v }
 
 func TestNewCollection_DenseOnly(t *testing.T) {
 	schema := CollectionSchema{
@@ -18,7 +22,7 @@ func TestNewCollection_DenseOnly(t *testing.T) {
 				Index: IndexConfig{
 					Type: IndexTypeHNSW,
 					Params: map[string]interface{}{
-						"m":              16,
+						"m":               16,
 						"ef_construction": 200,
 					},
 				},
@@ -111,9 +115,9 @@ func TestCollection_AddDense(t *testing.T) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  4,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 		},
@@ -149,9 +153,9 @@ func TestCollection_AddSparse(t *testing.T) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "keywords",
-				Type: VectorTypeSparse,
-				Dim:  100,
+				Name:  "keywords",
+				Type:  VectorTypeSparse,
+				Dim:   100,
 				Index: IndexConfig{Type: IndexTypeInverted},
 			},
 		},
@@ -196,15 +200,15 @@ func TestCollection_AddMultiVector(t *testing.T) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  4,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 			{
-				Name: "keywords",
-				Type: VectorTypeSparse,
-				Dim:  100,
+				Name:  "keywords",
+				Type:  VectorTypeSparse,
+				Dim:   100,
 				Index: IndexConfig{Type: IndexTypeInverted},
 			},
 		},
@@ -246,9 +250,9 @@ func TestCollection_SearchDense(t *testing.T) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  4,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 		},
@@ -310,6 +314,9 @@ func TestCollection_SearchDense(t *testing.T) {
 	if id, ok := resp.Documents[0].Metadata["id"].(int); !ok || id != 1 {
 		t.Errorf("expected first result to be doc1, got id=%v", resp.Documents[0].Metadata["id"])
 	}
+	if len(resp.Documents[0].Vectors) == 0 {
+		t.Fatal("expected vectors to be included by default")
+	}
 }
 
 func TestCollection_SearchSparse(t *testing.T) {
@@ -317,9 +324,9 @@ func TestCollection_SearchSparse(t *testing.T) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "keywords",
-				Type: VectorTypeSparse,
-				Dim:  100,
+				Name:  "keywords",
+				Type:  VectorTypeSparse,
+				Dim:   100,
 				Index: IndexConfig{Type: IndexTypeInverted},
 			},
 		},
@@ -381,15 +388,15 @@ func TestCollection_SearchHybrid(t *testing.T) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  4,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 			{
-				Name: "keywords",
-				Type: VectorTypeSparse,
-				Dim:  100,
+				Name:  "keywords",
+				Type:  VectorTypeSparse,
+				Dim:   100,
 				Index: IndexConfig{Type: IndexTypeInverted},
 			},
 		},
@@ -460,14 +467,195 @@ func TestCollection_SearchHybrid(t *testing.T) {
 		len(resp.Documents), resp.CandidatesExamined)
 }
 
+func TestCollection_SearchCanOmitVectors(t *testing.T) {
+	schema := CollectionSchema{
+		Name: "test",
+		Fields: []VectorField{
+			{
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
+				Index: IndexConfig{Type: IndexTypeFLAT},
+			},
+		},
+	}
+
+	coll, err := NewCollection(schema)
+	if err != nil {
+		t.Fatalf("failed to create collection: %v", err)
+	}
+
+	doc := Document{
+		Vectors: map[string]interface{}{
+			"embedding": []float32{1.0, 0.0, 0.0, 0.0},
+		},
+	}
+	ctx := context.Background()
+	if err := coll.Add(ctx, &doc); err != nil {
+		t.Fatalf("failed to add document: %v", err)
+	}
+
+	resp, err := coll.Search(ctx, SearchRequest{
+		CollectionName: "test",
+		Queries: map[string]interface{}{
+			"embedding": []float32{1.0, 0.0, 0.0, 0.0},
+		},
+		TopK:           1,
+		IncludeVectors: boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if resp.Documents[0].Vectors != nil {
+		t.Fatalf("expected vectors to be omitted when explicitly disabled")
+	}
+}
+
+func TestCollectionAcceptsJSONDenseDocumentAndQuery(t *testing.T) {
+	schema := CollectionSchema{
+		Name: "test",
+		Fields: []VectorField{
+			{
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
+				Index: IndexConfig{Type: IndexTypeFLAT},
+			},
+		},
+	}
+
+	coll, err := NewCollection(schema)
+	if err != nil {
+		t.Fatalf("failed to create collection: %v", err)
+	}
+
+	var doc Document
+	if err := json.Unmarshal([]byte(`{
+		"vectors": {"embedding": [1, 0, 0, 0]},
+		"metadata": {"source": "json"}
+	}`), &doc); err != nil {
+		t.Fatalf("unmarshal document failed: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := coll.Add(ctx, &doc); err != nil {
+		t.Fatalf("failed to add JSON document: %v", err)
+	}
+
+	var req SearchRequest
+	if err := json.Unmarshal([]byte(`{
+		"collection_name": "test",
+		"queries": {"embedding": [1, 0, 0, 0]},
+		"top_k": 1
+	}`), &req); err != nil {
+		t.Fatalf("unmarshal search request failed: %v", err)
+	}
+
+	resp, err := coll.Search(ctx, req)
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(resp.Documents) != 1 {
+		t.Fatalf("expected one result, got %d", len(resp.Documents))
+	}
+}
+
+func TestCollectionAcceptsJSONSparseDocumentAndQuery(t *testing.T) {
+	schema := CollectionSchema{
+		Name: "test",
+		Fields: []VectorField{
+			{
+				Name:  "keywords",
+				Type:  VectorTypeSparse,
+				Dim:   16,
+				Index: IndexConfig{Type: IndexTypeInverted},
+			},
+		},
+	}
+
+	coll, err := NewCollection(schema)
+	if err != nil {
+		t.Fatalf("failed to create collection: %v", err)
+	}
+
+	var doc Document
+	if err := json.Unmarshal([]byte(`{
+		"vectors": {
+			"keywords": {
+				"indices": [0, 5],
+				"values": [1.25, 2.5],
+				"dim": 16
+			}
+		}
+	}`), &doc); err != nil {
+		t.Fatalf("unmarshal sparse document failed: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := coll.Add(ctx, &doc); err != nil {
+		t.Fatalf("failed to add JSON sparse document: %v", err)
+	}
+
+	var req SearchRequest
+	if err := json.Unmarshal([]byte(`{
+		"collection_name": "test",
+		"queries": {
+			"keywords": {
+				"indices": [0],
+				"values": [1.0],
+				"dim": 16
+			}
+		},
+		"top_k": 1
+	}`), &req); err != nil {
+		t.Fatalf("unmarshal sparse search request failed: %v", err)
+	}
+
+	resp, err := coll.Search(ctx, req)
+	if err != nil {
+		t.Fatalf("sparse search failed: %v", err)
+	}
+	if len(resp.Documents) != 1 {
+		t.Fatalf("expected one sparse result, got %d", len(resp.Documents))
+	}
+}
+
+func TestCollectionSchemaJSONAcceptsStringEnums(t *testing.T) {
+	var schema CollectionSchema
+	err := json.Unmarshal([]byte(`{
+		"name": "docs",
+		"fields": [
+			{"name": "embedding", "type": "dense", "dim": 4, "index": {"type": "flat"}}
+		]
+	}`), &schema)
+	if err != nil {
+		t.Fatalf("unmarshal schema failed: %v", err)
+	}
+
+	if schema.Fields[0].Type != VectorTypeDense {
+		t.Fatalf("expected dense vector type, got %v", schema.Fields[0].Type)
+	}
+	if schema.Fields[0].Index.Type != IndexTypeFLAT {
+		t.Fatalf("expected flat index type, got %v", schema.Fields[0].Index.Type)
+	}
+
+	data, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal schema failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"type":"dense"`) || !strings.Contains(string(data), `"type":"flat"`) {
+		t.Fatalf("expected string enum encoding, got %s", string(data))
+	}
+}
+
 func TestCollection_BatchAdd(t *testing.T) {
 	schema := CollectionSchema{
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  4,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 		},
@@ -503,9 +691,9 @@ func TestCollection_Delete(t *testing.T) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  4,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 		},
@@ -549,9 +737,9 @@ func TestCollection_GetDocument(t *testing.T) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  4,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 		},
@@ -597,9 +785,9 @@ func TestCollection_ValidationErrors(t *testing.T) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  4,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   4,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 		},
@@ -643,9 +831,9 @@ func BenchmarkCollection_AddDense(b *testing.B) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  384,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   384,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 		},
@@ -675,15 +863,15 @@ func BenchmarkCollection_AddMultiVector(b *testing.B) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  384,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   384,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 			{
-				Name: "keywords",
-				Type: VectorTypeSparse,
-				Dim:  10000,
+				Name:  "keywords",
+				Type:  VectorTypeSparse,
+				Dim:   10000,
 				Index: IndexConfig{Type: IndexTypeInverted},
 			},
 		},
@@ -722,15 +910,15 @@ func BenchmarkCollection_SearchHybrid(b *testing.B) {
 		Name: "test",
 		Fields: []VectorField{
 			{
-				Name: "embedding",
-				Type: VectorTypeDense,
-				Dim:  384,
+				Name:  "embedding",
+				Type:  VectorTypeDense,
+				Dim:   384,
 				Index: IndexConfig{Type: IndexTypeFLAT},
 			},
 			{
-				Name: "keywords",
-				Type: VectorTypeSparse,
-				Dim:  10000,
+				Name:  "keywords",
+				Type:  VectorTypeSparse,
+				Dim:   10000,
 				Index: IndexConfig{Type: IndexTypeInverted},
 			},
 		},
@@ -749,7 +937,7 @@ func BenchmarkCollection_SearchHybrid(b *testing.B) {
 		indices := make([]uint32, 50)
 		values := make([]float32, 50)
 		for j := range indices {
-			indices[j] = uint32((i*j)%10000)
+			indices[j] = uint32((i * j) % 10000)
 			values[j] = float32(j + 1)
 		}
 		sparseVec, _ := sparse.NewSparseVector(indices, values, 10000)

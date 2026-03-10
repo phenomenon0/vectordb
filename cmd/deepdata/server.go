@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/base64"
@@ -10,16 +11,21 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Neumenon/cowrie/go/codec"
 	"github.com/phenomenon0/vectordb/internal/index"
 	"github.com/phenomenon0/vectordb/internal/logging"
+	"github.com/phenomenon0/vectordb/internal/obsidian"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
 
@@ -82,6 +88,10 @@ func decodeRequest(r *http.Request, v any) error {
 // newHTTPHandler builds the HTTP mux for insert/query/delete/health/metrics.
 func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) http.Handler {
 	mux := http.NewServeMux()
+	configDir := "."
+	if indexPath != "" {
+		configDir = filepath.Dir(indexPath)
+	}
 	if store.rl == nil {
 		rps := envInt("API_RPS", 100)
 		store.rl = newRateLimiter(rps, rps, time.Minute)
@@ -637,6 +647,23 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			// Unknown mode: treat as ANN but don't propagate arbitrary strings to metrics
 			req.Mode = "ann"
 		}
+
+		// Auto scan-mode for small collections: ANN index may not return
+		// recently inserted vectors until compaction. Use scan for small sets.
+		scanThreshold := envInt("SCAN_THRESHOLD", 500)
+		if req.Mode == "ann" && scanThreshold > 0 {
+			store.RLock()
+			collCount := 0
+			for _, coll := range store.Coll {
+				if coll == req.Collection || (req.Collection == "" && coll == "default") {
+					collCount++
+				}
+			}
+			store.RUnlock()
+			if collCount > 0 && collCount < scanThreshold {
+				req.Mode = "scan"
+			}
+		}
 		if req.HybridAlpha == 0 {
 			req.HybridAlpha = 0.5
 		}
@@ -670,7 +697,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 		var ids []int
 		if req.Mode == "scan" {
-			ids = store.Search(qVec, req.TopK)
+			ids = store.SearchScan(qVec, req.TopK, req.Collection)
 		} else if req.Mode == "lex" {
 			ids = store.SearchLex(qTokens, req.TopK)
 		} else {
@@ -826,13 +853,32 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		responseCodec := codec.FromRequest(r)
 		w.Header().Set("Content-Type", responseCodec.ContentType())
 
+		// Build structured results array for web UI compatibility
+		// UI reads: r.id, r.score, r.text||r.document, r.metadata
+		results := make([]map[string]any, 0, len(respIDs))
+		for i, id := range respIDs {
+			item := map[string]any{"id": id}
+			if i < len(rDocs) {
+				item["text"] = rDocs[i]
+				item["document"] = rDocs[i]
+			}
+			if i < len(respScores) {
+				item["score"] = respScores[i]
+			}
+			if req.IncludeMeta && i < len(respMeta) {
+				item["metadata"] = respMeta[i]
+			}
+			results = append(results, item)
+		}
+
 		response := map[string]any{
-			"ids":    respIDs,
-			"docs":   rDocs,
-			"scores": respScores,
-			"stats":  stats,
-			"meta":   respMeta,
-			"next":   nextPage,
+			"ids":     respIDs,
+			"docs":    rDocs,
+			"scores":  respScores,
+			"stats":   stats,
+			"meta":    respMeta,
+			"next":    nextPage,
+			"results": results,
 		}
 
 		if err := responseCodec.Encode(w, response); err != nil {
@@ -1574,8 +1620,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Admin middleware - requires admin permission
 	adminGuard := func(next http.HandlerFunc) http.HandlerFunc {
 		return guard(func(w http.ResponseWriter, r *http.Request) {
-			tenantCtx := security.GetTenantContextFromRequest(r, store.jwtMgr)
-			if !tenantCtx.IsAdmin {
+			// Read tenant context from request context (set by guard middleware)
+			tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
+			if !ok || !tenantCtx.IsAdmin {
 				http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
 				return
 			}
@@ -2501,6 +2548,457 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			next.ServeHTTP(w, r)
 		})
 	}
+
+	// ==========================================================================
+	// OBSIDIAN ADMIN ENDPOINTS
+	// ==========================================================================
+
+	mux.HandleFunc("/admin/obsidian/detect", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		vaults := obsidian.DetectVaults()
+		sendResponse(w, r, map[string]any{"vaults": vaults})
+	}))
+
+	mux.HandleFunc("/admin/obsidian/status", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		cfg := obsidian.LoadOrDetectConfig(configDir)
+		obsidian.ApplyEnvOverrides(&cfg)
+
+		// Count notes in the obsidian collection
+		collection := cfg.Collection
+		if collection == "" {
+			collection = "obsidian"
+		}
+		store.RLock()
+		noteCount := 0
+		for _, coll := range store.Coll {
+			if coll == collection {
+				noteCount++
+			}
+		}
+		store.RUnlock()
+
+		sendResponse(w, r, map[string]any{
+			"enabled":    cfg.Enabled,
+			"vault":      cfg.VaultPath,
+			"collection": collection,
+			"interval":   cfg.Interval.String(),
+			"note_count": noteCount,
+		})
+	}))
+
+	mux.HandleFunc("/admin/obsidian/enable", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Vault      string `json:"vault"`
+			Collection string `json:"collection"`
+			Interval   string `json:"interval"`
+		}
+		if err := decodeRequest(r, &req); err != nil {
+			http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Vault == "" {
+			http.Error(w, "vault path required", http.StatusBadRequest)
+			return
+		}
+		// Validate vault path exists
+		if info, err := os.Stat(req.Vault); err != nil || !info.IsDir() {
+			http.Error(w, "vault path is not a valid directory", http.StatusBadRequest)
+			return
+		}
+
+		cfg := obsidian.DefaultConfig()
+		cfg.VaultPath = req.Vault
+		cfg.Enabled = true
+		if req.Collection != "" {
+			cfg.Collection = req.Collection
+		}
+		if req.Interval != "" {
+			if d, err := time.ParseDuration(req.Interval); err == nil {
+				cfg.Interval = d
+			}
+		}
+
+		if err := obsidian.SaveConfig(configDir, cfg); err != nil {
+			http.Error(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		sendResponse(w, r, map[string]any{
+			"ok":         true,
+			"vault":      cfg.VaultPath,
+			"collection": cfg.Collection,
+			"interval":   cfg.Interval.String(),
+			"note":       "restart server to start sync, or set OBSIDIAN_VAULT env var",
+		})
+	}))
+
+	mux.HandleFunc("/admin/obsidian/disable", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		cfg := obsidian.DefaultConfig()
+		cfg.Enabled = false
+		cfg.VaultPath = ""
+		if err := obsidian.SaveConfig(configDir, cfg); err != nil {
+			http.Error(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sendResponse(w, r, map[string]any{"ok": true, "note": "restart server to stop sync"})
+	}))
+
+	// ==========================================================================
+	// VAULT FILE SERVING & ANNOTATIONS
+	// ==========================================================================
+
+	// getVaultRoot returns the configured obsidian vault path, or empty string.
+	getVaultRoot := func() string {
+		cfg := obsidian.LoadOrDetectConfig(configDir)
+		obsidian.ApplyEnvOverrides(&cfg)
+		return cfg.VaultPath
+	}
+
+	// validateVaultPath resolves a relative path within the vault, rejecting traversal.
+	validateVaultPath := func(vaultRoot, relPath string) (string, error) {
+		cleaned := filepath.Clean(relPath)
+		if strings.Contains(cleaned, "..") {
+			return "", fmt.Errorf("path traversal rejected")
+		}
+		abs := filepath.Join(vaultRoot, cleaned)
+		// Ensure resolved path is still within vault
+		realAbs, err := filepath.EvalSymlinks(abs)
+		if err != nil {
+			// File may not exist yet for new paths — check parent
+			realAbs = abs
+		}
+		realVault, err := filepath.EvalSymlinks(vaultRoot)
+		if err != nil {
+			realVault = vaultRoot
+		}
+		if !strings.HasPrefix(realAbs, realVault+string(filepath.Separator)) && realAbs != realVault {
+			return "", fmt.Errorf("path outside vault")
+		}
+		return abs, nil
+	}
+
+	// GET /vault/file?path=<relative_path> — serve a file from the vault
+	mux.HandleFunc("/vault/file", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		vaultRoot := getVaultRoot()
+		if vaultRoot == "" {
+			http.Error(w, "no vault configured", http.StatusNotFound)
+			return
+		}
+		relPath := r.URL.Query().Get("path")
+		if relPath == "" {
+			http.Error(w, "path parameter required", http.StatusBadRequest)
+			return
+		}
+		absPath, err := validateVaultPath(vaultRoot, relPath)
+		if err != nil {
+			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+			return
+		}
+		info, err := os.Stat(absPath)
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if info.IsDir() {
+			http.Error(w, "path is a directory", http.StatusBadRequest)
+			return
+		}
+		if info.Size() > 100*1024*1024 {
+			http.Error(w, "file too large (>100MB)", http.StatusRequestEntityTooLarge)
+			return
+		}
+		// Set MIME type from extension
+		ext := filepath.Ext(absPath)
+		mimeType := mime.TypeByExtension(ext)
+		if mimeType != "" {
+			w.Header().Set("Content-Type", mimeType)
+		}
+		http.ServeFile(w, r, absPath)
+	}))
+
+	// GET /vault/browse?dir=<relative_path> — list files in a vault subdirectory
+	mux.HandleFunc("/vault/browse", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		vaultRoot := getVaultRoot()
+		if vaultRoot == "" {
+			http.Error(w, "no vault configured", http.StatusNotFound)
+			return
+		}
+		relDir := r.URL.Query().Get("dir")
+		if relDir == "" {
+			relDir = "."
+		}
+		absDir, err := validateVaultPath(vaultRoot, relDir)
+		if err != nil {
+			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+			return
+		}
+		entries, err := os.ReadDir(absDir)
+		if err != nil {
+			http.Error(w, "cannot read directory", http.StatusNotFound)
+			return
+		}
+		type fileEntry struct {
+			Name    string `json:"name"`
+			Path    string `json:"path"`
+			Size    int64  `json:"size"`
+			ModTime string `json:"mod_time"`
+			IsDir   bool   `json:"is_dir"`
+		}
+		files := make([]fileEntry, 0, len(entries))
+		for _, e := range entries {
+			// Skip hidden files/dirs
+			if strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			entryPath := relDir
+			if entryPath == "." {
+				entryPath = e.Name()
+			} else {
+				entryPath = filepath.Join(relDir, e.Name())
+			}
+			files = append(files, fileEntry{
+				Name:    e.Name(),
+				Path:    entryPath,
+				Size:    info.Size(),
+				ModTime: info.ModTime().UTC().Format(time.RFC3339),
+				IsDir:   e.IsDir(),
+			})
+		}
+		sendResponse(w, r, map[string]any{"files": files, "dir": relDir})
+	}))
+
+	// Annotation storage — simple JSON file persistence
+	annotationFile := filepath.Join(configDir, "annotations.json")
+	var annotationMu sync.Mutex
+
+	loadAnnotations := func() map[string][]map[string]any {
+		data, err := os.ReadFile(annotationFile)
+		if err != nil {
+			return make(map[string][]map[string]any)
+		}
+		var result map[string][]map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			return make(map[string][]map[string]any)
+		}
+		return result
+	}
+	saveAnnotations := func(anns map[string][]map[string]any) error {
+		data, err := json.MarshalIndent(anns, "", "  ")
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(annotationFile, data, 0644)
+	}
+
+	// GET /vault/annotations?doc_id=<id> — get annotations for a document
+	// POST /vault/annotations — create/update an annotation
+	// DELETE /vault/annotations?doc_id=<id>&id=<aid> — delete an annotation
+	mux.HandleFunc("/vault/annotations", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			docID := r.URL.Query().Get("doc_id")
+			annotationMu.Lock()
+			anns := loadAnnotations()
+			annotationMu.Unlock()
+			if docID != "" {
+				sendResponse(w, r, map[string]any{"annotations": anns[docID]})
+			} else {
+				sendResponse(w, r, map[string]any{"annotations": anns})
+			}
+
+		case http.MethodPost:
+			var ann map[string]any
+			if err := decodeRequest(r, &ann); err != nil {
+				http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			docID, _ := ann["doc_id"].(string)
+			if docID == "" {
+				http.Error(w, "doc_id required", http.StatusBadRequest)
+				return
+			}
+			annotationMu.Lock()
+			anns := loadAnnotations()
+			anns[docID] = append(anns[docID], ann)
+			err := saveAnnotations(anns)
+			annotationMu.Unlock()
+			if err != nil {
+				http.Error(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			sendResponse(w, r, map[string]any{"ok": true})
+
+		case http.MethodDelete:
+			docID := r.URL.Query().Get("doc_id")
+			annID := r.URL.Query().Get("id")
+			if docID == "" || annID == "" {
+				http.Error(w, "doc_id and id required", http.StatusBadRequest)
+				return
+			}
+			annotationMu.Lock()
+			anns := loadAnnotations()
+			if docAnns, ok := anns[docID]; ok {
+				filtered := make([]map[string]any, 0, len(docAnns))
+				for _, a := range docAnns {
+					if aid, _ := a["id"].(string); aid != annID {
+						filtered = append(filtered, a)
+					}
+				}
+				anns[docID] = filtered
+			}
+			err := saveAnnotations(anns)
+			annotationMu.Unlock()
+			if err != nil {
+				http.Error(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			sendResponse(w, r, map[string]any{"ok": true})
+
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	// ==========================================================================
+	// WHISPER TRANSCRIPTION ENDPOINT
+	// ==========================================================================
+
+	// POST /vault/transcribe?path=<relative_path> — transcribe audio/video via OpenAI Whisper
+	// Also accepts file upload via multipart form (field "file")
+	mux.HandleFunc("/vault/transcribe", adminGuard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		openaiKey := os.Getenv("OPENAI_API_KEY")
+		if openaiKey == "" {
+			http.Error(w, "OPENAI_API_KEY not configured", http.StatusServiceUnavailable)
+			return
+		}
+
+		var audioData io.Reader
+		var filename string
+
+		// Option 1: path query param — read from vault
+		if relPath := r.URL.Query().Get("path"); relPath != "" {
+			vaultRoot := getVaultRoot()
+			if vaultRoot == "" {
+				http.Error(w, "no vault configured", http.StatusNotFound)
+				return
+			}
+			absPath, err := validateVaultPath(vaultRoot, relPath)
+			if err != nil {
+				http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+				return
+			}
+			info, err := os.Stat(absPath)
+			if err != nil {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			if info.Size() > 25*1024*1024 { // Whisper limit is 25MB
+				http.Error(w, "file too large for Whisper (>25MB)", http.StatusRequestEntityTooLarge)
+				return
+			}
+			f, err := os.Open(absPath)
+			if err != nil {
+				http.Error(w, "cannot open file", http.StatusInternalServerError)
+				return
+			}
+			defer f.Close()
+			audioData = f
+			filename = filepath.Base(absPath)
+		} else {
+			// Option 2: multipart upload
+			if err := r.ParseMultipartForm(25 << 20); err != nil {
+				http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				http.Error(w, "file field required", http.StatusBadRequest)
+				return
+			}
+			defer file.Close()
+			audioData = file
+			filename = header.Filename
+		}
+
+		// Build multipart request for OpenAI Whisper API
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		part, err := mw.CreateFormFile("file", filename)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if _, err := io.Copy(part, audioData); err != nil {
+			http.Error(w, "read error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		mw.WriteField("model", "whisper-1")
+		mw.WriteField("response_format", "verbose_json")
+
+		// Optional language hint
+		if lang := r.URL.Query().Get("language"); lang != "" {
+			mw.WriteField("language", lang)
+		}
+		mw.Close()
+
+		whisperReq, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/transcriptions", &buf)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		whisperReq.Header.Set("Authorization", "Bearer "+openaiKey)
+		whisperReq.Header.Set("Content-Type", mw.FormDataContentType())
+
+		client := &http.Client{Timeout: 120 * time.Second}
+		resp, err := client.Do(whisperReq)
+		if err != nil {
+			http.Error(w, "whisper API error: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			http.Error(w, "whisper API error "+fmt.Sprint(resp.StatusCode)+": "+string(body), resp.StatusCode)
+			return
+		}
+
+		// Stream the JSON response back
+		w.Header().Set("Content-Type", "application/json")
+		io.Copy(w, resp.Body)
+	}))
 
 	return recoveryMiddleware(corsMiddleware(otelMiddleware(mux)))
 }

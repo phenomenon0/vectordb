@@ -46,8 +46,8 @@ func setupCollectionHTTPServerForSearch(t *testing.T) *CollectionHTTPServer {
 		{Vectors: map[string]interface{}{"embedding": []float32{0.90, 0.10, 0.0, 0.0}}},
 		{Vectors: map[string]interface{}{"embedding": []float32{0.85, 0.15, 0.0, 0.0}}},
 	}
-	for _, doc := range docs {
-		if err := server.manager.AddDocument(ctx, "test", doc); err != nil {
+	for i := range docs {
+		if err := server.manager.AddDocument(ctx, "test", &docs[i]); err != nil {
 			t.Fatalf("add document failed: %v", err)
 		}
 	}
@@ -154,5 +154,44 @@ func TestCollectionHTTPHandleSearchRejectsNegativeOffset(t *testing.T) {
 
 	if !strings.Contains(body, "offset must be >= 0") {
 		t.Fatalf("expected negative offset validation error, got %q", body)
+	}
+}
+
+func TestCollectionHTTPHandleSearchIncludesVectorsByDefault(t *testing.T) {
+	server := setupCollectionHTTPServerForSearch(t)
+
+	resp, _ := runCollectionSearch(t, server, map[string]interface{}{
+		"collection": "test",
+		"queries": map[string]interface{}{
+			"embedding": []float32{1.0, 0.0, 0.0, 0.0},
+		},
+		"top_k": 1,
+	}, http.StatusOK)
+
+	if len(resp.Documents) != 1 {
+		t.Fatalf("expected 1 document, got %d", len(resp.Documents))
+	}
+	if len(resp.Documents[0].Vectors) == 0 {
+		t.Fatal("expected vectors in default search response")
+	}
+}
+
+func TestCollectionHTTPHandleSearchCanOmitVectors(t *testing.T) {
+	server := setupCollectionHTTPServerForSearch(t)
+
+	resp, _ := runCollectionSearch(t, server, map[string]interface{}{
+		"collection": "test",
+		"queries": map[string]interface{}{
+			"embedding": []float32{1.0, 0.0, 0.0, 0.0},
+		},
+		"top_k":           1,
+		"include_vectors": false,
+	}, http.StatusOK)
+
+	if len(resp.Documents) != 1 {
+		t.Fatalf("expected 1 document, got %d", len(resp.Documents))
+	}
+	if resp.Documents[0].Vectors != nil {
+		t.Fatal("expected vectors to be omitted when include_vectors=false")
 	}
 }

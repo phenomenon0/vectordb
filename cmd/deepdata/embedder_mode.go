@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -42,9 +43,27 @@ func (f *EmbedderFactory) CreateEmbedder() (Embedder, error) {
 	}
 }
 
-// createLocalEmbedder creates an embedder for LOCAL mode
-// Priority: ONNX > Ollama > Hash (fallback)
+// createLocalEmbedder creates an embedder for LOCAL mode.
+// OpenAI is only selected when explicitly requested via EMBEDDER_TYPE=openai.
+// Default local behavior remains ONNX > Ollama > Hash.
 func (f *EmbedderFactory) createLocalEmbedder() (Embedder, error) {
+	if strings.EqualFold(os.Getenv("EMBEDDER_TYPE"), "openai") {
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		if apiKey == "" {
+			return nil, fmt.Errorf("EMBEDDER_TYPE=openai requires OPENAI_API_KEY")
+		}
+		fmt.Println(">>> [LOCAL] Using OpenAI embedder (text-embedding-3-small, 1536d)")
+		f.mode.Dimension = 1536
+		f.mode.EmbedderType = "openai"
+		f.mode.EmbedderModel = "text-embedding-3-small"
+		f.mode.CostPer1MToken = 0.02
+		baseEmb := NewOpenAIEmbedder(apiKey)
+		if f.costTracker != nil {
+			return NewTrackedEmbedder(baseEmb, f.costTracker), nil
+		}
+		return baseEmb, nil
+	}
+
 	// Priority 1: ONNX embeddings (local, good quality, requires model files)
 	onnxEmb, err := f.tryOnnxEmbedder(384) // BGE-small is always 384d
 	if err == nil && onnxEmb != nil {
@@ -86,7 +105,7 @@ func (f *EmbedderFactory) createProEmbedder() (Embedder, error) {
 	}
 
 	fmt.Println(">>> [PRO] Using OpenAI embedder (text-embedding-3-small, 1536d)")
-	
+
 	// Wrap OpenAI embedder with cost tracking
 	baseEmb := NewOpenAIEmbedder(apiKey)
 	if f.costTracker != nil {

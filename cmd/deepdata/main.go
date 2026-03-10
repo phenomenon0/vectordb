@@ -26,6 +26,7 @@ import (
 
 	"github.com/phenomenon0/vectordb/internal/index"
 	"github.com/phenomenon0/vectordb/internal/logging"
+	"github.com/phenomenon0/vectordb/internal/obsidian"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/storage"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
@@ -454,6 +455,11 @@ func (vs *VectorStore) GetID(index int) string {
 
 // Brute-force scan (used for debugging).
 func (vs *VectorStore) Search(query []float32, k int) []int {
+	return vs.SearchScan(query, k, "")
+}
+
+// SearchScan performs brute-force scan, optionally filtering by collection.
+func (vs *VectorStore) SearchScan(query []float32, k int, collection string) []int {
 	vs.RLock()
 	defer vs.RUnlock()
 	if k <= 0 || vs.Count == 0 {
@@ -464,6 +470,10 @@ func (vs *VectorStore) Search(query []float32, k int) []int {
 	for i := 0; i < vs.Count; i++ {
 		hid := hashID(vs.IDs[i])
 		if vs.Deleted[hid] {
+			continue
+		}
+		// Collection pre-filter during scan to avoid post-filter dropping results
+		if collection != "" && vs.Coll[hid] != collection {
 			continue
 		}
 		vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
@@ -2159,9 +2169,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Print mode banner
-	PrintModeBanner(modeConfig)
-
 	// Ensure data directory exists
 	dataDir, err := EnsureDataDirectory(modeConfig.Mode)
 	if err != nil {
@@ -2220,6 +2227,9 @@ func main() {
 			embedder = NewHashEmbedder(defaultDim)
 		}
 	}
+
+	// Print mode banner (after embedder init so it reflects actual config)
+	PrintModeBanner(modeConfig)
 
 	// Make initial capacity configurable for low-memory deployments
 	initialCapacity := 1000 // Reduced from 100000 for low-memory deployment
@@ -2297,6 +2307,68 @@ func main() {
 		}
 	}()
 
+	// Background Obsidian vault sync
+	var obsidianSyncCancel context.CancelFunc
+	{
+		cfg := obsidian.LoadOrDetectConfig(dataDir)
+		obsidian.ApplyEnvOverrides(&cfg)
+
+		if cfg.Enabled && cfg.VaultPath != "" {
+			cfg.StateFile = filepath.Join(dataDir, ".obsidian-sync-state")
+			syncCtx, cancel := context.WithCancel(context.Background())
+			obsidianSyncCancel = cancel
+
+			// Wire store methods into callbacks to avoid import cycles
+			embedFn := func(text string) ([]float32, error) {
+				return swappableEmbedder.Embed(text)
+			}
+			upsertFn := func(vec []float32, doc, id string, meta map[string]string, collection string) error {
+				_, err := store.Upsert(vec, doc, id, meta, collection, "default")
+				return err
+			}
+			deleteFn := func(id string) error {
+				return store.Delete(id)
+			}
+			iterFn := func(collection string, fn func(id string, meta map[string]string) bool) {
+				type snapshotEntry struct {
+					id   string
+					meta map[string]string
+				}
+
+				store.RLock()
+				entries := make([]snapshotEntry, 0, store.Count)
+				for i := 0; i < store.Count; i++ {
+					docID := store.GetID(i)
+					hid := hashID(docID)
+					if store.Deleted[hid] {
+						continue
+					}
+					if collection != "" && store.Coll[hid] != collection {
+						continue
+					}
+					metaCopy := make(map[string]string, len(store.Meta[hid]))
+					for k, v := range store.Meta[hid] {
+						metaCopy[k] = v
+					}
+					entries = append(entries, snapshotEntry{id: docID, meta: metaCopy})
+				}
+				store.RUnlock()
+
+				for _, entry := range entries {
+					if !fn(entry.id, entry.meta) {
+						break
+					}
+				}
+			}
+
+			go obsidian.SyncLoop(syncCtx, cfg, logger, embedFn, upsertFn, deleteFn, iterFn)
+			logger.Info("obsidian auto-sync started", "vault", cfg.VaultPath, "interval", cfg.Interval)
+		} else if vaults := obsidian.DetectVaults(); len(vaults) > 0 {
+			logger.Info("obsidian vault detected (not syncing — set OBSIDIAN_VAULT to enable)",
+				"vault", vaults[0])
+		}
+	}
+
 	// Setup graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -2305,6 +2377,11 @@ func main() {
 	fmt.Println(">>> Server running. Press Ctrl+C to stop.")
 	sig := <-sigCh
 	fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
+
+	// Stop obsidian sync
+	if obsidianSyncCancel != nil {
+		obsidianSyncCancel()
+	}
 
 	// Graceful shutdown sequence
 	fmt.Println(">>> Shutting down HTTP server...")

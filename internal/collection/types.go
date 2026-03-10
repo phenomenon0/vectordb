@@ -1,7 +1,9 @@
 package collection
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // VectorType defines the type of vector stored in a field.
@@ -29,6 +31,40 @@ func (vt VectorType) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// MarshalJSON outputs the string form of VectorType.
+func (vt VectorType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(vt.String())
+}
+
+// UnmarshalJSON accepts both integer (0,1,2) and string ("dense","sparse","binary") forms.
+func (vt *VectorType) UnmarshalJSON(data []byte) error {
+	// Try int first
+	var n int
+	if err := json.Unmarshal(data, &n); err == nil {
+		if n < 0 || n > 2 {
+			return fmt.Errorf("unknown vector type: %d", n)
+		}
+		*vt = VectorType(n)
+		return nil
+	}
+	// Try string
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("vector type must be int or string, got: %s", string(data))
+	}
+	switch strings.ToLower(s) {
+	case "dense":
+		*vt = VectorTypeDense
+	case "sparse":
+		*vt = VectorTypeSparse
+	case "binary":
+		*vt = VectorTypeBinary
+	default:
+		return fmt.Errorf("unknown vector type: %s", s)
+	}
+	return nil
 }
 
 // ParseVectorType converts a string to VectorType.
@@ -82,6 +118,35 @@ func (it IndexType) String() string {
 	}
 }
 
+// MarshalJSON outputs the string form of IndexType.
+func (it IndexType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(it.String())
+}
+
+// UnmarshalJSON accepts both integer and string forms.
+func (it *IndexType) UnmarshalJSON(data []byte) error {
+	var n int
+	if err := json.Unmarshal(data, &n); err == nil {
+		if n < 0 || n > int(IndexTypeInverted) {
+			return fmt.Errorf("unknown index type: %d", n)
+		}
+		*it = IndexType(n)
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("index type must be int or string, got: %s", string(data))
+	}
+
+	parsed, err := ParseIndexType(strings.ToLower(s))
+	if err != nil {
+		return err
+	}
+	*it = parsed
+	return nil
+}
+
 // ParseIndexType converts a string to IndexType.
 func ParseIndexType(s string) (IndexType, error) {
 	switch s {
@@ -102,8 +167,8 @@ func ParseIndexType(s string) (IndexType, error) {
 
 // IndexConfig holds configuration for a specific index.
 type IndexConfig struct {
-	Type   IndexType
-	Params map[string]interface{}
+	Type   IndexType              `json:"type"`
+	Params map[string]interface{} `json:"params,omitempty"`
 }
 
 // VectorField defines a single vector field in a collection.
@@ -115,10 +180,10 @@ type IndexConfig struct {
 //   - Field "embedding": Dense, 384-dim, HNSW index
 //   - Field "keywords": Sparse, 10000-dim, Inverted index
 type VectorField struct {
-	Name   string      // Field name (e.g., "embedding", "keywords")
-	Type   VectorType  // Dense, Sparse, or Binary
-	Dim    int         // Vector dimension
-	Index  IndexConfig // Index configuration
+	Name  string      `json:"name"`  // Field name (e.g., "embedding", "keywords")
+	Type  VectorType  `json:"type"`  // Dense, Sparse, or Binary
+	Dim   int         `json:"dim"`   // Vector dimension
+	Index IndexConfig `json:"index"` // Index configuration
 }
 
 // Validate checks if the vector field configuration is valid.
@@ -152,10 +217,10 @@ func (vf *VectorField) Validate() error {
 
 // CollectionSchema defines the schema for a multi-vector collection.
 type CollectionSchema struct {
-	Name        string                 // Collection name
-	Fields      []VectorField          // Vector fields
-	Metadata    map[string]interface{} // Collection-level metadata
-	Description string                 // Human-readable description
+	Name        string                 `json:"name"`                  // Collection name
+	Fields      []VectorField          `json:"fields"`                // Vector fields
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`    // Collection-level metadata
+	Description string                 `json:"description,omitempty"` // Human-readable description
 }
 
 // Validate checks if the collection schema is valid.
@@ -207,9 +272,9 @@ func (cs *CollectionSchema) FieldCount() int {
 
 // Document represents a single document with multiple vector fields.
 type Document struct {
-	ID       uint64                            // Document ID
-	Vectors  map[string]interface{}            // Field name -> vector data
-	Metadata map[string]interface{}            // Document metadata
+	ID       uint64                 `json:"id"`                 // Document ID
+	Vectors  map[string]interface{} `json:"vectors,omitempty"`  // Field name -> vector data
+	Metadata map[string]interface{} `json:"metadata,omitempty"` // Document metadata
 }
 
 // Validate checks if the document matches the collection schema.
@@ -269,31 +334,37 @@ func (d *Document) SetMetadata(key string, value interface{}) {
 // SearchRequest represents a multi-vector search request.
 type SearchRequest struct {
 	// Collection to search
-	CollectionName string
+	CollectionName string `json:"collection_name"`
 
 	// Vector queries (field name -> query vector)
-	Queries map[string]interface{}
+	Queries map[string]interface{} `json:"queries"`
 
 	// Top-k results to return
-	TopK int
+	TopK int `json:"top_k"`
+
+	// HNSW ef_search override (0 = use server default)
+	EfSearch int `json:"ef_search,omitempty"`
+
+	// Whether to include vectors in the response (nil = default true)
+	IncludeVectors *bool `json:"include_vectors,omitempty"`
 
 	// Metadata filters (optional)
-	Filters map[string]interface{}
+	Filters map[string]interface{} `json:"filters,omitempty"`
 
 	// Hybrid search parameters (optional)
-	HybridParams *HybridSearchParams
+	HybridParams *HybridSearchParams `json:"hybrid_params,omitempty"`
 }
 
 // HybridSearchParams configures hybrid search across multiple vector fields.
 type HybridSearchParams struct {
 	// Fusion strategy: "rrf", "weighted", or "linear"
-	Strategy string
+	Strategy string `json:"strategy"`
 
 	// Field weights (for weighted fusion)
-	Weights map[string]float32
+	Weights map[string]float32 `json:"weights,omitempty"`
 
 	// RRF constant (default: 60)
-	RRFConstant float32
+	RRFConstant float32 `json:"rrf_constant,omitempty"`
 }
 
 // DefaultHybridParams returns recommended hybrid search parameters.
@@ -311,14 +382,14 @@ func DefaultHybridParams() *HybridSearchParams {
 // SearchResponse represents the results of a multi-vector search.
 type SearchResponse struct {
 	// Matched documents
-	Documents []Document
+	Documents []Document `json:"documents"`
 
 	// Scores for each document
-	Scores []float32
+	Scores []float32 `json:"scores"`
 
 	// Query execution time (milliseconds)
-	QueryTimeMs float64
+	QueryTimeMs float64 `json:"query_time_ms"`
 
 	// Number of candidates examined
-	CandidatesExamined int
+	CandidatesExamined int `json:"candidates_examined"`
 }

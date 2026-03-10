@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -119,5 +121,81 @@ func TestReadyzDoesNotCallEmbedder(t *testing.T) {
 	}
 	if emb.called {
 		t.Fatal("expected readyz to avoid embedder calls")
+	}
+}
+
+func TestVaultEndpointsRequireAdmin(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	store.requireAuth = true
+	store.apiToken = "secret-token"
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	handler := newHTTPHandler(store, emb, reranker, filepath.Join(t.TempDir(), "index.gob"))
+
+	req := httptest.NewRequest(http.MethodGet, "/vault/browse", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin vault access, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestObsidianEnableStoresConfigBesideIndex(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.gob")
+	handler := newHTTPHandler(store, emb, reranker, indexPath)
+
+	vaultDir := filepath.Join(dir, "vault")
+	if err := os.MkdirAll(vaultDir, 0o755); err != nil {
+		t.Fatalf("mkdir vault failed: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"vault":      vaultDir,
+		"collection": "obsidian",
+		"interval":   "1m",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/obsidian/enable", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 enabling obsidian, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "obsidian.json")); err != nil {
+		t.Fatalf("expected obsidian config in data directory: %v", err)
+	}
+}
+
+func TestVaultAnnotationsStoreBesideIndex(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	dir := t.TempDir()
+	handler := newHTTPHandler(store, emb, reranker, filepath.Join(dir, "index.gob"))
+
+	body, _ := json.Marshal(map[string]any{
+		"id":     "ann-1",
+		"doc_id": "doc-1",
+		"text":   "note",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/vault/annotations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 storing annotation, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "annotations.json")); err != nil {
+		t.Fatalf("expected annotations file in data directory: %v", err)
 	}
 }
