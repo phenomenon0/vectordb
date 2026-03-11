@@ -4,15 +4,14 @@
 
 ### JWT Authentication
 
-VectorDB uses JWT tokens for multi-tenant authentication.
+DeepData uses JWT tokens for multi-tenant authentication.
 
 #### Enable Authentication
 
 ```bash
-# Set a strong secret (32+ characters)
 export JWT_SECRET="your-very-long-secret-key-at-least-32-chars"
 export JWT_REQUIRED=true
-./vectordb-server
+./deepdata serve
 ```
 
 #### Generate Tokens
@@ -20,13 +19,13 @@ export JWT_REQUIRED=true
 **Using the CLI:**
 ```bash
 # Admin token
-vectordb-cli gentoken --tenant admin --permissions admin --secret "$JWT_SECRET"
+deepdata-cli gentoken --tenant admin --permissions admin --secret "$JWT_SECRET"
 
 # Read-only token
-vectordb-cli gentoken --tenant viewer --permissions read --secret "$JWT_SECRET"
+deepdata-cli gentoken --tenant viewer --permissions read --secret "$JWT_SECRET"
 
 # Scoped to specific collections
-vectordb-cli gentoken --tenant partner --permissions read,write \
+deepdata-cli gentoken --tenant partner --permissions read,write \
   --collections public,shared --expires 168h --secret "$JWT_SECRET"
 ```
 
@@ -50,7 +49,7 @@ curl -X POST http://localhost:8080/admin/tokens \
   "tenant_id": "customer-1",
   "permissions": ["read", "write"],
   "collections": ["docs", "images"],
-  "iss": "vectordb",
+  "iss": "deepdata",
   "exp": 1735689600
 }
 ```
@@ -60,7 +59,7 @@ curl -X POST http://localhost:8080/admin/tokens \
 For simpler setups, use a static API token:
 ```bash
 export API_TOKEN="your-api-key"
-./vectordb-server
+./deepdata serve
 ```
 
 Clients include it as a header:
@@ -72,13 +71,13 @@ curl -H "Authorization: Bearer your-api-key" http://localhost:8080/health
 
 ### Self-Signed Certificate (Development)
 
-VectorDB can generate self-signed certificates:
+DeepData can generate self-signed certificates:
 ```bash
 export TLS_ENABLED=true
 export TLS_CERT_FILE=cert.pem
 export TLS_KEY_FILE=key.pem
 export TLS_AUTO_CERT=true  # auto-generate if files don't exist
-./vectordb-server
+./deepdata serve
 ```
 
 ### Production TLS
@@ -86,10 +85,10 @@ export TLS_AUTO_CERT=true  # auto-generate if files don't exist
 Use real certificates from Let's Encrypt or your CA:
 ```bash
 export TLS_ENABLED=true
-export TLS_CERT_FILE=/etc/vectordb/tls/tls.crt
-export TLS_KEY_FILE=/etc/vectordb/tls/tls.key
+export TLS_CERT_FILE=/etc/deepdata/tls/tls.crt
+export TLS_KEY_FILE=/etc/deepdata/tls/tls.key
 export TLS_MIN_VERSION=1.2
-./vectordb-server
+./deepdata serve
 ```
 
 ### Mutual TLS (mTLS)
@@ -101,7 +100,7 @@ export TLS_CERT_FILE=server.crt
 export TLS_KEY_FILE=server.key
 export TLS_CLIENT_CA=ca.crt
 export TLS_CLIENT_AUTH=require
-./vectordb-server
+./deepdata serve
 ```
 
 ## Authorization (RBAC)
@@ -110,9 +109,9 @@ export TLS_CLIENT_AUTH=require
 
 | Permission | Allows |
 |------------|--------|
-| `read` | Query, health check |
+| `read` | Query, scroll, health check |
 | `write` | Insert, delete, upsert |
-| `admin` | All operations + tenant management |
+| `admin` | All operations + tenant management + audit access |
 
 ### Collection-Level Access
 
@@ -130,8 +129,9 @@ Requests to other collections return `403 Forbidden`.
 ### Per-Tenant Rate Limiting
 
 ```bash
-# Global rate limit
+# Global rate limit (all tenants)
 export TENANT_RPS=100
+export TENANT_BURST=100
 
 # Or set per-tenant via admin API
 curl -X POST http://localhost:8080/admin/ratelimit/set \
@@ -149,38 +149,49 @@ curl -X POST http://localhost:8080/admin/quota/set \
 
 ## Encryption at Rest
 
-VectorDB supports AES-256-GCM and ChaCha20-Poly1305 encryption:
+DeepData supports AES-256-GCM and ChaCha20-Poly1305 encryption for all persisted data:
 
 ```bash
 export ENCRYPTION_ENABLED=true
 export ENCRYPTION_PASSPHRASE="your-encryption-passphrase"
 export ENCRYPTION_ALGORITHM=aes-256-gcm  # or chacha20-poly1305
-./vectordb-server
+./deepdata serve
 ```
 
-Key derivation uses Argon2id with configurable parameters.
+- **AES-256-GCM**: Default. Hardware-accelerated on modern CPUs (AES-NI).
+- **ChaCha20-Poly1305**: Better performance on hardware without AES-NI.
+- **Key derivation**: Argon2id with configurable parameters. Keys are never stored directly — they're derived from the passphrase at startup.
+
+Encrypted files use a binary header with magic bytes `VDBE`, making it easy to identify encrypted vs. plaintext data files.
 
 ## Audit Logging
 
-All write and admin operations are logged:
+Track all write, admin, and auth operations:
 
 ```bash
 export AUDIT_LOG=true
-export AUDIT_LOG_FILE=/var/log/vectordb/audit.log
-./vectordb-server
+export AUDIT_LOG_FILE=/var/log/deepdata/audit.log
+./deepdata serve
 ```
 
 Audit log format:
 ```json
 {
-  "timestamp": "2025-12-01T10:30:00Z",
+  "timestamp": "2026-03-01T10:30:00Z",
   "tenant_id": "customer-1",
   "action": "insert",
   "collection": "docs",
   "doc_id": "abc123",
+  "outcome": "success",
   "ip": "10.0.0.5"
 }
 ```
+
+25+ event types across categories: authentication, RBAC, vector operations, admin actions, cluster events, and system events.
+
+## gRPC Security
+
+gRPC on port 50051 inherits the same JWT/TLS configuration as HTTP. When TLS is enabled, gRPC uses the same certificate. Requests without valid tokens are rejected at the interceptor level.
 
 ## Network Security Checklist
 
@@ -189,8 +200,10 @@ Audit log format:
 - [ ] Enable `JWT_REQUIRED=true` to block unauthenticated access
 - [ ] Set per-tenant rate limits to prevent abuse
 - [ ] Set storage quotas for multi-tenant deployments
+- [ ] Enable encryption at rest for sensitive data
 - [ ] Enable audit logging for compliance
 - [ ] Restrict network access (firewall, security groups)
 - [ ] Use mTLS for service-to-service communication
 - [ ] Rotate JWT secrets periodically
 - [ ] Monitor `/metrics` endpoint for anomalies
+- [ ] Review audit logs regularly

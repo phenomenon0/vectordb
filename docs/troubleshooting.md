@@ -8,7 +8,7 @@ listen tcp :8080: bind: address already in use
 ```
 **Fix**: Another process is using port 8080. Either stop it or change the port:
 ```bash
-PORT=8081 ./vectordb-server
+PORT=8081 ./deepdata serve
 ```
 
 ### Permission denied on data directory
@@ -17,28 +17,31 @@ failed to create data directory: permission denied
 ```
 **Fix**: Ensure the user has write access:
 ```bash
-sudo mkdir -p /var/lib/vectordb
-sudo chown $USER /var/lib/vectordb
-DATA_DIR=/var/lib/vectordb ./vectordb-server
+sudo mkdir -p /var/lib/deepdata
+sudo chown $USER /var/lib/deepdata
+DATA_DIR=/var/lib/deepdata ./deepdata serve
 ```
 
 ### Out of memory at startup
 **Fix**: Reduce initial capacity and use hash embedder for minimal memory:
 ```bash
-VECTOR_CAPACITY=100 USE_HASH_EMBEDDER=1 ./vectordb-server
+VECTOR_CAPACITY=100 USE_HASH_EMBEDDER=1 ./deepdata serve
 ```
 
-### ONNX embedder fails to load
+### Embedder fails to connect
 ```
-failed to initialize embedder: onnx session error
+failed to initialize embedder: connection refused
 ```
-**Fix**: Either install the ONNX model or fall back to hash embedder:
+**Fix**: Either ensure Ollama is running or fall back to hash embedder:
 ```bash
-# Option 1: Download model
-wget https://huggingface.co/BAAI/bge-small-en/resolve/main/model.onnx -O models/bge-small-en.onnx
+# Option 1: Start Ollama
+ollama serve
 
-# Option 2: Use hash embedder
-USE_HASH_EMBEDDER=1 ./vectordb-server
+# Option 2: Use hash embedder (no external dependencies)
+USE_HASH_EMBEDDER=1 ./deepdata serve
+
+# Option 3: Use OpenAI
+VECTORDB_MODE=pro OPENAI_API_KEY=sk-... ./deepdata serve
 ```
 
 ---
@@ -47,19 +50,25 @@ USE_HASH_EMBEDDER=1 ./vectordb-server
 
 ### Client can't connect
 ```
-vectordb: connection failed: dial tcp 127.0.0.1:8080: connect: connection refused
+connection failed: dial tcp 127.0.0.1:8080: connect: connection refused
 ```
 **Fix**: Verify the server is running and the URL is correct:
 ```bash
 curl http://localhost:8080/health
-# If using a different port:
-VECTORDB_URL=http://localhost:8081 vectordb-cli health
+```
+
+### gRPC connection refused
+**Fix**: gRPC runs on port 50051 by default, separate from HTTP:
+```bash
+# Check gRPC port
+curl http://localhost:8080/health  # HTTP
+grpcurl -plaintext localhost:50051 list  # gRPC
+
+# Change gRPC port
+GRPC_PORT=50052 ./deepdata serve
 ```
 
 ### Request timeout
-```
-vectordb: request timed out
-```
 **Fix**: The server is overloaded or the query is too complex:
 - Reduce `top_k` value
 - Use `mode: "ann"` instead of `"scan"`
@@ -68,17 +77,21 @@ vectordb: request timed out
 ### 401 Unauthorized
 **Fix**: Authentication is enabled. Set your token:
 ```bash
-# CLI
-VECTORDB_TOKEN=your-token vectordb-cli health
+# curl
+curl -H "Authorization: Bearer your-token" http://localhost:8080/health
 
 # Go client
 c := client.New(url, client.WithToken("your-token"))
+
+# Python client
+from deepdata import DeepDataClient
+c = DeepDataClient(url, api_key="your-token")
 ```
 
 ### 429 Too Many Requests
 **Fix**: You're being rate-limited. The client auto-retries with backoff. To increase limits:
 ```bash
-TENANT_RPS=500 ./vectordb-server
+TENANT_RPS=500 TENANT_BURST=500 ./deepdata serve
 ```
 
 ---
@@ -86,13 +99,13 @@ TENANT_RPS=500 ./vectordb-server
 ## Query Issues
 
 ### Empty results
-- Verify documents exist: `vectordb-cli stats`
+- Verify documents exist: `deepdata-cli stats`
 - Check collection name matches: queries default to the `"default"` collection
 - If using metadata filters, verify metadata was set during insert
 - For ANN mode, the HNSW index needs at least a few vectors to work
 
 ### Low quality results / wrong documents returned
-- **Hash embedder**: Only useful for testing. Use ONNX or external embedder for semantic search
+- **Hash embedder**: Only useful for testing. Use Ollama or OpenAI for semantic search
 - **Dimension mismatch**: Ensure query and stored vectors use the same embedding model
 - **Try scan mode**: `"mode": "scan"` does exact search (slower but guaranteed correct)
 - **Increase ef_search**: `"ef_search": 200` improves recall at cost of latency
@@ -124,29 +137,40 @@ failed to load snapshot: gob decode error
 **Fix**: The snapshot format may have changed between versions. Export data and re-import:
 ```bash
 # If the old binary can still start:
-vectordb-cli export --output backup.jsonl
+deepdata-cli export --output backup.jsonl
 # Start with new binary
-vectordb-cli import --file backup.jsonl
+deepdata-cli import --file backup.jsonl
 ```
 
 ### Disk full
 **Fix**: Enable auto-compaction to reclaim deleted vector space:
 ```bash
-COMPACT_INTERVAL_MIN=60 ./vectordb-server
+COMPACT_INTERVAL_MIN=60 ./deepdata serve
 ```
 Or trigger manual compaction:
 ```bash
 curl -X POST http://localhost:8080/compact
 ```
 
+### Encrypted data on wrong binary
+```
+failed to read data: invalid header
+```
+**Fix**: If encryption was enabled, you need the same passphrase to decrypt:
+```bash
+ENCRYPTION_ENABLED=true ENCRYPTION_PASSPHRASE="original-passphrase" ./deepdata serve
+```
+Encrypted files have a `VDBE` magic header. You can check with `hexdump -C data/file | head -1`.
+
 ---
 
 ## Performance Issues
 
 ### Slow inserts
-- Use **batch insert** (`/batch_insert`) instead of single inserts — 10-100x faster
-- CLI: `vectordb-cli import --file data.jsonl --batch-size 500`
+- Use **batch insert** (`/batch/insert`) instead of single inserts — 10-100x faster
+- CLI: `deepdata-cli import --file data.jsonl --batch-size 500`
 - Reduce WAL rotation frequency: `WAL_MAX_OPS=5000`
+- For maximum throughput, use **gRPC** (port 50051) — ~2x over HTTP
 
 ### Slow queries
 - Use **ANN mode** (default) instead of scan mode
@@ -173,7 +197,7 @@ Compaction rebuilds the HNSW index. This is CPU-intensive but temporary:
 ### Container exits immediately
 Check logs:
 ```bash
-docker compose logs vectordb
+docker compose logs deepdata
 ```
 Common causes: port conflict, missing volume mount, environment misconfiguration.
 
@@ -181,7 +205,7 @@ Common causes: port conflict, missing volume mount, environment misconfiguration
 Ensure a volume is mounted:
 ```yaml
 volumes:
-  - vectordb-data:/data
+  - deepdata-data:/data
 ```
 
 ### Health check failing
@@ -198,9 +222,12 @@ healthcheck:
 ### Generate a test token
 ```bash
 # Set JWT_SECRET on the server
-JWT_SECRET=my-secret ./vectordb-server
+JWT_SECRET=my-secret ./deepdata serve
 
-# Generate token
+# Generate token with CLI
+deepdata-cli gentoken --tenant test --permissions read,write --secret my-secret
+
+# Or via admin API
 curl -X POST http://localhost:8080/admin/tokens \
   -H "Content-Type: application/json" \
   -d '{"tenant_id": "test", "permissions": ["read", "write"]}'
@@ -226,15 +253,8 @@ go mod download
 go mod tidy
 ```
 
-### ONNX build tag issues
-ONNX embedder requires the `onnx` build tag:
-```bash
-go build -tags onnx -o vectordb-server ./vectordb/
-```
-Without it, the hash embedder is used as fallback (no error, just different embedding quality).
-
 ### CGO issues
-VectorDB can be built without CGO for maximum portability:
+DeepData can be built without CGO for maximum portability:
 ```bash
-CGO_ENABLED=0 go build -o vectordb-server ./vectordb/
+CGO_ENABLED=0 go build -o deepdata ./cmd/deepdata
 ```

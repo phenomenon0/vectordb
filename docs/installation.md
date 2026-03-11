@@ -10,9 +10,8 @@
 ## Quick Start (Docker)
 
 ```bash
-# Clone and start
-git clone https://github.com/phenomenon0/Agent-GO.git
-cd Agent-GO/vectordb
+git clone https://github.com/phenomenon0/vectordb.git
+cd vectordb
 docker compose up -d
 
 # Verify
@@ -22,32 +21,40 @@ curl http://localhost:8080/health
 ## Build from Source
 
 ```bash
-# Clone
-git clone https://github.com/phenomenon0/Agent-GO.git
-cd Agent-GO
+git clone https://github.com/phenomenon0/vectordb.git
+cd vectordb
 
 # Build server
-go build -o vectordb-server ./vectordb/
+go build -o deepdata ./cmd/deepdata
 
 # Build CLI
-go build -o vectordb-cli ./vectordb/cmd/vectordb-cli/
+go build -o deepdata-cli ./cmd/cli
 
 # Run
-./vectordb-server
+./deepdata serve
+```
+
+## Pre-built Binaries
+
+Download from [GitHub Releases](https://github.com/phenomenon0/vectordb/releases/latest). No Go toolchain required:
+
+```bash
+chmod +x deepdata-linux-amd64
+./deepdata-linux-amd64 serve
 ```
 
 ## Go Client Library
 
 ```bash
-go get github.com/phenomenon0/Agent-GO/vectordb/client
+go get github.com/phenomenon0/vectordb/client
 ```
 
 ```go
-import "github.com/phenomenon0/Agent-GO/vectordb/client"
+import "github.com/phenomenon0/vectordb/client"
 
 c := client.New("http://localhost:8080")
 resp, err := c.Insert(ctx, client.InsertRequest{
-    Doc: "Hello world",
+    Doc:        "Hello world",
     Collection: "docs",
 })
 ```
@@ -55,62 +62,78 @@ resp, err := c.Insert(ctx, client.InsertRequest{
 ## Python Client
 
 ```bash
-pip install vectordb-client
+pip install deepdata
 ```
 
 ```python
-from vectordb import VectorDBClient
+from deepdata import DeepDataClient
 
-client = VectorDBClient("http://localhost:8080")
-client.insert(doc="Hello world", collection="docs")
+client = DeepDataClient("http://localhost:8080")
+client.insert("Hello world", collection="docs")
+results = client.search("Hello", top_k=5, collection="docs")
 ```
 
-## TypeScript/JavaScript Client
+Async variant:
 
-```bash
-npm install vectordb-js
-```
+```python
+from deepdata import AsyncDeepDataClient
 
-```typescript
-import { VectorDBClient } from 'vectordb-js';
-
-const client = new VectorDBClient('http://localhost:8080');
-await client.insert({ doc: 'Hello world', collection: 'docs' });
+async with AsyncDeepDataClient("http://localhost:8080") as client:
+    results = await client.search("Hello", top_k=5)
 ```
 
 ## Configuration
 
-VectorDB is configured via environment variables:
+DeepData is configured via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP server port |
+| `GRPC_PORT` | `50051` | gRPC server port |
 | `DATA_DIR` | `./data` | Data directory for persistence |
 | `LOG_LEVEL` | `info` | Log level: debug, info, warn, error |
 | `LOG_FORMAT` | `json` | Log format: json or text |
+| `VECTORDB_MODE` | `local` | Embedder mode: local (Ollama), pro (OpenAI) |
 | `JWT_SECRET` | _(empty)_ | JWT signing secret (enables auth) |
 | `JWT_REQUIRED` | `false` | Require JWT for all requests |
+| `API_TOKEN` | _(empty)_ | Simple bearer token auth |
+| `MAX_COLLECTIONS` | `10000` | Maximum number of collections |
+| `MAX_TENANTS` | `100000` | Maximum number of tenants |
+| `TENANT_RPS` | `100` | Per-tenant rate limit (requests/sec) |
+| `TENANT_BURST` | `100` | Per-tenant burst allowance |
+| `STORAGE_FORMAT` | `gob` | Serialization: gob, cowrie, cowrie-zstd |
 | `WAL_MAX_BYTES` | `5242880` | WAL file size limit (5MB) |
 | `WAL_MAX_OPS` | `1000` | WAL ops before rotation |
 | `VECTOR_CAPACITY` | `1000` | Initial vector store capacity |
-| `USE_HASH_EMBEDDER` | `0` | Use hash embedder (low-memory) |
+| `USE_HASH_EMBEDDER` | `0` | Use hash embedder (low-memory/benchmarks) |
 | `COMPACT_INTERVAL_MIN` | _(disabled)_ | Auto-compact interval in minutes |
 | `SNAPSHOT_EXPORT_PATH` | _(empty)_ | Auto-export snapshot path |
+| `ENCRYPTION_ENABLED` | `false` | Enable encryption at rest |
+| `ENCRYPTION_PASSPHRASE` | _(empty)_ | Encryption passphrase |
+| `ENCRYPTION_ALGORITHM` | `aes-gcm` | aes-gcm or chacha20 |
+| `AUDIT_LOG` | `false` | Enable audit logging |
+| `AUDIT_LOG_FILE` | _(empty)_ | Audit log file path |
+| `TLS_ENABLED` | `false` | Enable TLS |
+| `TLS_CERT_FILE` | _(empty)_ | TLS certificate file |
+| `TLS_KEY_FILE` | _(empty)_ | TLS private key file |
+| `TLS_CLIENT_AUTH` | _(empty)_ | mTLS client auth mode (require) |
+| `TLS_MIN_VERSION` | `1.2` | Minimum TLS version |
 
 ## systemd Service
 
 ```ini
-# /etc/systemd/system/vectordb.service
+# /etc/systemd/system/deepdata.service
 [Unit]
-Description=VectorDB Server
+Description=DeepData Vector Database
 After=network.target
 
 [Service]
 Type=simple
-User=vectordb
-ExecStart=/usr/local/bin/vectordb-server
+User=deepdata
+ExecStart=/usr/local/bin/deepdata serve
 Environment=PORT=8080
-Environment=DATA_DIR=/var/lib/vectordb
+Environment=GRPC_PORT=50051
+Environment=DATA_DIR=/var/lib/deepdata
 Environment=LOG_LEVEL=info
 Restart=on-failure
 RestartSec=5
@@ -121,7 +144,7 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now vectordb
+sudo systemctl enable --now deepdata
 ```
 
 ## Verify Installation
@@ -129,6 +152,12 @@ sudo systemctl enable --now vectordb
 ```bash
 # Health check
 curl -s http://localhost:8080/health | jq .
+
+# Liveness probe
+curl -s http://localhost:8080/healthz
+
+# Readiness probe
+curl -s http://localhost:8080/readyz
 
 # Insert a test document
 curl -X POST http://localhost:8080/insert \
@@ -141,7 +170,7 @@ curl -X POST http://localhost:8080/query \
   -d '{"query": "test", "top_k": 3}'
 
 # Using the CLI
-vectordb-cli health
-vectordb-cli insert --doc "test document" --collection test
-vectordb-cli query --query "test" --top-k 3
+deepdata-cli health
+deepdata-cli insert --doc "test document" --collection test
+deepdata-cli query --query "test" --top-k 3
 ```

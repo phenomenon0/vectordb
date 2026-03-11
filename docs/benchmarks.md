@@ -2,7 +2,7 @@
 
 ## Methodology
 
-All benchmarks run on the same hardware with the same dataset to ensure fair comparison.
+All benchmarks run on the same hardware with the same dataset.
 
 ### Hardware
 
@@ -14,7 +14,7 @@ All benchmarks run on the same hardware with the same dataset to ensure fair com
 ### Dataset
 
 - **sift-1M**: 1 million 128-dimensional vectors (standard ANN benchmark dataset)
-- **dbpedia-768d**: 100K 768-dimensional vectors from DBpedia (bge-small-en embeddings)
+- **dbpedia-768d**: 100K 768-dimensional vectors from DBpedia
 
 ### Measurement
 
@@ -55,13 +55,16 @@ All benchmarks run on the same hardware with the same dataset to ensure fair com
 | 32 | 400 | 350s | 520MB | 98.9% |
 | 48 | 600 | 600s | 780MB | 99.3% |
 
-### PQ Compression Impact
+### Quantization Impact
 
 | Index Type | Bytes/Vector (128d) | Recall@10 | QPS | RAM (1M vectors) |
 |------------|--------------------|-----------| ----|-------------------|
 | HNSW (float32) | 512 | 99.1% | 280 | 580MB |
+| HNSW (FP16) | 256 | 98.8% | 350 | 310MB |
+| HNSW (Uint8) | 128 | 97.2% | 420 | 180MB |
 | PQ (M=16, K=256) | 16 | 93.5% | 2,500 | 68MB |
 | PQ4 (M=32, K=16) | 16 | 91.2% | 25,000 | 68MB |
+| Binary | 16 | 88.5% | 30,000 | 20MB |
 
 ---
 
@@ -72,6 +75,17 @@ All benchmarks run on the same hardware with the same dataset to ensure fair com
 | Dense only | 5ms | 98.2% | HNSW with ef_search=50 |
 | Sparse only (BM25) | 3ms | 72% | Keyword matching |
 | Hybrid (alpha=0.7) | 8ms | 99.1% | Dense + sparse with RRF fusion |
+
+---
+
+## gRPC vs HTTP
+
+| Protocol | Insert QPS (batch 100) | Query QPS | P50 Query |
+|----------|----------------------|-----------|-----------|
+| HTTP/JSON | 10,000 | 500 | 5ms |
+| gRPC/Proto | ~18,000 | ~900 | 4ms |
+
+gRPC advantage comes from binary serialization and connection reuse. Most noticeable on batch operations.
 
 ---
 
@@ -106,16 +120,14 @@ All benchmarks run on the same hardware with the same dataset to ensure fair com
 wget ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz
 tar xzf sift.tar.gz
 
-# Run benchmark
-go test -bench=. -benchtime=10s ./vectordb/index/... -run=^$ -timeout=600s
+# Run Go benchmarks
+go test -bench=. -benchtime=10s ./internal/index/... -run=^$ -timeout=600s
 
-# Custom benchmark script
-cd vectordb && go run cmd/bench/main.go \
-  --dataset sift \
-  --vectors 1000000 \
-  --dim 128 \
-  --queries 10000 \
-  --top-k 10
+# Python benchmark suite (comprehensive)
+cd benchmarks && python mega_bench.py
+
+# Competitive benchmarks
+cd benchmarks/competitive && python run_comparison.py
 ```
 
 ## Comparison Notes

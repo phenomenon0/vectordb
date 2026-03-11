@@ -1,4 +1,4 @@
-# VectorDB Cookbook
+# DeepData Cookbook
 
 Practical recipes for common use cases.
 
@@ -11,9 +11,9 @@ Retrieval-Augmented Generation: store documents, retrieve relevant chunks, feed 
 ### Ingest Documents
 
 ```python
-from vectordb import VectorDBClient
+from deepdata import DeepDataClient
 
-client = VectorDBClient("http://localhost:8080")
+client = DeepDataClient("http://localhost:8080")
 
 # Split documents into chunks (400-800 tokens each)
 chunks = [
@@ -23,7 +23,7 @@ chunks = [
 ]
 
 # Batch insert
-client.insert_batch(chunks, collection="knowledge-base")
+client.batch_insert(chunks, collection="knowledge-base")
 ```
 
 ### Retrieve & Generate
@@ -35,11 +35,10 @@ def rag_query(question: str, llm_client) -> str:
         query=question,
         top_k=5,
         collection="knowledge-base",
-        include_meta=True
     )
 
     # 2. Build context
-    context = "\n\n".join(results.docs)
+    context = "\n\n".join(r.doc for r in results)
 
     # 3. Generate answer
     response = llm_client.chat([
@@ -50,32 +49,13 @@ def rag_query(question: str, llm_client) -> str:
     return response
 ```
 
-### With LangChain
-
-```python
-from vectordb.integrations.langchain import VectorDBVectorStore
-from langchain.chains import RetrievalQA
-
-vectorstore = VectorDBVectorStore(
-    url="http://localhost:8080",
-    collection="knowledge-base"
-)
-
-qa = RetrievalQA.from_chain_type(
-    llm=your_llm,
-    retriever=vectorstore.as_retriever(search_kwargs={"k": 5})
-)
-
-answer = qa.run("What is Rust?")
-```
-
 ---
 
 ## 2. Hybrid Search (Dense + Sparse)
 
 Combine semantic (dense) search with keyword (BM25) matching for best recall.
 
-### Setup with v2 API
+### Setup with V2 API
 
 ```bash
 # Create a hybrid collection
@@ -122,14 +102,14 @@ Isolate data per customer with JWT authentication.
 ### Setup
 
 ```bash
-JWT_SECRET="$(openssl rand -hex 32)" JWT_REQUIRED=true ./vectordb-server
+JWT_SECRET="$(openssl rand -hex 32)" JWT_REQUIRED=true ./deepdata serve
 ```
 
 ### Provision a Customer
 
 ```bash
 # Generate customer token
-TOKEN=$(vectordb-cli gentoken --tenant customer-42 \
+TOKEN=$(deepdata-cli gentoken --tenant customer-42 \
   --permissions read,write \
   --collections customer-42-docs \
   --expires 8760h \
@@ -149,15 +129,17 @@ curl -X POST http://localhost:8080/admin/ratelimit/set \
 ### Customer Usage
 
 ```python
+from deepdata import DeepDataClient
+
 # Customer's application uses their token
-client = VectorDBClient(
-    "http://vectordb.yourservice.com",
+client = DeepDataClient(
+    "http://deepdata.yourservice.com",
     api_key=customer_token
 )
 
 # They can only access their collection
-client.insert(doc="My document", collection="customer-42-docs")
-results = client.search(query="find this", collection="customer-42-docs")
+client.insert("My document", collection="customer-42-docs")
+results = client.search("find this", collection="customer-42-docs")
 
 # Access to other collections is denied (403)
 ```
@@ -213,27 +195,35 @@ curl -X POST http://localhost:8080/compact
 
 ---
 
-## 5. Embedding Model Selection
+## 5. Embedding Modes
 
-### Built-in: bge-small-en (Default)
+### Local (Ollama)
 
-- **Dimension**: 384
-- **Speed**: 3-8ms/query on CPU
-- **Quality**: Good for English text
-- **Size**: ~33MB ONNX model
-
-Best for: General English text, low-resource deployments.
-
-### Using External Embeddings
-
-If you need multilingual, code, or domain-specific embeddings:
+Default mode. Requires Ollama running locally:
 
 ```bash
-# Disable built-in embedder
-USE_HASH_EMBEDDER=1 ./vectordb-server
+VECTORDB_MODE=local ./deepdata serve
 ```
 
-Then embed client-side and use the raw vector API:
+### Pro (OpenAI)
+
+Uses OpenAI's `text-embedding-3-small` (~$0.02/1M tokens):
+
+```bash
+VECTORDB_MODE=pro OPENAI_API_KEY=sk-... ./deepdata serve
+```
+
+### Hash Embedder (Benchmarking)
+
+Deterministic hash — zero network calls, zero cost. Not semantically meaningful, but useful for benchmarking insert/query throughput:
+
+```bash
+USE_HASH_EMBEDDER=1 ./deepdata serve
+```
+
+### Bring Your Own Embeddings
+
+Embed client-side and send raw vectors:
 
 ```python
 import openai
@@ -251,15 +241,13 @@ requests.post("http://localhost:8080/insert", json={
 })
 ```
 
-### Model Comparison
+### Direct Embedding Endpoint
 
-| Model | Dim | Speed | Quality | Use Case |
-|-------|-----|-------|---------|----------|
-| bge-small-en | 384 | 3-8ms | Good | English text, low resource |
-| bge-base-en | 768 | 10-20ms | Better | English, higher quality |
-| e5-large | 1024 | 30-50ms | Best | Maximum quality |
-| text-embedding-3-small | 1536 | API call | Great | Multilingual, API-based |
-| nomic-embed-text | 768 | 5-15ms | Good | Open source, multilingual |
+Get embeddings without inserting:
+
+```bash
+curl -X POST http://localhost:8080/api/embed -d '{"text":"hello world"}'
+```
 
 ---
 
@@ -268,20 +256,17 @@ requests.post("http://localhost:8080/insert", json={
 ### Automated Snapshots
 
 ```bash
-# Export every 30 minutes to a backup path
-SNAPSHOT_EXPORT_PATH=/backup/vectordb
-EXPORT_INTERVAL_MIN=30
-./vectordb-server
+SNAPSHOT_EXPORT_PATH=/backup/deepdata EXPORT_INTERVAL_MIN=30 ./deepdata serve
 ```
 
 ### Manual Backup
 
 ```bash
 # Export
-curl -s http://localhost:8080/export > vectordb-backup-$(date +%Y%m%d).bin
+curl -s http://localhost:8080/export > deepdata-backup-$(date +%Y%m%d).bin
 
 # Restore
-curl -X POST http://localhost:8080/import --data-binary @vectordb-backup-20250101.bin
+curl -X POST http://localhost:8080/import --data-binary @deepdata-backup-20260101.bin
 ```
 
 ### Backup Strategy
@@ -291,12 +276,13 @@ curl -X POST http://localhost:8080/import --data-binary @vectordb-backup-2025010
 | WAL replay | ~seconds | WAL files persist all writes |
 | Periodic snapshot | 30-60min | `EXPORT_INTERVAL_MIN` |
 | External backup | daily | CronJob + object storage |
+| Streaming replication | ~real-time | WAL shipping to replicas |
 
 ### Testing Restore
 
 ```bash
 # Start fresh instance
-DATA_DIR=/tmp/restore-test PORT=8081 ./vectordb-server &
+DATA_DIR=/tmp/restore-test PORT=8081 ./deepdata serve &
 
 # Import backup
 curl -X POST http://localhost:8081/import --data-binary @backup.bin
@@ -304,3 +290,43 @@ curl -X POST http://localhost:8081/import --data-binary @backup.bin
 # Verify
 curl http://localhost:8081/health | jq .total
 ```
+
+---
+
+## 7. gRPC Usage
+
+DeepData exposes gRPC on port 50051 (configurable via `GRPC_PORT`). Same operations as the HTTP API, protobuf-encoded for lower overhead.
+
+### Go Client via gRPC
+
+```go
+import (
+    pb "github.com/phenomenon0/vectordb/api/proto/deepdata/v1"
+    "google.golang.org/grpc"
+)
+
+conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+client := pb.NewDeepDataServiceClient(conn)
+
+// Insert
+resp, err := client.Insert(ctx, &pb.InsertRequest{
+    Doc:        "Hello world",
+    Collection: "docs",
+})
+
+// Search
+results, err := client.Search(ctx, &pb.SearchRequest{
+    Query: "Hello",
+    TopK:  5,
+})
+```
+
+### When to Use gRPC vs HTTP
+
+| | HTTP | gRPC |
+|---|---|---|
+| Ease of use | curl, any language | Needs protobuf codegen |
+| Throughput | Good | ~2x higher |
+| Payload size | JSON overhead | Compact binary |
+| Streaming | No | Yes |
+| Browser support | Yes | Needs grpc-web proxy |

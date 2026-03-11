@@ -5,33 +5,37 @@
 ### Single-Node Deployment
 
 ```yaml
-# vectordb-deployment.yaml
+# deepdata-deployment.yaml
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: vectordb
+  name: deepdata
   labels:
-    app: vectordb
+    app: deepdata
 spec:
-  serviceName: vectordb
+  serviceName: deepdata
   replicas: 1
   selector:
     matchLabels:
-      app: vectordb
+      app: deepdata
   template:
     metadata:
       labels:
-        app: vectordb
+        app: deepdata
     spec:
       containers:
-        - name: vectordb
+        - name: deepdata
           image: ghcr.io/phenomenon0/vectordb:latest
           ports:
             - containerPort: 8080
               name: http
+            - containerPort: 50051
+              name: grpc
           env:
             - name: PORT
               value: "8080"
+            - name: GRPC_PORT
+              value: "50051"
             - name: DATA_DIR
               value: /data
             - name: LOG_LEVEL
@@ -76,29 +80,32 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: vectordb
+  name: deepdata
 spec:
   selector:
-    app: vectordb
+    app: deepdata
   ports:
     - port: 8080
       targetPort: 8080
       name: http
+    - port: 50051
+      targetPort: 50051
+      name: grpc
   type: ClusterIP
 ```
 
 ```bash
-kubectl apply -f vectordb-deployment.yaml
+kubectl apply -f deepdata-deployment.yaml
 ```
 
 ### With Authentication
 
 ```yaml
-# vectordb-secret.yaml
+# deepdata-secret.yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: vectordb-auth
+  name: deepdata-auth
 type: Opaque
 stringData:
   jwt-secret: "your-jwt-secret-at-least-32-chars-long"
@@ -110,10 +117,35 @@ env:
   - name: JWT_SECRET
     valueFrom:
       secretKeyRef:
-        name: vectordb-auth
+        name: deepdata-auth
         key: jwt-secret
   - name: JWT_REQUIRED
     value: "true"
+```
+
+### With Encryption at Rest
+
+```yaml
+# deepdata-encryption-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: deepdata-encryption
+type: Opaque
+stringData:
+  passphrase: "your-encryption-passphrase"
+```
+
+Add to the container env:
+```yaml
+env:
+  - name: ENCRYPTION_ENABLED
+    value: "true"
+  - name: ENCRYPTION_PASSPHRASE
+    valueFrom:
+      secretKeyRef:
+        name: deepdata-encryption
+        key: passphrase
 ```
 
 ### Ingress
@@ -122,26 +154,26 @@ env:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: vectordb
+  name: deepdata
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
 spec:
   rules:
-    - host: vectordb.example.com
+    - host: deepdata.example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: vectordb
+                name: deepdata
                 port:
                   number: 8080
   tls:
     - hosts:
-        - vectordb.example.com
-      secretName: vectordb-tls
+        - deepdata.example.com
+      secretName: deepdata-tls
 ```
 
 ## Resource Sizing Guide
@@ -158,17 +190,19 @@ spec:
 - 384d: ~1.7KB/vector → 1M vectors ≈ 1.7GB RAM
 - 768d: ~3.3KB/vector → 1M vectors ≈ 3.3GB RAM
 
+With DiskANN, memory requirements drop significantly since graph data is memory-mapped from disk.
+
 ## Backup & Restore
 
 ### Manual Snapshot
 
 ```bash
 # Create snapshot
-kubectl exec vectordb-0 -- curl -s http://localhost:8080/export > backup.bin
+kubectl exec deepdata-0 -- curl -s http://localhost:8080/export > backup.bin
 
 # Restore
-kubectl cp backup.bin vectordb-0:/data/backup.bin
-kubectl exec vectordb-0 -- curl -X POST http://localhost:8080/import \
+kubectl cp backup.bin deepdata-0:/data/backup.bin
+kubectl exec deepdata-0 -- curl -X POST http://localhost:8080/import \
   --data-binary @/data/backup.bin
 ```
 
@@ -178,7 +212,7 @@ kubectl exec vectordb-0 -- curl -X POST http://localhost:8080/import \
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: vectordb-backup
+  name: deepdata-backup
 spec:
   schedule: "0 2 * * *"  # Daily at 2 AM
   jobTemplate:
@@ -192,16 +226,16 @@ spec:
                 - sh
                 - -c
                 - |
-                  curl -s http://vectordb:8080/export > /backup/vectordb-$(date +%Y%m%d).bin
+                  curl -s http://deepdata:8080/export > /backup/deepdata-$(date +%Y%m%d).bin
                   # Keep last 7 days
-                  find /backup -name "vectordb-*.bin" -mtime +7 -delete
+                  find /backup -name "deepdata-*.bin" -mtime +7 -delete
               volumeMounts:
                 - name: backup
                   mountPath: /backup
           volumes:
             - name: backup
               persistentVolumeClaim:
-                claimName: vectordb-backup
+                claimName: deepdata-backup
           restartPolicy: OnFailure
 ```
 
@@ -213,37 +247,55 @@ spec:
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: vectordb
+  name: deepdata
 spec:
   selector:
     matchLabels:
-      app: vectordb
+      app: deepdata
   endpoints:
     - port: http
       path: /metrics
       interval: 15s
 ```
 
+### OpenTelemetry Collector
+
+To export traces to an OTEL collector:
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://otel-collector:4317"
+```
+
 ### Key Metrics to Alert On
 
 | Metric | Warning | Critical | Description |
 |--------|---------|----------|-------------|
-| `vectordb_query_latency_p99` | >100ms | >500ms | Query latency |
-| `vectordb_insert_latency_p99` | >50ms | >200ms | Insert latency |
-| `vectordb_wal_bytes` | >50MB | >100MB | WAL size growth |
-| `vectordb_active_vectors` | - | >capacity×0.9 | Approaching capacity |
-| `vectordb_error_rate` | >1% | >5% | Error rate |
+| `deepdata_search_duration_seconds` (P99) | >100ms | >500ms | Query latency |
+| `deepdata_insert_duration_seconds` (P99) | >50ms | >200ms | Insert latency |
+| `deepdata_vectors_total` | - | >capacity×0.9 | Approaching capacity |
+| `deepdata_search_requests_total` (error rate) | >1% | >5% | Error rate |
+| `deepdata_memory_bytes` | >limit×0.8 | >limit×0.9 | Memory pressure |
+
+See [Grafana Dashboard](grafana/) for a pre-built dashboard with 40+ panels and alerting rules.
 
 ## Troubleshooting
 
 ### Pod stuck in Pending
-Check PVC binding: `kubectl describe pvc data-vectordb-0`
+Check PVC binding: `kubectl describe pvc data-deepdata-0`
 
 ### OOMKilled
-Increase memory limits. Check vector count vs RAM sizing guide above.
+Increase memory limits. Check vector count vs RAM sizing guide above. Consider DiskANN or PQ quantization to reduce memory footprint.
 
 ### Slow startup with large dataset
 Increase `startupProbe.failureThreshold`. Loading 1M+ vectors can take 30-60 seconds.
 
 ### Data loss after pod restart
 Ensure PVC is `ReadWriteOnce` and the StatefulSet `volumeClaimTemplates` is configured. Data should persist across restarts.
+
+### gRPC not reachable
+Ensure the Service exposes port 50051 and your Ingress or load balancer routes gRPC traffic correctly. For gRPC through nginx ingress, add:
+```yaml
+annotations:
+  nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+```

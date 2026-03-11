@@ -1,27 +1,20 @@
-# Contributing to VectorDB
-
-Thank you for your interest in contributing to VectorDB! This document provides guidelines and instructions for contributing.
+# Contributing to DeepData
 
 ## Development Setup
 
 ### Prerequisites
 
-- Go 1.22 or later
+- Go 1.24 or later
 - golangci-lint (for linting)
-- Make (optional, but recommended)
 
 ### Getting Started
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/Agent-GO.git
-cd Agent-GO
+git clone https://github.com/phenomenon0/vectordb.git
+cd vectordb
 
-# Install dependencies
 go mod download
-
-# Run tests to verify setup
-make test-short
+go test -short ./...
 ```
 
 ## Development Workflow
@@ -30,39 +23,37 @@ make test-short
 
 ```bash
 # Quick tests (recommended during development)
-make test-short
+go test -short ./...
 
 # Full test suite
-make test
+go test ./...
 
 # Tests with race detector
-make test-race
+go test -race ./...
 
-# VectorDB-specific tests
-make test-vectordb
+# DeepData server tests
+go test ./cmd/deepdata/...
 
-# Tests with coverage report
-make test-coverage
+# Tests with coverage
+go test -coverprofile=cover.out ./...
+go tool cover -html=cover.out
 ```
 
 ### Building
 
 ```bash
-# Build all packages
-make build
+# Build server
+go build -o deepdata ./cmd/deepdata
 
-# Build VectorDB binary
-make build-vectordb
+# Build CLI
+go build -o deepdata-cli ./cmd/cli
 ```
 
 ### Linting
 
 ```bash
-# Run linter
-make lint
-
-# Format code
-make fmt
+golangci-lint run ./...
+gofmt -w .
 ```
 
 ## Code Guidelines
@@ -70,7 +61,7 @@ make fmt
 ### Code Style
 
 - Follow standard Go conventions and idioms
-- Use `gofmt` for formatting (or `make fmt`)
+- Use `gofmt` for formatting
 - Keep functions focused and reasonably sized
 - Add comments for exported functions and types
 
@@ -114,15 +105,15 @@ make fmt
 
 3. **Test**: Ensure all tests pass
    ```bash
-   make test-short
-   make test-race
-   make lint
+   go test -short ./...
+   go test -race ./...
+   golangci-lint run ./...
    ```
 
 4. **Commit**: Write clear commit messages
    ```
-   feat(vectordb): add support for binary vectors
-   
+   feat(index): add support for binary vectors
+
    - Implement binary vector type
    - Add Hamming distance metric
    - Update index interface
@@ -144,14 +135,6 @@ We follow conventional commits:
 - `perf`: Performance improvements
 - `chore`: Build/tooling changes
 
-Examples:
-```
-feat(index): add DiskANN support
-fix(hnsw): resolve race condition in Add()
-docs: update API reference
-test(vectordb): add integration tests for hybrid search
-```
-
 ## Reporting Issues
 
 When reporting issues, please include:
@@ -160,12 +143,10 @@ When reporting issues, please include:
 2. **Steps to Reproduce**: Minimal steps to reproduce the issue
 3. **Expected Behavior**: What you expected to happen
 4. **Actual Behavior**: What actually happened
-5. **Environment**: Go version, OS, VectorDB version
+5. **Environment**: Go version, OS, DeepData version
 6. **Logs**: Relevant log output or error messages
 
 ## Feature Requests
-
-For feature requests:
 
 1. Check existing issues to avoid duplicates
 2. Describe the use case and motivation
@@ -181,10 +162,6 @@ For feature requests:
 
 ## Questions?
 
-If you have questions:
-
 1. Check the [README](../README.md) and [docs/](./)
 2. Search existing issues
 3. Open a new issue with the "question" label
-
-Thank you for contributing!
