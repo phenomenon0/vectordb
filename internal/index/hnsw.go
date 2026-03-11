@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/coder/hnsw"
 	"github.com/phenomenon0/vectordb/internal/filter"
@@ -61,7 +63,7 @@ type HNSWIndex struct {
 // Configuration parameters (via config map):
 //   - m: Connections per node (default: 16, recommended: 5-48)
 //   - ml: Level multiplier (default: 0.25)
-//   - ef_construction: Build quality (default: 200, recommended: 100-500)
+//   - ef_construction: Build quality (default: 200, recommended: 100-400)
 //   - ef_search: Search beam width (default: 64, higher = better recall)
 //
 // Example:
@@ -79,7 +81,7 @@ func NewHNSWIndex(dim int, config map[string]interface{}) (Index, error) {
 	m := GetConfigInt(config, "m", 16)
 	ml := GetConfigFloat(config, "ml", 0.25)
 	efSearch := GetConfigInt(config, "ef_search", 200)
-	efConstruction := GetConfigInt(config, "ef_construction", 300)
+	efConstruction := GetConfigInt(config, "ef_construction", 200)
 
 	// Validate configuration
 	if m < 2 || m > 100 {
@@ -228,10 +230,11 @@ func (h *HNSWIndex) SetMetadata(id uint64, metadata map[string]interface{}) erro
 	return nil
 }
 
-// BatchAdd inserts multiple vectors efficiently with progress tracking.
+// BatchAdd inserts multiple vectors efficiently with parallel graph insertion.
 // This is significantly faster than calling Add in a loop for large batches.
 //
-// For batches >10K vectors, this provides progress feedback every 5000 vectors.
+// Graph insertion is parallelized across GOMAXPROCS workers (capped at 8)
+// using AddConcurrent for fine-grained locking within the graph.
 func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) error {
 	// Pre-validation
 	for id, vec := range vectors {
@@ -243,87 +246,56 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	total := len(vectors)
-	processed := 0
-	batchSize := 1000 // Process in chunks to allow lock yielding
-
-	// Convert map to slice for ordered processing
-	ids := make([]uint64, 0, total)
-	for id := range vectors {
-		ids = append(ids, id)
-	}
-
-	// Process in batches
-	for i := 0; i < len(ids); i += batchSize {
-		// Check context cancellation
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		end := i + batchSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-
-		// Build all nodes for this batch, then add in one variadic call
-		batchIDs := ids[i:end]
-		nodes := make([]hnsw.Node[uint64], 0, len(batchIDs))
-		for _, id := range batchIDs {
-			// Check if already exists
-			if _, exists := h.idToIdx[id]; exists {
-				if !h.deleted[id] {
-					return fmt.Errorf("vector with ID %d already exists", id)
-				}
-				// Tombstoned — resurrect via Update, skip batch Add
-				delete(h.deleted, id)
-				vecCopy := make([]float32, h.dim)
-				copy(vecCopy, vectors[id])
-				h.graph.Update(id, vecCopy)
-				if err := h.storeVectorLocked(id, vecCopy); err != nil {
-					return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
-				}
-				continue
+	// 1. Sequential: validate duplicates, handle resurrections, collect new nodes.
+	newNodes := make([]hnsw.Node[uint64], 0, len(vectors))
+	for id, vec := range vectors {
+		if _, exists := h.idToIdx[id]; exists {
+			if !h.deleted[id] {
+				return fmt.Errorf("vector with ID %d already exists", id)
 			}
-
-			// Make a copy
+			// Tombstoned — resurrect via Update
+			delete(h.deleted, id)
 			vecCopy := make([]float32, h.dim)
-			copy(vecCopy, vectors[id])
-			nodes = append(nodes, hnsw.MakeNode(id, vecCopy))
-		}
-
-		// Single variadic call — saves per-node function overhead
-		if len(nodes) > 0 {
-			h.graph.Add(nodes...)
-		}
-
-		// Update mappings and store vectors for newly added nodes
-		for _, node := range nodes {
-			if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
-				return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
+			copy(vecCopy, vec)
+			h.graph.Update(id, vecCopy)
+			if err := h.storeVectorLocked(id, vecCopy); err != nil {
+				return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
 			}
-			h.idToIdx[node.Key] = h.count
-			h.count++
-			processed++
+			continue
 		}
 
-		// Yield CPU between batches to allow other goroutines to run
-		// Note: We do NOT release the lock here as that would allow readers
-		// to see a partially-inserted batch (inconsistent state)
-		if i+batchSize < len(ids) {
-			runtime.Gosched()
-		}
+		vecCopy := make([]float32, h.dim)
+		copy(vecCopy, vec)
+		newNodes = append(newNodes, hnsw.MakeNode(id, vecCopy))
 	}
 
-	if err := h.maybeTrainQuantizerLocked(); err != nil {
+	if len(newNodes) == 0 {
+		return h.maybeTrainQuantizerLocked()
+	}
+
+	// 2. Sequential: pre-register metadata (idToIdx, vectors) so lookups work.
+	for _, node := range newNodes {
+		if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
+			return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
+		}
+		h.idToIdx[node.Key] = h.count
+		h.count++
+	}
+
+	// 3. Parallel graph insertion via AddConcurrent.
+	if err := h.parallelGraphInsert(ctx, newNodes); err != nil {
 		return err
 	}
 
-	return nil
+	return h.maybeTrainQuantizerLocked()
 }
 
 // BatchAddNoCopy inserts multiple vectors without copying them.
 // The caller must guarantee ownership transfer — the slices must not be
 // modified after this call. Used by binary import where vectors are freshly decoded.
+//
+// Graph insertion is parallelized across GOMAXPROCS workers (capped at 8)
+// using AddConcurrent for fine-grained locking within the graph.
 func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]float32) error {
 	for id, vec := range vectors {
 		if len(vec) != h.dim {
@@ -334,66 +306,96 @@ func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]flo
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	total := len(vectors)
-	processed := 0
-	batchSize := 1000
-
-	ids := make([]uint64, 0, total)
-	for id := range vectors {
-		ids = append(ids, id)
+	// 1. Sequential: validate duplicates, handle resurrections, collect new IDs.
+	newNodes := make([]hnsw.Node[uint64], 0, len(vectors))
+	for id, vec := range vectors {
+		if _, exists := h.idToIdx[id]; exists {
+			if !h.deleted[id] {
+				return fmt.Errorf("vector with ID %d already exists", id)
+			}
+			// Tombstoned — resurrect via Update
+			delete(h.deleted, id)
+			h.graph.Update(id, vec)
+			if err := h.storeVectorLocked(id, vec); err != nil {
+				return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
+			}
+			continue
+		}
+		newNodes = append(newNodes, hnsw.MakeNode(id, vec))
 	}
 
-	for i := 0; i < len(ids); i += batchSize {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		end := i + batchSize
-		if end > len(ids) {
-			end = len(ids)
-		}
-
-		batchIDs := ids[i:end]
-		nodes := make([]hnsw.Node[uint64], 0, len(batchIDs))
-		for _, id := range batchIDs {
-			if _, exists := h.idToIdx[id]; exists {
-				if !h.deleted[id] {
-					return fmt.Errorf("vector with ID %d already exists", id)
-				}
-				// Tombstoned — resurrect via Update
-				delete(h.deleted, id)
-				h.graph.Update(id, vectors[id])
-				if err := h.storeVectorLocked(id, vectors[id]); err != nil {
-					return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
-				}
-				continue
-			}
-			// No copy — caller guarantees ownership
-			nodes = append(nodes, hnsw.MakeNode(id, vectors[id]))
-		}
-
-		if len(nodes) > 0 {
-			h.graph.Add(nodes...)
-		}
-
-		for _, node := range nodes {
-			if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
-				return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
-			}
-			h.idToIdx[node.Key] = h.count
-			h.count++
-			processed++
-		}
-
-		if i+batchSize < len(ids) {
-			runtime.Gosched()
-		}
+	if len(newNodes) == 0 {
+		return h.maybeTrainQuantizerLocked()
 	}
 
-	if err := h.maybeTrainQuantizerLocked(); err != nil {
+	// 2. Sequential: pre-register metadata (idToIdx, vectors) so lookups work.
+	for _, node := range newNodes {
+		if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
+			return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
+		}
+		h.idToIdx[node.Key] = h.count
+		h.count++
+	}
+
+	// 3. Parallel graph insertion via AddConcurrent.
+	if err := h.parallelGraphInsert(ctx, newNodes); err != nil {
 		return err
 	}
 
+	return h.maybeTrainQuantizerLocked()
+}
+
+// parallelGraphInsert fans out graph insertion across multiple goroutines.
+// Must be called with h.mu held. Nodes must already be registered in idToIdx/vectors.
+func (h *HNSWIndex) parallelGraphInsert(ctx context.Context, nodes []hnsw.Node[uint64]) error {
+	numWorkers := runtime.GOMAXPROCS(0)
+	if numWorkers > 8 {
+		numWorkers = 8
+	}
+	if numWorkers > len(nodes) {
+		numWorkers = len(nodes)
+	}
+
+	// For small batches, insert sequentially to avoid goroutine overhead.
+	if len(nodes) < 100 || numWorkers <= 1 {
+		h.graph.Add(nodes...)
+		return nil
+	}
+
+	ch := make(chan hnsw.Node[uint64], len(nodes))
+	for _, n := range nodes {
+		ch <- n
+	}
+	close(ch)
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, numWorkers)
+
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(rand.Intn(1<<30))))
+			for node := range ch {
+				if ctx.Err() != nil {
+					errCh <- ctx.Err()
+					return
+				}
+				g := h.graph
+				g.AddConcurrent(node, rng)
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	// Return first error if any.
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

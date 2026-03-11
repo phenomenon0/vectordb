@@ -25,7 +25,7 @@ func (a *Analyzer[T]) Connectivity() []float64 {
 
 		var sum float64
 		for _, node := range layer.nodes {
-			sum += float64(len(node.neighbors))
+			sum += float64(len(node.loadNeighbors()))
 		}
 
 		layerConnectivity = append(layerConnectivity, sum/float64(len(layer.nodes)))

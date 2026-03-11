@@ -6,7 +6,10 @@ import (
 	"math"
 	"math/rand"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/coder/hnsw/heap"
 )
@@ -32,15 +35,31 @@ func MakeNode[K cmp.Ordered](key K, vec Vector) Node[K] {
 type layerNode[K cmp.Ordered] struct {
 	Node[K]
 
-	// neighbors is a slice of neighbor nodes.
-	// Slice provides better cache locality than a map for small M (typically 16).
-	// O(M) linear scans are faster than map lookups for M <= ~32.
-	neighbors []*layerNode[K]
+	// _neighbors stores a pointer to []*layerNode[K] (the neighbor slice header).
+	// Accessed atomically for concurrent read safety during AddConcurrent.
+	// Writers must hold the appropriate node lock from nodeLockPool.
+	_neighbors unsafe.Pointer // *[]*layerNode[K]
+}
+
+// loadNeighbors atomically loads the neighbors slice.
+// Safe for concurrent reads during AddConcurrent search traversal.
+func (n *layerNode[K]) loadNeighbors() []*layerNode[K] {
+	p := atomic.LoadPointer(&n._neighbors)
+	if p == nil {
+		return nil
+	}
+	return *(*[]*layerNode[K])(p)
+}
+
+// storeNeighbors atomically publishes a new neighbors slice.
+// Must be called under the appropriate node lock for writes.
+func (n *layerNode[K]) storeNeighbors(nb []*layerNode[K]) {
+	atomic.StorePointer(&n._neighbors, unsafe.Pointer(&nb))
 }
 
 // hasNeighbor returns true if the node has a neighbor with the given key.
 func (n *layerNode[K]) hasNeighbor(key K) bool {
-	for _, nb := range n.neighbors {
+	for _, nb := range n.loadNeighbors() {
 		if nb.Key == key {
 			return true
 		}
@@ -50,12 +69,14 @@ func (n *layerNode[K]) hasNeighbor(key K) bool {
 
 // removeNeighbor removes a neighbor by key using swap-remove (O(1) swap + O(M) scan).
 func (n *layerNode[K]) removeNeighbor(key K) {
-	for i, nb := range n.neighbors {
-		if nb.Key == key {
-			last := len(n.neighbors) - 1
-			n.neighbors[i] = n.neighbors[last]
-			n.neighbors[last] = nil // avoid memory leak
-			n.neighbors = n.neighbors[:last]
+	nb := n.loadNeighbors()
+	for i, node := range nb {
+		if node.Key == key {
+			last := len(nb) - 1
+			nb[i] = nb[last]
+			nb[last] = nil // avoid memory leak
+			nb = nb[:last]
+			n.storeNeighbors(nb)
 			return
 		}
 	}
@@ -133,21 +154,22 @@ func (n *layerNode[K]) addNeighbor(newNode *layerNode[K], m int, dist DistanceFu
 		return
 	}
 
-	n.neighbors = append(n.neighbors, newNode)
-	if len(n.neighbors) <= m {
+	nb := append(n.loadNeighbors(), newNode)
+	if len(nb) <= m {
+		n.storeNeighbors(nb)
 		return
 	}
 
 	// Over capacity: apply heuristic, silently drop excess (no backlink repair).
-	candidates := make([]diverseCandidate[K], len(n.neighbors))
-	for i, nb := range n.neighbors {
+	candidates := make([]diverseCandidate[K], len(nb))
+	for i, node := range nb {
 		candidates[i] = diverseCandidate[K]{
-			node:        nb,
-			distToOwner: dist(nb.Value, n.Value),
+			node:        node,
+			distToOwner: dist(node.Value, n.Value),
 		}
 	}
 
-	n.neighbors = selectDiverseNeighbors(candidates, m, dist)
+	n.storeNeighbors(selectDiverseNeighbors(candidates, m, dist))
 }
 
 type searchCandidate[K cmp.Ordered] struct {
@@ -214,7 +236,7 @@ func (n *layerNode[K]) search(
 		}
 
 		current := popped.node
-		for _, neighbor := range current.neighbors {
+		for _, neighbor := range current.loadNeighbors() {
 			neighborID := neighbor.Key
 			if visited[neighborID] {
 				continue
@@ -280,7 +302,7 @@ func (n *layerNode[K]) greedyClosest(target Vector, distance DistanceFunc) *laye
 	currentDist := distance(n.Value, target)
 	for {
 		improved := false
-		for _, neighbor := range current.neighbors {
+		for _, neighbor := range current.loadNeighbors() {
 			d := distance(neighbor.Value, target)
 			if d < currentDist {
 				current = neighbor
@@ -296,13 +318,13 @@ func (n *layerNode[K]) greedyClosest(target Vector, distance DistanceFunc) *laye
 }
 
 func (n *layerNode[K]) replenish(m int, dist DistanceFunc) {
-	if len(n.neighbors) >= m {
+	if len(n.loadNeighbors()) >= m {
 		return
 	}
 
 	// Restore connectivity by pulling candidates from neighbors-of-neighbors.
-	for _, neighbor := range n.neighbors {
-		for _, candidate := range neighbor.neighbors {
+	for _, neighbor := range n.loadNeighbors() {
+		for _, candidate := range neighbor.loadNeighbors() {
 			if n.hasNeighbor(candidate.Key) {
 				continue
 			}
@@ -310,7 +332,7 @@ func (n *layerNode[K]) replenish(m int, dist DistanceFunc) {
 				continue
 			}
 			n.addNeighbor(candidate, m, dist)
-			if len(n.neighbors) >= m {
+			if len(n.loadNeighbors()) >= m {
 				return
 			}
 		}
@@ -320,13 +342,14 @@ func (n *layerNode[K]) replenish(m int, dist DistanceFunc) {
 // isolate removes the node from the graph by removing all connections
 // to neighbors.
 func (n *layerNode[K]) isolate(m int, dist DistanceFunc) {
-	for _, neighbor := range n.neighbors {
+	for _, neighbor := range n.loadNeighbors() {
 		neighbor.removeNeighbor(n.Key)
 		neighbor.replenish(m, dist)
 	}
 }
 
 type layer[K cmp.Ordered] struct {
+	mu sync.RWMutex
 	// nodes is a map of nodes IDs to nodes.
 	// All nodes in a higher layer are also in the lower layers, an essential
 	// property of the graph.
@@ -339,6 +362,14 @@ func (l *layer[K]) entry() *layerNode[K] {
 	if l == nil {
 		return nil
 	}
+	for _, node := range l.nodes {
+		return node
+	}
+	return nil
+}
+
+// arbitraryNode returns any node from the layer. Must be called with at least RLock held.
+func (l *layer[K]) arbitraryNode() *layerNode[K] {
 	for _, node := range l.nodes {
 		return node
 	}
@@ -385,6 +416,10 @@ type Graph[K cmp.Ordered] struct {
 	// Without this, we pick an arbitrary map entry which gives bad search paths.
 	entryPointKey *K
 	entryLevel    int
+
+	// Concurrency support for AddConcurrent.
+	entryMu   sync.RWMutex       // protects entryPointKey, entryLevel, layers slice growth
+	nodeLocks nodeLockPool[K]    // per-node neighbor list locks (sharded by pointer)
 }
 
 // m0 returns the max neighbors for the base layer (level 0).
@@ -454,12 +489,23 @@ func (g *Graph[K]) assertDims(n Vector) {
 }
 
 // Dims returns the number of dimensions in the graph, or
-// 0 if the graph is empty.
+// 0 if the graph is empty. Safe for concurrent use with AddConcurrent.
 func (g *Graph[K]) Dims() int {
+	g.entryMu.RLock()
 	if len(g.layers) == 0 {
+		g.entryMu.RUnlock()
 		return 0
 	}
-	return len(g.layers[0].entry().Value)
+	base := g.layers[0]
+	g.entryMu.RUnlock()
+
+	base.mu.RLock()
+	e := base.arbitraryNode()
+	base.mu.RUnlock()
+	if e == nil {
+		return 0
+	}
+	return len(e.Value)
 }
 
 func ptr[T any](v T) *T {
@@ -565,10 +611,10 @@ func (g *Graph[K]) Add(nodes ...Node[K]) {
 					distToOwner: n.dist,
 				})
 			}
-			newNode.neighbors = selectDiverseNeighbors(candidates, mLevel, g.Distance)
+			newNode.storeNeighbors(selectDiverseNeighbors(candidates, mLevel, g.Distance))
 
 			// Add backlinks from selected neighbors to the new node
-			for _, neighbor := range newNode.neighbors {
+			for _, neighbor := range newNode.loadNeighbors() {
 				neighbor.addNeighbor(newNode, mLevel, g.Distance)
 			}
 		}
@@ -591,6 +637,143 @@ func (g *Graph[K]) Add(nodes ...Node[K]) {
 	}
 }
 
+// randomLevelWith generates a random level using the provided Rng.
+// This avoids contention on the shared Graph.Rng during concurrent insertion.
+func (g *Graph[K]) randomLevelWith(rng *rand.Rand) int {
+	mL := 1.0 / math.Log(float64(g.M))
+	r := rng.Float64()
+	if r == 0 {
+		r = 1e-9
+	}
+	return int(-math.Log(r) * mL)
+}
+
+// AddConcurrent inserts a single node into the graph using fine-grained locking.
+// Safe for concurrent calls from multiple goroutines. Each caller must provide
+// its own *rand.Rand to avoid contention on the shared Rng.
+//
+// Locking protocol (matches hnswlib):
+//  1. Layer growth and entry point: entryMu (write-locked only when growing layers or updating entry)
+//  2. Layer node map: layer.mu (write for insertion, read for lookup)
+//  3. Neighbor list mutation: nodeLocks per-node (only the node being mutated)
+//  4. Neighbor list reads during search: lock-free (stale reads acceptable, same as hnswlib)
+func (g *Graph[K]) AddConcurrent(node Node[K], rng *rand.Rand) {
+	key := node.Key
+	vec := node.Value
+
+	insertLevel := g.randomLevelWith(rng)
+	if insertLevel < 0 {
+		panic("invalid level")
+	}
+
+	// Grow layers if needed and snapshot state under entryMu.
+	g.entryMu.Lock()
+	for insertLevel >= len(g.layers) {
+		g.layers = append(g.layers, &layer[K]{nodes: make(map[K]*layerNode[K])})
+	}
+	// Snapshot layers and entry point — avoids racing on g.layers reads later.
+	numLayers := len(g.layers)
+	layers := make([]*layer[K], numLayers)
+	copy(layers, g.layers)
+	var elevator *K
+	if g.entryPointKey != nil {
+		epCopy := *g.entryPointKey
+		elevator = &epCopy
+	}
+	g.entryMu.Unlock()
+
+	if g.Distance == nil {
+		panic("(*Graph).Distance must be set")
+	}
+
+	// Traverse from top layer down using snapshot.
+	for i := numLayers - 1; i >= 0; i-- {
+		ly := layers[i]
+
+		// UPPER LAYERS (above insertLevel): greedy walk, no insertion.
+		if i > insertLevel {
+			ly.mu.RLock()
+			if len(ly.nodes) == 0 {
+				ly.mu.RUnlock()
+				continue
+			}
+			searchPoint := ly.arbitraryNode()
+			if elevator != nil {
+				if ep, ok := ly.nodes[*elevator]; ok {
+					searchPoint = ep
+				}
+			}
+			ly.mu.RUnlock()
+
+			// greedyClosest only reads neighbor pointers — lock-free.
+			closest := searchPoint.greedyClosest(vec, g.Distance)
+			elevator = ptr(closest.Key)
+			continue
+		}
+
+		// INSERTION LAYERS (at or below insertLevel).
+		newNode := &layerNode[K]{
+			Node: Node[K]{Key: key, Value: vec},
+		}
+
+		ly.mu.Lock()
+		if len(ly.nodes) == 0 {
+			ly.nodes[key] = newNode
+			ly.mu.Unlock()
+			continue
+		}
+		ly.mu.Unlock()
+
+		// Find search start in this layer.
+		ly.mu.RLock()
+		searchPoint := ly.arbitraryNode()
+		if elevator != nil {
+			if ep, ok := ly.nodes[*elevator]; ok {
+				searchPoint = ep
+			}
+		}
+		ly.mu.RUnlock()
+
+		mLevel := g.mForLevel(i)
+		// search reads neighbor pointers — lock-free after initial node lookup.
+		neighborhood := searchPoint.search(g.EfSearch, g.EfSearch, vec, g.Distance, nil)
+		if len(neighborhood) == 0 {
+			panic("no nodes found")
+		}
+		elevator = ptr(neighborhood[0].node.Key)
+
+		// Select diverse neighbors for the new node.
+		candidates := make([]diverseCandidate[K], 0, len(neighborhood))
+		for _, n := range neighborhood {
+			candidates = append(candidates, diverseCandidate[K]{
+				node:        n.node,
+				distToOwner: n.dist,
+			})
+		}
+		newNode.storeNeighbors(selectDiverseNeighbors(candidates, mLevel, g.Distance))
+
+		// Insert node into layer map.
+		ly.mu.Lock()
+		ly.nodes[key] = newNode
+		ly.mu.Unlock()
+
+		// Add backlinks from selected neighbors — per-node locking.
+		for _, neighbor := range newNode.loadNeighbors() {
+			g.nodeLocks.lock(neighbor)
+			neighbor.addNeighbor(newNode, mLevel, g.Distance)
+			g.nodeLocks.unlock(neighbor)
+		}
+	}
+
+	// Update entry point if this node has a higher level.
+	g.entryMu.Lock()
+	if g.entryPointKey == nil || insertLevel > g.entryLevel {
+		g.entryPointKey = ptr(key)
+		g.entryLevel = insertLevel
+	}
+	g.entryMu.Unlock()
+}
+
 // Search finds the k nearest neighbors from the target node.
 func (h *Graph[K]) Search(near Vector, k int) []Node[K] {
 	return h.SearchWithEf(near, k, h.EfSearch, nil)
@@ -607,30 +790,43 @@ func (h *Graph[K]) SearchFiltered(near Vector, k int, filter FilterFunc[K]) []No
 }
 
 // SearchWithEf finds the k nearest neighbors using the specified efSearch beam width.
-// This is safe for concurrent use — efSearch is passed as a parameter, not read from the graph.
+// Safe for concurrent use with AddConcurrent — uses layer RLocks for node map access.
 func (h *Graph[K]) SearchWithEf(near Vector, k int, efSearch int, filter FilterFunc[K]) []Node[K] {
-	h.assertDims(near)
+	// Snapshot layers and entry point under entryMu.
+	h.entryMu.RLock()
 	if len(h.layers) == 0 {
+		h.entryMu.RUnlock()
 		return nil
 	}
-
-	// FIX 1: Start from the explicit entry point at the top level
+	numLayers := len(h.layers)
+	layers := make([]*layer[K], numLayers)
+	copy(layers, h.layers)
 	var elevator *K
 	if h.entryPointKey != nil {
-		elevator = h.entryPointKey
+		epCopy := *h.entryPointKey
+		elevator = &epCopy
 	}
+	h.entryMu.RUnlock()
 
-	for layer := len(h.layers) - 1; layer >= 0; layer-- {
-		// Find search start for this layer
-		searchPoint := h.layers[layer].entry()
+	for i := numLayers - 1; i >= 0; i-- {
+		ly := layers[i]
+
+		// Find search start for this layer under RLock.
+		ly.mu.RLock()
+		if len(ly.nodes) == 0 {
+			ly.mu.RUnlock()
+			continue
+		}
+		searchPoint := ly.arbitraryNode()
 		if elevator != nil {
-			if ep, ok := h.layers[layer].nodes[*elevator]; ok {
+			if ep, ok := ly.nodes[*elevator]; ok {
 				searchPoint = ep
 			}
 		}
+		ly.mu.RUnlock()
 
 		// Upper layers: greedy walk to find entry point for next layer.
-		if layer > 0 {
+		if i > 0 {
 			closest := searchPoint.greedyClosest(near, h.Distance)
 			elevator = ptr(closest.Key)
 			continue
@@ -639,23 +835,30 @@ func (h *Graph[K]) SearchWithEf(near Vector, k int, efSearch int, filter FilterF
 		// Base layer - apply filter during search
 		nodes := searchPoint.search(k, efSearch, near, h.Distance, filter)
 		out := make([]Node[K], 0, len(nodes))
-
 		for _, node := range nodes {
 			out = append(out, node.node.Node)
 		}
-
 		return out
 	}
 
-	panic("unreachable")
+	return nil
 }
 
 // Len returns the number of nodes in the graph.
+// Safe for concurrent use with AddConcurrent.
 func (h *Graph[K]) Len() int {
+	h.entryMu.RLock()
 	if len(h.layers) == 0 {
+		h.entryMu.RUnlock()
 		return 0
 	}
-	return h.layers[0].size()
+	base := h.layers[0]
+	h.entryMu.RUnlock()
+
+	base.mu.RLock()
+	n := len(base.nodes)
+	base.mu.RUnlock()
+	return n
 }
 
 // Delete removes a node from the graph by key.
