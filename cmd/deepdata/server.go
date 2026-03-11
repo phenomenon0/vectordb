@@ -32,6 +32,34 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// ===========================================================================================
+// CONFIGURABLE REQUEST LIMITS
+// Override via environment variables. Defaults are safe for most deployments.
+// ===========================================================================================
+
+var (
+	// HTTP body size limits (bytes)
+	limitInsertBody   = int64(envInt("LIMIT_INSERT_BODY_MB", 10)) * 1024 * 1024
+	limitBatchBody    = int64(envInt("LIMIT_BATCH_BODY_MB", 50)) * 1024 * 1024
+	limitQueryBody    = int64(envInt("LIMIT_QUERY_BODY_MB", 1)) * 1024 * 1024
+	limitDeleteBody   = int64(envInt("LIMIT_DELETE_BODY_MB", 1)) * 1024 * 1024
+	limitSnapshotBody = int64(envInt("LIMIT_SNAPSHOT_BODY_MB", 1024)) * 1024 * 1024
+	limitBinaryImport = int64(envInt("LIMIT_BINARY_IMPORT_MB", 500)) * 1024 * 1024
+
+	// Batch processing limits
+	limitMaxBatchSize       = envInt("LIMIT_MAX_BATCH_SIZE", 10_000)
+	limitMaxDocLength       = envInt("LIMIT_MAX_DOC_LENGTH", 1_000_000)
+	limitMaxMetaKeys        = envInt("LIMIT_MAX_META_KEYS", 100)
+	limitMaxMetaValueLength = envInt("LIMIT_MAX_META_VALUE_LEN", 10_000)
+	limitMaxTotalBatchBytes = envInt("LIMIT_MAX_BATCH_BYTES", 100_000_000)
+
+	// List/query result limits
+	limitMaxListResults = envInt("LIMIT_MAX_LIST_RESULTS", 100_000)
+
+	// Dimension limit
+	limitMaxDimension = envInt("LIMIT_MAX_DIMENSION", 65_536)
+)
+
 //go:embed web-ui/dist
 var webUIFS embed.FS
 
@@ -94,7 +122,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	}
 	if store.rl == nil {
 		rps := envInt("API_RPS", 100)
-		store.rl = newRateLimiter(rps, rps, time.Minute)
+		store.rl = newRateLimiter(rps, rps, envInt("MAX_RATE_LIMIT_KEYS", 100_000), time.Minute)
 	}
 	trustProxy := os.Getenv("TRUST_PROXY") == "1"
 
@@ -234,7 +262,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Add request size limit
-		r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10MB limit
+		r.Body = http.MaxBytesReader(w, r.Body, limitInsertBody)
 
 		var req struct {
 			ID         string            `json:"id"`
@@ -249,27 +277,21 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Input validation
-		const (
-			MaxDocLength       = 1_000_000 // 1MB
-			MaxMetaKeys        = 100
-			MaxMetaValueLength = 10_000
-		)
-
 		if req.Doc == "" {
 			http.Error(w, "doc required", http.StatusBadRequest)
 			return
 		}
-		if len(req.Doc) > MaxDocLength {
-			http.Error(w, fmt.Sprintf("doc too large: max %d bytes", MaxDocLength), http.StatusBadRequest)
+		if len(req.Doc) > limitMaxDocLength {
+			http.Error(w, fmt.Sprintf("doc too large: max %d bytes", limitMaxDocLength), http.StatusBadRequest)
 			return
 		}
-		if len(req.Meta) > MaxMetaKeys {
-			http.Error(w, fmt.Sprintf("too many metadata keys: max %d", MaxMetaKeys), http.StatusBadRequest)
+		if len(req.Meta) > limitMaxMetaKeys {
+			http.Error(w, fmt.Sprintf("too many metadata keys: max %d", limitMaxMetaKeys), http.StatusBadRequest)
 			return
 		}
 		for k, v := range req.Meta {
-			if len(k) > MaxMetaValueLength || len(v) > MaxMetaValueLength {
-				http.Error(w, fmt.Sprintf("metadata key or value too large: max %d bytes", MaxMetaValueLength), http.StatusBadRequest)
+			if len(k) > limitMaxMetaValueLength || len(v) > limitMaxMetaValueLength {
+				http.Error(w, fmt.Sprintf("metadata key or value too large: max %d bytes", limitMaxMetaValueLength), http.StatusBadRequest)
 				return
 			}
 		}
@@ -355,7 +377,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Add request size limit
-		r.Body = http.MaxBytesReader(w, r.Body, 50*1024*1024) // 50MB limit for batch
+		r.Body = http.MaxBytesReader(w, r.Body, limitBatchBody)
 
 		var req struct {
 			Docs []struct {
@@ -371,20 +393,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		const (
-			MaxDocLength       = 1_000_000 // 1MB per doc
-			MaxMetaKeys        = 100
-			MaxMetaValueLength = 10_000
-			MaxBatchSize       = 10_000
-			MaxTotalBatchBytes = 100_000_000 // 100MB total batch limit
-		)
-
 		if len(req.Docs) == 0 {
 			http.Error(w, "no docs provided", http.StatusBadRequest)
 			return
 		}
-		if len(req.Docs) > MaxBatchSize {
-			http.Error(w, fmt.Sprintf("batch too large: max %d docs", MaxBatchSize), http.StatusBadRequest)
+		if len(req.Docs) > limitMaxBatchSize {
+			http.Error(w, fmt.Sprintf("batch too large: max %d docs (set LIMIT_MAX_BATCH_SIZE to increase)", limitMaxBatchSize), http.StatusBadRequest)
 			return
 		}
 
@@ -392,8 +406,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		var totalBytes int64
 		for _, d := range req.Docs {
 			totalBytes += int64(len(d.Doc))
-			if totalBytes > MaxTotalBatchBytes {
-				http.Error(w, fmt.Sprintf("batch total size exceeds limit: max %d bytes", MaxTotalBatchBytes), http.StatusBadRequest)
+			if totalBytes > int64(limitMaxTotalBatchBytes) {
+				http.Error(w, fmt.Sprintf("batch total size exceeds limit: max %d bytes", limitMaxTotalBatchBytes), http.StatusBadRequest)
 				return
 			}
 		}
@@ -408,11 +422,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				errors = append(errors, fmt.Sprintf("doc %d: empty document", i))
 				continue
 			}
-			if len(d.Doc) > MaxDocLength {
+			if len(d.Doc) > limitMaxDocLength {
 				errors = append(errors, fmt.Sprintf("doc %d: too large", i))
 				continue
 			}
-			if len(d.Meta) > MaxMetaKeys {
+			if len(d.Meta) > limitMaxMetaKeys {
 				errors = append(errors, fmt.Sprintf("doc %d: too many metadata keys", i))
 				continue
 			}
@@ -484,7 +498,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10MB limit
+		r.Body = http.MaxBytesReader(w, r.Body, limitInsertBody)
 
 		var req struct {
 			ID         string            `json:"id"`
@@ -585,7 +599,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Add request size limit
-		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024) // 1MB limit for query
+		r.Body = http.MaxBytesReader(w, r.Body, limitQueryBody)
 
 		var req struct {
 			Query       string              `json:"query"`
@@ -912,7 +926,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10MB limit
+		r.Body = http.MaxBytesReader(w, r.Body, limitInsertBody)
 
 		var req struct {
 			Indices     []uint32            `json:"indices"`   // Sparse query indices
@@ -1082,7 +1096,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024) // 1MB limit
+		r.Body = http.MaxBytesReader(w, r.Body, limitDeleteBody)
 
 		var req struct {
 			ID string `json:"id"`
@@ -1156,7 +1170,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		includeMeta := r.URL.Query().Get("include_meta") == "true"
 
 		if v := r.URL.Query().Get("limit"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 10000 {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= limitMaxListResults {
 				limit = n
 			}
 		}
@@ -1468,7 +1482,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Add request size limit (max 1GB for snapshot)
-		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024*1024)
+		r.Body = http.MaxBytesReader(w, r.Body, limitSnapshotBody)
 
 		// Phase 1: Validate imported snapshot
 		tmp, err := os.CreateTemp("", "vectordb-import-*.gob")

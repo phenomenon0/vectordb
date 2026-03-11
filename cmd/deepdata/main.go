@@ -94,6 +94,9 @@ type VectorStore struct {
 
 	// Recovery state
 	walReplayError error // Non-nil if WAL replay failed during load
+
+	// Limits (configurable via env vars)
+	maxCollections int // MAX_COLLECTIONS (default 10,000)
 }
 
 func NewVectorStore(capacity int, dim int) *VectorStore {
@@ -157,12 +160,14 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		TenantID: make(map[uint64]string),
 		acl:      security.NewACL(),
 		quotas:   security.NewTenantQuota(),
-		tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), time.Minute),
+		tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), envInt("MAX_TENANTS", 100_000), time.Minute),
 		jwtMgr:   jwtMgr,
 		// Storage
 		storageFormat: storageFormat,
 		// Metadata index for fast pre-filtering
 		metaIndex: NewMetadataIndex(),
+		// Limits
+		maxCollections: envInt("MAX_COLLECTIONS", 10_000),
 	}
 }
 
@@ -183,9 +188,8 @@ func (vs *VectorStore) resolveCollectionIndexLocked(collection string) (string, 
 		return collection, idx, false, nil
 	}
 
-	const maxCollections = 1000
-	if len(vs.indexes) >= maxCollections {
-		return "", nil, false, fmt.Errorf("collection limit exceeded: maximum %d collections allowed", maxCollections)
+	if vs.maxCollections > 0 && len(vs.indexes) >= vs.maxCollections {
+		return "", nil, false, fmt.Errorf("collection limit exceeded: maximum %d collections allowed (set MAX_COLLECTIONS to increase)", vs.maxCollections)
 	}
 
 	cfg := loadHNSWConfig()
@@ -952,7 +956,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			// Multi-tenancy support (TenantID already set from payload above)
 			acl:      security.NewACL(),
 			quotas:   security.NewTenantQuota(),
-			tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), time.Minute),
+			tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), envInt("MAX_TENANTS", 100_000), time.Minute),
 			jwtMgr:   jwtMgr,
 			// Storage format
 			storageFormat: getStorageFormat(),

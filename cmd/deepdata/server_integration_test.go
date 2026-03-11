@@ -286,7 +286,7 @@ func TestHTTPHealthEndpoint(t *testing.T) {
 
 func TestHTTPRateLimiting(t *testing.T) {
 	store := NewVectorStore(100, 3)
-	store.rl = newRateLimiter(2, 2, time.Minute) // 2 requests per minute
+	store.rl = newRateLimiter(2, 2, 0, time.Minute) // 2 requests per minute
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
 	handler := newHTTPHandler(store, emb, reranker, "")

@@ -420,7 +420,7 @@ func TestPerTenantRateLimiting(t *testing.T) {
 	store, jwtMgr, handler := setupMultiTenantTest(t)
 
 	// Create per-tenant rate limiter: 3 requests per minute per tenant
-	store.tenantRL = newTenantRateLimiter(3, 3, time.Minute)
+	store.tenantRL = newTenantRateLimiter(3, 3, 0, time.Minute)
 
 	// Generate tokens for two different tenants
 	tokenA, _ := jwtMgr.GenerateTenantToken("rate-tenant-a", []string{"read"}, []string{}, 1*time.Hour)

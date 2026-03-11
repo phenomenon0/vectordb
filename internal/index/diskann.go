@@ -69,6 +69,9 @@ type DiskANNIndex struct {
 
 	// Offset index for unquantized vectors (faster lookups, O(1) instead of O(n))
 	unquantizedOffsetIndex map[uint64]int64
+
+	// Raw config map for deferred lookups (validation limits, etc.)
+	rawConfig map[string]interface{}
 }
 
 // DiskANNConfig holds configuration for DiskANN index
@@ -155,6 +158,7 @@ func NewDiskANNIndex(dim int, config map[string]interface{}) (Index, error) {
 		compactOnClose:         compactOnClose,
 		maxMmapSize:            maxMmapSize,
 		unquantizedOffsetIndex: make(map[uint64]int64),
+		rawConfig:              config,
 	}
 
 	// Check for quantization config
@@ -1350,8 +1354,9 @@ func (d *DiskANNIndex) importLegacyLocked(data []byte) error {
 	}
 	graphSize := int(v32)
 
-	// Sanity check to prevent excessive allocation
-	const maxGraphSize = 100_000_000
+	// Sanity check to prevent excessive allocation.
+	// Configurable via max_graph_size in index config (default 1 billion).
+	maxGraphSize := GetConfigInt(d.rawConfig, "max_graph_size", 1_000_000_000)
 	if graphSize < 0 || graphSize > maxGraphSize {
 		return fmt.Errorf("invalid graph size: %d (max %d)", graphSize, maxGraphSize)
 	}
@@ -1369,10 +1374,11 @@ func (d *DiskANNIndex) importLegacyLocked(data []byte) error {
 		}
 		neighborsCount := int(nc)
 
-		// Sanity check neighbor count
-		const maxNeighbors = 10000
+		// Sanity check neighbor count.
+		// Configurable via max_neighbors in index config (default 100,000).
+		maxNeighbors := GetConfigInt(d.rawConfig, "max_neighbors", 100_000)
 		if neighborsCount < 0 || neighborsCount > maxNeighbors {
-			return fmt.Errorf("invalid neighbor count for node %d: %d", i, neighborsCount)
+			return fmt.Errorf("invalid neighbor count for node %d: %d (max %d)", i, neighborsCount, maxNeighbors)
 		}
 
 		neighbors := make([]uint64, neighborsCount)

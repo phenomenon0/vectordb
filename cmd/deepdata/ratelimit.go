@@ -21,13 +21,16 @@ type bucket struct {
 	lastFill time.Time
 }
 
-func newRateLimiter(rate, burst int, intvl time.Duration) *rateLimiter {
+func newRateLimiter(rate, burst, maxBuckets int, intvl time.Duration) *rateLimiter {
+	if maxBuckets <= 0 {
+		maxBuckets = 100_000
+	}
 	rl := &rateLimiter{
 		rate:       rate,
 		burst:      burst,
 		intvl:      intvl,
 		buckets:    make(map[string]*bucket),
-		maxBuckets: 100000,           // Limit to 100k unique keys
+		maxBuckets: maxBuckets,
 		cleanupAge: 10 * time.Minute, // Clean up buckets inactive for 10 minutes
 	}
 	// Start background cleanup
@@ -112,14 +115,17 @@ type tenantRateLimiter struct {
 	cleanupAge time.Duration // Age after which inactive tenants are cleaned
 }
 
-func newTenantRateLimiter(rps, burst int, window time.Duration) *tenantRateLimiter {
+func newTenantRateLimiter(rps, burst, maxTenants int, window time.Duration) *tenantRateLimiter {
+	if maxTenants <= 0 {
+		maxTenants = 100_000
+	}
 	trl := &tenantRateLimiter{
 		limiters:   make(map[string]*rateLimiter),
 		lastAccess: make(map[string]time.Time),
 		rps:        rps,
 		burst:      burst,
 		window:     window,
-		maxTenants: 10000,            // Limit to 10k tenants
+		maxTenants: maxTenants,
 		cleanupAge: 30 * time.Minute, // Clean up tenants inactive for 30 minutes
 	}
 	// Start background cleanup
@@ -144,7 +150,7 @@ func (trl *tenantRateLimiter) allow(tenantID string) bool {
 				trl.mu.Unlock()
 				return false // At capacity, deny new tenants
 			}
-			limiter = newRateLimiter(trl.rps, trl.burst, trl.window)
+			limiter = newRateLimiter(trl.rps, trl.burst, 0, trl.window)
 			trl.limiters[tenantID] = limiter
 			trl.lastAccess[tenantID] = now
 		}
@@ -162,7 +168,7 @@ func (trl *tenantRateLimiter) allow(tenantID string) bool {
 func (trl *tenantRateLimiter) setLimit(tenantID string, rps, burst int) {
 	trl.mu.Lock()
 	defer trl.mu.Unlock()
-	trl.limiters[tenantID] = newRateLimiter(rps, burst, trl.window)
+	trl.limiters[tenantID] = newRateLimiter(rps, burst, 0, trl.window)
 	trl.lastAccess[tenantID] = time.Now()
 }
 

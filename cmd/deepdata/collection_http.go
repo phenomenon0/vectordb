@@ -413,13 +413,12 @@ func (s *CollectionHTTPServer) handleBatchInsert(w http.ResponseWriter, r *http.
 		return
 	}
 
-	const MaxBatchSize = 10_000
 	if len(req.Docs) == 0 {
 		http.Error(w, "no documents provided", http.StatusBadRequest)
 		return
 	}
-	if len(req.Docs) > MaxBatchSize {
-		http.Error(w, fmt.Sprintf("batch too large: max %d documents", MaxBatchSize), http.StatusBadRequest)
+	if len(req.Docs) > limitMaxBatchSize {
+		http.Error(w, fmt.Sprintf("batch too large: max %d documents (set LIMIT_MAX_BATCH_SIZE to increase)", limitMaxBatchSize), http.StatusBadRequest)
 		return
 	}
 
@@ -1397,8 +1396,8 @@ func (s *CollectionHTTPServer) handleBinaryImport(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Cap request body at 500MB to prevent OOM
-	const maxBodySize = 500 * 1024 * 1024
+	// Cap request body to prevent OOM
+	maxBodySize := limitBinaryImport
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 
 	// Read 8-byte header: [uint32 count][uint32 dim]
@@ -1415,15 +1414,15 @@ func (s *CollectionHTTPServer) handleBinaryImport(w http.ResponseWriter, r *http
 		http.Error(w, "count must be > 0", http.StatusBadRequest)
 		return
 	}
-	if dim == 0 || dim > 65536 {
-		http.Error(w, "dim must be in [1, 65536]", http.StatusBadRequest)
+	if dim == 0 || dim > uint32(limitMaxDimension) {
+		http.Error(w, fmt.Sprintf("dim must be in [1, %d]", limitMaxDimension), http.StatusBadRequest)
 		return
 	}
 
 	// Each record: 8 bytes (uint64 id) + dim*4 bytes (float32 vector)
 	recordSize := 8 + uint64(dim)*4
 	expectedSize := uint64(count) * recordSize
-	if expectedSize > maxBodySize {
+	if expectedSize > uint64(maxBodySize) {
 		http.Error(w, fmt.Sprintf("payload too large: %d bytes", expectedSize), http.StatusRequestEntityTooLarge)
 		return
 	}
