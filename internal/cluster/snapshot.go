@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -603,23 +602,67 @@ func (ssc *SnapshotSyncClient) FetchLatestSnapshot(ctx context.Context) (*StoreS
 	return metadata, data, nil
 }
 
-// FetchAndApplySnapshot fetches and applies snapshot to a store
+// FetchAndApplySnapshot fetches and applies snapshot to a store.
+// Streams the response body to a temp file to avoid OOM on large snapshots.
 func (ssc *SnapshotSyncClient) FetchAndApplySnapshot(ctx context.Context, store Store, walStream *WALStream) (*StoreSnapshot, error) {
 	fmt.Printf("[SnapshotSyncClient] Fetching snapshot from %s...\n", ssc.primaryAddr)
 
-	metadata, data, err := ssc.FetchLatestSnapshot(ctx)
+	url := fmt.Sprintf("%s/snapshot/download", ssc.primaryAddr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	if ssc.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+ssc.authToken)
 	}
 
-	fmt.Printf("[SnapshotSyncClient] Downloaded snapshot %s (%d bytes)\n", metadata.ID, len(data))
+	resp, err := ssc.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch snapshot: %w", err)
+	}
+	defer resp.Body.Close()
 
-	// Parse and apply snapshot
-	var reader io.Reader = bytes.NewReader(data)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("snapshot download failed: %s - %s", resp.Status, string(body))
+	}
+
+	// Stream to temp file instead of buffering in memory
+	tmpFile, err := os.CreateTemp("", "snapshot-sync-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	written, err := io.Copy(tmpFile, resp.Body)
+	if err != nil {
+		tmpFile.Close()
+		return nil, fmt.Errorf("failed to stream snapshot to file: %w", err)
+	}
+	tmpFile.Close()
+
+	snapshotID := resp.Header.Get("X-Snapshot-ID")
+	fmt.Printf("[SnapshotSyncClient] Downloaded snapshot %s (%d bytes) to temp file\n", snapshotID, written)
+
+	// Open temp file for reading
+	file, err := os.Open(tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open temp snapshot: %w", err)
+	}
+	defer file.Close()
+
+	var reader io.Reader = file
 
 	// Check if compressed
-	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-		gzReader, err := gzip.NewReader(bytes.NewReader(data))
+	header := make([]byte, 2)
+	if _, err := file.Read(header); err != nil {
+		return nil, fmt.Errorf("failed to read header: %w", err)
+	}
+	file.Seek(0, 0)
+
+	if header[0] == 0x1f && header[1] == 0x8b {
+		gzReader, err := gzip.NewReader(file)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 		}
@@ -667,7 +710,7 @@ func (ssc *SnapshotSyncClient) FetchAndApplySnapshot(ctx context.Context, store 
 	}
 
 	fmt.Printf("[SnapshotSyncClient] Applied snapshot %s (vectors=%d, wal_seq=%d)\n",
-		metadata.ID, fileData.Metadata.VectorCount, fileData.Metadata.WALSequence)
+		snapshotID, fileData.Metadata.VectorCount, fileData.Metadata.WALSequence)
 
 	return fileData.Metadata, nil
 }

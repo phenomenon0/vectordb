@@ -1,12 +1,15 @@
 package cluster
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"hash/crc64"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -262,10 +265,17 @@ func (fr *FollowerReplicator) poll() error {
 	// Pull latest entries from primary
 	entries, err := fr.walClient.PullLatest()
 	if err != nil {
-		// Check if error indicates we're too far behind (410 Gone)
+		// Detect WAL gap (410 Gone) and trigger streaming snapshot sync
+		if strings.Contains(err.Error(), "WAL gap detected") || strings.Contains(err.Error(), "no longer available") {
+			fmt.Printf("[FollowerReplicator] WAL gap detected at seq %d, initiating streaming snapshot sync\n", fr.walClient.lastSeq)
+			if syncErr := fr.RequestFullSync(fr.ctx); syncErr != nil {
+				return fmt.Errorf("streaming snapshot sync failed after WAL gap: %w", syncErr)
+			}
+			return nil
+		}
+		// Generic error with full sync fallback
 		if fr.config.FullSyncThreshold > 0 {
-			// Try full sync if WAL entries are trimmed
-			fmt.Printf("[FollowerReplicator] WAL entries too old, attempting full snapshot sync\n")
+			fmt.Printf("[FollowerReplicator] WAL pull error, attempting full snapshot sync\n")
 			if syncErr := fr.RequestFullSync(fr.ctx); syncErr != nil {
 				return fmt.Errorf("full sync failed: %w", syncErr)
 			}
@@ -425,14 +435,160 @@ func (fr *FollowerReplicator) SetPrimaryAddr(addr string, token string) {
 	fmt.Printf("[FollowerReplicator] Primary changed to %s\n", addr)
 }
 
-// RequestFullSync requests a full snapshot sync (when too far behind)
+// RequestFullSync requests a full snapshot sync (when too far behind).
+// Tries the streaming snapshot endpoint first; falls back to the legacy
+// JSON blob endpoint if the primary returns 404.
 func (fr *FollowerReplicator) RequestFullSync(ctx context.Context) error {
 	fmt.Printf("[FollowerReplicator] Starting full snapshot sync from %s\n", fr.config.PrimaryAddr)
-
-	// 1. Set status to syncing
 	fr.setStatus(StatusSyncing)
 
-	// 2. Request snapshot from primary
+	// Try streaming snapshot first
+	if err := fr.requestStreamingSnapshot(ctx); err == nil {
+		return nil
+	} else {
+		fmt.Printf("[FollowerReplicator] Streaming snapshot unavailable, falling back to legacy: %v\n", err)
+	}
+
+	// Fallback: legacy JSON blob snapshot
+	return fr.requestLegacySnapshot(ctx)
+}
+
+// requestStreamingSnapshot downloads a snapshot via the streaming endpoint,
+// writing directly to a temp file to avoid buffering in memory.
+func (fr *FollowerReplicator) requestStreamingSnapshot(ctx context.Context) error {
+	streamURL := fmt.Sprintf("%s/internal/snapshot/stream/download", fr.config.PrimaryAddr)
+	req, err := http.NewRequestWithContext(ctx, "GET", streamURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create streaming snapshot request: %w", err)
+	}
+	if fr.config.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+fr.config.AuthToken)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to request streaming snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("streaming snapshot endpoint not available (404)")
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("streaming snapshot failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Stream response body to temp file (no memory buffering)
+	tmpFile, err := os.CreateTemp("", "snapshot-download-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to stream snapshot to file: %w", err)
+	}
+	tmpFile.Close()
+
+	// Apply snapshot from file
+	snapshotID := resp.Header.Get("X-Snapshot-ID")
+	walSeq, err := fr.applyStreamingSnapshot(ctx, tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to apply streaming snapshot: %w", err)
+	}
+
+	fmt.Printf("[FollowerReplicator] Streaming snapshot %s applied, resuming from seq=%d\n", snapshotID, walSeq)
+	return nil
+}
+
+// applyStreamingSnapshot reads a snapshot file (possibly gzipped) and loads it
+// into the store. Returns the WAL sequence from the snapshot metadata.
+func (fr *FollowerReplicator) applyStreamingSnapshot(ctx context.Context, path string) (uint64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	var reader io.Reader = file
+
+	// Check for gzip magic bytes
+	header := make([]byte, 2)
+	if _, err := file.Read(header); err != nil {
+		return 0, fmt.Errorf("failed to read header: %w", err)
+	}
+	file.Seek(0, 0)
+
+	if header[0] == 0x1f && header[1] == 0x8b {
+		gzReader, err := gzip.NewReader(file)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer gzReader.Close()
+		reader = gzReader
+	}
+
+	var fileData snapshotFileData
+	if err := json.NewDecoder(reader).Decode(&fileData); err != nil {
+		return 0, fmt.Errorf("failed to decode snapshot: %w", err)
+	}
+	if fileData.Metadata == nil {
+		return 0, fmt.Errorf("invalid streaming snapshot: missing metadata")
+	}
+
+	// Build SnapshotData
+	snapData := &SnapshotData{
+		Count:    fileData.Metadata.VectorCount,
+		Dim:      fileData.Metadata.Dimension,
+		IDs:      fileData.IDs,
+		Docs:     fileData.Docs,
+		Data:     fileData.Data,
+		Seqs:     fileData.Seqs,
+		Meta:     fileData.Meta,
+		NumMeta:  fileData.NumMeta,
+		TimeMeta: fileData.TimeMeta,
+		Deleted:  fileData.Deleted,
+		Coll:     fileData.Coll,
+		TenantID: fileData.TenantID,
+		LexTF:    fileData.LexTF,
+		DocLen:   fileData.DocLen,
+		DF:       fileData.DF,
+		SumDocL:  fileData.SumDocL,
+	}
+	snapData.IDToIx = make(map[uint64]int)
+	for i, seq := range fileData.Seqs {
+		snapData.IDToIx[seq] = i
+	}
+
+	// Apply to store
+	fr.shard.store.StoreLock()
+	if err := fr.shard.store.LoadSnapshotData(snapData); err != nil {
+		fr.shard.store.StoreUnlock()
+		return 0, fmt.Errorf("failed to load snapshot data: %w", err)
+	}
+	fr.shard.store.StoreUnlock()
+
+	walSeq := fileData.Metadata.WALSequence
+
+	// Update replication state
+	fr.mu.Lock()
+	fr.lastAppliedSeq = walSeq
+	if walSeq > fr.primarySeq {
+		fr.primarySeq = walSeq
+	}
+	fr.stats.EntriesApplied += uint64(fileData.Metadata.VectorCount)
+	fr.mu.Unlock()
+	fr.walClient.Advance(walSeq)
+
+	return walSeq, nil
+}
+
+// requestLegacySnapshot falls back to the old JSON blob /internal/snapshot endpoint.
+func (fr *FollowerReplicator) requestLegacySnapshot(ctx context.Context) error {
 	snapshotURL := fmt.Sprintf("%s/internal/snapshot", fr.config.PrimaryAddr)
 	req, err := http.NewRequestWithContext(ctx, "GET", snapshotURL, nil)
 	if err != nil {
@@ -443,7 +599,7 @@ func (fr *FollowerReplicator) RequestFullSync(ctx context.Context) error {
 		req.Header.Set("Authorization", "Bearer "+fr.config.AuthToken)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Minute} // Snapshots can be large
+	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to request snapshot: %w", err)
@@ -455,26 +611,22 @@ func (fr *FollowerReplicator) RequestFullSync(ctx context.Context) error {
 		return fmt.Errorf("snapshot request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// 3. Parse snapshot
 	var snapshot Snapshot
 	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
 		return fmt.Errorf("failed to decode snapshot: %w", err)
 	}
 
-	// 4. Validate checksum
 	if !snapshot.validate() {
 		return fmt.Errorf("snapshot checksum mismatch: data corruption detected")
 	}
 
-	fmt.Printf("[FollowerReplicator] Received snapshot: seq=%d, vectors=%d\n",
+	fmt.Printf("[FollowerReplicator] Received legacy snapshot: seq=%d, vectors=%d\n",
 		snapshot.Sequence, len(snapshot.Vectors))
 
-	// 5. Load snapshot into local store
 	if err := fr.shard.LoadSnapshot(&snapshot); err != nil {
 		return fmt.Errorf("failed to load snapshot: %w", err)
 	}
 
-	// 6. Update replication state
 	fr.mu.Lock()
 	fr.lastAppliedSeq = snapshot.Sequence
 	if snapshot.Sequence > fr.primarySeq {
@@ -484,9 +636,7 @@ func (fr *FollowerReplicator) RequestFullSync(ctx context.Context) error {
 	fr.mu.Unlock()
 	fr.walClient.Advance(snapshot.Sequence)
 
-	fmt.Printf("[FollowerReplicator] Full sync complete, resuming from seq=%d\n", snapshot.Sequence)
-
-	// 7. Status will transition to streaming on next successful poll
+	fmt.Printf("[FollowerReplicator] Legacy full sync complete, resuming from seq=%d\n", snapshot.Sequence)
 	return nil
 }
 

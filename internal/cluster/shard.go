@@ -49,6 +49,9 @@ type ShardServer struct {
 	walStream       *WALStream       // WAL stream buffer (for primaries)
 	walStreamClient *WALStreamClient // WAL stream client (for replicas)
 
+	// Streaming snapshots (for primaries)
+	snapshotManager *SnapshotSyncManager
+
 	// HTTP server
 	server *http.Server
 
@@ -73,9 +76,10 @@ type ShardServerConfig struct {
 	IndexPath string
 
 	// Optional
-	Embedder Embedder
-	Reranker Reranker
-	APIToken string
+	Embedder    Embedder
+	Reranker    Reranker
+	APIToken    string
+	SnapshotDir string // Directory for streaming snapshots (primary only)
 
 	// Dependencies from main package
 	Deps *Deps
@@ -133,6 +137,18 @@ func NewShardServer(cfg ShardServerConfig) (*ShardServer, error) {
 			}
 		})
 		fmt.Printf("WAL streaming enabled (primary mode)\n")
+
+		// Initialize streaming snapshot manager if snapshot dir is configured
+		if cfg.SnapshotDir != "" {
+			snapCfg := DefaultSnapshotSyncConfig()
+			snapCfg.SnapshotDir = cfg.SnapshotDir
+			mgr, err := NewSnapshotSyncManager(store, s.walStream, snapCfg)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create snapshot manager: %w", err)
+			}
+			s.snapshotManager = mgr
+			fmt.Printf("Streaming snapshot manager enabled (dir=%s)\n", cfg.SnapshotDir)
+		}
 	} else if cfg.PrimaryAddr != "" {
 		s.walStreamClient = NewWALStreamClient(cfg.PrimaryAddr, cfg.APIToken)
 		fmt.Printf("WAL streaming client enabled (pulling from %s)\n", cfg.PrimaryAddr)
@@ -231,6 +247,24 @@ func (s *ShardServer) newHTTPHandler() http.Handler {
 	// Add snapshot endpoint for full sync (primaries only)
 	if s.role == RolePrimary {
 		mux.HandleFunc("/internal/snapshot", s.handleSnapshot)
+	}
+
+	// Add streaming snapshot endpoints (primaries with snapshot manager)
+	if s.snapshotManager != nil {
+		mux.HandleFunc("/internal/snapshot/stream/download", func(w http.ResponseWriter, r *http.Request) {
+			if err := AuthorizeWALStream(s.store, r); err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			s.snapshotManager.HandleSnapshotDownload(w, r)
+		})
+		mux.HandleFunc("/internal/snapshot/stream/upload", func(w http.ResponseWriter, r *http.Request) {
+			if err := AuthorizeWALStream(s.store, r); err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			s.snapshotManager.HandleSnapshotUpload(w, r)
+		})
 	}
 
 	// Register migration handlers for shard rebalancing
