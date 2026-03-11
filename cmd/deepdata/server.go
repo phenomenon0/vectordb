@@ -86,7 +86,7 @@ func decodeRequest(r *http.Request, v any) error {
 }
 
 // newHTTPHandler builds the HTTP mux for insert/query/delete/health/metrics.
-func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) http.Handler {
+func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
 	mux := http.NewServeMux()
 	configDir := "."
 	if indexPath != "" {
@@ -1926,6 +1926,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// NEW Multi-Vector Collection API (v2) - supports hybrid search with dense + sparse vectors
 	// Initialize collection HTTP server for multi-vector support
 	collectionHTTP := NewCollectionHTTPServer(indexPath + ".collections")
+	if err := collectionHTTP.Load(indexPath + ".collections"); err != nil {
+		fmt.Printf("Warning: failed to load collection state: %v\n", err)
+	}
 	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
 
 	// ==========================================================================
@@ -3000,7 +3003,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		io.Copy(w, resp.Body)
 	}))
 
-	return recoveryMiddleware(corsMiddleware(otelMiddleware(mux)))
+	return recoveryMiddleware(corsMiddleware(otelMiddleware(mux))), collectionHTTP
 }
 
 func ageMillis(path string, fallback time.Time) int64 {

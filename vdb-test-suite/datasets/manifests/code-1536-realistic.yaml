@@ -1,0 +1,9 @@
+name: code-1536-realistic
+type: realistic
+dim: 1536
+metric: cosine
+base_path: datasets/cache/realistic/code_base_1536.fvecs
+query_path: datasets/cache/realistic/code_query_1536.fvecs
+gt_path: datasets/cache/realistic/code_gt100.npy
+payload_path: datasets/cache/realistic/code_payloads.jsonl
+n_base: 250000

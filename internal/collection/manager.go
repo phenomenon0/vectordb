@@ -2,7 +2,9 @@ package collection
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 )
 
@@ -337,4 +339,111 @@ func (cm *CollectionManager) DropAllCollections(ctx context.Context) error {
 // ValidateCollection validates a collection schema without creating it.
 func (cm *CollectionManager) ValidateCollection(schema CollectionSchema) error {
 	return schema.Validate()
+}
+
+// persistedCollection holds the serialized state of a single collection.
+type persistedCollection struct {
+	Schema  CollectionSchema          `json:"schema"`
+	Indexes map[string]json.RawMessage `json:"indexes"`
+	NextID  uint64                     `json:"next_id"`
+	Docs    map[string]*Document       `json:"docs,omitempty"` // string keys for JSON compat
+}
+
+// persistedManagerState holds the serialized state of all collections.
+type persistedManagerState struct {
+	Collections map[string]*persistedCollection `json:"collections"`
+}
+
+// Save serializes all collections to a JSON file.
+func (cm *CollectionManager) Save(path string) error {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	state := persistedManagerState{
+		Collections: make(map[string]*persistedCollection, len(cm.collections)),
+	}
+
+	for name, coll := range cm.collections {
+		indexes, err := coll.ExportIndexes()
+		if err != nil {
+			return fmt.Errorf("export collection %s: %w", name, err)
+		}
+
+		rawIndexes := make(map[string]json.RawMessage, len(indexes))
+		for field, data := range indexes {
+			rawIndexes[field] = json.RawMessage(data)
+		}
+
+		docs := coll.ExportDocuments()
+		docMap := make(map[string]*Document, len(docs))
+		for id, doc := range docs {
+			docMap[fmt.Sprintf("%d", id)] = doc
+		}
+
+		state.Collections[name] = &persistedCollection{
+			Schema:  coll.Schema(),
+			Indexes: rawIndexes,
+			NextID:  coll.GetNextID(),
+			Docs:    docMap,
+		}
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+
+	return os.WriteFile(path, data, 0644)
+}
+
+// Load deserializes collections from a JSON file.
+func (cm *CollectionManager) Load(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No saved state, nothing to load
+		}
+		return fmt.Errorf("read state file: %w", err)
+	}
+
+	var state persistedManagerState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("unmarshal state: %w", err)
+	}
+
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	for name, pc := range state.Collections {
+		coll, err := NewCollection(pc.Schema)
+		if err != nil {
+			return fmt.Errorf("recreate collection %s: %w", name, err)
+		}
+
+		// Restore indexes
+		indexes := make(map[string][]byte, len(pc.Indexes))
+		for field, raw := range pc.Indexes {
+			indexes[field] = []byte(raw)
+		}
+		if err := coll.ImportIndexes(indexes); err != nil {
+			return fmt.Errorf("import indexes for %s: %w", name, err)
+		}
+
+		// Restore documents
+		if pc.Docs != nil {
+			docs := make(map[uint64]*Document, len(pc.Docs))
+			for idStr, doc := range pc.Docs {
+				var id uint64
+				fmt.Sscanf(idStr, "%d", &id)
+				doc.ID = id
+				docs[id] = doc
+			}
+			coll.ImportDocuments(docs)
+		}
+
+		coll.SetNextID(pc.NextID)
+		cm.collections[name] = coll
+	}
+
+	return nil
 }

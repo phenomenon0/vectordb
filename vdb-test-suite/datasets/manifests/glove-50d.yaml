@@ -1,0 +1,8 @@
+name: glove-50d
+type: ann
+dim: 50
+metric: cosine
+base_path: datasets/cache/glove/glove_base_50d.fvecs
+query_path: datasets/cache/glove/glove_query_50d.fvecs
+gt_path: datasets/cache/glove/glove_50d_gt100.npy
+n_base: 0

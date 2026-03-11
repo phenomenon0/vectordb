@@ -2,7 +2,9 @@ package collection
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 )
@@ -246,4 +248,80 @@ func (tm *TenantManager) GetTenantStats(tenantID string) (*TenantStats, error) {
 		TotalDocuments:  mgrStats.TotalDocuments,
 		Collections:     mgrStats.Collections,
 	}, nil
+}
+
+// persistedTenantState holds all tenant manager states.
+type persistedTenantState struct {
+	Tenants map[string]json.RawMessage `json:"tenants"`
+}
+
+// Save serializes all tenant collection managers to a JSON file.
+func (tm *TenantManager) Save(path string) error {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	if len(tm.tenants) == 0 {
+		return nil // Nothing to save
+	}
+
+	state := persistedTenantState{
+		Tenants: make(map[string]json.RawMessage, len(tm.tenants)),
+	}
+
+	for tenantID, mgr := range tm.tenants {
+		// Save each manager to a temporary path and read the bytes
+		tmpPath := path + "." + tenantID + ".tmp"
+		if err := mgr.Save(tmpPath); err != nil {
+			return fmt.Errorf("save tenant %s: %w", tenantID, err)
+		}
+		data, err := os.ReadFile(tmpPath)
+		if err != nil {
+			return fmt.Errorf("read tenant %s state: %w", tenantID, err)
+		}
+		os.Remove(tmpPath)
+		state.Tenants[tenantID] = json.RawMessage(data)
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal tenant state: %w", err)
+	}
+
+	return os.WriteFile(path, data, 0644)
+}
+
+// Load deserializes tenant collection managers from a JSON file.
+func (tm *TenantManager) Load(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read tenant state file: %w", err)
+	}
+
+	var state persistedTenantState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("unmarshal tenant state: %w", err)
+	}
+
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	for tenantID, raw := range state.Tenants {
+		// Write tenant data to temp file and use manager Load
+		tmpPath := path + "." + tenantID + ".tmp"
+		if err := os.WriteFile(tmpPath, []byte(raw), 0644); err != nil {
+			return fmt.Errorf("write tenant %s temp: %w", tenantID, err)
+		}
+		mgr := NewCollectionManager(tm.tenantStoragePath(tenantID))
+		if err := mgr.Load(tmpPath); err != nil {
+			os.Remove(tmpPath)
+			return fmt.Errorf("load tenant %s: %w", tenantID, err)
+		}
+		os.Remove(tmpPath)
+		tm.tenants[tenantID] = mgr
+	}
+
+	return nil
 }

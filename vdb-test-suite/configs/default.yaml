@@ -1,0 +1,10 @@
+port: 8080
+n_search: 200
+warmup: 10
+concurrency: 8
+duration_s: 5.0
+batch_size: 5000
+startup_timeout_s: 20.0
+settle_time_s: 1.0
+metric: cosine
+seed: 42

@@ -1,0 +1,9 @@
+name: text-768-realistic
+type: realistic
+dim: 768
+metric: cosine
+base_path: datasets/cache/realistic/text_base_768.fvecs
+query_path: datasets/cache/realistic/text_query_768.fvecs
+gt_path: datasets/cache/realistic/text_gt100.npy
+payload_path: datasets/cache/realistic/text_payloads.jsonl
+n_base: 100000

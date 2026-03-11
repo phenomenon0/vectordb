@@ -2256,7 +2256,7 @@ func main() {
 	warmupModels(swappableEmbedder, reranker)
 
 	// HTTP API with graceful shutdown
-	handler := newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
+	handler, collectionHTTP := newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
 	addr := fmt.Sprintf(":%d", envInt("PORT", 8080))
 
 	// Wrap handler with h2c (HTTP/2 cleartext) for connection multiplexing
@@ -2395,6 +2395,11 @@ func main() {
 		logger.Error("failed to save final snapshot", "error", err)
 	} else {
 		logger.Info("final snapshot saved successfully")
+	}
+	if err := collectionHTTP.Save(indexPath + ".collections"); err != nil {
+		logger.Error("failed to save collection state", "error", err)
+	} else {
+		logger.Info("collection state saved successfully")
 	}
 
 	logger.Info("shutdown complete")

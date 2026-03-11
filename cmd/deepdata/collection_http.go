@@ -90,6 +90,28 @@ func NewCollectionHTTPServer(storagePath string) *CollectionHTTPServer {
 	}
 }
 
+// Save persists all collection and tenant state to disk.
+func (s *CollectionHTTPServer) Save(basePath string) error {
+	if err := s.manager.Save(basePath + ".manager"); err != nil {
+		return fmt.Errorf("save manager: %w", err)
+	}
+	if err := s.tenantManager.Save(basePath + ".tenants"); err != nil {
+		return fmt.Errorf("save tenant manager: %w", err)
+	}
+	return nil
+}
+
+// Load restores collection and tenant state from disk.
+func (s *CollectionHTTPServer) Load(basePath string) error {
+	if err := s.manager.Load(basePath + ".manager"); err != nil {
+		return fmt.Errorf("load manager: %w", err)
+	}
+	if err := s.tenantManager.Load(basePath + ".tenants"); err != nil {
+		return fmt.Errorf("load tenant manager: %w", err)
+	}
+	return nil
+}
+
 // EnableGraphRAG activates the GraphRAG index for graph-boosted hybrid search.
 func (s *CollectionHTTPServer) EnableGraphRAG(cfg graph.Config) {
 	s.graphIndex = graph.NewGraphIndex(cfg)
@@ -579,7 +601,8 @@ func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Reque
 	}
 
 	if req.TopK <= 0 {
-		req.TopK = 10
+		http.Error(w, "top_k must be positive", http.StatusBadRequest)
+		return
 	}
 	if req.Offset < 0 {
 		http.Error(w, "offset must be >= 0", http.StatusBadRequest)
@@ -1152,7 +1175,8 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 		return
 	}
 	if req.TopK <= 0 {
-		req.TopK = 10
+		http.Error(w, "top_k must be positive", http.StatusBadRequest)
+		return
 	}
 
 	// Convert query vectors (dense and sparse)

@@ -1,0 +1,8 @@
+name: sift-10k
+type: ann
+dim: 128
+metric: l2
+base_path: datasets/cache/sift/sift_base.fvecs
+query_path: datasets/cache/sift/sift_query.fvecs
+gt_path: datasets/cache/sift/sift_gt100.npy
+n_base: 10000

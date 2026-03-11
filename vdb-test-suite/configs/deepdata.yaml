@@ -1,0 +1,7 @@
+vdb: deepdata
+port: 8080
+hnsw_m: 16
+ef_construction: 300
+ef_search: 200
+batch_size: 5000
+startup_timeout_s: 20.0

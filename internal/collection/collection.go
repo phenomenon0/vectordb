@@ -910,6 +910,100 @@ func (c *Collection) Name() string {
 	return c.schema.Name
 }
 
+// ExportIndexes exports all dense index data as field -> serialized bytes.
+func (c *Collection) ExportIndexes() (map[string][]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make(map[string][]byte, len(c.indexes))
+	for name, idx := range c.indexes {
+		data, err := idx.Export()
+		if err != nil {
+			return nil, fmt.Errorf("export index %s: %w", name, err)
+		}
+		result[name] = data
+	}
+	return result, nil
+}
+
+// ImportIndexes restores dense index data from field -> serialized bytes.
+func (c *Collection) ImportIndexes(data map[string][]byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for name, raw := range data {
+		idx, ok := c.indexes[name]
+		if !ok {
+			return fmt.Errorf("index %s not found in schema", name)
+		}
+		if err := idx.Import(raw); err != nil {
+			return fmt.Errorf("import index %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// ExportMetadata returns a copy of all document metadata.
+func (c *Collection) ExportMetadata() map[uint64]map[string]interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make(map[uint64]map[string]interface{}, len(c.documents))
+	for id, doc := range c.documents {
+		if doc.Metadata != nil {
+			meta := make(map[string]interface{}, len(doc.Metadata))
+			for k, v := range doc.Metadata {
+				meta[k] = v
+			}
+			result[id] = meta
+		}
+	}
+	return result
+}
+
+// ImportMetadata restores document metadata and creates minimal document records.
+func (c *Collection) ImportMetadata(data map[uint64]map[string]interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for id, meta := range data {
+		if _, exists := c.documents[id]; !exists {
+			c.documents[id] = &Document{ID: id}
+		}
+		c.documents[id].Metadata = meta
+	}
+}
+
+// SetNextID sets the next document ID counter.
+func (c *Collection) SetNextID(id uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextID = id
+}
+
+// GetNextID returns the current next document ID counter.
+func (c *Collection) GetNextID() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.nextID
+}
+
+// ExportDocuments returns all document records for persistence.
+func (c *Collection) ExportDocuments() map[uint64]*Document {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.documents
+}
+
+// ImportDocuments restores document records.
+func (c *Collection) ImportDocuments(docs map[uint64]*Document) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, doc := range docs {
+		c.documents[id] = doc
+	}
+}
+
 // Close releases all resources held by the collection.
 // This should be called when deleting a collection.
 func (c *Collection) Close() {

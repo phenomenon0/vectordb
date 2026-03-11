@@ -1,0 +1,17 @@
+vdb: deepdata
+port: 8080
+dim: 1536
+metric: cosine
+n_base: 250000
+top_k: [10, 20, 50]
+concurrency: 16
+duration_s: 120.0
+mix:
+  search_pct: 60
+  insert_pct: 20
+  delete_pct: 10
+  update_pct: 10
+filters:
+  - tenant_id
+  - doc_type
+  - language

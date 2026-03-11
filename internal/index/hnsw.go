@@ -271,7 +271,18 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 		for _, id := range batchIDs {
 			// Check if already exists
 			if _, exists := h.idToIdx[id]; exists {
-				return fmt.Errorf("vector with ID %d already exists", id)
+				if !h.deleted[id] {
+					return fmt.Errorf("vector with ID %d already exists", id)
+				}
+				// Tombstoned — resurrect via Update, skip batch Add
+				delete(h.deleted, id)
+				vecCopy := make([]float32, h.dim)
+				copy(vecCopy, vectors[id])
+				h.graph.Update(id, vecCopy)
+				if err := h.storeVectorLocked(id, vecCopy); err != nil {
+					return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
+				}
+				continue
 			}
 
 			// Make a copy
@@ -281,14 +292,16 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 		}
 
 		// Single variadic call — saves per-node function overhead
-		h.graph.Add(nodes...)
+		if len(nodes) > 0 {
+			h.graph.Add(nodes...)
+		}
 
-		// Update mappings and store vectors
-		for idx, id := range batchIDs {
-			if err := h.storeVectorLocked(id, nodes[idx].Value); err != nil {
-				return fmt.Errorf("failed to store vector %d: %w", id, err)
+		// Update mappings and store vectors for newly added nodes
+		for _, node := range nodes {
+			if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
+				return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
 			}
-			h.idToIdx[id] = h.count
+			h.idToIdx[node.Key] = h.count
 			h.count++
 			processed++
 		}
@@ -344,19 +357,30 @@ func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]flo
 		nodes := make([]hnsw.Node[uint64], 0, len(batchIDs))
 		for _, id := range batchIDs {
 			if _, exists := h.idToIdx[id]; exists {
-				return fmt.Errorf("vector with ID %d already exists", id)
+				if !h.deleted[id] {
+					return fmt.Errorf("vector with ID %d already exists", id)
+				}
+				// Tombstoned — resurrect via Update
+				delete(h.deleted, id)
+				h.graph.Update(id, vectors[id])
+				if err := h.storeVectorLocked(id, vectors[id]); err != nil {
+					return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
+				}
+				continue
 			}
 			// No copy — caller guarantees ownership
 			nodes = append(nodes, hnsw.MakeNode(id, vectors[id]))
 		}
 
-		h.graph.Add(nodes...)
+		if len(nodes) > 0 {
+			h.graph.Add(nodes...)
+		}
 
-		for idx, id := range batchIDs {
-			if err := h.storeVectorLocked(id, nodes[idx].Value); err != nil {
-				return fmt.Errorf("failed to store vector %d: %w", id, err)
+		for _, node := range nodes {
+			if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
+				return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
 			}
-			h.idToIdx[id] = h.count
+			h.idToIdx[node.Key] = h.count
 			h.count++
 			processed++
 		}
