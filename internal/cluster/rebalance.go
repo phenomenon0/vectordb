@@ -384,6 +384,11 @@ func (rc *RebalanceCoordinator) executeMigration(m *Migration) {
 
 	rc.stats.RecordMigrationComplete(m.TotalVectors, time.Since(m.StartTime))
 
+	// Clean up completed migration from map to prevent unbounded growth
+	rc.mu.Lock()
+	delete(rc.migrations, m.ID)
+	rc.mu.Unlock()
+
 	fmt.Printf("✅ Migration complete: %s (%.0f%% - %d vectors in %.1fs)\n",
 		m.ID, m.Progress(), m.TotalVectors, time.Since(m.StartTime).Seconds())
 }
@@ -543,6 +548,11 @@ func (rc *RebalanceCoordinator) handleMigrationFailure(m *Migration, err error) 
 		fmt.Printf("✅ Rollback successful for %s\n", m.ID)
 		m.Status = MigrationRolledBack
 	}
+
+	// Clean up failed/rolled-back migration from map to prevent unbounded growth
+	rc.mu.Lock()
+	delete(rc.migrations, m.ID)
+	rc.mu.Unlock()
 
 	rc.stats.RecordMigrationFailed()
 }

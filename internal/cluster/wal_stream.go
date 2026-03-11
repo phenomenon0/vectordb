@@ -70,10 +70,14 @@ func (ws *WALStream) Append(entry WalEntry) uint64 {
 	seq := ws.nextSeq
 	ws.nextSeq++
 
-	// Trim old entries if buffer gets too large
+	// Trim old entries if buffer gets too large.
+	// Copy to a new backing array so the GC can reclaim the old one.
 	if len(ws.entries) > ws.maxEntries {
 		trimCount := len(ws.entries) - ws.maxEntries
-		ws.entries = ws.entries[trimCount:]
+		remaining := ws.entries[trimCount:]
+		compacted := make([]WalEntry, len(remaining))
+		copy(compacted, remaining)
+		ws.entries = compacted
 		ws.minSeq = ws.entries[0].Seq
 	}
 

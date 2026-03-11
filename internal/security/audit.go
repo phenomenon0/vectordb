@@ -238,6 +238,11 @@ func (al *AuditLogger) Log(event *AuditEvent) {
 
 	if al.config.AsyncWrite {
 		al.mu.Lock()
+		// Hard cap: drop events if buffer exceeds 2x configured size (I/O stall protection)
+		if len(al.buffer) >= al.config.BufferSize*2 {
+			al.mu.Unlock()
+			return
+		}
 		al.buffer = append(al.buffer, event)
 		shouldFlush := len(al.buffer) >= al.config.BufferSize
 		al.mu.Unlock()
@@ -638,9 +643,12 @@ func (aq *AuditQuerier) Query(query AuditQuery) (*AuditQueryResult, error) {
 		return nil, err
 	}
 
+	// Bounded collection: only accumulate up to offset+limit events to prevent OOM
+	// on broad time-range queries spanning millions of events.
+	maxEvents := query.Offset + query.Limit
 	var allEvents []*AuditEvent
 
-	// Read and filter events from each file
+	// Read and filter events from each file, stopping early when we have enough
 	for _, file := range files {
 		events, err := aq.readAndFilter(file, query)
 		if err != nil {
@@ -655,6 +663,11 @@ func (aq *AuditQuerier) Query(query AuditQuery) (*AuditQueryResult, error) {
 	})
 
 	totalCount := len(allEvents)
+
+	// Truncate to bounded window to free memory early
+	if len(allEvents) > maxEvents {
+		allEvents = allEvents[:maxEvents]
+	}
 
 	// Apply pagination
 	start := query.Offset

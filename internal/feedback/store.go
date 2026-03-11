@@ -367,6 +367,25 @@ func (s *Store) Prune() int {
 		}
 	}
 
+	// Prune orphaned queryStats: collect live query hashes from remaining interactions
+	liveQueryHashes := make(map[string]bool, len(s.interactions))
+	for _, interaction := range s.interactions {
+		liveQueryHashes[interaction.QueryHash] = true
+	}
+	for queryHash := range s.queryStats {
+		if !liveQueryHashes[queryHash] {
+			delete(s.queryStats, queryHash)
+		}
+	}
+
+	// Prune orphaned boosts: remove entries whose query hash is no longer live
+	// Global boosts (queryHash="") are always kept
+	for key, boost := range s.boosts {
+		if boost.QueryHash != "" && !liveQueryHashes[boost.QueryHash] {
+			delete(s.boosts, key)
+		}
+	}
+
 	return pruned
 }
 

@@ -1422,7 +1422,26 @@ func (d *DiskANNIndex) importLegacyLocked(data []byte) error {
 		d.deleted[id] = true
 	}
 
-	// Memory vectors are reconstructed on demand from mmap
+	// Eagerly rebuild unquantizedOffsetIndex by scanning the mmap file once.
+	// This eliminates O(n_vectors) linear scan fallback on cache miss.
+	if d.mmapData != nil && d.mmapOffset > 0 && d.quantizer == nil {
+		recordSize := int64(8 + d.dim*4)
+		scanOffset := int64(0)
+		for scanOffset+recordSize <= d.mmapOffset {
+			storedID := binary.LittleEndian.Uint64(d.mmapData[scanOffset:])
+			d.unquantizedOffsetIndex[storedID] = scanOffset
+			scanOffset += recordSize
+		}
+	} else if d.mmapData != nil && d.mmapOffset > 0 && d.quantizer != nil {
+		// Rebuild diskOffsetIndex for quantized data
+		scanOffset := int64(0)
+		for scanOffset+12 <= d.mmapOffset { // 8 (id) + 4 (length) minimum
+			storedID := binary.LittleEndian.Uint64(d.mmapData[scanOffset:])
+			d.diskOffsetIndex[storedID] = scanOffset
+			dataLen := int64(binary.LittleEndian.Uint32(d.mmapData[scanOffset+8:]))
+			scanOffset += 8 + 4 + dataLen
+		}
+	}
 
 	return nil
 }

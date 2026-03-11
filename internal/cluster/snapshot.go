@@ -210,23 +210,103 @@ func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapsh
 		defer gzWriter.Close()
 	}
 
-	// Write snapshot data structure
+	// Filter out deleted vectors from the snapshot to prevent monotonic growth.
+	// Build a set of live indices (not marked as deleted).
+	liveIndices := make(map[int]bool, len(snapData.Seqs))
+	for i, seq := range snapData.Seqs {
+		if !snapData.Deleted[seq] {
+			liveIndices[i] = true
+		}
+	}
+
+	// Build filtered slices containing only live vectors
+	filteredData := make([]float32, 0, len(liveIndices)*snapData.Dim)
+	filteredDocs := make([]string, 0, len(liveIndices))
+	filteredIDs := make([]string, 0, len(liveIndices))
+	filteredSeqs := make([]uint64, 0, len(liveIndices))
+	filteredMeta := make(map[uint64]map[string]string, len(liveIndices))
+	filteredNumMeta := make(map[uint64]map[string]float64, len(liveIndices))
+	filteredTimeMeta := make(map[uint64]map[string]time.Time, len(liveIndices))
+	filteredColl := make(map[uint64]string, len(liveIndices))
+	filteredTenantID := make(map[uint64]string, len(liveIndices))
+	filteredLexTF := make(map[uint64]map[string]int, len(liveIndices))
+	filteredDocLen := make(map[uint64]int, len(liveIndices))
+
+	for i := 0; i < len(snapData.Seqs); i++ {
+		if !liveIndices[i] {
+			continue
+		}
+		seq := snapData.Seqs[i]
+
+		// Copy vector data (dim floats per vector)
+		start := i * snapData.Dim
+		end := start + snapData.Dim
+		if end <= len(snapData.Data) {
+			filteredData = append(filteredData, snapData.Data[start:end]...)
+		}
+		if i < len(snapData.Docs) {
+			filteredDocs = append(filteredDocs, snapData.Docs[i])
+		}
+		if i < len(snapData.IDs) {
+			filteredIDs = append(filteredIDs, snapData.IDs[i])
+		}
+		filteredSeqs = append(filteredSeqs, seq)
+
+		if m, ok := snapData.Meta[seq]; ok {
+			filteredMeta[seq] = m
+		}
+		if m, ok := snapData.NumMeta[seq]; ok {
+			filteredNumMeta[seq] = m
+		}
+		if m, ok := snapData.TimeMeta[seq]; ok {
+			filteredTimeMeta[seq] = m
+		}
+		if c, ok := snapData.Coll[seq]; ok {
+			filteredColl[seq] = c
+		}
+		if t, ok := snapData.TenantID[seq]; ok {
+			filteredTenantID[seq] = t
+		}
+		if tf, ok := snapData.LexTF[seq]; ok {
+			filteredLexTF[seq] = tf
+		}
+		if dl, ok := snapData.DocLen[seq]; ok {
+			filteredDocLen[seq] = dl
+		}
+	}
+
+	// Rebuild DF from only live documents' term frequencies to remove dead terms
+	filteredDF := make(map[string]int, len(snapData.DF))
+	filteredSumDocL := 0
+	for seq, tf := range filteredLexTF {
+		for term := range tf {
+			filteredDF[term]++
+		}
+		if dl, ok := filteredDocLen[seq]; ok {
+			filteredSumDocL += dl
+		}
+	}
+
+	// Update metadata vector count to reflect filtered state
+	metadata.VectorCount = len(filteredSeqs)
+
+	// Write snapshot data structure (no Deleted map — deleted vectors are simply absent)
 	data := &snapshotFileData{
 		Metadata: metadata,
-		Data:     snapData.Data,
-		Docs:     snapData.Docs,
-		IDs:      snapData.IDs,
-		Seqs:     snapData.Seqs,
-		Meta:     snapData.Meta,
-		NumMeta:  snapData.NumMeta,
-		TimeMeta: snapData.TimeMeta,
-		Deleted:  snapData.Deleted,
-		Coll:     snapData.Coll,
-		TenantID: snapData.TenantID,
-		LexTF:    snapData.LexTF,
-		DocLen:   snapData.DocLen,
-		DF:       snapData.DF,
-		SumDocL:  snapData.SumDocL,
+		Data:     filteredData,
+		Docs:     filteredDocs,
+		IDs:      filteredIDs,
+		Seqs:     filteredSeqs,
+		Meta:     filteredMeta,
+		NumMeta:  filteredNumMeta,
+		TimeMeta: filteredTimeMeta,
+		Deleted:  nil, // Deleted vectors are excluded, not tombstoned
+		Coll:     filteredColl,
+		TenantID: filteredTenantID,
+		LexTF:    filteredLexTF,
+		DocLen:   filteredDocLen,
+		DF:       filteredDF,
+		SumDocL:  filteredSumDocL,
 	}
 
 	encoder := json.NewEncoder(writer)

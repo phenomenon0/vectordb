@@ -162,11 +162,12 @@ func (ivf *IVFIndex) Add(ctx context.Context, id uint64, vector []float32) error
 	// Clean up old cluster assignment for re-adds
 	if isReAdd && ivf.centroids != nil {
 		if oldCluster, hadCluster := ivf.clusterID[id]; hadCluster {
-			// Remove from old posting list
+			// Remove from old posting list using swap-with-last (O(1) instead of O(n))
 			oldList := ivf.postings[oldCluster]
 			for i, pid := range oldList {
 				if pid == id {
-					ivf.postings[oldCluster] = append(oldList[:i], oldList[i+1:]...)
+					oldList[i] = oldList[len(oldList)-1]
+					ivf.postings[oldCluster] = oldList[:len(oldList)-1]
 					break
 				}
 			}

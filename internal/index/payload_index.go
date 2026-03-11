@@ -127,12 +127,29 @@ func (p *PayloadIndex) Remove(id uint64, metadata map[string]interface{}) {
 					delete(p.stringIdx, field)
 				}
 			}
-		} else if _, ok := payloadToFloat64(value); ok {
+		} else if numVal, ok := payloadToFloat64(value); ok {
 			if sn, ok := p.numericIdx[field]; ok {
-				for i, entry := range sn.entries {
-					if entry.DocID == id {
+				// Use binary search to find the value neighborhood, then scan for docID.
+				// This is O(log n + d) where d is the number of duplicate values,
+				// instead of O(n) linear scan from the beginning.
+				idx := sort.Search(len(sn.entries), func(i int) bool {
+					return sn.entries[i].Value >= numVal
+				})
+				found := false
+				for i := idx; i < len(sn.entries) && sn.entries[i].Value == numVal; i++ {
+					if sn.entries[i].DocID == id {
 						sn.entries = append(sn.entries[:i], sn.entries[i+1:]...)
+						found = true
 						break
+					}
+				}
+				// Fallback: scan entire list if value changed (edge case)
+				if !found {
+					for i, entry := range sn.entries {
+						if entry.DocID == id {
+							sn.entries = append(sn.entries[:i], sn.entries[i+1:]...)
+							break
+						}
 					}
 				}
 				if len(sn.entries) == 0 {

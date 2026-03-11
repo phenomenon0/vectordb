@@ -26,14 +26,16 @@ type Posting struct {
 type InvertedIndex struct {
 	mu sync.RWMutex
 
-	dim           int                         // Maximum dimension
-	postings      map[uint32][]Posting        // term_id -> postings list
-	docNorms      map[uint64]float32          // doc_id -> L2 norm
-	docLengths    map[uint64]float32          // doc_id -> sum of values
-	docVectors    map[uint64]*SparseVector    // doc_id -> original vector
-	avgDocLength  float32                     // average document length
-	totalDocs     int                         // total documents indexed
-	termDocCounts map[uint32]int              // term_id -> number of docs containing term
+	dim            int                         // Maximum dimension
+	postings       map[uint32][]Posting        // term_id -> postings list
+	docNorms       map[uint64]float32          // doc_id -> L2 norm
+	docLengths     map[uint64]float32          // doc_id -> sum of values
+	docVectors     map[uint64]*SparseVector    // doc_id -> original vector
+	avgDocLength   float32                     // average document length
+	totalDocs      int                         // total documents indexed
+	totalDocLength float32                     // sum of all document lengths (for incremental avgDocLength)
+	totalPostings  int                         // total postings across all terms (for O(1) Stats)
+	termDocCounts  map[uint32]int              // term_id -> number of docs containing term
 
 	// BM25 parameters
 	k1 float32 // Term frequency saturation (default: 1.2)
@@ -107,13 +109,11 @@ func (idx *InvertedIndex) Add(ctx context.Context, docID uint64, vector *SparseV
 		idx.termDocCounts[termID]++
 	}
 
-	// Update average document length
+	// Update statistics incrementally (O(1) instead of O(n))
 	idx.totalDocs++
-	totalLength := float32(0)
-	for _, length := range idx.docLengths {
-		totalLength += length
-	}
-	idx.avgDocLength = totalLength / float32(idx.totalDocs)
+	idx.totalDocLength += docLength
+	idx.avgDocLength = idx.totalDocLength / float32(idx.totalDocs)
+	idx.totalPostings += len(vector.Indices)
 
 	return nil
 }
@@ -345,6 +345,7 @@ func (idx *InvertedIndex) Delete(ctx context.Context, docID uint64) error {
 		for i, posting := range postingsList {
 			if posting.DocID == docID {
 				idx.postings[termID] = append(postingsList[:i], postingsList[i+1:]...)
+				idx.totalPostings--
 				break
 			}
 		}
@@ -359,21 +360,22 @@ func (idx *InvertedIndex) Delete(ctx context.Context, docID uint64) error {
 		}
 	}
 
+	// Capture doc length before removing
+	removedLength := idx.docLengths[docID]
+
 	// Remove document data
 	delete(idx.docVectors, docID)
 	delete(idx.docNorms, docID)
 	delete(idx.docLengths, docID)
 
-	// Update statistics
+	// Update statistics incrementally (O(1) instead of O(n))
 	idx.totalDocs--
+	idx.totalDocLength -= removedLength
 	if idx.totalDocs > 0 {
-		totalLength := float32(0)
-		for _, length := range idx.docLengths {
-			totalLength += length
-		}
-		idx.avgDocLength = totalLength / float32(idx.totalDocs)
+		idx.avgDocLength = idx.totalDocLength / float32(idx.totalDocs)
 	} else {
 		idx.avgDocLength = 0
+		idx.totalDocLength = 0 // Prevent floating-point drift
 	}
 
 	return nil
@@ -399,20 +401,15 @@ func (idx *InvertedIndex) Stats() IndexStats {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	totalPostings := 0
-	for _, postings := range idx.postings {
-		totalPostings += len(postings)
-	}
-
 	avgPostings := float32(0)
 	if len(idx.postings) > 0 {
-		avgPostings = float32(totalPostings) / float32(len(idx.postings))
+		avgPostings = float32(idx.totalPostings) / float32(len(idx.postings))
 	}
 
 	// Estimate memory usage
 	memoryUsage := int64(0)
 	memoryUsage += int64(len(idx.postings)) * 8                    // map overhead
-	memoryUsage += int64(totalPostings) * 12                       // postings (8 bytes docID + 4 bytes score)
+	memoryUsage += int64(idx.totalPostings) * 12                    // postings (8 bytes docID + 4 bytes score)
 	memoryUsage += int64(len(idx.docVectors)) * (8 + 8 + 8)        // maps overhead
 	memoryUsage += int64(len(idx.docVectors)) * 32                 // vector overhead estimate
 
@@ -483,6 +480,8 @@ func (idx *InvertedIndex) Import(data []byte) error {
 	idx.docVectors = make(map[uint64]*SparseVector)
 	idx.termDocCounts = make(map[uint32]int)
 	idx.totalDocs = 0
+	idx.totalDocLength = 0
+	idx.totalPostings = 0
 	idx.avgDocLength = 0
 
 	// Re-add each vector to rebuild posting lists and stats
@@ -511,16 +510,14 @@ func (idx *InvertedIndex) Import(data []byte) error {
 			idx.termDocCounts[termID]++
 		}
 		idx.docLengths[docID] = docLength
+		idx.totalDocLength += docLength
+		idx.totalPostings += len(vec.Indices)
 		idx.totalDocs++
 	}
 
-	// Recompute average doc length
+	// Compute average doc length from accumulated total (O(1))
 	if idx.totalDocs > 0 {
-		totalLength := float32(0)
-		for _, l := range idx.docLengths {
-			totalLength += l
-		}
-		idx.avgDocLength = totalLength / float32(idx.totalDocs)
+		idx.avgDocLength = idx.totalDocLength / float32(idx.totalDocs)
 	}
 
 	return nil

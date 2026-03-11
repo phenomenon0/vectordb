@@ -271,6 +271,12 @@ func (fr *FollowerReplicator) poll() error {
 			if syncErr := fr.RequestFullSync(fr.ctx); syncErr != nil {
 				return fmt.Errorf("streaming snapshot sync failed after WAL gap: %w", syncErr)
 			}
+			// Reset WAL cursor to the latest applied sequence after snapshot sync
+			// to prevent infinite 410 retry loop
+			fr.mu.RLock()
+			newSeq := fr.lastAppliedSeq
+			fr.mu.RUnlock()
+			fr.walClient.Advance(newSeq)
 			return nil
 		}
 		// Generic error with full sync fallback
