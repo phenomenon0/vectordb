@@ -185,7 +185,7 @@ func (d *DiskANNIndex) buildEdgesParallel(ctx context.Context, vectors map[uint6
 
 	// Check if graph is empty (first batch)
 	d.mu.RLock()
-	isEmptyGraph := len(d.graph) == 0
+	isEmptyGraph := d.graphStore.Len() == 0
 	d.mu.RUnlock()
 
 	// Collect IDs for batching
@@ -291,14 +291,14 @@ func (d *DiskANNIndex) buildEdgesParallel(ctx context.Context, vectors map[uint6
 
 	for _, result := range results {
 		// Update forward edges
-		d.graph[result.id] = result.edges
+		d.graphStore.SetNeighbors(result.id, result.edges)
 
 		// Update backward edges (bidirectional)
 		for _, neighborID := range result.edges {
-			if neighbors, ok := d.graph[neighborID]; ok {
+			if neighbors := d.graphStore.GetNeighbors(neighborID); neighbors != nil {
 				// Add edge if not at max degree
 				if len(neighbors) < d.maxDegree {
-					d.graph[neighborID] = append(neighbors, result.id)
+					d.graphStore.SetNeighbors(neighborID, append(neighbors, result.id))
 				} else {
 					// Replace farthest neighbor
 					neighborVec, err := d.getVector(neighborID)
@@ -306,7 +306,7 @@ func (d *DiskANNIndex) buildEdgesParallel(ctx context.Context, vectors map[uint6
 						continue
 					}
 					farthestIdx := d.findFarthest(neighborVec, neighbors)
-					d.graph[neighborID][farthestIdx] = result.id
+					neighbors[farthestIdx] = result.id
 				}
 			}
 		}

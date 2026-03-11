@@ -326,9 +326,10 @@ func (sm *SnapshotManager) listSnapshotsUnlocked() ([]*SnapshotMetadata, error) 
 
 func (sm *SnapshotManager) countGraphEdges() int {
 	count := 0
-	for _, neighbors := range sm.index.graph {
+	sm.index.graphStore.Range(func(_ uint64, neighbors []uint64) bool {
 		count += len(neighbors)
-	}
+		return true
+	})
 	return count
 }
 
@@ -353,7 +354,7 @@ func (sm *SnapshotManager) copyFile(src, dst string) error {
 }
 
 func (sm *SnapshotManager) saveGraph(path string) error {
-	data, err := json.Marshal(sm.index.graph)
+	data, err := json.Marshal(sm.index.graphStore.Clone())
 	if err != nil {
 		return err
 	}
@@ -365,8 +366,12 @@ func (sm *SnapshotManager) loadGraph(path string) error {
 	if err != nil {
 		return err
 	}
-	sm.index.graph = make(map[uint64][]uint64)
-	return json.Unmarshal(data, &sm.index.graph)
+	graphMap := make(map[uint64][]uint64)
+	if err := json.Unmarshal(data, &graphMap); err != nil {
+		return err
+	}
+	sm.index.graphStore.ReplaceAll(graphMap)
+	return nil
 }
 
 func (sm *SnapshotManager) saveMemoryVectors(path string) error {

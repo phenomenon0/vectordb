@@ -201,6 +201,122 @@ func (s *CollectionGRPCServer) DeleteDoc(ctx context.Context, req *deepdatav1.De
 	return &deepdatav1.DeleteDocResponse{}, nil
 }
 
+func (s *CollectionGRPCServer) Recommend(ctx context.Context, req *deepdatav1.RecommendRequest) (*deepdatav1.SearchResponse, error) {
+	if req.Collection == "" {
+		return nil, status.Error(codes.InvalidArgument, "collection required")
+	}
+	if len(req.PositiveIds) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one positive_id required")
+	}
+
+	topK := int(req.TopK)
+	if topK <= 0 {
+		topK = 10
+	}
+
+	var filters map[string]interface{}
+	if len(req.MetadataFilter) > 0 {
+		filters = make(map[string]interface{}, len(req.MetadataFilter))
+		for k, v := range req.MetadataFilter {
+			filters[k] = map[string]interface{}{"$eq": v}
+		}
+	}
+
+	recReq := vcollection.RecommendRequest{
+		CollectionName: req.Collection,
+		FieldName:      req.Field,
+		PositiveIDs:    req.PositiveIds,
+		NegativeIDs:    req.NegativeIds,
+		NegativeWeight: req.NegativeWeight,
+		TopK:           topK,
+		EfSearch:       int(req.EfSearch),
+		Filters:        filters,
+	}
+
+	resp, err := s.manager.Recommend(ctx, recReq)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+
+	return searchResponseToProto(resp), nil
+}
+
+func (s *CollectionGRPCServer) Discover(ctx context.Context, req *deepdatav1.DiscoverRequest) (*deepdatav1.SearchResponse, error) {
+	if req.Collection == "" {
+		return nil, status.Error(codes.InvalidArgument, "collection required")
+	}
+	if len(req.Context) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one context pair required")
+	}
+
+	topK := int(req.TopK)
+	if topK <= 0 {
+		topK = 10
+	}
+
+	var filters map[string]interface{}
+	if len(req.MetadataFilter) > 0 {
+		filters = make(map[string]interface{}, len(req.MetadataFilter))
+		for k, v := range req.MetadataFilter {
+			filters[k] = map[string]interface{}{"$eq": v}
+		}
+	}
+
+	context := make([]vcollection.ContextPair, len(req.Context))
+	for i, c := range req.Context {
+		context[i] = vcollection.ContextPair{
+			PositiveID: c.PositiveId,
+			NegativeID: c.NegativeId,
+		}
+	}
+
+	var targetVec []float32
+	if req.TargetVector != nil {
+		targetVec = req.TargetVector.Values
+	}
+
+	discReq := vcollection.DiscoverRequest{
+		CollectionName: req.Collection,
+		FieldName:      req.Field,
+		TargetID:       req.TargetId,
+		TargetVector:   targetVec,
+		Context:        context,
+		TopK:           topK,
+		EfSearch:       int(req.EfSearch),
+		Filters:        filters,
+	}
+
+	resp, err := s.manager.Discover(ctx, discReq)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+
+	return searchResponseToProto(resp), nil
+}
+
+func searchResponseToProto(resp *vcollection.SearchResponse) *deepdatav1.SearchResponse {
+	hits := make([]*deepdatav1.SearchHit, len(resp.Documents))
+	for i, doc := range resp.Documents {
+		hit := &deepdatav1.SearchHit{
+			Id: doc.ID,
+		}
+		if i < len(resp.Scores) {
+			hit.Score = resp.Scores[i]
+		}
+		if doc.Metadata != nil {
+			hit.Metadata = make(map[string]string, len(doc.Metadata))
+			for k, v := range doc.Metadata {
+				hit.Metadata[k] = fmt.Sprintf("%v", v)
+			}
+		}
+		hits[i] = hit
+	}
+	return &deepdatav1.SearchResponse{
+		Results:            hits,
+		CandidatesExamined: int32(resp.CandidatesExamined),
+	}
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 func vectorDataToInterface(vd *deepdatav1.VectorData) (interface{}, error) {

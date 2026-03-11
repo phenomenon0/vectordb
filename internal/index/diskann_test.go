@@ -261,7 +261,7 @@ func TestDiskANNGraphStructure(t *testing.T) {
 
 	// Check graph structure
 	diskANN.mu.RLock()
-	graphSize := len(diskANN.graph)
+	graphSize := diskANN.graphStore.Len()
 	diskANN.mu.RUnlock()
 
 	if graphSize != numVectors {
@@ -270,12 +270,13 @@ func TestDiskANNGraphStructure(t *testing.T) {
 
 	// Verify max degree constraint
 	diskANN.mu.RLock()
-	for id, neighbors := range diskANN.graph {
+	diskANN.graphStore.Range(func(id uint64, neighbors []uint64) bool {
 		if len(neighbors) > maxDegree {
 			t.Errorf("vector %d has %d neighbors, exceeds max_degree %d",
 				id, len(neighbors), maxDegree)
 		}
-	}
+		return true
+	})
 	diskANN.mu.RUnlock()
 
 	t.Logf("Graph has %d nodes, max degree: %d", graphSize, maxDegree)
@@ -506,7 +507,7 @@ func TestDiskANNAddBatch(t *testing.T) {
 	// Verify graph connectivity
 	diskANN := idx.(*DiskANNIndex)
 	diskANN.mu.RLock()
-	graphSize := len(diskANN.graph)
+	graphSize := diskANN.graphStore.Len()
 	diskANN.mu.RUnlock()
 
 	if graphSize != batchSize {

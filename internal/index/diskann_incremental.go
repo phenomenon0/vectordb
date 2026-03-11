@@ -504,20 +504,21 @@ func (u *IncrementalUpdater) Rebuild(ctx context.Context) error {
 	u.index.mu.RLock()
 	vectors := make(map[uint64][]float32)
 
-	for id := range u.index.graph {
+	u.index.graphStore.Range(func(id uint64, _ []uint64) bool {
 		if u.index.deleted[id] {
-			continue
+			return true
 		}
 		vec, err := u.index.getVector(id)
 		if err == nil {
 			vectors[id] = vec
 		}
-	}
+		return true
+	})
 	u.index.mu.RUnlock()
 
 	// Clear existing graph
 	u.index.mu.Lock()
-	u.index.graph = make(map[uint64][]uint64)
+	u.index.graphStore = NewMemoryGraphStore()
 	u.index.mu.Unlock()
 
 	// Rebuild graph

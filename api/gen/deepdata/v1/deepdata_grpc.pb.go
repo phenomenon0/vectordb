@@ -25,6 +25,8 @@ const (
 	DeepData_BatchInsert_FullMethodName      = "/deepdata.v1.DeepData/BatchInsert"
 	DeepData_Search_FullMethodName           = "/deepdata.v1.DeepData/Search"
 	DeepData_DeleteDoc_FullMethodName        = "/deepdata.v1.DeepData/DeleteDoc"
+	DeepData_Recommend_FullMethodName        = "/deepdata.v1.DeepData/Recommend"
+	DeepData_Discover_FullMethodName         = "/deepdata.v1.DeepData/Discover"
 )
 
 // DeepDataClient is the client API for DeepData service.
@@ -37,6 +39,8 @@ type DeepDataClient interface {
 	BatchInsert(ctx context.Context, in *BatchInsertRequest, opts ...grpc.CallOption) (*BatchInsertResponse, error)
 	Search(ctx context.Context, in *SearchRequest, opts ...grpc.CallOption) (*SearchResponse, error)
 	DeleteDoc(ctx context.Context, in *DeleteDocRequest, opts ...grpc.CallOption) (*DeleteDocResponse, error)
+	Recommend(ctx context.Context, in *RecommendRequest, opts ...grpc.CallOption) (*SearchResponse, error)
+	Discover(ctx context.Context, in *DiscoverRequest, opts ...grpc.CallOption) (*SearchResponse, error)
 }
 
 type deepDataClient struct {
@@ -107,6 +111,26 @@ func (c *deepDataClient) DeleteDoc(ctx context.Context, in *DeleteDocRequest, op
 	return out, nil
 }
 
+func (c *deepDataClient) Recommend(ctx context.Context, in *RecommendRequest, opts ...grpc.CallOption) (*SearchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SearchResponse)
+	err := c.cc.Invoke(ctx, DeepData_Recommend_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepDataClient) Discover(ctx context.Context, in *DiscoverRequest, opts ...grpc.CallOption) (*SearchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SearchResponse)
+	err := c.cc.Invoke(ctx, DeepData_Discover_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DeepDataServer is the server API for DeepData service.
 // All implementations must embed UnimplementedDeepDataServer
 // for forward compatibility.
@@ -117,6 +141,8 @@ type DeepDataServer interface {
 	BatchInsert(context.Context, *BatchInsertRequest) (*BatchInsertResponse, error)
 	Search(context.Context, *SearchRequest) (*SearchResponse, error)
 	DeleteDoc(context.Context, *DeleteDocRequest) (*DeleteDocResponse, error)
+	Recommend(context.Context, *RecommendRequest) (*SearchResponse, error)
+	Discover(context.Context, *DiscoverRequest) (*SearchResponse, error)
 	mustEmbedUnimplementedDeepDataServer()
 }
 
@@ -144,6 +170,12 @@ func (UnimplementedDeepDataServer) Search(context.Context, *SearchRequest) (*Sea
 }
 func (UnimplementedDeepDataServer) DeleteDoc(context.Context, *DeleteDocRequest) (*DeleteDocResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteDoc not implemented")
+}
+func (UnimplementedDeepDataServer) Recommend(context.Context, *RecommendRequest) (*SearchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Recommend not implemented")
+}
+func (UnimplementedDeepDataServer) Discover(context.Context, *DiscoverRequest) (*SearchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Discover not implemented")
 }
 func (UnimplementedDeepDataServer) mustEmbedUnimplementedDeepDataServer() {}
 func (UnimplementedDeepDataServer) testEmbeddedByValue()                  {}
@@ -274,6 +306,42 @@ func _DeepData_DeleteDoc_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DeepData_Recommend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecommendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepDataServer).Recommend(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepData_Recommend_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepDataServer).Recommend(ctx, req.(*RecommendRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepData_Discover_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiscoverRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepDataServer).Discover(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepData_Discover_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepDataServer).Discover(ctx, req.(*DiscoverRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DeepData_ServiceDesc is the grpc.ServiceDesc for DeepData service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -304,6 +372,14 @@ var DeepData_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteDoc",
 			Handler:    _DeepData_DeleteDoc_Handler,
+		},
+		{
+			MethodName: "Recommend",
+			Handler:    _DeepData_Recommend_Handler,
+		},
+		{
+			MethodName: "Discover",
+			Handler:    _DeepData_Discover_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

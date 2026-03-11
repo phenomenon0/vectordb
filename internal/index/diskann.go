@@ -38,13 +38,14 @@ type DiskANNIndex struct {
 	mmapOffset int64
 
 	// Index structure
-	graph          map[uint64][]uint64 // Neighbor graph (in memory)
-	maxDegree      int                 // Maximum edges per node
+	graphStore     GraphStore // Neighbor graph (abstracted for memory/disk backends)
+	maxDegree      int       // Maximum edges per node
 	efConstruction int                 // Expansion factor during construction
 	efSearch       int                 // Expansion factor during search
 
 	// Metadata storage (for filtered search)
-	metadata map[uint64]map[string]interface{}
+	metadata   map[uint64]map[string]interface{}
+	payloadIdx *PayloadIndex
 
 	// Metrics
 	metric       string
@@ -119,6 +120,22 @@ func NewDiskANNIndex(dim int, config map[string]interface{}) (Index, error) {
 	compactOnClose := GetConfigBool(config, "compact_on_close", false)
 	// Default max mmap size: 100GB - prevents unbounded file growth
 	maxMmapSize := GetConfigInt64(config, "max_mmap_size", 100*1024*1024*1024)
+	graphStorage := GetConfigString(config, "graph_storage", "memory")
+
+	// Create graph store based on config
+	var graphStore GraphStore
+	switch graphStorage {
+	case "disk":
+		graphPath := indexPath + ".graph"
+		var err error
+		gs, err := NewMmapGraphStore(graphPath, maxDegree)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create mmap graph store: %w", err)
+		}
+		graphStore = gs
+	default:
+		graphStore = NewMemoryGraphStore()
+	}
 
 	idx := &DiskANNIndex{
 		dim:                    dim,
@@ -126,8 +143,9 @@ func NewDiskANNIndex(dim int, config map[string]interface{}) (Index, error) {
 		memoryVectors:          make(map[uint64][]float32),
 		memoryLimit:            memoryLimit,
 		deleted:                make(map[uint64]bool),
-		graph:                  make(map[uint64][]uint64),
+		graphStore:             graphStore,
 		metadata:               make(map[uint64]map[string]interface{}),
+		payloadIdx:             NewPayloadIndex(),
 		maxDegree:              maxDegree,
 		efConstruction:         efConstruction,
 		efSearch:               efSearch,
@@ -278,7 +296,7 @@ func (d *DiskANNIndex) SetMetadata(id uint64, metadata map[string]interface{}) e
 				return fmt.Errorf("vector with ID %d does not exist", id)
 			}
 			// For unquantized disk vectors, check if ID is in graph
-			if _, existsGraph := d.graph[id]; !existsGraph {
+			if !d.graphStore.HasNode(id) {
 				return fmt.Errorf("vector with ID %d does not exist", id)
 			}
 		}
@@ -290,9 +308,17 @@ func (d *DiskANNIndex) SetMetadata(id uint64, metadata map[string]interface{}) e
 		for k, v := range metadata {
 			metaCopy[k] = v
 		}
+		// Remove old payload index entries before overwriting
+		if old := d.metadata[id]; old != nil {
+			d.payloadIdx.Remove(id, old)
+		}
 		d.metadata[id] = metaCopy
+		d.payloadIdx.Index(id, metaCopy)
 	} else {
 		// Allow nil to clear metadata
+		if old := d.metadata[id]; old != nil {
+			d.payloadIdx.Remove(id, old)
+		}
 		delete(d.metadata, id)
 	}
 
@@ -404,14 +430,14 @@ func (d *DiskANNIndex) buildEdges(newID uint64, newVec []float32) error {
 		}
 	}
 
-	d.graph[newID] = edges
+	d.graphStore.SetNeighbors(newID, edges)
 
 	// Add reverse edges (bidirectional)
 	for _, neighborID := range edges {
-		if neighbors, ok := d.graph[neighborID]; ok {
+		if neighbors := d.graphStore.GetNeighbors(neighborID); neighbors != nil {
 			// Add new edge if not at max degree
 			if len(neighbors) < d.maxDegree {
-				d.graph[neighborID] = append(neighbors, newID)
+				d.graphStore.SetNeighbors(neighborID, append(neighbors, newID))
 			} else {
 				// Replace farthest neighbor
 				neighborVec, err := d.getVector(neighborID)
@@ -419,7 +445,7 @@ func (d *DiskANNIndex) buildEdges(newID uint64, newVec []float32) error {
 					continue
 				}
 				farthestIdx := d.findFarthest(neighborVec, neighbors)
-				d.graph[neighborID][farthestIdx] = newID
+				neighbors[farthestIdx] = newID
 			}
 		}
 	}
@@ -429,17 +455,14 @@ func (d *DiskANNIndex) buildEdges(newID uint64, newVec []float32) error {
 
 // greedySearch performs greedy graph search
 func (d *DiskANNIndex) greedySearch(query []float32, ef int) []Result {
-	if len(d.graph) == 0 {
+	if d.graphStore.Len() == 0 {
 		return []Result{}
 	}
 
-	// Start from random entry point
-	var entryID uint64
-	for id := range d.graph {
-		if !d.deleted[id] {
-			entryID = id
-			break
-		}
+	// Start from entry point
+	entryID, found := FirstNodeID(d.graphStore, d.deleted)
+	if !found {
+		return []Result{}
 	}
 
 	visited := make(map[uint64]bool)
@@ -462,7 +485,7 @@ func (d *DiskANNIndex) greedySearch(query []float32, ef int) []Result {
 		}
 
 		current := candidates[i]
-		neighbors := d.graph[current.ID]
+		neighbors := d.graphStore.GetNeighbors(current.ID)
 
 		for _, nID := range neighbors {
 			if visited[nID] || d.deleted[nID] {
@@ -701,6 +724,17 @@ func (d *DiskANNIndex) Search(ctx context.Context, query []float32, k int, param
 		}
 	}
 
+	// Try payload index for O(1) lookups on indexed fields
+	var payloadCandidates map[uint64]struct{}
+	if filterFunc != nil {
+		if bitmap, ok := d.payloadIdx.QueryBitmap(filterFunc); ok {
+			selectivity := float64(len(bitmap)) / float64(d.count)
+			if selectivity < 0.15 {
+				payloadCandidates = bitmap
+			}
+		}
+	}
+
 	// Use greedy search with efSearch expansion
 	candidates := d.greedySearch(query, d.efSearch)
 
@@ -713,9 +747,15 @@ func (d *DiskANNIndex) Search(ctx context.Context, query []float32, k int, param
 
 		// Apply metadata filter if provided
 		if filterFunc != nil {
-			meta := d.metadata[c.ID]
-			if meta == nil || !filterFunc.Evaluate(meta) {
-				continue // Skip vectors that don't match filter
+			if payloadCandidates != nil {
+				if _, match := payloadCandidates[c.ID]; !match {
+					continue
+				}
+			} else {
+				meta := d.metadata[c.ID]
+				if meta == nil || !filterFunc.Evaluate(meta) {
+					continue
+				}
 			}
 		}
 
@@ -783,7 +823,7 @@ func (d *DiskANNIndex) Stats() IndexStats {
 	totalMemoryBytes := hotMemoryBytes + cacheStats.MemoryUsed
 
 	diskBytes := int(d.mmapOffset)
-	graphBytes := int64(len(d.graph) * 8 * d.maxDegree)
+	graphBytes := int64(d.graphStore.Len() * 8 * d.maxDegree)
 
 	// Calculate cache hit rate from LRU cache stats
 	cacheHitRate := cacheStats.HitRate
@@ -893,7 +933,7 @@ func (d *DiskANNIndex) exportPayloadLocked() (*diskANNExportPayload, error) {
 		CompactOnClose: d.compactOnClose,
 		MaxMmapSize:    d.maxMmapSize,
 		Quantization:   QuantizationNone,
-		Graph:          cloneDiskANNGraph(d.graph),
+		Graph:          d.graphStore.Clone(),
 		Deleted:        cloneDiskANNDeleted(d.deleted),
 		Metadata:       make(map[uint64][]byte, len(d.metadata)),
 		Vectors:        records,
@@ -1088,7 +1128,7 @@ func (d *DiskANNIndex) importPayloadLocked(payload *diskANNExportPayload) error 
 		return err
 	}
 
-	d.graph = cloneDiskANNGraph(payload.Graph)
+	d.graphStore.ReplaceAll(cloneDiskANNGraph(payload.Graph))
 	d.deleted = cloneDiskANNDeleted(payload.Deleted)
 	d.metadata = make(map[uint64]map[string]interface{}, len(payload.Metadata))
 	for id, raw := range payload.Metadata {
@@ -1116,6 +1156,14 @@ func (d *DiskANNIndex) importPayloadLocked(payload *diskANNExportPayload) error 
 
 		if err := d.writeToDisk(record.ID, vecCopy); err != nil {
 			return fmt.Errorf("restore disk vector %d: %w", record.ID, err)
+		}
+	}
+
+	// Rebuild payload index from restored metadata
+	d.payloadIdx = NewPayloadIndex()
+	for id, meta := range d.metadata {
+		if meta != nil {
+			d.payloadIdx.Index(id, meta)
 		}
 	}
 
@@ -1184,7 +1232,7 @@ func (d *DiskANNIndex) resetStorageForImportLocked() error {
 
 	d.lruCache = NewLRUCache(cacheCapacity, maxBytes)
 	d.memoryVectors = make(map[uint64][]float32)
-	d.graph = make(map[uint64][]uint64)
+	d.graphStore = NewMemoryGraphStore()
 	d.deleted = make(map[uint64]bool)
 	d.metadata = make(map[uint64]map[string]interface{})
 	d.unquantizedOffsetIndex = make(map[uint64]int64)
@@ -1308,7 +1356,7 @@ func (d *DiskANNIndex) importLegacyLocked(data []byte) error {
 		return fmt.Errorf("invalid graph size: %d (max %d)", graphSize, maxGraphSize)
 	}
 
-	d.graph = make(map[uint64][]uint64, graphSize)
+	graphMap := make(map[uint64][]uint64, graphSize)
 	for i := 0; i < graphSize; i++ {
 		id, err := readUint64()
 		if err != nil {
@@ -1334,8 +1382,9 @@ func (d *DiskANNIndex) importLegacyLocked(data []byte) error {
 				return fmt.Errorf("reading graph node %d neighbor %d: %w", i, j, err)
 			}
 		}
-		d.graph[id] = neighbors
+		graphMap[id] = neighbors
 	}
+	d.graphStore.ReplaceAll(graphMap)
 
 	// Deleted set
 	if v32, err = readUint32(); err != nil {
@@ -1435,6 +1484,13 @@ func (d *DiskANNIndex) Close() error {
 			return fmt.Errorf("failed to close file: %w", err)
 		}
 		d.mmapFile = nil
+	}
+
+	// Close mmap graph store if applicable
+	if gs, ok := d.graphStore.(*MmapGraphStore); ok {
+		if err := gs.Close(); err != nil {
+			return fmt.Errorf("failed to close mmap graph: %w", err)
+		}
 	}
 
 	return nil

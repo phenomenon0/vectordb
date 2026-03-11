@@ -23,6 +23,7 @@ TEXT ·dotProductAVX2(SB), NOSPLIT, $0-28
 	SHRQ	$5, DX             // DX = n/32
 	JZ		loop8_setup
 
+	PCALIGN	$32
 loop32:
 	// Iteration: 32 elements = 4 x 8
 	VMOVUPS	0(SI), Y4
@@ -96,6 +97,7 @@ TEXT ·l2DistanceSquaredAVX2(SB), NOSPLIT, $0-28
 	SHRQ	$5, DX
 	JZ		l2_loop8_setup
 
+	PCALIGN	$32
 l2_loop32:
 	VMOVUPS	0(SI), Y4
 	VMOVUPS	0(DI), Y8
@@ -184,6 +186,7 @@ TEXT ·cosineComponentsAVX2(SB), NOSPLIT, $0-36
 	SHRQ	$4, DX             // DX = n/16
 	JZ		cos_loop8_setup
 
+	PCALIGN	$32
 cos_loop16:
 	// First 8 elements
 	VMOVUPS	0(SI), Y6         // a[0..7]

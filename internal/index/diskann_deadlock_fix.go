@@ -22,8 +22,8 @@ package index
 
 // graphSnapshot holds a snapshot of graph data for lock-free search
 type graphSnapshot struct {
-	graph   map[uint64][]uint64  // Neighbor adjacency lists
-	deleted map[uint64]bool      // Deleted node flags
+	graphStore GraphStore      // Neighbor adjacency lists (snapshot)
+	deleted    map[uint64]bool // Deleted node flags
 }
 
 // copyGraphSnapshot creates a shallow copy of graph and deleted maps
@@ -33,15 +33,8 @@ func (d *DiskANNIndex) copyGraphSnapshot() graphSnapshot {
 	defer d.mu.RUnlock()
 
 	snapshot := graphSnapshot{
-		graph:   make(map[uint64][]uint64, len(d.graph)),
-		deleted: make(map[uint64]bool, len(d.deleted)),
-	}
-
-	// Shallow copy graph (neighbor IDs are immutable)
-	for id, neighbors := range d.graph {
-		neighborsCopy := make([]uint64, len(neighbors))
-		copy(neighborsCopy, neighbors)
-		snapshot.graph[id] = neighborsCopy
+		graphStore: d.graphStore.Snapshot(),
+		deleted:    make(map[uint64]bool, len(d.deleted)),
 	}
 
 	// Copy deleted flags
@@ -65,17 +58,14 @@ func (d *DiskANNIndex) greedySearchSafe(query []float32, ef int) []Result {
 // greedySearchOnSnapshot performs greedy search on a graph snapshot
 // This function is lock-free and can be called from parallel workers safely
 func (d *DiskANNIndex) greedySearchOnSnapshot(query []float32, ef int, snapshot graphSnapshot) []Result {
-	if len(snapshot.graph) == 0 {
+	if snapshot.graphStore.Len() == 0 {
 		return []Result{}
 	}
 
-	// Start from random entry point
-	var entryID uint64
-	for id := range snapshot.graph {
-		if !snapshot.deleted[id] {
-			entryID = id
-			break
-		}
+	// Start from entry point
+	entryID, found := FirstNodeID(snapshot.graphStore, snapshot.deleted)
+	if !found {
+		return []Result{}
 	}
 
 	visited := make(map[uint64]bool)
@@ -98,10 +88,10 @@ func (d *DiskANNIndex) greedySearchOnSnapshot(query []float32, ef int, snapshot 
 		}
 
 		current := candidates[i]
-		neighbors := snapshot.graph[current.ID]  // Use snapshot, not d.graph
+		neighbors := snapshot.graphStore.GetNeighbors(current.ID)
 
 		for _, nID := range neighbors {
-			if visited[nID] || snapshot.deleted[nID] {  // Use snapshot, not d.deleted
+			if visited[nID] || snapshot.deleted[nID] {
 				continue
 			}
 

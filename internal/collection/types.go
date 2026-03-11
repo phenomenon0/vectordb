@@ -393,3 +393,33 @@ type SearchResponse struct {
 	// Number of candidates examined
 	CandidatesExamined int `json:"candidates_examined"`
 }
+
+// RecommendRequest represents a recommendation request using positive/negative examples.
+type RecommendRequest struct {
+	CollectionName string   `json:"collection"`
+	FieldName      string   `json:"field"`
+	PositiveIDs    []uint64 `json:"positive_ids"`
+	NegativeIDs    []uint64 `json:"negative_ids"`
+	NegativeWeight float32  `json:"negative_weight"`
+	TopK           int      `json:"top_k"`
+	EfSearch       int      `json:"ef_search"`
+	Filters        map[string]interface{} `json:"filters,omitempty"`
+}
+
+// ContextPair represents a positive/negative document pair for discovery search.
+type ContextPair struct {
+	PositiveID uint64 `json:"positive_id"`
+	NegativeID uint64 `json:"negative_id"`
+}
+
+// DiscoverRequest represents a context-based discovery search request.
+type DiscoverRequest struct {
+	CollectionName string        `json:"collection"`
+	FieldName      string        `json:"field"`
+	TargetID       uint64        `json:"target_id"`
+	TargetVector   []float32     `json:"target_vector"`
+	Context        []ContextPair `json:"context"`
+	TopK           int           `json:"top_k"`
+	EfSearch       int           `json:"ef_search"`
+	Filters        map[string]interface{} `json:"filters,omitempty"`
+}

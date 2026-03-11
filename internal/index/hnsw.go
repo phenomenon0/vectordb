@@ -47,6 +47,9 @@ type HNSWIndex struct {
 	// Metadata storage (for filtered search)
 	metadata map[uint64]map[string]interface{}
 
+	// Payload index for O(1) equality / O(log n) range lookups on metadata
+	payloadIdx *PayloadIndex
+
 	// Configuration
 	m              int     // Connections per node (default: 16)
 	ml             float64 // Level multiplier (default: 0.25)
@@ -106,6 +109,7 @@ func NewHNSWIndex(dim int, config map[string]interface{}) (Index, error) {
 		vectors:        make(map[uint64][]float32),
 		deleted:        make(map[uint64]bool),
 		metadata:       make(map[uint64]map[string]interface{}),
+		payloadIdx:     NewPayloadIndex(),
 		m:              m,
 		ml:             ml,
 		efSearch:       efSearch,
@@ -215,6 +219,11 @@ func (h *HNSWIndex) SetMetadata(id uint64, metadata map[string]interface{}) erro
 		return fmt.Errorf("vector with ID %d does not exist", id)
 	}
 
+	// Update payload index (remove old entry first if exists)
+	if old, ok := h.metadata[id]; ok {
+		h.payloadIdx.Remove(id, old)
+	}
+
 	// Store metadata (make a copy to avoid external mutations)
 	if metadata != nil {
 		metaCopy := make(map[string]interface{}, len(metadata))
@@ -222,6 +231,7 @@ func (h *HNSWIndex) SetMetadata(id uint64, metadata map[string]interface{}) erro
 			metaCopy[k] = v
 		}
 		h.metadata[id] = metaCopy
+		h.payloadIdx.Index(id, metaCopy)
 	} else {
 		// Allow nil to clear metadata
 		delete(h.metadata, id)
@@ -446,17 +456,30 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, params S
 	if f != nil {
 		// FILTERED SEARCH: Use in-graph filtering with adaptive over-fetch
 		// Filter is applied DURING graph traversal for 5-20x speedup
+
+		// Try payload index for O(1) bitmap lookup
 		filterFn := func(id uint64) bool {
-			// Skip deleted vectors
 			if h.deleted[id] {
 				return false
 			}
-			// Apply metadata filter
 			meta := h.metadata[id]
 			if meta == nil {
 				return false
 			}
 			return f.Evaluate(meta)
+		}
+
+		if candidates, ok := h.payloadIdx.QueryBitmap(f); ok {
+			selectivity := float64(len(candidates)) / float64(h.count)
+			if selectivity < 0.15 {
+				filterFn = func(id uint64) bool {
+					if h.deleted[id] {
+						return false
+					}
+					_, match := candidates[id]
+					return match
+				}
+			}
 		}
 
 		// Adaptive over-fetch: if filter is selective, we may not get enough results
@@ -783,6 +806,7 @@ func (h *HNSWIndex) Import(data []byte) error {
 	h.quantizedData = make(map[uint64][]byte)
 	h.deleted = make(map[uint64]bool)
 	h.metadata = make(map[uint64]map[string]interface{})
+	h.payloadIdx = NewPayloadIndex()
 	h.quantizer = quantizer
 	h.count = 0
 
@@ -812,7 +836,9 @@ func (h *HNSWIndex) Import(data []byte) error {
 			h.vectors[entry.ID] = vectorCopy
 		}
 		if entry.Metadata != nil {
-			h.metadata[entry.ID] = copyMetadataMap(entry.Metadata)
+			meta := copyMetadataMap(entry.Metadata)
+			h.metadata[entry.ID] = meta
+			h.payloadIdx.Index(entry.ID, meta)
 		}
 
 		// Update mappings
@@ -857,6 +883,7 @@ func (h *HNSWIndex) Compact() (int, error) {
 	newVectors := make(map[uint64][]float32)
 	newQuantized := make(map[uint64][]byte)
 	newMetadata := make(map[uint64]map[string]interface{})
+	newPayloadIdx := NewPayloadIndex()
 	newCount := 0
 
 	for _, id := range h.sortedIDsLocked() {
@@ -876,7 +903,9 @@ func (h *HNSWIndex) Compact() (int, error) {
 			newQuantized[id] = append([]byte(nil), quantized...)
 		}
 		if metadata, ok := h.metadata[id]; ok {
-			newMetadata[id] = copyMetadataMap(metadata)
+			meta := copyMetadataMap(metadata)
+			newMetadata[id] = meta
+			newPayloadIdx.Index(id, meta)
 		}
 		newIdToIdx[id] = newCount
 		newCount++
@@ -888,6 +917,7 @@ func (h *HNSWIndex) Compact() (int, error) {
 	h.vectors = newVectors
 	h.quantizedData = newQuantized
 	h.metadata = newMetadata
+	h.payloadIdx = newPayloadIdx
 	h.deleted = make(map[uint64]bool)
 	h.count = newCount
 

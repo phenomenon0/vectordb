@@ -206,6 +206,24 @@ func (cm *CollectionManager) SearchCollection(ctx context.Context, req SearchReq
 	return coll.Search(ctx, req)
 }
 
+// Recommend performs a recommendation search on a collection.
+func (cm *CollectionManager) Recommend(ctx context.Context, req RecommendRequest) (*SearchResponse, error) {
+	coll, err := cm.GetCollection(req.CollectionName)
+	if err != nil {
+		return nil, err
+	}
+	return coll.Recommend(ctx, req)
+}
+
+// Discover performs a context-based discovery search on a collection.
+func (cm *CollectionManager) Discover(ctx context.Context, req DiscoverRequest) (*SearchResponse, error) {
+	coll, err := cm.GetCollection(req.CollectionName)
+	if err != nil {
+		return nil, err
+	}
+	return coll.Discover(ctx, req)
+}
+
 // DeleteDocument deletes a document from a collection.
 func (cm *CollectionManager) DeleteDocument(ctx context.Context, collectionName string, docID uint64) error {
 	coll, err := cm.GetCollection(collectionName)

@@ -1027,6 +1027,258 @@ func (*DeleteDocResponse) Descriptor() ([]byte, []int) {
 	return file_deepdata_v1_deepdata_proto_rawDescGZIP(), []int{17}
 }
 
+type RecommendRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Collection     string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Field          string                 `protobuf:"bytes,2,opt,name=field,proto3" json:"field,omitempty"`
+	PositiveIds    []uint64               `protobuf:"varint,3,rep,packed,name=positive_ids,json=positiveIds,proto3" json:"positive_ids,omitempty"`
+	NegativeIds    []uint64               `protobuf:"varint,4,rep,packed,name=negative_ids,json=negativeIds,proto3" json:"negative_ids,omitempty"`
+	NegativeWeight float32                `protobuf:"fixed32,5,opt,name=negative_weight,json=negativeWeight,proto3" json:"negative_weight,omitempty"`
+	TopK           int32                  `protobuf:"varint,6,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
+	EfSearch       int32                  `protobuf:"varint,7,opt,name=ef_search,json=efSearch,proto3" json:"ef_search,omitempty"`
+	MetadataFilter map[string]string      `protobuf:"bytes,8,rep,name=metadata_filter,json=metadataFilter,proto3" json:"metadata_filter,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RecommendRequest) Reset() {
+	*x = RecommendRequest{}
+	mi := &file_deepdata_v1_deepdata_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecommendRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecommendRequest) ProtoMessage() {}
+
+func (x *RecommendRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v1_deepdata_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecommendRequest.ProtoReflect.Descriptor instead.
+func (*RecommendRequest) Descriptor() ([]byte, []int) {
+	return file_deepdata_v1_deepdata_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *RecommendRequest) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *RecommendRequest) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
+func (x *RecommendRequest) GetPositiveIds() []uint64 {
+	if x != nil {
+		return x.PositiveIds
+	}
+	return nil
+}
+
+func (x *RecommendRequest) GetNegativeIds() []uint64 {
+	if x != nil {
+		return x.NegativeIds
+	}
+	return nil
+}
+
+func (x *RecommendRequest) GetNegativeWeight() float32 {
+	if x != nil {
+		return x.NegativeWeight
+	}
+	return 0
+}
+
+func (x *RecommendRequest) GetTopK() int32 {
+	if x != nil {
+		return x.TopK
+	}
+	return 0
+}
+
+func (x *RecommendRequest) GetEfSearch() int32 {
+	if x != nil {
+		return x.EfSearch
+	}
+	return 0
+}
+
+func (x *RecommendRequest) GetMetadataFilter() map[string]string {
+	if x != nil {
+		return x.MetadataFilter
+	}
+	return nil
+}
+
+type ContextPair struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PositiveId    uint64                 `protobuf:"varint,1,opt,name=positive_id,json=positiveId,proto3" json:"positive_id,omitempty"`
+	NegativeId    uint64                 `protobuf:"varint,2,opt,name=negative_id,json=negativeId,proto3" json:"negative_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContextPair) Reset() {
+	*x = ContextPair{}
+	mi := &file_deepdata_v1_deepdata_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContextPair) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContextPair) ProtoMessage() {}
+
+func (x *ContextPair) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v1_deepdata_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContextPair.ProtoReflect.Descriptor instead.
+func (*ContextPair) Descriptor() ([]byte, []int) {
+	return file_deepdata_v1_deepdata_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ContextPair) GetPositiveId() uint64 {
+	if x != nil {
+		return x.PositiveId
+	}
+	return 0
+}
+
+func (x *ContextPair) GetNegativeId() uint64 {
+	if x != nil {
+		return x.NegativeId
+	}
+	return 0
+}
+
+type DiscoverRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Collection     string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
+	Field          string                 `protobuf:"bytes,2,opt,name=field,proto3" json:"field,omitempty"`
+	TargetId       uint64                 `protobuf:"varint,3,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	TargetVector   *DenseVector           `protobuf:"bytes,4,opt,name=target_vector,json=targetVector,proto3" json:"target_vector,omitempty"`
+	Context        []*ContextPair         `protobuf:"bytes,5,rep,name=context,proto3" json:"context,omitempty"`
+	TopK           int32                  `protobuf:"varint,6,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
+	EfSearch       int32                  `protobuf:"varint,7,opt,name=ef_search,json=efSearch,proto3" json:"ef_search,omitempty"`
+	MetadataFilter map[string]string      `protobuf:"bytes,8,rep,name=metadata_filter,json=metadataFilter,proto3" json:"metadata_filter,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DiscoverRequest) Reset() {
+	*x = DiscoverRequest{}
+	mi := &file_deepdata_v1_deepdata_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiscoverRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiscoverRequest) ProtoMessage() {}
+
+func (x *DiscoverRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v1_deepdata_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiscoverRequest.ProtoReflect.Descriptor instead.
+func (*DiscoverRequest) Descriptor() ([]byte, []int) {
+	return file_deepdata_v1_deepdata_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DiscoverRequest) GetCollection() string {
+	if x != nil {
+		return x.Collection
+	}
+	return ""
+}
+
+func (x *DiscoverRequest) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
+func (x *DiscoverRequest) GetTargetId() uint64 {
+	if x != nil {
+		return x.TargetId
+	}
+	return 0
+}
+
+func (x *DiscoverRequest) GetTargetVector() *DenseVector {
+	if x != nil {
+		return x.TargetVector
+	}
+	return nil
+}
+
+func (x *DiscoverRequest) GetContext() []*ContextPair {
+	if x != nil {
+		return x.Context
+	}
+	return nil
+}
+
+func (x *DiscoverRequest) GetTopK() int32 {
+	if x != nil {
+		return x.TopK
+	}
+	return 0
+}
+
+func (x *DiscoverRequest) GetEfSearch() int32 {
+	if x != nil {
+		return x.EfSearch
+	}
+	return 0
+}
+
+func (x *DiscoverRequest) GetMetadataFilter() map[string]string {
+	if x != nil {
+		return x.MetadataFilter
+	}
+	return nil
+}
+
 var File_deepdata_v1_deepdata_proto protoreflect.FileDescriptor
 
 const file_deepdata_v1_deepdata_proto_rawDesc = "" +
@@ -1128,14 +1380,49 @@ const file_deepdata_v1_deepdata_proto_rawDesc = "" +
 	"collection\x18\x01 \x01(\tR\n" +
 	"collection\x12\x15\n" +
 	"\x06doc_id\x18\x02 \x01(\x04R\x05docId\"\x13\n" +
-	"\x11DeleteDocResponse2\xf0\x03\n" +
+	"\x11DeleteDocResponse\"\x88\x03\n" +
+	"\x10RecommendRequest\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x01 \x01(\tR\n" +
+	"collection\x12\x14\n" +
+	"\x05field\x18\x02 \x01(\tR\x05field\x12!\n" +
+	"\fpositive_ids\x18\x03 \x03(\x04R\vpositiveIds\x12!\n" +
+	"\fnegative_ids\x18\x04 \x03(\x04R\vnegativeIds\x12'\n" +
+	"\x0fnegative_weight\x18\x05 \x01(\x02R\x0enegativeWeight\x12\x13\n" +
+	"\x05top_k\x18\x06 \x01(\x05R\x04topK\x12\x1b\n" +
+	"\tef_search\x18\a \x01(\x05R\befSearch\x12Z\n" +
+	"\x0fmetadata_filter\x18\b \x03(\v21.deepdata.v1.RecommendRequest.MetadataFilterEntryR\x0emetadataFilter\x1aA\n" +
+	"\x13MetadataFilterEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"O\n" +
+	"\vContextPair\x12\x1f\n" +
+	"\vpositive_id\x18\x01 \x01(\x04R\n" +
+	"positiveId\x12\x1f\n" +
+	"\vnegative_id\x18\x02 \x01(\x04R\n" +
+	"negativeId\"\xa7\x03\n" +
+	"\x0fDiscoverRequest\x12\x1e\n" +
+	"\n" +
+	"collection\x18\x01 \x01(\tR\n" +
+	"collection\x12\x14\n" +
+	"\x05field\x18\x02 \x01(\tR\x05field\x12\x1b\n" +
+	"\ttarget_id\x18\x03 \x01(\x04R\btargetId\x12=\n" +
+	"\rtarget_vector\x18\x04 \x01(\v2\x18.deepdata.v1.DenseVectorR\ftargetVector\x122\n" +
+	"\acontext\x18\x05 \x03(\v2\x18.deepdata.v1.ContextPairR\acontext\x12\x13\n" +
+	"\x05top_k\x18\x06 \x01(\x05R\x04topK\x12\x1b\n" +
+	"\tef_search\x18\a \x01(\x05R\befSearch\x12Y\n" +
+	"\x0fmetadata_filter\x18\b \x03(\v20.deepdata.v1.DiscoverRequest.MetadataFilterEntryR\x0emetadataFilter\x1aA\n" +
+	"\x13MetadataFilterEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\x80\x05\n" +
 	"\bDeepData\x12_\n" +
 	"\x10CreateCollection\x12$.deepdata.v1.CreateCollectionRequest\x1a%.deepdata.v1.CreateCollectionResponse\x12_\n" +
 	"\x10DeleteCollection\x12$.deepdata.v1.DeleteCollectionRequest\x1a%.deepdata.v1.DeleteCollectionResponse\x12A\n" +
 	"\x06Insert\x12\x1a.deepdata.v1.InsertRequest\x1a\x1b.deepdata.v1.InsertResponse\x12P\n" +
 	"\vBatchInsert\x12\x1f.deepdata.v1.BatchInsertRequest\x1a .deepdata.v1.BatchInsertResponse\x12A\n" +
 	"\x06Search\x12\x1a.deepdata.v1.SearchRequest\x1a\x1b.deepdata.v1.SearchResponse\x12J\n" +
-	"\tDeleteDoc\x12\x1d.deepdata.v1.DeleteDocRequest\x1a\x1e.deepdata.v1.DeleteDocResponseB@Z>github.com/phenomenon0/vectordb/api/gen/deepdata/v1;deepdatav1b\x06proto3"
+	"\tDeleteDoc\x12\x1d.deepdata.v1.DeleteDocRequest\x1a\x1e.deepdata.v1.DeleteDocResponse\x12G\n" +
+	"\tRecommend\x12\x1d.deepdata.v1.RecommendRequest\x1a\x1b.deepdata.v1.SearchResponse\x12E\n" +
+	"\bDiscover\x12\x1c.deepdata.v1.DiscoverRequest\x1a\x1b.deepdata.v1.SearchResponseB@Z>github.com/phenomenon0/vectordb/api/gen/deepdata/v1;deepdatav1b\x06proto3"
 
 var (
 	file_deepdata_v1_deepdata_proto_rawDescOnce sync.Once
@@ -1149,7 +1436,7 @@ func file_deepdata_v1_deepdata_proto_rawDescGZIP() []byte {
 	return file_deepdata_v1_deepdata_proto_rawDescData
 }
 
-var file_deepdata_v1_deepdata_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_deepdata_v1_deepdata_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_deepdata_v1_deepdata_proto_goTypes = []any{
 	(*VectorFieldConfig)(nil),        // 0: deepdata.v1.VectorFieldConfig
 	(*CreateCollectionRequest)(nil),  // 1: deepdata.v1.CreateCollectionRequest
@@ -1169,52 +1456,65 @@ var file_deepdata_v1_deepdata_proto_goTypes = []any{
 	(*SearchResponse)(nil),           // 15: deepdata.v1.SearchResponse
 	(*DeleteDocRequest)(nil),         // 16: deepdata.v1.DeleteDocRequest
 	(*DeleteDocResponse)(nil),        // 17: deepdata.v1.DeleteDocResponse
-	nil,                              // 18: deepdata.v1.VectorFieldConfig.IndexParamsEntry
-	nil,                              // 19: deepdata.v1.InsertRequest.VectorsEntry
-	nil,                              // 20: deepdata.v1.InsertRequest.MetadataEntry
-	nil,                              // 21: deepdata.v1.BatchDoc.VectorsEntry
-	nil,                              // 22: deepdata.v1.BatchDoc.MetadataEntry
-	nil,                              // 23: deepdata.v1.SearchRequest.QueriesEntry
-	nil,                              // 24: deepdata.v1.SearchRequest.MetadataFilterEntry
-	nil,                              // 25: deepdata.v1.SearchHit.MetadataEntry
-	nil,                              // 26: deepdata.v1.SearchHit.VectorsEntry
+	(*RecommendRequest)(nil),         // 18: deepdata.v1.RecommendRequest
+	(*ContextPair)(nil),              // 19: deepdata.v1.ContextPair
+	(*DiscoverRequest)(nil),          // 20: deepdata.v1.DiscoverRequest
+	nil,                              // 21: deepdata.v1.VectorFieldConfig.IndexParamsEntry
+	nil,                              // 22: deepdata.v1.InsertRequest.VectorsEntry
+	nil,                              // 23: deepdata.v1.InsertRequest.MetadataEntry
+	nil,                              // 24: deepdata.v1.BatchDoc.VectorsEntry
+	nil,                              // 25: deepdata.v1.BatchDoc.MetadataEntry
+	nil,                              // 26: deepdata.v1.SearchRequest.QueriesEntry
+	nil,                              // 27: deepdata.v1.SearchRequest.MetadataFilterEntry
+	nil,                              // 28: deepdata.v1.SearchHit.MetadataEntry
+	nil,                              // 29: deepdata.v1.SearchHit.VectorsEntry
+	nil,                              // 30: deepdata.v1.RecommendRequest.MetadataFilterEntry
+	nil,                              // 31: deepdata.v1.DiscoverRequest.MetadataFilterEntry
 }
 var file_deepdata_v1_deepdata_proto_depIdxs = []int32{
-	18, // 0: deepdata.v1.VectorFieldConfig.index_params:type_name -> deepdata.v1.VectorFieldConfig.IndexParamsEntry
+	21, // 0: deepdata.v1.VectorFieldConfig.index_params:type_name -> deepdata.v1.VectorFieldConfig.IndexParamsEntry
 	0,  // 1: deepdata.v1.CreateCollectionRequest.fields:type_name -> deepdata.v1.VectorFieldConfig
 	5,  // 2: deepdata.v1.VectorData.dense:type_name -> deepdata.v1.DenseVector
 	6,  // 3: deepdata.v1.VectorData.sparse:type_name -> deepdata.v1.SparseVector
-	19, // 4: deepdata.v1.InsertRequest.vectors:type_name -> deepdata.v1.InsertRequest.VectorsEntry
-	20, // 5: deepdata.v1.InsertRequest.metadata:type_name -> deepdata.v1.InsertRequest.MetadataEntry
-	21, // 6: deepdata.v1.BatchDoc.vectors:type_name -> deepdata.v1.BatchDoc.VectorsEntry
-	22, // 7: deepdata.v1.BatchDoc.metadata:type_name -> deepdata.v1.BatchDoc.MetadataEntry
+	22, // 4: deepdata.v1.InsertRequest.vectors:type_name -> deepdata.v1.InsertRequest.VectorsEntry
+	23, // 5: deepdata.v1.InsertRequest.metadata:type_name -> deepdata.v1.InsertRequest.MetadataEntry
+	24, // 6: deepdata.v1.BatchDoc.vectors:type_name -> deepdata.v1.BatchDoc.VectorsEntry
+	25, // 7: deepdata.v1.BatchDoc.metadata:type_name -> deepdata.v1.BatchDoc.MetadataEntry
 	10, // 8: deepdata.v1.BatchInsertRequest.docs:type_name -> deepdata.v1.BatchDoc
-	23, // 9: deepdata.v1.SearchRequest.queries:type_name -> deepdata.v1.SearchRequest.QueriesEntry
-	24, // 10: deepdata.v1.SearchRequest.metadata_filter:type_name -> deepdata.v1.SearchRequest.MetadataFilterEntry
-	25, // 11: deepdata.v1.SearchHit.metadata:type_name -> deepdata.v1.SearchHit.MetadataEntry
-	26, // 12: deepdata.v1.SearchHit.vectors:type_name -> deepdata.v1.SearchHit.VectorsEntry
+	26, // 9: deepdata.v1.SearchRequest.queries:type_name -> deepdata.v1.SearchRequest.QueriesEntry
+	27, // 10: deepdata.v1.SearchRequest.metadata_filter:type_name -> deepdata.v1.SearchRequest.MetadataFilterEntry
+	28, // 11: deepdata.v1.SearchHit.metadata:type_name -> deepdata.v1.SearchHit.MetadataEntry
+	29, // 12: deepdata.v1.SearchHit.vectors:type_name -> deepdata.v1.SearchHit.VectorsEntry
 	14, // 13: deepdata.v1.SearchResponse.results:type_name -> deepdata.v1.SearchHit
-	7,  // 14: deepdata.v1.InsertRequest.VectorsEntry.value:type_name -> deepdata.v1.VectorData
-	7,  // 15: deepdata.v1.BatchDoc.VectorsEntry.value:type_name -> deepdata.v1.VectorData
-	7,  // 16: deepdata.v1.SearchRequest.QueriesEntry.value:type_name -> deepdata.v1.VectorData
-	5,  // 17: deepdata.v1.SearchHit.VectorsEntry.value:type_name -> deepdata.v1.DenseVector
-	1,  // 18: deepdata.v1.DeepData.CreateCollection:input_type -> deepdata.v1.CreateCollectionRequest
-	3,  // 19: deepdata.v1.DeepData.DeleteCollection:input_type -> deepdata.v1.DeleteCollectionRequest
-	8,  // 20: deepdata.v1.DeepData.Insert:input_type -> deepdata.v1.InsertRequest
-	11, // 21: deepdata.v1.DeepData.BatchInsert:input_type -> deepdata.v1.BatchInsertRequest
-	13, // 22: deepdata.v1.DeepData.Search:input_type -> deepdata.v1.SearchRequest
-	16, // 23: deepdata.v1.DeepData.DeleteDoc:input_type -> deepdata.v1.DeleteDocRequest
-	2,  // 24: deepdata.v1.DeepData.CreateCollection:output_type -> deepdata.v1.CreateCollectionResponse
-	4,  // 25: deepdata.v1.DeepData.DeleteCollection:output_type -> deepdata.v1.DeleteCollectionResponse
-	9,  // 26: deepdata.v1.DeepData.Insert:output_type -> deepdata.v1.InsertResponse
-	12, // 27: deepdata.v1.DeepData.BatchInsert:output_type -> deepdata.v1.BatchInsertResponse
-	15, // 28: deepdata.v1.DeepData.Search:output_type -> deepdata.v1.SearchResponse
-	17, // 29: deepdata.v1.DeepData.DeleteDoc:output_type -> deepdata.v1.DeleteDocResponse
-	24, // [24:30] is the sub-list for method output_type
-	18, // [18:24] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	30, // 14: deepdata.v1.RecommendRequest.metadata_filter:type_name -> deepdata.v1.RecommendRequest.MetadataFilterEntry
+	5,  // 15: deepdata.v1.DiscoverRequest.target_vector:type_name -> deepdata.v1.DenseVector
+	19, // 16: deepdata.v1.DiscoverRequest.context:type_name -> deepdata.v1.ContextPair
+	31, // 17: deepdata.v1.DiscoverRequest.metadata_filter:type_name -> deepdata.v1.DiscoverRequest.MetadataFilterEntry
+	7,  // 18: deepdata.v1.InsertRequest.VectorsEntry.value:type_name -> deepdata.v1.VectorData
+	7,  // 19: deepdata.v1.BatchDoc.VectorsEntry.value:type_name -> deepdata.v1.VectorData
+	7,  // 20: deepdata.v1.SearchRequest.QueriesEntry.value:type_name -> deepdata.v1.VectorData
+	5,  // 21: deepdata.v1.SearchHit.VectorsEntry.value:type_name -> deepdata.v1.DenseVector
+	1,  // 22: deepdata.v1.DeepData.CreateCollection:input_type -> deepdata.v1.CreateCollectionRequest
+	3,  // 23: deepdata.v1.DeepData.DeleteCollection:input_type -> deepdata.v1.DeleteCollectionRequest
+	8,  // 24: deepdata.v1.DeepData.Insert:input_type -> deepdata.v1.InsertRequest
+	11, // 25: deepdata.v1.DeepData.BatchInsert:input_type -> deepdata.v1.BatchInsertRequest
+	13, // 26: deepdata.v1.DeepData.Search:input_type -> deepdata.v1.SearchRequest
+	16, // 27: deepdata.v1.DeepData.DeleteDoc:input_type -> deepdata.v1.DeleteDocRequest
+	18, // 28: deepdata.v1.DeepData.Recommend:input_type -> deepdata.v1.RecommendRequest
+	20, // 29: deepdata.v1.DeepData.Discover:input_type -> deepdata.v1.DiscoverRequest
+	2,  // 30: deepdata.v1.DeepData.CreateCollection:output_type -> deepdata.v1.CreateCollectionResponse
+	4,  // 31: deepdata.v1.DeepData.DeleteCollection:output_type -> deepdata.v1.DeleteCollectionResponse
+	9,  // 32: deepdata.v1.DeepData.Insert:output_type -> deepdata.v1.InsertResponse
+	12, // 33: deepdata.v1.DeepData.BatchInsert:output_type -> deepdata.v1.BatchInsertResponse
+	15, // 34: deepdata.v1.DeepData.Search:output_type -> deepdata.v1.SearchResponse
+	17, // 35: deepdata.v1.DeepData.DeleteDoc:output_type -> deepdata.v1.DeleteDocResponse
+	15, // 36: deepdata.v1.DeepData.Recommend:output_type -> deepdata.v1.SearchResponse
+	15, // 37: deepdata.v1.DeepData.Discover:output_type -> deepdata.v1.SearchResponse
+	30, // [30:38] is the sub-list for method output_type
+	22, // [22:30] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_deepdata_v1_deepdata_proto_init() }
@@ -1232,7 +1532,7 @@ func file_deepdata_v1_deepdata_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_deepdata_v1_deepdata_proto_rawDesc), len(file_deepdata_v1_deepdata_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   27,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

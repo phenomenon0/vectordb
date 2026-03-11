@@ -127,9 +127,10 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 
 	// Collect all vector IDs from all sources
 	allIDs := make(map[uint64]bool)
-	for id := range d.graph {
+	d.graphStore.Range(func(id uint64, _ []uint64) bool {
 		allIDs[id] = true
-	}
+		return true
+	})
 	for id := range d.memoryVectors {
 		allIDs[id] = true
 	}
@@ -314,7 +315,12 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 	for id := range d.deleted {
 		delete(d.memoryVectors, id)
 		delete(d.quantizedMemory, id)
-		delete(d.graph, id) // Also remove from graph
+		d.graphStore.DeleteNode(id) // Also remove from graph
+		// Remove metadata and payload index entries for deleted vectors
+		if meta := d.metadata[id]; meta != nil {
+			d.payloadIdx.Remove(id, meta)
+		}
+		delete(d.metadata, id)
 	}
 	d.deleted = make(map[uint64]bool)
 	d.count -= deletedCount

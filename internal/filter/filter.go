@@ -3,6 +3,7 @@ package filter
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -35,6 +36,8 @@ const (
 	OpEndsWith           Operator = "endswith"
 	OpRegex              Operator = "regex"
 	OpExists             Operator = "exists"
+	OpGeoRadius          Operator = "geo_radius"
+	OpGeoBBox            Operator = "geo_bbox"
 )
 
 // ComparisonFilter compares a field to a value
@@ -192,6 +195,104 @@ func (f *NotFilter) Evaluate(metadata map[string]interface{}) bool {
 
 func (f *NotFilter) String() string {
 	return fmt.Sprintf("NOT(%s)", f.Filter.String())
+}
+
+// GeoRadiusFilter checks if a geo point is within a radius of a center point
+type GeoRadiusFilter struct {
+	Field     string
+	CenterLat float64
+	CenterLon float64
+	RadiusKm  float64
+}
+
+func (f *GeoRadiusFilter) Evaluate(metadata map[string]interface{}) bool {
+	value, exists := getNestedValue(metadata, f.Field)
+	if !exists {
+		return false
+	}
+	lat, lon, ok := extractGeoPoint(value)
+	if !ok {
+		return false
+	}
+	return haversineKm(f.CenterLat, f.CenterLon, lat, lon) <= f.RadiusKm
+}
+
+func (f *GeoRadiusFilter) String() string {
+	return fmt.Sprintf("%s geo_radius(%.4f, %.4f, %.2fkm)", f.Field, f.CenterLat, f.CenterLon, f.RadiusKm)
+}
+
+// GeoBBoxFilter checks if a geo point is within a bounding box
+type GeoBBoxFilter struct {
+	Field       string
+	TopLeftLat  float64
+	TopLeftLon  float64
+	BotRightLat float64
+	BotRightLon float64
+}
+
+func (f *GeoBBoxFilter) Evaluate(metadata map[string]interface{}) bool {
+	value, exists := getNestedValue(metadata, f.Field)
+	if !exists {
+		return false
+	}
+	lat, lon, ok := extractGeoPoint(value)
+	if !ok {
+		return false
+	}
+	return lat <= f.TopLeftLat && lat >= f.BotRightLat &&
+		lon >= f.TopLeftLon && lon <= f.BotRightLon
+}
+
+func (f *GeoBBoxFilter) String() string {
+	return fmt.Sprintf("%s geo_bbox([%.4f, %.4f], [%.4f, %.4f])", f.Field,
+		f.TopLeftLat, f.TopLeftLon, f.BotRightLat, f.BotRightLon)
+}
+
+// haversineKm computes the great-circle distance between two points in kilometers
+func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 6371.0 // Earth radius in km
+	dLat := (lat2 - lat1) * math.Pi / 180
+	dLon := (lon2 - lon1) * math.Pi / 180
+	lat1R := lat1 * math.Pi / 180
+	lat2R := lat2 * math.Pi / 180
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(lat1R)*math.Cos(lat2R)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return R * c
+}
+
+// extractGeoPoint extracts latitude and longitude from various metadata formats
+func extractGeoPoint(value interface{}) (lat, lon float64, ok bool) {
+	switch v := value.(type) {
+	case []interface{}:
+		if len(v) != 2 {
+			return 0, 0, false
+		}
+		lat, latOk := toFloat64(v[0])
+		lon, lonOk := toFloat64(v[1])
+		if !latOk || !lonOk {
+			return 0, 0, false
+		}
+		return lat, lon, true
+	case []float64:
+		if len(v) != 2 {
+			return 0, 0, false
+		}
+		return v[0], v[1], true
+	case map[string]interface{}:
+		latVal, latExists := v["lat"]
+		lonVal, lonExists := v["lon"]
+		if !latExists || !lonExists {
+			return 0, 0, false
+		}
+		lat, latOk := toFloat64(latVal)
+		lon, lonOk := toFloat64(lonVal)
+		if !latOk || !lonOk {
+			return 0, 0, false
+		}
+		return lat, lon, true
+	default:
+		return 0, 0, false
+	}
 }
 
 // Helper functions
@@ -540,6 +641,16 @@ func NotExists(field string) *ComparisonFilter {
 	return &ComparisonFilter{Field: field, Operator: OpExists, Value: false}
 }
 
+// GeoRadius creates a geo radius filter
+func GeoRadius(field string, lat, lon, radiusKm float64) *GeoRadiusFilter {
+	return &GeoRadiusFilter{Field: field, CenterLat: lat, CenterLon: lon, RadiusKm: radiusKm}
+}
+
+// GeoBBox creates a geo bounding box filter
+func GeoBBox(field string, tlLat, tlLon, brLat, brLon float64) *GeoBBoxFilter {
+	return &GeoBBoxFilter{Field: field, TopLeftLat: tlLat, TopLeftLon: tlLon, BotRightLat: brLat, BotRightLon: brLon}
+}
+
 // And combines filters with AND logic
 func And(filters ...Filter) *AndFilter {
 	return &AndFilter{Filters: filters}
@@ -615,8 +726,15 @@ func parseFilterMap(data map[string]interface{}) (Filter, error) {
 
 		// Parse operator
 		for opStr, val := range opMap {
-			op := Operator(strings.TrimPrefix(opStr, "$"))
-			return &ComparisonFilter{Field: field, Operator: op, Value: val}, nil
+			switch opStr {
+			case "$geo_radius":
+				return parseGeoRadiusFilter(field, val)
+			case "$geo_bbox":
+				return parseGeoBBoxFilter(field, val)
+			default:
+				op := Operator(strings.TrimPrefix(opStr, "$"))
+				return &ComparisonFilter{Field: field, Operator: op, Value: val}, nil
+			}
 		}
 	}
 
@@ -644,4 +762,38 @@ func parseFilterArray(data interface{}) ([]Filter, error) {
 	}
 
 	return filters, nil
+}
+
+// parseGeoRadiusFilter parses a $geo_radius filter value
+func parseGeoRadiusFilter(field string, val interface{}) (*GeoRadiusFilter, error) {
+	m, ok := val.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("$geo_radius value must be an object with lat, lon, radius_km")
+	}
+	lat, latOk := toFloat64(m["lat"])
+	lon, lonOk := toFloat64(m["lon"])
+	radius, radOk := toFloat64(m["radius_km"])
+	if !latOk || !lonOk || !radOk {
+		return nil, fmt.Errorf("$geo_radius requires numeric lat, lon, and radius_km fields")
+	}
+	return &GeoRadiusFilter{Field: field, CenterLat: lat, CenterLon: lon, RadiusKm: radius}, nil
+}
+
+// parseGeoBBoxFilter parses a $geo_bbox filter value
+func parseGeoBBoxFilter(field string, val interface{}) (*GeoBBoxFilter, error) {
+	m, ok := val.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("$geo_bbox value must be an object with top_left and bottom_right")
+	}
+	tlRaw, tlOk := m["top_left"]
+	brRaw, brOk := m["bottom_right"]
+	if !tlOk || !brOk {
+		return nil, fmt.Errorf("$geo_bbox requires top_left and bottom_right arrays")
+	}
+	tlLat, tlLon, tlValid := extractGeoPoint(tlRaw)
+	brLat, brLon, brValid := extractGeoPoint(brRaw)
+	if !tlValid || !brValid {
+		return nil, fmt.Errorf("$geo_bbox top_left and bottom_right must be [lat, lon] arrays")
+	}
+	return &GeoBBoxFilter{Field: field, TopLeftLat: tlLat, TopLeftLon: tlLon, BotRightLat: brLat, BotRightLon: brLon}, nil
 }

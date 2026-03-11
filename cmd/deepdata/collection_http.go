@@ -137,6 +137,10 @@ func (s *CollectionHTTPServer) RegisterHandlers(mux *http.ServeMux, guard func(h
 	// Binary bulk import (zero-copy dense vectors)
 	mux.HandleFunc("/v2/import", guard(s.handleBinaryImport))
 
+	// Recommend and Discover APIs
+	mux.HandleFunc("/v2/recommend", guard(s.handleRecommend))
+	mux.HandleFunc("/v2/discover", guard(s.handleDiscover))
+
 	// Multi-tenant endpoints (v3)
 	// Tenant collection management
 	mux.HandleFunc("/v3/tenants/", guard(s.handleTenantRoutes))
@@ -837,6 +841,114 @@ func (s *CollectionHTTPServer) handleDelete(w http.ResponseWriter, r *http.Reque
 		"status":  "success",
 		"message": fmt.Sprintf("document %d deleted from collection %s", req.DocID, req.CollectionName),
 	})
+}
+
+func (s *CollectionHTTPServer) handleRecommend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var raw struct {
+		Collection     string                 `json:"collection"`
+		Field          string                 `json:"field"`
+		PositiveIDs    []uint64               `json:"positive_ids"`
+		NegativeIDs    []uint64               `json:"negative_ids"`
+		NegativeWeight float32                `json:"negative_weight"`
+		TopK           int                    `json:"top_k"`
+		EfSearch       int                    `json:"ef_search"`
+		Filters        map[string]interface{} `json:"filters,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if raw.Collection == "" {
+		http.Error(w, "collection name required", http.StatusBadRequest)
+		return
+	}
+	if len(raw.PositiveIDs) == 0 {
+		http.Error(w, "at least one positive_id required", http.StatusBadRequest)
+		return
+	}
+	if raw.TopK <= 0 {
+		raw.TopK = 10
+	}
+
+	req := vcollection.RecommendRequest{
+		CollectionName: raw.Collection,
+		FieldName:      raw.Field,
+		PositiveIDs:    raw.PositiveIDs,
+		NegativeIDs:    raw.NegativeIDs,
+		NegativeWeight: raw.NegativeWeight,
+		TopK:           raw.TopK,
+		EfSearch:       raw.EfSearch,
+		Filters:        raw.Filters,
+	}
+
+	resp, err := s.manager.Recommend(r.Context(), req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("recommend failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *CollectionHTTPServer) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var raw struct {
+		Collection   string                 `json:"collection"`
+		Field        string                 `json:"field"`
+		TargetID     uint64                 `json:"target_id"`
+		TargetVector []float32              `json:"target_vector"`
+		Context      []vcollection.ContextPair `json:"context"`
+		TopK         int                    `json:"top_k"`
+		EfSearch     int                    `json:"ef_search"`
+		Filters      map[string]interface{} `json:"filters,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if raw.Collection == "" {
+		http.Error(w, "collection name required", http.StatusBadRequest)
+		return
+	}
+	if len(raw.Context) == 0 {
+		http.Error(w, "at least one context pair required", http.StatusBadRequest)
+		return
+	}
+	if raw.TopK <= 0 {
+		raw.TopK = 10
+	}
+
+	req := vcollection.DiscoverRequest{
+		CollectionName: raw.Collection,
+		FieldName:      raw.Field,
+		TargetID:       raw.TargetID,
+		TargetVector:   raw.TargetVector,
+		Context:        raw.Context,
+		TopK:           raw.TopK,
+		EfSearch:       raw.EfSearch,
+		Filters:        raw.Filters,
+	}
+
+	resp, err := s.manager.Discover(r.Context(), req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("discover failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 // ======================================================================================

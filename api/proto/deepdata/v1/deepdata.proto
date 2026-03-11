@@ -109,6 +109,37 @@ message DeleteDocRequest {
 
 message DeleteDocResponse {}
 
+// ── Recommend ────────────────────────────────────────────────────────
+
+message RecommendRequest {
+  string collection = 1;
+  string field = 2;
+  repeated uint64 positive_ids = 3;
+  repeated uint64 negative_ids = 4;
+  float negative_weight = 5;
+  int32 top_k = 6;
+  int32 ef_search = 7;
+  map<string, string> metadata_filter = 8;
+}
+
+// ── Discover ─────────────────────────────────────────────────────────
+
+message ContextPair {
+  uint64 positive_id = 1;
+  uint64 negative_id = 2;
+}
+
+message DiscoverRequest {
+  string collection = 1;
+  string field = 2;
+  uint64 target_id = 3;
+  DenseVector target_vector = 4;
+  repeated ContextPair context = 5;
+  int32 top_k = 6;
+  int32 ef_search = 7;
+  map<string, string> metadata_filter = 8;
+}
+
 // ── Service ──────────────────────────────────────────────────────────
 
 service DeepData {
@@ -118,4 +149,6 @@ service DeepData {
   rpc BatchInsert      (BatchInsertRequest)      returns (BatchInsertResponse);
   rpc Search           (SearchRequest)           returns (SearchResponse);
   rpc DeleteDoc        (DeleteDocRequest)        returns (DeleteDocResponse);
+  rpc Recommend        (RecommendRequest)        returns (SearchResponse);
+  rpc Discover         (DiscoverRequest)         returns (SearchResponse);
 }

@@ -34,6 +34,17 @@ const (
 	ReadBalanced      ReadStrategy = "balanced"       // Load balance across all (primary + replicas)
 )
 
+// ShardingStrategy defines how to assign data to shards
+type ShardingStrategy string
+
+const (
+	// ShardByCollection routes all vectors in a collection to the same shard (default).
+	ShardByCollection ShardingStrategy = "collection"
+	// ShardByVector routes each vector to a shard based on its ID.
+	// Queries scatter to all shards and merge top-K results.
+	ShardByVector ShardingStrategy = "vector"
+)
+
 // ShardNode represents a single vectordb instance in a shard
 type ShardNode struct {
 	NodeID         string      `json:"node_id"`
@@ -55,6 +66,7 @@ type DistributedVectorDB struct {
 	numShards         int
 	replicationFactor int
 	readStrategy      ReadStrategy
+	shardingStrategy  ShardingStrategy
 
 	// Shard topology: shardID -> nodes (primary + replicas)
 	shards map[int][]*ShardNode
@@ -77,8 +89,9 @@ type DistributedVectorDB struct {
 // DistributedConfig configures the distributed vectordb
 type DistributedConfig struct {
 	NumShards           int
-	ReplicationFactor   int          // Number of replicas per shard
-	ReadStrategy        ReadStrategy // How to route read queries
+	ReplicationFactor   int              // Number of replicas per shard
+	ReadStrategy        ReadStrategy     // How to route read queries
+	ShardingStrategy    ShardingStrategy // How to assign data to shards (default: "collection")
 	HealthCheckInterval time.Duration
 
 	// Quorum configuration
@@ -106,6 +119,9 @@ func NewDistributedVectorDB(cfg DistributedConfig) *DistributedVectorDB {
 	if cfg.ReadStrategy == "" {
 		cfg.ReadStrategy = ReadReplicaPrefer
 	}
+	if cfg.ShardingStrategy == "" {
+		cfg.ShardingStrategy = ShardByCollection
+	}
 	if cfg.CoordinatorID == "" {
 		cfg.CoordinatorID = fmt.Sprintf("coordinator-%d", time.Now().Unix())
 	}
@@ -114,6 +130,7 @@ func NewDistributedVectorDB(cfg DistributedConfig) *DistributedVectorDB {
 		numShards:           cfg.NumShards,
 		replicationFactor:   cfg.ReplicationFactor,
 		readStrategy:        cfg.ReadStrategy,
+		shardingStrategy:    cfg.ShardingStrategy,
 		shards:              make(map[int][]*ShardNode),
 		collectionShards:    make(map[string]int),
 		httpClient:          &http.Client{Timeout: 30 * time.Second},
@@ -229,6 +246,66 @@ func (d *DistributedVectorDB) getShardForCollection(collection string) int {
 	return shardID
 }
 
+// getShardForVector returns the shard ID for a vector ID using FNV-64a hashing.
+// Used when sharding strategy is "vector".
+func (d *DistributedVectorDB) getShardForVector(vectorID string) int {
+	h := fnv.New64a()
+	h.Write([]byte(vectorID))
+	return int(h.Sum64() % uint64(d.numShards))
+}
+
+// getShardsForInsert returns the shard(s) that should receive an insert.
+// For collection sharding: returns a single shard based on collection name.
+// For vector sharding: returns a single shard based on vector ID.
+func (d *DistributedVectorDB) getShardsForInsert(collection string, vectorID string) []int {
+	if d.shardingStrategy == ShardByVector {
+		return []int{d.getShardForVector(vectorID)}
+	}
+	return []int{d.getShardForCollection(collection)}
+}
+
+// getShardsForQuery returns the shard(s) to query.
+// For collection sharding: returns shards for the requested collections.
+// For vector sharding: returns ALL shards (scatter-gather).
+func (d *DistributedVectorDB) getShardsForQuery(collections []string) map[int]bool {
+	shardsToQuery := make(map[int]bool)
+
+	if d.shardingStrategy == ShardByVector {
+		// Vector sharding: must scatter to all shards
+		d.mu.RLock()
+		for shardID := range d.shards {
+			shardsToQuery[shardID] = true
+		}
+		d.mu.RUnlock()
+		return shardsToQuery
+	}
+
+	// Collection sharding: route to specific shards
+	if len(collections) == 0 {
+		d.mu.RLock()
+		for shardID := range d.shards {
+			shardsToQuery[shardID] = true
+		}
+		d.mu.RUnlock()
+	} else {
+		for _, collection := range collections {
+			shardID := d.getShardForCollection(collection)
+			shardsToQuery[shardID] = true
+		}
+	}
+	return shardsToQuery
+}
+
+// getShardsForDelete returns the shard(s) that should receive a delete.
+// For collection sharding: returns a single shard based on collection name.
+// For vector sharding: returns a single shard based on vector ID.
+func (d *DistributedVectorDB) getShardsForDelete(collection string, vectorID string) []int {
+	if d.shardingStrategy == ShardByVector {
+		return []int{d.getShardForVector(vectorID)}
+	}
+	return []int{d.getShardForCollection(collection)}
+}
+
 // InvalidateCollectionCache removes a collection from the shard cache.
 // Call this when a collection is deleted or when shard topology changes.
 func (d *DistributedVectorDB) InvalidateCollectionCache(collection string) {
@@ -327,7 +404,8 @@ func (d *DistributedVectorDB) selectNodeForRead(shardID int) (*ShardNode, error)
 // Add inserts a vector into the distributed vectordb
 func (d *DistributedVectorDB) Add(doc string, id string, meta map[string]string, collection string) (string, error) {
 	// Route to appropriate shard
-	shardID := d.getShardForCollection(collection)
+	shards := d.getShardsForInsert(collection, id)
+	shardID := shards[0]
 
 	// Get primary node for write
 	node, err := d.selectNodeForWrite(shardID)
@@ -365,20 +443,7 @@ func (d *DistributedVectorDB) Add(doc string, id string, meta map[string]string,
 // Query searches across collections
 func (d *DistributedVectorDB) Query(query string, topK int, collections []string, filters map[string]string, mode string) ([]map[string]any, error) {
 	// Determine which shards to query
-	shardsToQuery := make(map[int]bool)
-
-	if len(collections) == 0 {
-		// Broadcast to all shards
-		for shardID := range d.shards {
-			shardsToQuery[shardID] = true
-		}
-	} else {
-		// Query specific shards for collections
-		for _, collection := range collections {
-			shardID := d.getShardForCollection(collection)
-			shardsToQuery[shardID] = true
-		}
-	}
+	shardsToQuery := d.getShardsForQuery(collections)
 
 	// Query shards in parallel
 	type shardResult struct {
@@ -492,7 +557,8 @@ func (d *DistributedVectorDB) Query(query string, topK int, collections []string
 // Delete removes a vector from a collection
 func (d *DistributedVectorDB) Delete(id string, collection string) error {
 	// Route to appropriate shard
-	shardID := d.getShardForCollection(collection)
+	shards := d.getShardsForDelete(collection, id)
+	shardID := shards[0]
 
 	// Get primary node for write
 	node, err := d.selectNodeForWrite(shardID)

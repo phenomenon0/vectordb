@@ -3,13 +3,16 @@ package collection
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 
 	"github.com/phenomenon0/vectordb/internal/filter"
 	"github.com/phenomenon0/vectordb/internal/hybrid"
 	"github.com/phenomenon0/vectordb/internal/index"
+	"github.com/phenomenon0/vectordb/internal/index/simd"
 	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
@@ -1002,6 +1005,341 @@ func (c *Collection) ImportDocuments(docs map[uint64]*Document) {
 	for id, doc := range docs {
 		c.documents[id] = doc
 	}
+}
+
+// Recommend finds similar documents given positive/negative example IDs.
+func (c *Collection) Recommend(ctx context.Context, req RecommendRequest) (*SearchResponse, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if len(req.PositiveIDs) == 0 {
+		return nil, fmt.Errorf("at least one positive ID is required")
+	}
+
+	// Resolve field name (default to first dense field)
+	fieldName := req.FieldName
+	if fieldName == "" {
+		for _, f := range c.schema.Fields {
+			if f.Type == VectorTypeDense {
+				fieldName = f.Name
+				break
+			}
+		}
+		if fieldName == "" {
+			return nil, fmt.Errorf("no dense vector field found")
+		}
+	}
+
+	field := c.schema.GetField(fieldName)
+	if field == nil {
+		return nil, fmt.Errorf("field not found: %s", fieldName)
+	}
+	if field.Type != VectorTypeDense {
+		return nil, fmt.Errorf("field %s is not a dense vector field", fieldName)
+	}
+
+	// Look up vectors for positive IDs
+	dim := field.Dim
+	posCentroid := make([]float32, dim)
+	for _, id := range req.PositiveIDs {
+		doc, ok := c.documents[id]
+		if !ok {
+			return nil, fmt.Errorf("document %d not found", id)
+		}
+		vec, err := coerceDenseVector(doc.Vectors[fieldName])
+		if err != nil {
+			return nil, fmt.Errorf("document %d: %w", id, err)
+		}
+		for j := range posCentroid {
+			posCentroid[j] += vec[j]
+		}
+	}
+	posCount := float32(len(req.PositiveIDs))
+	for j := range posCentroid {
+		posCentroid[j] /= posCount
+	}
+
+	// Subtract negative centroid if present
+	if len(req.NegativeIDs) > 0 {
+		negWeight := req.NegativeWeight
+		if negWeight == 0 {
+			negWeight = 0.5
+		}
+		negCentroid := make([]float32, dim)
+		for _, id := range req.NegativeIDs {
+			doc, ok := c.documents[id]
+			if !ok {
+				return nil, fmt.Errorf("document %d not found", id)
+			}
+			vec, err := coerceDenseVector(doc.Vectors[fieldName])
+			if err != nil {
+				return nil, fmt.Errorf("document %d: %w", id, err)
+			}
+			for j := range negCentroid {
+				negCentroid[j] += vec[j]
+			}
+		}
+		negCount := float32(len(req.NegativeIDs))
+		for j := range negCentroid {
+			negCentroid[j] /= negCount
+		}
+		for j := range posCentroid {
+			posCentroid[j] -= negWeight * negCentroid[j]
+		}
+	}
+
+	// L2-normalize the result vector
+	l2NormalizeInPlace(posCentroid)
+
+	// Parse filters
+	var metadataFilter filter.Filter
+	if len(req.Filters) > 0 {
+		var err error
+		metadataFilter, err = filter.FromMap(req.Filters)
+		if err != nil {
+			return nil, fmt.Errorf("invalid filter: %w", err)
+		}
+	}
+
+	efSearch := c.defaultEfSearch
+	if req.EfSearch > 0 {
+		efSearch = req.EfSearch
+	}
+
+	// Search with synthesized vector
+	resp, err := c.searchSingleField(ctx, fieldName, posCentroid, req.TopK, efSearch, true, metadataFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Post-filter: exclude all input IDs
+	excludeSet := make(map[uint64]struct{}, len(req.PositiveIDs)+len(req.NegativeIDs))
+	for _, id := range req.PositiveIDs {
+		excludeSet[id] = struct{}{}
+	}
+	for _, id := range req.NegativeIDs {
+		excludeSet[id] = struct{}{}
+	}
+
+	filteredDocs := make([]Document, 0, len(resp.Documents))
+	filteredScores := make([]float32, 0, len(resp.Scores))
+	for i, doc := range resp.Documents {
+		if _, excluded := excludeSet[doc.ID]; !excluded {
+			filteredDocs = append(filteredDocs, doc)
+			filteredScores = append(filteredScores, resp.Scores[i])
+		}
+	}
+
+	resp.Documents = filteredDocs
+	resp.Scores = filteredScores
+	return resp, nil
+}
+
+// Discover performs context-based discovery search using positive/negative pairs.
+func (c *Collection) Discover(ctx context.Context, req DiscoverRequest) (*SearchResponse, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if len(req.Context) == 0 {
+		return nil, fmt.Errorf("at least one context pair is required")
+	}
+
+	// Resolve field name
+	fieldName := req.FieldName
+	if fieldName == "" {
+		for _, f := range c.schema.Fields {
+			if f.Type == VectorTypeDense {
+				fieldName = f.Name
+				break
+			}
+		}
+		if fieldName == "" {
+			return nil, fmt.Errorf("no dense vector field found")
+		}
+	}
+
+	field := c.schema.GetField(fieldName)
+	if field == nil {
+		return nil, fmt.Errorf("field not found: %s", fieldName)
+	}
+	if field.Type != VectorTypeDense {
+		return nil, fmt.Errorf("field %s is not a dense vector field", fieldName)
+	}
+
+	// Resolve target vector
+	var targetVec []float32
+	if req.TargetVector != nil {
+		targetVec = req.TargetVector
+	} else if req.TargetID != 0 {
+		doc, ok := c.documents[req.TargetID]
+		if !ok {
+			return nil, fmt.Errorf("target document %d not found", req.TargetID)
+		}
+		var err error
+		targetVec, err = coerceDenseVector(doc.Vectors[fieldName])
+		if err != nil {
+			return nil, fmt.Errorf("target document %d: %w", req.TargetID, err)
+		}
+	} else {
+		// Average of context positives
+		dim := field.Dim
+		targetVec = make([]float32, dim)
+		for _, pair := range req.Context {
+			doc, ok := c.documents[pair.PositiveID]
+			if !ok {
+				return nil, fmt.Errorf("positive document %d not found", pair.PositiveID)
+			}
+			vec, err := coerceDenseVector(doc.Vectors[fieldName])
+			if err != nil {
+				return nil, fmt.Errorf("positive document %d: %w", pair.PositiveID, err)
+			}
+			for j := range targetVec {
+				targetVec[j] += vec[j]
+			}
+		}
+		count := float32(len(req.Context))
+		for j := range targetVec {
+			targetVec[j] /= count
+		}
+		l2NormalizeInPlace(targetVec)
+	}
+
+	// Resolve context vectors
+	type resolvedPair struct {
+		posVec []float32
+		negVec []float32
+	}
+	pairs := make([]resolvedPair, len(req.Context))
+	for i, pair := range req.Context {
+		posDoc, ok := c.documents[pair.PositiveID]
+		if !ok {
+			return nil, fmt.Errorf("positive document %d not found", pair.PositiveID)
+		}
+		posVec, err := coerceDenseVector(posDoc.Vectors[fieldName])
+		if err != nil {
+			return nil, fmt.Errorf("positive document %d: %w", pair.PositiveID, err)
+		}
+		negDoc, ok := c.documents[pair.NegativeID]
+		if !ok {
+			return nil, fmt.Errorf("negative document %d not found", pair.NegativeID)
+		}
+		negVec, err := coerceDenseVector(negDoc.Vectors[fieldName])
+		if err != nil {
+			return nil, fmt.Errorf("negative document %d: %w", pair.NegativeID, err)
+		}
+		pairs[i] = resolvedPair{posVec: posVec, negVec: negVec}
+	}
+
+	// Parse filters
+	var metadataFilter filter.Filter
+	if len(req.Filters) > 0 {
+		var err error
+		metadataFilter, err = filter.FromMap(req.Filters)
+		if err != nil {
+			return nil, fmt.Errorf("invalid filter: %w", err)
+		}
+	}
+
+	efSearch := c.defaultEfSearch
+	if req.EfSearch > 0 {
+		efSearch = req.EfSearch
+	}
+
+	topK := req.TopK
+	if topK <= 0 {
+		topK = 10
+	}
+
+	// Over-fetch candidates
+	overFetchK := topK * 4
+	overFetchEf := efSearch * 2
+	resp, err := c.searchSingleField(ctx, fieldName, targetVec, overFetchK, overFetchEf, true, metadataFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-rank each candidate using context scoring
+	type scoredDoc struct {
+		doc   Document
+		score float32
+	}
+	scored := make([]scoredDoc, 0, len(resp.Documents))
+	for i, doc := range resp.Documents {
+		candidateVec, err := c.getDocumentVector(doc.ID, fieldName)
+		if err != nil {
+			continue
+		}
+
+		// Compute context score
+		contextScore := float64(1.0)
+		for _, pair := range pairs {
+			posSim := cosineSimilarity(candidateVec, pair.posVec)
+			negSim := cosineSimilarity(candidateVec, pair.negVec)
+			contextScore *= sigmoid(float64(posSim - negSim))
+		}
+
+		targetSim := cosineSimilarity(candidateVec, targetVec)
+		finalScore := float32(contextScore) * targetSim
+
+		_ = resp.Scores[i] // bounds check hint
+		scored = append(scored, scoredDoc{doc: doc, score: finalScore})
+	}
+
+	// Sort by final_score descending
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	// Return top-k
+	if len(scored) > topK {
+		scored = scored[:topK]
+	}
+
+	docs := make([]Document, len(scored))
+	scores := make([]float32, len(scored))
+	for i, s := range scored {
+		docs[i] = s.doc
+		scores[i] = s.score
+	}
+
+	return &SearchResponse{
+		Documents:          docs,
+		Scores:             scores,
+		CandidatesExamined: resp.CandidatesExamined,
+	}, nil
+}
+
+// getDocumentVector retrieves a dense vector for a document from the stored documents.
+func (c *Collection) getDocumentVector(docID uint64, fieldName string) ([]float32, error) {
+	doc, ok := c.documents[docID]
+	if !ok {
+		return nil, fmt.Errorf("document %d not found", docID)
+	}
+	return coerceDenseVector(doc.Vectors[fieldName])
+}
+
+func l2NormalizeInPlace(vec []float32) {
+	var norm float64
+	for _, v := range vec {
+		norm += float64(v) * float64(v)
+	}
+	if norm == 0 {
+		return
+	}
+	inv := float32(1.0 / math.Sqrt(norm))
+	for i := range vec {
+		vec[i] *= inv
+	}
+}
+
+func cosineSimilarity(a, b []float32) float32 {
+	// Use SIMD distance (returns 1 - cosine_similarity for normalized vectors)
+	dist := simd.CosineDistanceF32(a, b)
+	return 1.0 - dist
+}
+
+func sigmoid(x float64) float64 {
+	return 1.0 / (1.0 + math.Exp(-x))
 }
 
 // Close releases all resources held by the collection.

@@ -528,6 +528,234 @@ func TestFilterString(t *testing.T) {
 	}
 }
 
+// TestGeoRadiusFilter tests geo radius filtering
+func TestGeoRadiusFilter(t *testing.T) {
+	// Times Square: 40.7580, -73.9855
+	timesSquare := map[string]interface{}{
+		"location": []interface{}{40.7580, -73.9855},
+	}
+	// Central Park (about 1.5km from Times Square)
+	centralPark := map[string]interface{}{
+		"location": map[string]interface{}{"lat": 40.7712, "lon": -73.9742},
+	}
+	// Brooklyn (about 8km from Times Square)
+	brooklyn := map[string]interface{}{
+		"location": []float64{40.6782, -73.9442},
+	}
+	noGeo := map[string]interface{}{
+		"name": "no location",
+	}
+
+	tests := []struct {
+		name     string
+		filter   Filter
+		metadata map[string]interface{}
+		want     bool
+	}{
+		{"Inside radius (array format)", GeoRadius("location", 40.7580, -73.9855, 10), timesSquare, true},
+		{"Inside radius (object format)", GeoRadius("location", 40.7580, -73.9855, 10), centralPark, true},
+		{"Outside radius", GeoRadius("location", 40.7580, -73.9855, 5), brooklyn, false},
+		{"Inside large radius (float64 array)", GeoRadius("location", 40.7580, -73.9855, 15), brooklyn, true},
+		{"Missing geo field", GeoRadius("location", 40.7580, -73.9855, 10), noGeo, false},
+		{"Zero radius (same point)", GeoRadius("location", 40.7580, -73.9855, 0), timesSquare, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.filter.Evaluate(tt.metadata); got != tt.want {
+				t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGeoBBoxFilter tests geo bounding box filtering
+func TestGeoBBoxFilter(t *testing.T) {
+	// Bounding box roughly covering Manhattan
+	// Top-left: 40.80, -74.02   Bottom-right: 40.70, -73.93
+	manhattanBBox := GeoBBox("location", 40.80, -74.02, 40.70, -73.93)
+
+	tests := []struct {
+		name     string
+		filter   Filter
+		metadata map[string]interface{}
+		want     bool
+	}{
+		{
+			"Inside bbox (array)",
+			manhattanBBox,
+			map[string]interface{}{"location": []interface{}{40.7580, -73.9855}},
+			true,
+		},
+		{
+			"Inside bbox (object)",
+			manhattanBBox,
+			map[string]interface{}{"location": map[string]interface{}{"lat": 40.7580, "lon": -73.9855}},
+			true,
+		},
+		{
+			"Outside bbox (too far south)",
+			manhattanBBox,
+			map[string]interface{}{"location": []interface{}{40.6500, -73.9500}},
+			false,
+		},
+		{
+			"Outside bbox (too far east)",
+			manhattanBBox,
+			map[string]interface{}{"location": []interface{}{40.7500, -73.9000}},
+			false,
+		},
+		{
+			"On boundary (top-left corner)",
+			manhattanBBox,
+			map[string]interface{}{"location": []interface{}{40.80, -74.02}},
+			true,
+		},
+		{
+			"On boundary (bottom-right corner)",
+			manhattanBBox,
+			map[string]interface{}{"location": []interface{}{40.70, -73.93}},
+			true,
+		},
+		{
+			"Missing field",
+			manhattanBBox,
+			map[string]interface{}{"name": "test"},
+			false,
+		},
+		{
+			"Float64 array format",
+			manhattanBBox,
+			map[string]interface{}{"location": []float64{40.75, -73.97}},
+			true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.filter.Evaluate(tt.metadata); got != tt.want {
+				t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGeoFilterJSON tests JSON parsing of geo filters
+func TestGeoFilterJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		metadata map[string]interface{}
+		want     bool
+	}{
+		{
+			"Geo radius from JSON",
+			`{"location": {"$geo_radius": {"lat": 40.7580, "lon": -73.9855, "radius_km": 10}}}`,
+			map[string]interface{}{"location": []interface{}{40.7580, -73.9855}},
+			true,
+		},
+		{
+			"Geo radius outside",
+			`{"location": {"$geo_radius": {"lat": 40.7580, "lon": -73.9855, "radius_km": 1}}}`,
+			map[string]interface{}{"location": []interface{}{40.6782, -73.9442}},
+			false,
+		},
+		{
+			"Geo bbox from JSON",
+			`{"location": {"$geo_bbox": {"top_left": [40.80, -74.02], "bottom_right": [40.70, -73.93]}}}`,
+			map[string]interface{}{"location": []interface{}{40.75, -73.97}},
+			true,
+		},
+		{
+			"Geo bbox outside",
+			`{"location": {"$geo_bbox": {"top_left": [40.80, -74.02], "bottom_right": [40.70, -73.93]}}}`,
+			map[string]interface{}{"location": []interface{}{40.60, -73.97}},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filter, err := FromJSON([]byte(tt.json))
+			if err != nil {
+				t.Fatalf("Failed to parse JSON: %v", err)
+			}
+			if got := filter.Evaluate(tt.metadata); got != tt.want {
+				t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGeoFilterCombined tests geo filters combined with other filters
+func TestGeoFilterCombined(t *testing.T) {
+	restaurants := []map[string]interface{}{
+		{
+			"name":     "Joe's Pizza",
+			"category": "restaurant",
+			"location": []interface{}{40.7308, -73.9973},
+		},
+		{
+			"name":     "Shake Shack",
+			"category": "restaurant",
+			"location": []interface{}{40.7415, -73.9880},
+		},
+		{
+			"name":     "Brooklyn Brewery",
+			"category": "bar",
+			"location": []interface{}{40.7215, -73.9573},
+		},
+		{
+			"name":     "Far Away Place",
+			"category": "restaurant",
+			"location": []interface{}{41.0000, -74.5000},
+		},
+	}
+
+	tests := []struct {
+		name string
+		filter Filter
+		wantNames []string
+	}{
+		{
+			"Restaurants within 5km of Union Square",
+			And(
+				GeoRadius("location", 40.7359, -73.9911, 5),
+				Eq("category", "restaurant"),
+			),
+			[]string{"Joe's Pizza", "Shake Shack"},
+		},
+		{
+			"Any place in bbox OR category bar",
+			Or(
+				GeoBBox("location", 40.75, -74.00, 40.73, -73.98),
+				Eq("category", "bar"),
+			),
+			[]string{"Joe's Pizza", "Shake Shack", "Brooklyn Brewery"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var matched []string
+			for _, r := range restaurants {
+				if tt.filter.Evaluate(r) {
+					matched = append(matched, r["name"].(string))
+				}
+			}
+			if len(matched) != len(tt.wantNames) {
+				t.Errorf("got %d matches %v, want %d %v", len(matched), matched, len(tt.wantNames), tt.wantNames)
+				return
+			}
+			for i, name := range matched {
+				if name != tt.wantNames[i] {
+					t.Errorf("match[%d] = %q, want %q", i, name, tt.wantNames[i])
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkFilterEvaluation benchmarks filter performance
 func BenchmarkFilterEvaluation(b *testing.B) {
 	metadata := map[string]interface{}{
