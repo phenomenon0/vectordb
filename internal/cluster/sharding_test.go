@@ -79,7 +79,7 @@ func TestGetShardsForInsertCollection(t *testing.T) {
 	d := NewDistributedVectorDB(cfg)
 	defer d.Shutdown()
 
-	shards := d.getShardsForInsert("my-collection", "vec-123")
+	shards := d.getShardsForWrite("my-collection", "vec-123")
 	if len(shards) != 1 {
 		t.Fatalf("expected 1 shard, got %d", len(shards))
 	}
@@ -101,7 +101,7 @@ func TestGetShardsForInsertVector(t *testing.T) {
 	d := NewDistributedVectorDB(cfg)
 	defer d.Shutdown()
 
-	shards := d.getShardsForInsert("my-collection", "vec-123")
+	shards := d.getShardsForWrite("my-collection", "vec-123")
 	if len(shards) != 1 {
 		t.Fatalf("expected 1 shard, got %d", len(shards))
 	}

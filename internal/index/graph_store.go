@@ -72,15 +72,7 @@ func (m *MemoryGraphStore) Range(fn func(id uint64, neighbors []uint64) bool) {
 }
 
 func (m *MemoryGraphStore) Snapshot() GraphStore {
-	snap := &MemoryGraphStore{
-		graph: make(map[uint64][]uint64, len(m.graph)),
-	}
-	for id, neighbors := range m.graph {
-		neighborsCopy := make([]uint64, len(neighbors))
-		copy(neighborsCopy, neighbors)
-		snap.graph[id] = neighborsCopy
-	}
-	return snap
+	return NewMemoryGraphStoreFrom(m.Clone())
 }
 
 func (m *MemoryGraphStore) Clone() map[uint64][]uint64 {

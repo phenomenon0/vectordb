@@ -212,6 +212,13 @@ func (d *DistributedVectorDB) UnregisterShard(nodeID string) error {
 	return fmt.Errorf("node %s not found", nodeID)
 }
 
+// hashToShard computes an FNV-64a hash of key and maps it to a shard index.
+func (d *DistributedVectorDB) hashToShard(key string) int {
+	h := fnv.New64a()
+	h.Write([]byte(key))
+	return int(h.Sum64() % uint64(d.numShards))
+}
+
 // getShardForCollection returns the shard ID for a given collection using consistent hashing
 func (d *DistributedVectorDB) getShardForCollection(collection string) int {
 	d.mu.RLock()
@@ -222,10 +229,7 @@ func (d *DistributedVectorDB) getShardForCollection(collection string) int {
 	}
 	d.mu.RUnlock()
 
-	// Compute shard using consistent hashing
-	h := fnv.New64a()
-	h.Write([]byte(collection))
-	shardID := int(h.Sum64() % uint64(d.numShards))
+	shardID := d.hashToShard(collection)
 
 	// Cache the result (with size limit to prevent unbounded growth)
 	d.mu.Lock()
@@ -249,15 +253,13 @@ func (d *DistributedVectorDB) getShardForCollection(collection string) int {
 // getShardForVector returns the shard ID for a vector ID using FNV-64a hashing.
 // Used when sharding strategy is "vector".
 func (d *DistributedVectorDB) getShardForVector(vectorID string) int {
-	h := fnv.New64a()
-	h.Write([]byte(vectorID))
-	return int(h.Sum64() % uint64(d.numShards))
+	return d.hashToShard(vectorID)
 }
 
-// getShardsForInsert returns the shard(s) that should receive an insert.
+// getShardsForWrite returns the shard(s) for a write operation (insert or delete).
 // For collection sharding: returns a single shard based on collection name.
 // For vector sharding: returns a single shard based on vector ID.
-func (d *DistributedVectorDB) getShardsForInsert(collection string, vectorID string) []int {
+func (d *DistributedVectorDB) getShardsForWrite(collection string, vectorID string) []int {
 	if d.shardingStrategy == ShardByVector {
 		return []int{d.getShardForVector(vectorID)}
 	}
@@ -270,8 +272,8 @@ func (d *DistributedVectorDB) getShardsForInsert(collection string, vectorID str
 func (d *DistributedVectorDB) getShardsForQuery(collections []string) map[int]bool {
 	shardsToQuery := make(map[int]bool)
 
-	if d.shardingStrategy == ShardByVector {
-		// Vector sharding: must scatter to all shards
+	if d.shardingStrategy == ShardByVector || len(collections) == 0 {
+		// Vector sharding or no collection filter: scatter to all shards
 		d.mu.RLock()
 		for shardID := range d.shards {
 			shardsToQuery[shardID] = true
@@ -281,29 +283,11 @@ func (d *DistributedVectorDB) getShardsForQuery(collections []string) map[int]bo
 	}
 
 	// Collection sharding: route to specific shards
-	if len(collections) == 0 {
-		d.mu.RLock()
-		for shardID := range d.shards {
-			shardsToQuery[shardID] = true
-		}
-		d.mu.RUnlock()
-	} else {
-		for _, collection := range collections {
-			shardID := d.getShardForCollection(collection)
-			shardsToQuery[shardID] = true
-		}
+	for _, collection := range collections {
+		shardID := d.getShardForCollection(collection)
+		shardsToQuery[shardID] = true
 	}
 	return shardsToQuery
-}
-
-// getShardsForDelete returns the shard(s) that should receive a delete.
-// For collection sharding: returns a single shard based on collection name.
-// For vector sharding: returns a single shard based on vector ID.
-func (d *DistributedVectorDB) getShardsForDelete(collection string, vectorID string) []int {
-	if d.shardingStrategy == ShardByVector {
-		return []int{d.getShardForVector(vectorID)}
-	}
-	return []int{d.getShardForCollection(collection)}
 }
 
 // InvalidateCollectionCache removes a collection from the shard cache.
@@ -404,7 +388,7 @@ func (d *DistributedVectorDB) selectNodeForRead(shardID int) (*ShardNode, error)
 // Add inserts a vector into the distributed vectordb
 func (d *DistributedVectorDB) Add(doc string, id string, meta map[string]string, collection string) (string, error) {
 	// Route to appropriate shard
-	shards := d.getShardsForInsert(collection, id)
+	shards := d.getShardsForWrite(collection, id)
 	shardID := shards[0]
 
 	// Get primary node for write
@@ -557,7 +541,7 @@ func (d *DistributedVectorDB) Query(query string, topK int, collections []string
 // Delete removes a vector from a collection
 func (d *DistributedVectorDB) Delete(id string, collection string) error {
 	// Route to appropriate shard
-	shards := d.getShardsForDelete(collection, id)
+	shards := d.getShardsForWrite(collection, id)
 	shardID := shards[0]
 
 	// Get primary node for write

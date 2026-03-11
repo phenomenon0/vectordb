@@ -1,5 +1,7 @@
 package index
 
+import "sort"
+
 // DISKANN DEADLOCK FIX
 //
 // This file contains the deadlock fix for DiskANN parallel graph construction.
@@ -106,14 +108,9 @@ func (d *DiskANNIndex) greedySearchOnSnapshot(query []float32, ef int, snapshot 
 		}
 
 		// Sort by distance (keep best candidates)
-		// Using sort.Slice (imported at package level)
-		for j := 0; j < len(candidates); j++ {
-			for k := j + 1; k < len(candidates); k++ {
-				if candidates[k].Distance < candidates[j].Distance {
-					candidates[j], candidates[k] = candidates[k], candidates[j]
-				}
-			}
-		}
+		sort.Slice(candidates, func(a, b int) bool {
+			return candidates[a].Distance < candidates[b].Distance
+		})
 
 		if len(candidates) > ef*2 {
 			candidates = candidates[:ef*2]

@@ -75,105 +75,37 @@ func (sm *SnapshotManager) CreateSnapshot(ctx context.Context, description strin
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Generate snapshot ID (timestamp-based with milliseconds to avoid collisions)
 	now := time.Now()
 	snapshotID := fmt.Sprintf("snapshot_%d_%d", now.Unix(), now.UnixNano()/1000000%1000)
 	snapshotPath := filepath.Join(sm.snapshotDir, snapshotID)
 
-	// Create snapshot directory
 	if err := os.MkdirAll(snapshotPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create snapshot path: %w", err)
 	}
 
-	// Lock index for consistent snapshot
 	sm.index.mu.RLock()
 	defer sm.index.mu.RUnlock()
 
-	// Collect metadata
-	stats := sm.index.Stats()
-	metadata := &SnapshotMetadata{
-		ID:            snapshotID,
-		Timestamp:     time.Now(),
-		VectorCount:   stats.Count,
-		Dimension:     sm.index.dim,
-		MemoryVectors: len(sm.index.memoryVectors) + len(sm.index.quantizedMemory),
-		DiskVectors:   stats.Count - (len(sm.index.memoryVectors) + len(sm.index.quantizedMemory)),
-		GraphEdges:    sm.countGraphEdges(),
-		DiskSizeBytes: sm.index.mmapOffset,
-		Description:   description,
-	}
+	metadata := sm.buildSnapshotMetadata(snapshotID, now, description)
 
-	if sm.index.quantizer != nil {
-		switch sm.index.quantizer.(type) {
-		case *Float16Quantizer:
-			metadata.Quantization = "float16"
-		case *Uint8Quantizer:
-			metadata.Quantization = "uint8"
-		case *ProductQuantizer:
-			metadata.Quantization = "pq"
-		}
-	}
-
-	// Copy mmap file (disk vectors + graph)
-	if sm.index.mmapFile != nil && sm.index.mmapOffset > 0 {
-		destPath := filepath.Join(snapshotPath, "index.dat")
-		if err := sm.copyFile(sm.index.indexPath, destPath); err != nil {
-			os.RemoveAll(snapshotPath)
-			return nil, fmt.Errorf("failed to copy index file: %w", err)
-		}
-	}
-
-	// Save graph structure as JSON
-	graphPath := filepath.Join(snapshotPath, "graph.json")
-	if err := sm.saveGraph(graphPath); err != nil {
+	if err := sm.writeSnapshotComponents(snapshotPath); err != nil {
 		os.RemoveAll(snapshotPath)
-		return nil, fmt.Errorf("failed to save graph: %w", err)
-	}
-
-	// Save memory vectors (optional, for quick recovery)
-	if len(sm.index.memoryVectors) > 0 {
-		memPath := filepath.Join(snapshotPath, "memory_vectors.json")
-		if err := sm.saveMemoryVectors(memPath); err != nil {
-			os.RemoveAll(snapshotPath)
-			return nil, fmt.Errorf("failed to save memory vectors: %w", err)
-		}
-	}
-
-	// Save quantized memory (if exists)
-	if len(sm.index.quantizedMemory) > 0 {
-		quantPath := filepath.Join(snapshotPath, "quantized_memory.json")
-		if err := sm.saveQuantizedMemory(quantPath); err != nil {
-			os.RemoveAll(snapshotPath)
-			return nil, fmt.Errorf("failed to save quantized memory: %w", err)
-		}
-	}
-
-	// Save disk offset index (for quantized vectors)
-	if sm.index.quantizer != nil && len(sm.index.diskOffsetIndex) > 0 {
-		offsetPath := filepath.Join(snapshotPath, "offset_index.json")
-		if err := sm.saveOffsetIndex(offsetPath); err != nil {
-			os.RemoveAll(snapshotPath)
-			return nil, fmt.Errorf("failed to save offset index: %w", err)
-		}
+		return nil, err
 	}
 
 	// Compute component checksums for future incremental use
-	checksums, csErr := computeComponentChecksums(snapshotPath)
-	if csErr == nil {
+	if checksums, err := computeComponentChecksums(snapshotPath); err == nil {
 		metadata.ComponentChecksums = checksums
 	}
 
-	// Save metadata
 	metadataPath := filepath.Join(snapshotPath, "metadata.json")
 	if err := sm.saveMetadata(metadataPath, metadata); err != nil {
 		os.RemoveAll(snapshotPath)
 		return nil, fmt.Errorf("failed to save metadata: %w", err)
 	}
 
-	// Auto-cleanup old snapshots if configured
 	if sm.maxSnapshots > 0 {
 		if err := sm.cleanupOldSnapshots(); err != nil {
-			// Log error but don't fail snapshot creation
 			fmt.Printf("Warning: failed to cleanup old snapshots: %v\n", err)
 		}
 	}
@@ -186,82 +118,29 @@ func (sm *SnapshotManager) RestoreSnapshot(ctx context.Context, snapshotID strin
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	return sm.restoreSnapshotLocked(snapshotID)
+}
+
+// restoreSnapshotLocked restores a snapshot. Caller must hold sm.mu.
+func (sm *SnapshotManager) restoreSnapshotLocked(snapshotID string) error {
 	snapshotPath := filepath.Join(sm.snapshotDir, snapshotID)
 
-	// Verify snapshot exists
-	if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
-		return fmt.Errorf("snapshot %s not found", snapshotID)
-	}
-
-	// Load metadata
 	metadataPath := filepath.Join(snapshotPath, "metadata.json")
 	metadata, err := sm.loadMetadata(metadataPath)
 	if err != nil {
 		return fmt.Errorf("failed to load metadata: %w", err)
 	}
 
-	// Close current mmap before locking (Close acquires its own lock)
-	if sm.index.mmapData != nil {
-		if err := sm.index.Close(); err != nil {
-			return fmt.Errorf("failed to close current index: %w", err)
+	// Build resolved paths from the single snapshot directory
+	resolvedPaths := make(map[string]string)
+	for _, name := range snapshotComponents {
+		p := filepath.Join(snapshotPath, name)
+		if _, err := os.Stat(p); err == nil {
+			resolvedPaths[name] = p
 		}
 	}
 
-	// Lock index for restoration
-	sm.index.mu.Lock()
-	defer sm.index.mu.Unlock()
-
-	// Restore index file
-	indexSrc := filepath.Join(snapshotPath, "index.dat")
-	if _, err := os.Stat(indexSrc); err == nil {
-		if err := sm.copyFile(indexSrc, sm.index.indexPath); err != nil {
-			return fmt.Errorf("failed to restore index file: %w", err)
-		}
-	}
-
-	// Restore graph
-	graphPath := filepath.Join(snapshotPath, "graph.json")
-	if err := sm.loadGraph(graphPath); err != nil {
-		return fmt.Errorf("failed to restore graph: %w", err)
-	}
-
-	// Restore memory vectors
-	memPath := filepath.Join(snapshotPath, "memory_vectors.json")
-	if _, err := os.Stat(memPath); err == nil {
-		if err := sm.loadMemoryVectors(memPath); err != nil {
-			return fmt.Errorf("failed to restore memory vectors: %w", err)
-		}
-	}
-
-	// Restore quantized memory
-	quantPath := filepath.Join(snapshotPath, "quantized_memory.json")
-	if _, err := os.Stat(quantPath); err == nil {
-		if err := sm.loadQuantizedMemory(quantPath); err != nil {
-			return fmt.Errorf("failed to restore quantized memory: %w", err)
-		}
-	}
-
-	// Restore offset index
-	offsetPath := filepath.Join(snapshotPath, "offset_index.json")
-	if _, err := os.Stat(offsetPath); err == nil {
-		if err := sm.loadOffsetIndex(offsetPath); err != nil {
-			return fmt.Errorf("failed to restore offset index: %w", err)
-		}
-	}
-
-	// Reinitialize mmap
-	if err := sm.index.initMmap(); err != nil {
-		return fmt.Errorf("failed to reinitialize mmap: %w", err)
-	}
-
-	// Update index stats
-	sm.index.count = metadata.VectorCount
-	sm.index.deleted = make(map[uint64]bool)
-
-	// Clear LRU cache to ensure fresh reads after restore
-	sm.index.lruCache.Clear()
-
-	return nil
+	return sm.restoreFromPaths(resolvedPaths, metadata)
 }
 
 // ListSnapshots returns all available snapshots sorted by timestamp (newest first)
@@ -497,6 +376,130 @@ func computeFileChecksum(path string) (string, error) {
 // snapshotComponents lists the component file names used in snapshot creation and restoration.
 var snapshotComponents = []string{"index.dat", "graph.json", "memory_vectors.json", "quantized_memory.json", "offset_index.json"}
 
+// quantizerName returns a human-readable name for the index quantizer (empty if none).
+func (sm *SnapshotManager) quantizerName() string {
+	if sm.index.quantizer == nil {
+		return ""
+	}
+	switch sm.index.quantizer.(type) {
+	case *Float16Quantizer:
+		return "float16"
+	case *Uint8Quantizer:
+		return "uint8"
+	case *ProductQuantizer:
+		return "pq"
+	default:
+		return ""
+	}
+}
+
+// buildSnapshotMetadata constructs metadata from the current index state.
+// Must be called with sm.index.mu held (at least RLock).
+func (sm *SnapshotManager) buildSnapshotMetadata(snapshotID string, now time.Time, description string) *SnapshotMetadata {
+	stats := sm.index.Stats()
+	memCount := len(sm.index.memoryVectors) + len(sm.index.quantizedMemory)
+	return &SnapshotMetadata{
+		ID:            snapshotID,
+		Timestamp:     now,
+		VectorCount:   stats.Count,
+		Dimension:     sm.index.dim,
+		MemoryVectors: memCount,
+		DiskVectors:   stats.Count - memCount,
+		GraphEdges:    sm.countGraphEdges(),
+		DiskSizeBytes: sm.index.mmapOffset,
+		Quantization:  sm.quantizerName(),
+		Description:   description,
+	}
+}
+
+// writeSnapshotComponents writes all index components to snapshotPath.
+// Must be called with sm.index.mu held (at least RLock).
+func (sm *SnapshotManager) writeSnapshotComponents(snapshotPath string) error {
+	// Graph (always present)
+	if err := sm.saveGraph(filepath.Join(snapshotPath, "graph.json")); err != nil {
+		return fmt.Errorf("save graph: %w", err)
+	}
+
+	// Index.dat (disk vectors)
+	if sm.index.mmapFile != nil && sm.index.mmapOffset > 0 {
+		if err := sm.copyFile(sm.index.indexPath, filepath.Join(snapshotPath, "index.dat")); err != nil {
+			return fmt.Errorf("copy index file: %w", err)
+		}
+	}
+
+	// Memory vectors
+	if len(sm.index.memoryVectors) > 0 {
+		if err := sm.saveMemoryVectors(filepath.Join(snapshotPath, "memory_vectors.json")); err != nil {
+			return fmt.Errorf("save memory vectors: %w", err)
+		}
+	}
+
+	// Quantized memory
+	if len(sm.index.quantizedMemory) > 0 {
+		if err := sm.saveQuantizedMemory(filepath.Join(snapshotPath, "quantized_memory.json")); err != nil {
+			return fmt.Errorf("save quantized memory: %w", err)
+		}
+	}
+
+	// Offset index
+	if sm.index.quantizer != nil && len(sm.index.diskOffsetIndex) > 0 {
+		if err := sm.saveOffsetIndex(filepath.Join(snapshotPath, "offset_index.json")); err != nil {
+			return fmt.Errorf("save offset index: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// restoreFromPaths restores index state from resolved component file paths.
+// Must be called with sm.mu held. Acquires sm.index.mu internally.
+func (sm *SnapshotManager) restoreFromPaths(resolvedPaths map[string]string, metadata *SnapshotMetadata) error {
+	// Close current mmap
+	if sm.index.mmapData != nil {
+		if err := sm.index.Close(); err != nil {
+			return fmt.Errorf("close current index: %w", err)
+		}
+	}
+
+	sm.index.mu.Lock()
+	defer sm.index.mu.Unlock()
+
+	if src, ok := resolvedPaths["index.dat"]; ok {
+		if err := sm.copyFile(src, sm.index.indexPath); err != nil {
+			return fmt.Errorf("restore index.dat: %w", err)
+		}
+	}
+	if src, ok := resolvedPaths["graph.json"]; ok {
+		if err := sm.loadGraph(src); err != nil {
+			return fmt.Errorf("restore graph: %w", err)
+		}
+	}
+	if src, ok := resolvedPaths["memory_vectors.json"]; ok {
+		if err := sm.loadMemoryVectors(src); err != nil {
+			return fmt.Errorf("restore memory vectors: %w", err)
+		}
+	}
+	if src, ok := resolvedPaths["quantized_memory.json"]; ok {
+		if err := sm.loadQuantizedMemory(src); err != nil {
+			return fmt.Errorf("restore quantized memory: %w", err)
+		}
+	}
+	if src, ok := resolvedPaths["offset_index.json"]; ok {
+		if err := sm.loadOffsetIndex(src); err != nil {
+			return fmt.Errorf("restore offset index: %w", err)
+		}
+	}
+
+	if err := sm.index.initMmap(); err != nil {
+		return fmt.Errorf("reinitialize mmap: %w", err)
+	}
+
+	sm.index.count = metadata.VectorCount
+	sm.index.deleted = make(map[uint64]bool)
+	sm.index.lruCache.Clear()
+	return nil
+}
+
 // computeComponentChecksums computes checksums for all component files in a snapshot directory.
 func computeComponentChecksums(snapshotPath string) (map[string]string, error) {
 	components := snapshotComponents
@@ -523,7 +526,7 @@ func (sm *SnapshotManager) CreateIncrementalSnapshot(ctx context.Context, baseSn
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Load base snapshot metadata
+	// Load base snapshot checksums
 	basePath := filepath.Join(sm.snapshotDir, baseSnapshotID)
 	baseMetaPath := filepath.Join(basePath, "metadata.json")
 	baseMeta, err := sm.loadMetadata(baseMetaPath)
@@ -531,21 +534,18 @@ func (sm *SnapshotManager) CreateIncrementalSnapshot(ctx context.Context, baseSn
 		return nil, fmt.Errorf("base snapshot %s not found: %w", baseSnapshotID, err)
 	}
 
-	// Compute base checksums if not already stored
 	baseChecksums := baseMeta.ComponentChecksums
 	if len(baseChecksums) == 0 {
 		baseChecksums, err = computeComponentChecksums(basePath)
 		if err != nil {
 			return nil, fmt.Errorf("compute base checksums: %w", err)
 		}
-		// Persist checksums back to base metadata for future use
 		baseMeta.ComponentChecksums = baseChecksums
 		if saveErr := sm.saveMetadata(baseMetaPath, baseMeta); saveErr != nil {
 			return nil, fmt.Errorf("update base metadata: %w", saveErr)
 		}
 	}
 
-	// Create a full snapshot first into a temp dir, then prune unchanged components
 	now := time.Now()
 	snapshotID := fmt.Sprintf("snapshot_%d_%d", now.Unix(), now.UnixNano()/1000000%1000)
 	snapshotPath := filepath.Join(sm.snapshotDir, snapshotID)
@@ -554,70 +554,19 @@ func (sm *SnapshotManager) CreateIncrementalSnapshot(ctx context.Context, baseSn
 		return nil, fmt.Errorf("create snapshot path: %w", err)
 	}
 
-	// Lock index for consistent snapshot
 	sm.index.mu.RLock()
 	defer sm.index.mu.RUnlock()
 
-	stats := sm.index.Stats()
-	metadata := &SnapshotMetadata{
-		ID:             snapshotID,
-		Timestamp:      now,
-		VectorCount:    stats.Count,
-		Dimension:      sm.index.dim,
-		MemoryVectors:  len(sm.index.memoryVectors) + len(sm.index.quantizedMemory),
-		DiskVectors:    stats.Count - (len(sm.index.memoryVectors) + len(sm.index.quantizedMemory)),
-		GraphEdges:     sm.countGraphEdges(),
-		DiskSizeBytes:  sm.index.mmapOffset,
-		Description:    description,
-		BaseSnapshotID: baseSnapshotID,
-		Incremental:    true,
+	metadata := sm.buildSnapshotMetadata(snapshotID, now, description)
+	metadata.BaseSnapshotID = baseSnapshotID
+	metadata.Incremental = true
+
+	if err := sm.writeSnapshotComponents(snapshotPath); err != nil {
+		os.RemoveAll(snapshotPath)
+		return nil, err
 	}
 
-	if sm.index.quantizer != nil {
-		switch sm.index.quantizer.(type) {
-		case *Float16Quantizer:
-			metadata.Quantization = "float16"
-		case *Uint8Quantizer:
-			metadata.Quantization = "uint8"
-		case *ProductQuantizer:
-			metadata.Quantization = "pq"
-		}
-	}
-
-	// Write all components to snapshot dir
-	type componentWriter struct {
-		name    string
-		write   func(string) error
-		present bool
-	}
-
-	writers := []componentWriter{
-		{"graph.json", sm.saveGraph, true},
-	}
-	if sm.index.mmapFile != nil && sm.index.mmapOffset > 0 {
-		writers = append(writers, componentWriter{"index.dat", func(p string) error {
-			return sm.copyFile(sm.index.indexPath, p)
-		}, true})
-	}
-	if len(sm.index.memoryVectors) > 0 {
-		writers = append(writers, componentWriter{"memory_vectors.json", sm.saveMemoryVectors, true})
-	}
-	if len(sm.index.quantizedMemory) > 0 {
-		writers = append(writers, componentWriter{"quantized_memory.json", sm.saveQuantizedMemory, true})
-	}
-	if sm.index.quantizer != nil && len(sm.index.diskOffsetIndex) > 0 {
-		writers = append(writers, componentWriter{"offset_index.json", sm.saveOffsetIndex, true})
-	}
-
-	for _, cw := range writers {
-		p := filepath.Join(snapshotPath, cw.name)
-		if err := cw.write(p); err != nil {
-			os.RemoveAll(snapshotPath)
-			return nil, fmt.Errorf("write %s: %w", cw.name, err)
-		}
-	}
-
-	// Compute checksums for new components
+	// Compute checksums and prune unchanged components
 	newChecksums, err := computeComponentChecksums(snapshotPath)
 	if err != nil {
 		os.RemoveAll(snapshotPath)
@@ -625,14 +574,12 @@ func (sm *SnapshotManager) CreateIncrementalSnapshot(ctx context.Context, baseSn
 	}
 	metadata.ComponentChecksums = newChecksums
 
-	// Remove unchanged components (same checksum as base)
 	for name, newCS := range newChecksums {
 		if baseCS, ok := baseChecksums[name]; ok && baseCS == newCS {
 			os.Remove(filepath.Join(snapshotPath, name))
 		}
 	}
 
-	// Save metadata
 	metadataPath := filepath.Join(snapshotPath, "metadata.json")
 	if err := sm.saveMetadata(metadataPath, metadata); err != nil {
 		os.RemoveAll(snapshotPath)
@@ -663,23 +610,14 @@ func (sm *SnapshotManager) RestoreIncrementalSnapshot(ctx context.Context, snaps
 	}
 
 	if !metadata.Incremental || metadata.BaseSnapshotID == "" {
-		// Not incremental — delegate to normal restore
-		sm.mu.Unlock()
-		err := sm.RestoreSnapshot(ctx, snapshotID)
-		sm.mu.Lock()
-		return err
+		return sm.restoreSnapshotLocked(snapshotID)
 	}
 
 	basePath := filepath.Join(sm.snapshotDir, metadata.BaseSnapshotID)
-	if _, err := os.Stat(basePath); os.IsNotExist(err) {
-		return fmt.Errorf("base snapshot %s not found", metadata.BaseSnapshotID)
-	}
 
-	// Build a merged view: for each component, use incremental if present, else base
-	components := snapshotComponents
-	resolvedPaths := make(map[string]string) // component → actual file path
-
-	for _, name := range components {
+	// Build merged view: use incremental file if present, else fall back to base
+	resolvedPaths := make(map[string]string)
+	for _, name := range snapshotComponents {
 		incrFile := filepath.Join(snapshotPath, name)
 		baseFile := filepath.Join(basePath, name)
 
@@ -688,62 +626,7 @@ func (sm *SnapshotManager) RestoreIncrementalSnapshot(ctx context.Context, snaps
 		} else if _, err := os.Stat(baseFile); err == nil {
 			resolvedPaths[name] = baseFile
 		}
-		// if neither exists, component is absent (normal for optional components)
 	}
 
-	// Close current mmap
-	if sm.index.mmapData != nil {
-		if err := sm.index.Close(); err != nil {
-			return fmt.Errorf("close current index: %w", err)
-		}
-	}
-
-	sm.index.mu.Lock()
-	defer sm.index.mu.Unlock()
-
-	// Restore index.dat
-	if src, ok := resolvedPaths["index.dat"]; ok {
-		if err := sm.copyFile(src, sm.index.indexPath); err != nil {
-			return fmt.Errorf("restore index.dat: %w", err)
-		}
-	}
-
-	// Restore graph
-	if src, ok := resolvedPaths["graph.json"]; ok {
-		if err := sm.loadGraph(src); err != nil {
-			return fmt.Errorf("restore graph: %w", err)
-		}
-	}
-
-	// Restore memory vectors
-	if src, ok := resolvedPaths["memory_vectors.json"]; ok {
-		if err := sm.loadMemoryVectors(src); err != nil {
-			return fmt.Errorf("restore memory vectors: %w", err)
-		}
-	}
-
-	// Restore quantized memory
-	if src, ok := resolvedPaths["quantized_memory.json"]; ok {
-		if err := sm.loadQuantizedMemory(src); err != nil {
-			return fmt.Errorf("restore quantized memory: %w", err)
-		}
-	}
-
-	// Restore offset index
-	if src, ok := resolvedPaths["offset_index.json"]; ok {
-		if err := sm.loadOffsetIndex(src); err != nil {
-			return fmt.Errorf("restore offset index: %w", err)
-		}
-	}
-
-	// Reinitialize mmap
-	if err := sm.index.initMmap(); err != nil {
-		return fmt.Errorf("reinitialize mmap: %w", err)
-	}
-
-	sm.index.count = metadata.VectorCount
-	sm.index.deleted = make(map[uint64]bool)
-	sm.index.lruCache.Clear()
-
-	return nil
+	return sm.restoreFromPaths(resolvedPaths, metadata)
 }

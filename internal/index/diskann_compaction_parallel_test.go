@@ -3,7 +3,7 @@ package index
 import (
 	"context"
 	"math/rand"
-	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -12,24 +12,20 @@ func TestParallelCompaction(t *testing.T) {
 	numVectors := 1000
 	deleteRatio := 0.2 // delete 20%
 
+	indexPath := filepath.Join(t.TempDir(), "test_parallel_compact.idx")
 	config := map[string]interface{}{
 		"memory_limit":    numVectors,
 		"max_degree":      16,
 		"ef_construction": 50,
 		"ef_search":       30,
-		"index_path":      "/tmp/test_parallel_compact.idx",
+		"index_path":      indexPath,
 	}
 
 	idx, err := NewDiskANNIndex(dim, config)
 	if err != nil {
 		t.Fatalf("failed to create index: %v", err)
 	}
-	defer func() {
-		if d, ok := idx.(*DiskANNIndex); ok {
-			d.Close()
-			os.Remove("/tmp/test_parallel_compact.idx")
-		}
-	}()
+	defer idx.(*DiskANNIndex).Close()
 
 	// Add vectors
 	vectors := make(map[uint64][]float32, numVectors)
@@ -97,24 +93,20 @@ func TestParallelCompactionLarger(t *testing.T) {
 	numVectors := 10000
 	deleteRatio := 0.3
 
+	indexPath := filepath.Join(t.TempDir(), "test_parallel_compact_large.idx")
 	config := map[string]interface{}{
 		"memory_limit":    numVectors,
 		"max_degree":      16,
 		"ef_construction": 30,
 		"ef_search":       20,
-		"index_path":      "/tmp/test_parallel_compact_large.idx",
+		"index_path":      indexPath,
 	}
 
 	idx, err := NewDiskANNIndex(dim, config)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	defer func() {
-		if d, ok := idx.(*DiskANNIndex); ok {
-			d.Close()
-			os.Remove("/tmp/test_parallel_compact_large.idx")
-		}
-	}()
+	defer idx.(*DiskANNIndex).Close()
 
 	// Batch add
 	diskANN := idx.(*DiskANNIndex)

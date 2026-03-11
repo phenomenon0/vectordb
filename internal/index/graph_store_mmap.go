@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -220,12 +219,6 @@ func (m *MmapGraphStore) Snapshot() GraphStore {
 		slotsCopy[id] = offset
 	}
 
-	// Capture current data slice — reads are safe on shared mmap.
-	// The snapshot captures the nextOffset atomically so it won't
-	// read beyond what was written at snapshot time.
-	currentOffset := atomic.LoadInt64(&m.nextOffset)
-	_ = currentOffset // used implicitly: slots only point to valid offsets
-
 	return &MmapGraphStore{
 		data:       m.data, // shared mmap, read-only access
 		maxDegree:  m.maxDegree,
@@ -254,21 +247,7 @@ func (m *MmapGraphStore) ReplaceAll(graph map[uint64][]uint64) {
 	m.nextOffset = 0
 
 	for id, neighbors := range graph {
-		offset, err := m.allocSlot(id)
-		if err != nil {
-			panic(fmt.Sprintf("mmap graph: alloc during ReplaceAll: %v", err))
-		}
-
-		count := len(neighbors)
-		if count > m.maxDegree {
-			count = m.maxDegree
-		}
-
-		binary.LittleEndian.PutUint32(m.data[offset:], uint32(count))
-		base := offset + 4
-		for i := 0; i < count; i++ {
-			binary.LittleEndian.PutUint64(m.data[base+int64(i)*8:], neighbors[i])
-		}
+		m.SetNeighbors(id, neighbors)
 	}
 }
 
