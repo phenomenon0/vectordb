@@ -74,6 +74,22 @@ func (s *SparseIndex) Add(ctx context.Context, id uint64, vector []float32) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Check for re-add: clean up old inverted index entries first
+	isReAdd := false
+	if oldSparse, exists := s.vectors[id]; exists {
+		isReAdd = true
+		for _, idx := range oldSparse.Indices {
+			if ids, ok := s.inverted[idx]; ok {
+				for j, pid := range ids {
+					if pid == id {
+						s.inverted[idx] = append(ids[:j], ids[j+1:]...)
+						break
+					}
+				}
+			}
+		}
+	}
+
 	// Convert dense to sparse (only store non-zero elements)
 	sparse := denseToSparse(vector)
 
@@ -88,7 +104,6 @@ func (s *SparseIndex) Add(ctx context.Context, id uint64, vector []float32) erro
 		s.inverted[idx] = append(s.inverted[idx], id)
 
 		// Maintain sorted order for efficient search
-		// TODO: Optimize this - batch updates + periodic sort
 		sort.Slice(s.inverted[idx], func(a, b int) bool {
 			return s.inverted[idx][a] < s.inverted[idx][b]
 		})
@@ -105,7 +120,9 @@ func (s *SparseIndex) Add(ctx context.Context, id uint64, vector []float32) erro
 	}
 
 	delete(s.deleted, id)
-	s.count++
+	if !isReAdd {
+		s.count++
+	}
 
 	return nil
 }

@@ -123,6 +123,14 @@ func (ivf *IVFIndex) Add(ctx context.Context, id uint64, vector []float32) error
 	vecCopy := make([]float32, ivf.dim)
 	copy(vecCopy, vector)
 
+	// Check if this is a re-add (update) BEFORE storage modifies the maps
+	_, isReAdd := ivf.vectors[id]
+	if !isReAdd && ivf.quantizedData != nil {
+		if _, inQuantized := ivf.quantizedData[id]; inQuantized {
+			isReAdd = true
+		}
+	}
+
 	// If centroids not trained yet, collect vectors for training
 	if ivf.centroids == nil {
 		// Store unquantized for training
@@ -151,6 +159,21 @@ func (ivf *IVFIndex) Add(ctx context.Context, id uint64, vector []float32) error
 		}
 	}
 
+	// Clean up old cluster assignment for re-adds
+	if isReAdd && ivf.centroids != nil {
+		if oldCluster, hadCluster := ivf.clusterID[id]; hadCluster {
+			// Remove from old posting list
+			oldList := ivf.postings[oldCluster]
+			for i, pid := range oldList {
+				if pid == id {
+					ivf.postings[oldCluster] = append(oldList[:i], oldList[i+1:]...)
+					break
+				}
+			}
+			ivf.clusterSizes[oldCluster]--
+		}
+	}
+
 	// Assign to nearest cluster if centroids exist
 	if ivf.centroids != nil {
 		clusterIdx := ivf.findNearestCluster(vecCopy)
@@ -160,7 +183,9 @@ func (ivf *IVFIndex) Add(ctx context.Context, id uint64, vector []float32) error
 	}
 
 	delete(ivf.deleted, id)
-	ivf.count++
+	if !isReAdd {
+		ivf.count++
+	}
 
 	return nil
 }
@@ -636,7 +661,7 @@ func (ivf *IVFIndex) trainCentroids() error {
 
 	ivf.centroids = centroids
 
-	// Reassign all existing vectors to clusters
+	// Reassign all existing vectors to clusters (both unquantized and quantized)
 	ivf.postings = make(map[int][]uint64)
 	ivf.clusterSizes = make([]int, ivf.nlist)
 
@@ -645,6 +670,24 @@ func (ivf *IVFIndex) trainCentroids() error {
 		ivf.clusterID[id] = clusterIdx
 		ivf.postings[clusterIdx] = append(ivf.postings[clusterIdx], id)
 		ivf.clusterSizes[clusterIdx]++
+	}
+
+	// Also reassign quantized vectors that aren't in the unquantized map
+	if ivf.quantizer != nil && ivf.quantizedData != nil {
+		for id, qData := range ivf.quantizedData {
+			if _, inUnquantized := ivf.vectors[id]; inUnquantized {
+				continue // Already assigned above
+			}
+			// Dequantize to find nearest cluster
+			vec, err := ivf.quantizer.Dequantize(qData)
+			if err != nil {
+				continue // Skip vectors that can't be dequantized
+			}
+			clusterIdx := ivf.findNearestCluster(vec)
+			ivf.clusterID[id] = clusterIdx
+			ivf.postings[clusterIdx] = append(ivf.postings[clusterIdx], id)
+			ivf.clusterSizes[clusterIdx]++
+		}
 	}
 
 	return nil

@@ -79,9 +79,22 @@ func (ivf *IVFIndex) ExportConfig() map[string]interface{} {
 func (ivf *IVFIndex) ExportVectors() []VectorEntry {
 	ivf.mu.RLock()
 	defer ivf.mu.RUnlock()
-	entries := make([]VectorEntry, 0, len(ivf.vectors))
+	entries := make([]VectorEntry, 0, len(ivf.vectors)+len(ivf.quantizedData))
 	for id, vec := range ivf.vectors {
 		entries = append(entries, VectorEntry{ID: id, Vector: vec})
+	}
+	// Include quantized vectors not already in the unquantized map
+	if ivf.quantizer != nil && ivf.quantizedData != nil {
+		for id, qData := range ivf.quantizedData {
+			if _, inUnquantized := ivf.vectors[id]; inUnquantized {
+				continue
+			}
+			vec, err := ivf.quantizer.Dequantize(qData)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, VectorEntry{ID: id, Vector: vec})
+		}
 	}
 	return entries
 }

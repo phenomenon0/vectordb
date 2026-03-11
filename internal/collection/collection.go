@@ -908,6 +908,18 @@ func (c *Collection) Schema() CollectionSchema {
 	return c.schema
 }
 
+// UpdateMetadata updates the collection schema's metadata map.
+func (c *Collection) UpdateMetadata(metadata map[string]interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.schema.Metadata == nil {
+		c.schema.Metadata = make(map[string]interface{})
+	}
+	for k, v := range metadata {
+		c.schema.Metadata[k] = v
+	}
+}
+
 // Name returns the collection name.
 func (c *Collection) Name() string {
 	return c.schema.Name
@@ -927,6 +939,43 @@ func (c *Collection) ExportIndexes() (map[string][]byte, error) {
 		result[name] = data
 	}
 	return result, nil
+}
+
+// ExportSparseIndexes exports all sparse index data as field -> serialized bytes.
+func (c *Collection) ExportSparseIndexes() (map[string][]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if len(c.sparse) == 0 {
+		return nil, nil
+	}
+
+	result := make(map[string][]byte, len(c.sparse))
+	for name, idx := range c.sparse {
+		data, err := idx.Export()
+		if err != nil {
+			return nil, fmt.Errorf("export sparse index %s: %w", name, err)
+		}
+		result[name] = data
+	}
+	return result, nil
+}
+
+// ImportSparseIndexes restores sparse index data from field -> serialized bytes.
+func (c *Collection) ImportSparseIndexes(data map[string][]byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for name, raw := range data {
+		idx, ok := c.sparse[name]
+		if !ok {
+			continue // Field no longer in schema, skip
+		}
+		if err := idx.Import(raw); err != nil {
+			return fmt.Errorf("import sparse index %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // ImportIndexes restores dense index data from field -> serialized bytes.
@@ -991,11 +1040,15 @@ func (c *Collection) GetNextID() uint64 {
 	return c.nextID
 }
 
-// ExportDocuments returns all document records for persistence.
+// ExportDocuments returns a shallow copy of all document records for persistence.
 func (c *Collection) ExportDocuments() map[uint64]*Document {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.documents
+	docs := make(map[uint64]*Document, len(c.documents))
+	for id, doc := range c.documents {
+		docs[id] = doc
+	}
+	return docs
 }
 
 // ImportDocuments restores document records.

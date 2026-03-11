@@ -2,6 +2,7 @@ package sparse
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -422,4 +423,105 @@ func (idx *InvertedIndex) Stats() IndexStats {
 		AvgPostings:  avgPostings,
 		MemoryUsage:  memoryUsage,
 	}
+}
+
+// persistedSparseIndex is the serialization format for InvertedIndex.
+type persistedSparseIndex struct {
+	Dim  int                          `json:"dim"`
+	K1   float32                      `json:"k1"`
+	B    float32                      `json:"b"`
+	Docs map[string]*persistedSparseDoc `json:"docs"` // docID (string) -> sparse vector
+}
+
+type persistedSparseDoc struct {
+	Indices []uint32  `json:"indices"`
+	Values  []float32 `json:"values"`
+}
+
+// Export serializes the inverted index to JSON bytes.
+// Only stores the source vectors — the posting lists and BM25 stats are
+// rebuilt on Import via Add(), guaranteeing consistency.
+func (idx *InvertedIndex) Export() ([]byte, error) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	state := persistedSparseIndex{
+		Dim:  idx.dim,
+		K1:   idx.k1,
+		B:    idx.b,
+		Docs: make(map[string]*persistedSparseDoc, len(idx.docVectors)),
+	}
+
+	for docID, vec := range idx.docVectors {
+		state.Docs[fmt.Sprintf("%d", docID)] = &persistedSparseDoc{
+			Indices: vec.Indices,
+			Values:  vec.Values,
+		}
+	}
+
+	return json.Marshal(state)
+}
+
+// Import restores the inverted index from JSON bytes produced by Export.
+// Rebuilds all posting lists and BM25 statistics from the stored vectors.
+func (idx *InvertedIndex) Import(data []byte) error {
+	var state persistedSparseIndex
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("unmarshal sparse index: %w", err)
+	}
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	// Reset state
+	idx.dim = state.Dim
+	idx.k1 = state.K1
+	idx.b = state.B
+	idx.postings = make(map[uint32][]Posting)
+	idx.docNorms = make(map[uint64]float32)
+	idx.docLengths = make(map[uint64]float32)
+	idx.docVectors = make(map[uint64]*SparseVector)
+	idx.termDocCounts = make(map[uint32]int)
+	idx.totalDocs = 0
+	idx.avgDocLength = 0
+
+	// Re-add each vector to rebuild posting lists and stats
+	for idStr, doc := range state.Docs {
+		var docID uint64
+		fmt.Sscanf(idStr, "%d", &docID)
+
+		vec, err := NewSparseVector(doc.Indices, doc.Values, state.Dim)
+		if err != nil {
+			return fmt.Errorf("restore vector %d: %w", docID, err)
+		}
+
+		// Inline the Add logic (we already hold the lock)
+		idx.docVectors[docID] = vec.Clone()
+		idx.docNorms[docID] = vec.Norm()
+
+		docLength := float32(0)
+		for i, termID := range vec.Indices {
+			score := vec.Values[i]
+			docLength += score
+
+			idx.postings[termID] = append(idx.postings[termID], Posting{
+				DocID: docID,
+				Score: score,
+			})
+			idx.termDocCounts[termID]++
+		}
+		idx.docLengths[docID] = docLength
+		idx.totalDocs++
+	}
+
+	// Recompute average doc length
+	if idx.totalDocs > 0 {
+		totalLength := float32(0)
+		for _, l := range idx.docLengths {
+			totalLength += l
+		}
+		idx.avgDocLength = totalLength / float32(idx.totalDocs)
+	}
+
+	return nil
 }

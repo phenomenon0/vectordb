@@ -672,7 +672,10 @@ func (d *DiskANNIndex) readUnquantizedFromOffset(id uint64, offset int64) ([]flo
 	return vec, nil
 }
 
-// readFromDiskLinearScan performs a linear scan for backward compatibility
+// readFromDiskLinearScan performs a linear scan for backward compatibility.
+// Returns the vector and the discovered offset. The caller is responsible for
+// caching the offset — this function does NOT mutate shared state, avoiding
+// the data race that occurs when called under RLock (search path).
 func (d *DiskANNIndex) readFromDiskLinearScan(id uint64) ([]float32, error) {
 	offset := int64(0)
 	recordSize := int64(8 + d.dim*4)
@@ -682,15 +685,22 @@ func (d *DiskANNIndex) readFromDiskLinearScan(id uint64) ([]float32, error) {
 		storedID := binary.LittleEndian.Uint64(d.mmapData[offset:])
 
 		if storedID == id {
-			// Found it - update offset index for future lookups
-			d.unquantizedOffsetIndex[id] = offset
-
 			// Read vector
 			vec := make([]float32, d.dim)
 			for i := 0; i < d.dim; i++ {
 				bits := binary.LittleEndian.Uint32(d.mmapData[offset+8+int64(i*4):])
 				vec[i] = math.Float32frombits(bits)
 			}
+
+			// Cache the discovered offset for future O(1) lookups.
+			// This requires a write lock — upgrade from the caller's RLock.
+			// Use a goroutine to avoid blocking the search path.
+			go func() {
+				d.mu.Lock()
+				d.unquantizedOffsetIndex[id] = offset
+				d.mu.Unlock()
+			}()
+
 			return vec, nil
 		}
 

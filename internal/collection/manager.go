@@ -259,15 +259,7 @@ func (cm *CollectionManager) UpdateCollectionMetadata(name string, metadata map[
 		return fmt.Errorf("collection %s not found", name)
 	}
 
-	// Update schema metadata (note: this modifies the schema in place)
-	schema := coll.Schema()
-	if schema.Metadata == nil {
-		schema.Metadata = make(map[string]interface{})
-	}
-	for k, v := range metadata {
-		schema.Metadata[k] = v
-	}
-
+	coll.UpdateMetadata(metadata)
 	return nil
 }
 
@@ -361,10 +353,11 @@ func (cm *CollectionManager) ValidateCollection(schema CollectionSchema) error {
 
 // persistedCollection holds the serialized state of a single collection.
 type persistedCollection struct {
-	Schema  CollectionSchema          `json:"schema"`
-	Indexes map[string]json.RawMessage `json:"indexes"`
-	NextID  uint64                     `json:"next_id"`
-	Docs    map[string]*Document       `json:"docs,omitempty"` // string keys for JSON compat
+	Schema        CollectionSchema          `json:"schema"`
+	Indexes       map[string]json.RawMessage `json:"indexes"`
+	SparseIndexes map[string]json.RawMessage `json:"sparse_indexes,omitempty"`
+	NextID        uint64                     `json:"next_id"`
+	Docs          map[string]*Document       `json:"docs,omitempty"` // string keys for JSON compat
 }
 
 // persistedManagerState holds the serialized state of all collections.
@@ -392,6 +385,19 @@ func (cm *CollectionManager) Save(path string) error {
 			rawIndexes[field] = json.RawMessage(data)
 		}
 
+		// Export sparse indexes
+		sparseIndexes, err := coll.ExportSparseIndexes()
+		if err != nil {
+			return fmt.Errorf("export sparse indexes for %s: %w", name, err)
+		}
+		var rawSparseIndexes map[string]json.RawMessage
+		if len(sparseIndexes) > 0 {
+			rawSparseIndexes = make(map[string]json.RawMessage, len(sparseIndexes))
+			for field, data := range sparseIndexes {
+				rawSparseIndexes[field] = json.RawMessage(data)
+			}
+		}
+
 		docs := coll.ExportDocuments()
 		docMap := make(map[string]*Document, len(docs))
 		for id, doc := range docs {
@@ -399,10 +405,11 @@ func (cm *CollectionManager) Save(path string) error {
 		}
 
 		state.Collections[name] = &persistedCollection{
-			Schema:  coll.Schema(),
-			Indexes: rawIndexes,
-			NextID:  coll.GetNextID(),
-			Docs:    docMap,
+			Schema:        coll.Schema(),
+			Indexes:       rawIndexes,
+			SparseIndexes: rawSparseIndexes,
+			NextID:        coll.GetNextID(),
+			Docs:          docMap,
 		}
 	}
 
@@ -445,6 +452,17 @@ func (cm *CollectionManager) Load(path string) error {
 		}
 		if err := coll.ImportIndexes(indexes); err != nil {
 			return fmt.Errorf("import indexes for %s: %w", name, err)
+		}
+
+		// Restore sparse indexes
+		if pc.SparseIndexes != nil {
+			sparseIndexes := make(map[string][]byte, len(pc.SparseIndexes))
+			for field, raw := range pc.SparseIndexes {
+				sparseIndexes[field] = []byte(raw)
+			}
+			if err := coll.ImportSparseIndexes(sparseIndexes); err != nil {
+				return fmt.Errorf("import sparse indexes for %s: %w", name, err)
+			}
 		}
 
 		// Restore documents

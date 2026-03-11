@@ -29,6 +29,8 @@ type GraphIndex struct {
 
 	// Edge list for CSR construction
 	edges []edge
+	// Document ID -> range of edge indices owned by that document
+	docEdges map[uint64][]int
 
 	// Document ID -> set of node IDs contained in that document
 	docNodes map[uint64]map[string]bool
@@ -79,6 +81,7 @@ func NewGraphIndex(cfg Config) *GraphIndex {
 
 	return &GraphIndex{
 		nodeIndex:  make(map[string]int64),
+		docEdges:   make(map[uint64][]int),
 		docNodes:   make(map[uint64]map[string]bool),
 		nodeDocMap: make(map[string]map[uint64]bool),
 		dirty:      true,
@@ -100,6 +103,11 @@ func (g *GraphIndex) AddKnowledgeGraph(docID uint64, kg *extraction.KnowledgeGra
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	// If this document was already added, remove its old edges first (re-add safety)
+	if oldEdgeIdxs, exists := g.docEdges[docID]; exists {
+		g.removeEdgesByIndices(oldEdgeIdxs)
+	}
+
 	// Ensure doc entry exists
 	if g.docNodes[docID] == nil {
 		g.docNodes[docID] = make(map[string]bool)
@@ -117,20 +125,23 @@ func (g *GraphIndex) AddKnowledgeGraph(docID uint64, kg *extraction.KnowledgeGra
 		_ = idx
 	}
 
-	// Add edges
+	// Add edges, tracking which edge indices belong to this document
+	var edgeIndices []int
 	for _, e := range kg.Edges {
 		srcIdx, srcOK := g.nodeIndex[e.SourceNodeID]
 		dstIdx, dstOK := g.nodeIndex[e.TargetNodeID]
 		if srcOK && dstOK {
+			edgeIndices = append(edgeIndices, len(g.edges))
 			g.edges = append(g.edges, edge{src: srcIdx, dst: dstIdx})
 		}
 	}
+	g.docEdges[docID] = edgeIndices
 
 	g.dirty = true
 }
 
 // RemoveDocument removes a document's association from the graph.
-// Nodes shared with other documents are kept.
+// Nodes shared with other documents are kept; edges owned by this document are removed.
 func (g *GraphIndex) RemoveDocument(docID uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -146,7 +157,52 @@ func (g *GraphIndex) RemoveDocument(docID uint64) {
 		}
 	}
 	delete(g.docNodes, docID)
+
+	// Remove edges owned by this document
+	if edgeIdxs, exists := g.docEdges[docID]; exists {
+		g.removeEdgesByIndices(edgeIdxs)
+		delete(g.docEdges, docID)
+	}
+
 	g.dirty = true
+}
+
+// removeEdgesByIndices removes edges at the given indices from g.edges.
+// Shifts remaining edges and updates all docEdges references.
+// Caller must hold the write lock.
+func (g *GraphIndex) removeEdgesByIndices(indices []int) {
+	if len(indices) == 0 {
+		return
+	}
+
+	// Build set of indices to remove
+	removeSet := make(map[int]bool, len(indices))
+	for _, idx := range indices {
+		removeSet[idx] = true
+	}
+
+	// Compact edges, tracking old→new index mapping
+	newEdges := make([]edge, 0, len(g.edges)-len(indices))
+	indexMap := make(map[int]int, len(g.edges)) // old index -> new index
+	for i, e := range g.edges {
+		if removeSet[i] {
+			continue
+		}
+		indexMap[i] = len(newEdges)
+		newEdges = append(newEdges, e)
+	}
+	g.edges = newEdges
+
+	// Update all docEdges references to use new indices
+	for docID, edgeIdxs := range g.docEdges {
+		updated := edgeIdxs[:0]
+		for _, oldIdx := range edgeIdxs {
+			if newIdx, ok := indexMap[oldIdx]; ok {
+				updated = append(updated, newIdx)
+			}
+		}
+		g.docEdges[docID] = updated
+	}
 }
 
 // getOrCreateNode returns the internal index for a node, creating it if needed.
@@ -217,12 +273,13 @@ func (g *GraphIndex) ensureComputed() {
 // It runs Personalized PageRank seeded from entities matching the query terms,
 // then aggregates node scores to document scores.
 func (g *GraphIndex) Search(queryTerms []string, topK int) []hybrid.SearchResult {
+	// Hold write lock for the entire operation to avoid TOCTOU between
+	// ensureComputed() and the read phase. ensureComputed() is O(edges)
+	// and only runs when dirty, so the lock duration is bounded.
 	g.mu.Lock()
-	g.ensureComputed()
-	g.mu.Unlock()
+	defer g.mu.Unlock()
 
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	g.ensureComputed()
 
 	if g.csr == nil || g.pagerank == nil || len(g.nodeIDs) == 0 {
 		return nil

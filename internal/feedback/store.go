@@ -121,9 +121,18 @@ func (s *Store) RecordFeedback(ctx context.Context, fb *Feedback) error {
 			stats.NegativeFeedback++
 		}
 
-		// Track clicked IDs
+		// Track clicked IDs (deduplicate, cap at 100)
 		for _, clickedID := range fb.ClickedIDs {
-			stats.TopClickedIDs = append(stats.TopClickedIDs, clickedID)
+			found := false
+			for _, existing := range stats.TopClickedIDs {
+				if existing == clickedID {
+					found = true
+					break
+				}
+			}
+			if !found && len(stats.TopClickedIDs) < 100 {
+				stats.TopClickedIDs = append(stats.TopClickedIDs, clickedID)
+			}
 		}
 	}
 
