@@ -171,6 +171,13 @@ func (h *HNSWIndex) distanceFunc() hnsw.DistanceFunc {
 	return simdCosineDistance
 }
 
+// maybeNormalize L2-normalizes vec in place if prenormalization is enabled.
+func (h *HNSWIndex) maybeNormalize(vec []float32) {
+	if h.prenormalized {
+		simd.NormalizeF32(vec)
+	}
+}
+
 // Add inserts a vector into the HNSW index.
 //
 // Thread-safety: Writes are serialized
@@ -194,10 +201,7 @@ func (h *HNSWIndex) Add(ctx context.Context, id uint64, vector []float32) error 
 		// Make a copy to avoid external mutations
 		vecCopy := make([]float32, h.dim)
 		copy(vecCopy, vector)
-
-		if h.prenormalized {
-			simd.NormalizeF32(vecCopy)
-		}
+		h.maybeNormalize(vecCopy)
 
 		// Update the vector in place in the graph (more efficient than Delete+Add)
 		h.graph.Update(id, vecCopy)
@@ -217,10 +221,7 @@ func (h *HNSWIndex) Add(ctx context.Context, id uint64, vector []float32) error 
 	// Make a copy to avoid external mutations
 	vecCopy := make([]float32, h.dim)
 	copy(vecCopy, vector)
-
-	if h.prenormalized {
-		simd.NormalizeF32(vecCopy)
-	}
+	h.maybeNormalize(vecCopy)
 
 	// Add to HNSW graph (graph always uses full precision for accuracy)
 	h.graph.Add(hnsw.MakeNode(id, vecCopy))
@@ -299,9 +300,7 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 			delete(h.deleted, id)
 			vecCopy := make([]float32, h.dim)
 			copy(vecCopy, vec)
-			if h.prenormalized {
-				simd.NormalizeF32(vecCopy)
-			}
+			h.maybeNormalize(vecCopy)
 			h.graph.Update(id, vecCopy)
 			if err := h.storeVectorLocked(id, vecCopy); err != nil {
 				return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
@@ -311,9 +310,7 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 
 		vecCopy := make([]float32, h.dim)
 		copy(vecCopy, vec)
-		if h.prenormalized {
-			simd.NormalizeF32(vecCopy)
-		}
+		h.maybeNormalize(vecCopy)
 		newNodes = append(newNodes, hnsw.MakeNode(id, vecCopy))
 	}
 
@@ -340,7 +337,8 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 
 // BatchAddNoCopy inserts multiple vectors without copying them.
 // The caller must guarantee ownership transfer — the slices must not be
-// modified after this call. Used by binary import where vectors are freshly decoded.
+// modified after this call. When prenormalization is enabled, vectors are
+// L2-normalized in place. Used by binary import where vectors are freshly decoded.
 //
 // Graph insertion is parallelized across GOMAXPROCS workers (capped at 8)
 // using AddConcurrent for fine-grained locking within the graph.
@@ -357,9 +355,7 @@ func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]flo
 	// 1. Sequential: validate duplicates, handle resurrections, collect new IDs.
 	newNodes := make([]hnsw.Node[uint64], 0, len(vectors))
 	for id, vec := range vectors {
-		if h.prenormalized {
-			simd.NormalizeF32(vec)
-		}
+		h.maybeNormalize(vec) // NB: mutates caller's slice (NoCopy contract)
 		if _, exists := h.idToIdx[id]; exists {
 			if !h.deleted[id] {
 				return fmt.Errorf("vector with ID %d already exists", id)
@@ -589,7 +585,7 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, params S
 	var err error
 
 	if ShouldUseGPU(1, len(candidateVectors)) {
-		distances, err = GPUSingleDistance(query, candidateVectors, "cosine")
+		distances, err = GPUSingleDistance(searchQuery, candidateVectors, "cosine")
 		if err != nil {
 			// Fall back to CPU
 			distances = h.computeDistancesCPU(searchQuery, candidateVectors)

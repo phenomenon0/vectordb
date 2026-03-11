@@ -43,7 +43,7 @@ type MmapGraphStore struct {
 }
 
 const (
-	mmapGraphInitialSlots = 1 << 20 // 1M slots initial capacity
+	mmapGraphInitialSlots = 1 << 12 // 4K slots initial capacity (grows 2x as needed)
 	mmapGraphGrowFactor   = 2
 )
 

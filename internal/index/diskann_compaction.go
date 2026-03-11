@@ -122,7 +122,13 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 		return nil, fmt.Errorf("failed to mmap temp file: %w", err)
 	}
 	// Note: tempData may be replaced by writeCompactedVectors if it needs to grow.
-	// The final unmap is done explicitly below, not via defer.
+	// Track whether we need to unmap on error (cleanup is explicit on success path).
+	needsUnmap := true
+	defer func() {
+		if needsUnmap && tempData != nil {
+			mmapUnmap(tempData)
+		}
+	}()
 
 	// Collect all vector IDs from all sources
 	allIDSet := make(map[uint64]bool)
@@ -168,7 +174,8 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 		return nil, fmt.Errorf("write compacted vectors: %w", err)
 	}
 
-	// Sync temp file
+	// Sync temp file — take ownership from defer
+	needsUnmap = false
 	if err := mmapUnmap(tempData); err != nil {
 		return nil, fmt.Errorf("failed to unmap temp file: %w", err)
 	}

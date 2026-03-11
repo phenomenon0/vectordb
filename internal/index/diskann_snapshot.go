@@ -494,18 +494,21 @@ func computeFileChecksum(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// snapshotComponents lists the component file names used in snapshot creation and restoration.
+var snapshotComponents = []string{"index.dat", "graph.json", "memory_vectors.json", "quantized_memory.json", "offset_index.json"}
+
 // computeComponentChecksums computes checksums for all component files in a snapshot directory.
 func computeComponentChecksums(snapshotPath string) (map[string]string, error) {
-	components := []string{"index.dat", "graph.json", "memory_vectors.json", "quantized_memory.json", "offset_index.json"}
+	components := snapshotComponents
 	checksums := make(map[string]string)
 
 	for _, name := range components {
 		p := filepath.Join(snapshotPath, name)
-		if _, err := os.Stat(p); os.IsNotExist(err) {
-			continue
-		}
 		cs, err := computeFileChecksum(p)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return nil, fmt.Errorf("checksum %s: %w", name, err)
 		}
 		checksums[name] = cs
@@ -673,7 +676,7 @@ func (sm *SnapshotManager) RestoreIncrementalSnapshot(ctx context.Context, snaps
 	}
 
 	// Build a merged view: for each component, use incremental if present, else base
-	components := []string{"index.dat", "graph.json", "memory_vectors.json", "quantized_memory.json", "offset_index.json"}
+	components := snapshotComponents
 	resolvedPaths := make(map[string]string) // component → actual file path
 
 	for _, name := range components {
