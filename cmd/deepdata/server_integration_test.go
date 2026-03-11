@@ -18,7 +18,7 @@ func TestHTTPInsertEndpoint(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	// Test successful insert
 	reqBody := map[string]any{
@@ -51,7 +51,7 @@ func TestHTTPInsertValidation(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	tests := []struct {
 		name       string
@@ -101,7 +101,7 @@ func TestHTTPBatchInsertEndpoint(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	reqBody := map[string]any{
 		"docs": []map[string]any{
@@ -141,7 +141,7 @@ func TestHTTPQueryEndpoint(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	// Insert some documents first
 	for i := 0; i < 10; i++ {
@@ -185,7 +185,7 @@ func TestHTTPQueryValidation(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	tests := []struct {
 		name       string
@@ -224,7 +224,7 @@ func TestHTTPDeleteEndpoint(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	// Insert a document
 	vec, _ := emb.Embed("test doc")
@@ -253,7 +253,7 @@ func TestHTTPHealthEndpoint(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	// Add some documents
 	for i := 0; i < 5; i++ {
@@ -289,7 +289,7 @@ func TestHTTPRateLimiting(t *testing.T) {
 	store.rl = newRateLimiter(2, 2, 0, time.Minute) // 2 requests per minute
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	// Make 3 requests from same IP
 	for i := 0; i < 3; i++ {
@@ -320,7 +320,7 @@ func TestHTTPRequestSizeLimits(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	// Create a request larger than 10MB (insert endpoint limit)
 	largeDoc := string(make([]byte, 11*1024*1024))
@@ -342,7 +342,7 @@ func TestHTTPUpsertFunctionality(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	// Insert with ID
 	reqBody := map[string]any{

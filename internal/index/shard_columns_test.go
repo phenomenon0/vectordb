@@ -82,13 +82,22 @@ func TestColumnarExport_HNSW(t *testing.T) {
 		t.Errorf("expected 20 vectors, got %d", len(vectors))
 	}
 
-	// Verify vector precision
+	// Verify vector precision.
+	// HNSW with cosine metric normalizes vectors on insert, so we compare
+	// against the L2-normalized version of the original input.
 	for _, v := range vectors {
 		if v.ID == 1 {
-			expected := []float32{0.1, 0.2, 0.3, 0.4}
+			raw := []float32{0.1, 0.2, 0.3, 0.4}
+			// Compute L2 norm
+			var norm float64
+			for _, r := range raw {
+				norm += float64(r) * float64(r)
+			}
+			norm = math.Sqrt(norm)
 			for j, val := range v.Vector {
-				if math.Abs(float64(val-expected[j])) > 1e-6 {
-					t.Errorf("vector[%d] precision loss: got %f, want %f", j, val, expected[j])
+				expected := float32(float64(raw[j]) / norm)
+				if math.Abs(float64(val-expected)) > 1e-5 {
+					t.Errorf("vector[%d] precision loss: got %f, want %f", j, val, expected)
 				}
 			}
 		}

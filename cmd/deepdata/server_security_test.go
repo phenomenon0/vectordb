@@ -27,7 +27,7 @@ func TestCORSDefaultDoesNotAllowCredentials(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	req := httptest.NewRequest(http.MethodOptions, "/health", nil)
 	req.Header.Set("Origin", "https://example.com")
@@ -51,7 +51,7 @@ func TestCORSAllowlistAllowsOnlyConfiguredOrigins(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	allowedReq := httptest.NewRequest(http.MethodOptions, "/health", nil)
 	allowedReq.Header.Set("Origin", "https://allowed.example")
@@ -84,7 +84,7 @@ func TestEmbedEndpointsRequireAuthWhenEnabled(t *testing.T) {
 	store.apiToken = "secret-token"
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	body, _ := json.Marshal(map[string]string{"text": "hello"})
 
@@ -110,7 +110,7 @@ func TestReadyzDoesNotCallEmbedder(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	emb := &failingEmbedder{}
 	reranker := &SimpleReranker{Embedder: NewHashEmbedder(3)}
-	handler := newHTTPHandler(store, emb, reranker, "")
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -130,7 +130,7 @@ func TestVaultEndpointsRequireAdmin(t *testing.T) {
 	store.apiToken = "secret-token"
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
-	handler := newHTTPHandler(store, emb, reranker, filepath.Join(t.TempDir(), "index.gob"))
+	handler, _ := newHTTPHandler(store, emb, reranker, filepath.Join(t.TempDir(), "index.gob"))
 
 	req := httptest.NewRequest(http.MethodGet, "/vault/browse", nil)
 	req.Header.Set("Authorization", "Bearer secret-token")
@@ -148,7 +148,7 @@ func TestObsidianEnableStoresConfigBesideIndex(t *testing.T) {
 	reranker := &SimpleReranker{Embedder: emb}
 	dir := t.TempDir()
 	indexPath := filepath.Join(dir, "index.gob")
-	handler := newHTTPHandler(store, emb, reranker, indexPath)
+	handler, _ := newHTTPHandler(store, emb, reranker, indexPath)
 
 	vaultDir := filepath.Join(dir, "vault")
 	if err := os.MkdirAll(vaultDir, 0o755); err != nil {
@@ -179,7 +179,7 @@ func TestVaultAnnotationsStoreBesideIndex(t *testing.T) {
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
 	dir := t.TempDir()
-	handler := newHTTPHandler(store, emb, reranker, filepath.Join(dir, "index.gob"))
+	handler, _ := newHTTPHandler(store, emb, reranker, filepath.Join(dir, "index.gob"))
 
 	body, _ := json.Marshal(map[string]any{
 		"id":     "ann-1",

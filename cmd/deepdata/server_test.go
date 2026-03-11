@@ -67,7 +67,7 @@ func TestHTTPHandlersInsertQueryDelete(t *testing.T) {
 	embedder := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: embedder}
 
-	handler := newHTTPHandler(store, embedder, reranker, indexPath)
+	handler, _ := newHTTPHandler(store, embedder, reranker, indexPath)
 	srv := testutil.NewLoopbackServer(t, handler)
 
 	cli := client.New(srv.URL)
@@ -120,7 +120,7 @@ func TestHTTPQueryPaginationUsesPageToken(t *testing.T) {
 		},
 	}
 	store := NewVectorStore(10, emb.Dim())
-	handler := newHTTPHandler(store, emb, identityReranker{}, "")
+	handler, _ := newHTTPHandler(store, emb, identityReranker{}, "")
 
 	docs := []struct {
 		id   string
@@ -238,7 +238,7 @@ func TestHTTPQueryRerankKeepsResponseFieldsAligned(t *testing.T) {
 		},
 	}
 	store := NewVectorStore(10, emb.Dim())
-	handler := newHTTPHandler(store, emb, reverseReranker{}, "")
+	handler, _ := newHTTPHandler(store, emb, reverseReranker{}, "")
 
 	docs := []struct {
 		id   string
