@@ -9,58 +9,62 @@ Real-world head-to-head benchmark: DeepData vs Weaviate vs Milvus vs Qdrant vs C
 
 ## Summary
 
-| Metric             | DEEPDATA     | WEAVIATE   | MILVUS   | QDRANT   | CHROMADB   |
-|--------------------|--------------|------------|----------|----------|------------|
-| Insert (docs/sec)  | 689.4        | 44.8       | 4.8      | 2313.9   | 463.8      |
-| Recall@10          | 0.9900       | 1.0        | 1.0      | 1.0      | 0.9980     |
-| Recall@100         | 0.9602       | 0.9946     | 1.0      | 1.0      | 0.9960     |
-| Latency p50 (ms)   | 21.6ms       | 1.5ms      | 4.5ms    | 1.8ms    | 1.7ms      |
-| Latency p95 (ms)   | 24.3ms       | 2.1ms      | 5.5ms    | 3.2ms    | 1.9ms      |
-| QPS (top_k=10)     | 287.6        | 1809.4     | 262.1    | 813.1    | 683.1      |
-| Filtered Recall@10 | 0.9920       | 1.0        | 1.0      | 1.0      | 1.0        |
-| Hybrid Recall@10   | 0.9900       | 0.8200     | 1.0      | N/A      | N/A        |
-| Memory (bytes/vec) | N/A          | N/A        | N/A      | N/A      | N/A        |
-| Graph Search       | YES (unique) | No         | No       | No       | No         |
+| Metric             | DEEPDATA     | DEEPDATA-GRPC   | WEAVIATE   | MILVUS   | QDRANT   | CHROMADB   |
+|--------------------|--------------|-----------------|------------|----------|----------|------------|
+| Insert (docs/sec)  | 661.2        | N/A             | 44.8       | 4.7      | 2508.7   | 724.4      |
+| Recall@10          | 1.0          | N/A             | 1.0        | 1.0      | 1.0      | 1.0        |
+| Recall@100         | 0.9974       | N/A             | 0.9936     | 1.0      | 1.0      | 0.9956     |
+| Latency p50 (ms)   | 21.7ms       | N/A             | 1.3ms      | 3.6ms    | 1.6ms    | 1.7ms      |
+| Latency p95 (ms)   | 25.8ms       | N/A             | 2.1ms      | 4.2ms    | 2.2ms    | 1.9ms      |
+| QPS (top_k=10)     | 273.3        | N/A             | 1828.1     | 272.3    | 799.1    | 674.8      |
+| Filtered Recall@10 | 1.0          | N/A             | 1.0        | 1.0      | 1.0      | 1.0        |
+| Hybrid Recall@10   | 1.0          | N/A             | 0.8200     | 1.0      | N/A      | N/A        |
+| Memory (bytes/vec) | N/A          | N/A             | N/A        | N/A      | N/A      | N/A        |
+| Graph Search       | YES (unique) | N/A             | No         | No       | No       | No         |
 
 ## Suite 1: Insert Throughput
 
-| VDB      |   Total Docs |   Time (s) |   Docs/sec |
-|----------|--------------|------------|------------|
-| DEEPDATA |          562 |      0.815 |      689.4 |
-| WEAVIATE |          562 |     12.535 |       44.8 |
-| MILVUS   |          562 |    116.252 |        4.8 |
-| QDRANT   |          562 |      0.243 |     2313.9 |
-| CHROMADB |          562 |      1.212 |      463.8 |
+| VDB           | Total Docs   | Time (s)   | Docs/sec   |
+|---------------|--------------|------------|------------|
+| DEEPDATA      | 562          | 0.85       | 661.2      |
+| DEEPDATA-GRPC | ERROR        |            |            |
+| WEAVIATE      | 562          | 12.55      | 44.8       |
+| MILVUS        | 562          | 119.334    | 4.7        |
+| QDRANT        | 562          | 0.224      | 2508.7     |
+| CHROMADB      | 562          | 0.776      | 724.4      |
 
 ## Suite 2: Search Recall & Latency
 
-| VDB      |   R@1 |   R@10 |   R@100 |   p50ms |   p95ms |   p99ms |    QPS |
-|----------|-------|--------|---------|---------|---------|---------|--------|
-| DEEPDATA |     1 |  0.99  |  0.9602 |    21.6 |    24.3 |    26.2 |  287.6 |
-| WEAVIATE |     1 |  1     |  0.9946 |     1.5 |     2.1 |     3.1 | 1809.4 |
-| MILVUS   |     1 |  1     |  1      |     4.5 |     5.5 |   729.3 |  262.1 |
-| QDRANT   |     1 |  1     |  1      |     1.8 |     3.2 |     3.2 |  813.1 |
-| CHROMADB |     1 |  0.998 |  0.996  |     1.7 |     1.9 |    13.2 |  683.1 |
+| VDB           | R@1   | R@10   | R@100   | p50ms   | p95ms   | p99ms   | QPS    |
+|---------------|-------|--------|---------|---------|---------|---------|--------|
+| DEEPDATA      | 1.0   | 1.0    | 0.9974  | 21.7    | 25.8    | 34.5    | 273.3  |
+| DEEPDATA-GRPC | N/A   | N/A    | N/A     | N/A     | N/A     | N/A     | N/A    |
+| WEAVIATE      | 1.0   | 1.0    | 0.9936  | 1.3     | 2.1     | 3.3     | 1828.1 |
+| MILVUS        | 1.0   | 1.0    | 1.0     | 3.6     | 4.2     | 626.5   | 272.3  |
+| QDRANT        | 1.0   | 1.0    | 1.0     | 1.6     | 2.2     | 3.0     | 799.1  |
+| CHROMADB      | 1.0   | 1.0    | 0.9956  | 1.7     | 1.9     | 13.5    | 674.8  |
 
 ## Suite 3: Filtered Search
 
-| VDB      | Filter               |   Recall@10 |   p50ms |   p95ms |
-|----------|----------------------|-------------|---------|---------|
-| DEEPDATA | {'package': 'index'} |       0.992 |    22.3 |    25.1 |
-| WEAVIATE | {'package': 'index'} |       1     |     1.1 |     1.2 |
-| MILVUS   | {'package': 'index'} |       1     |     3.5 |     3.9 |
-| QDRANT   | {'package': 'index'} |       1     |     1.7 |     2   |
-| CHROMADB | {'package': 'index'} |       1     |     2.2 |     2.6 |
+| VDB           | Filter               | Recall@10   | p50ms   | p95ms   |
+|---------------|----------------------|-------------|---------|---------|
+| DEEPDATA      | {'package': 'index'} | 1.0         | 22.3    | 24.4    |
+| DEEPDATA-GRPC |                      | N/A         | N/A     | N/A     |
+| WEAVIATE      | {'package': 'index'} | 1.0         | 1.1     | 1.3     |
+| MILVUS        | {'package': 'index'} | 1.0         | 3.7     | 4.3     |
+| QDRANT        | {'package': 'index'} | 1.0         | 1.7     | 2.0     |
+| CHROMADB      | {'package': 'index'} | 1.0         | 2.0     | 2.3     |
 
 ## Suite 4: Hybrid Search
 
-| VDB      | Hybrid R@10   | Hybrid p50ms   | Status        |
-|----------|---------------|----------------|---------------|
-| DEEPDATA | 0.9900        | 21.5           | ok            |
-| WEAVIATE | 0.8200        | 1.6            | ok            |
-| MILVUS   | 1.0           | 3.6            | ok            |
-| QDRANT   | N/A           | N/A            | not_supported |
-| CHROMADB | N/A           | N/A            | not_supported |
+| VDB           | Hybrid R@10   | Hybrid p50ms   | Status        |
+|---------------|---------------|----------------|---------------|
+| DEEPDATA      | 1.0           | 22.0           | ok            |
+| DEEPDATA-GRPC | N/A           | N/A            | ok            |
+| WEAVIATE      | 0.8200        | 1.7            | ok            |
+| MILVUS        | 1.0           | 3.6            | ok            |
+| QDRANT        | N/A           | N/A            | not_supported |
+| CHROMADB      | N/A           | N/A            | not_supported |
 
 ## Suite 5: Graph-Boosted Search
 
@@ -70,13 +74,14 @@ using weighted fusion scoring. No competitor offers equivalent functionality.
 
 ## Suite 6: Memory Footprint
 
-| VDB      | Docker RSS   | Bytes/Vector   |   Corpus Size |
-|----------|--------------|----------------|---------------|
-| DEEPDATA | N/A          | N/A            |           562 |
-| WEAVIATE | N/A          | N/A            |           562 |
-| MILVUS   | N/A          | N/A            |           562 |
-| QDRANT   | N/A          | N/A            |           562 |
-| CHROMADB | N/A          | N/A            |           562 |
+| VDB           | Docker RSS   | Bytes/Vector   | Corpus Size   |
+|---------------|--------------|----------------|---------------|
+| DEEPDATA      | N/A          | N/A            | 562           |
+| DEEPDATA-GRPC | N/A          | N/A            |               |
+| WEAVIATE      | N/A          | N/A            | 562           |
+| MILVUS        | N/A          | N/A            | 562           |
+| QDRANT        | N/A          | N/A            | 562           |
+| CHROMADB      | N/A          | N/A            | 562           |
 
 ## DeepData Analysis
 

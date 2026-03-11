@@ -1,26 +1,109 @@
 {
-  "deepdata-grpc": {
+  "deepdata": {
     "insert": {
       "total_docs": 562,
-      "elapsed_sec": 0.327,
-      "inserts_per_sec": 1718.7
+      "elapsed_sec": 0.85,
+      "inserts_per_sec": 661.2
     },
     "search": {
       "recall_at_1": 1.0,
       "recall_at_10": 1.0,
-      "recall_at_100": 0.9972,
-      "latency_p50_ms": 0.76,
-      "latency_p95_ms": 1.06,
-      "latency_p99_ms": 1.43,
-      "qps": 2771.8
+      "recall_at_100": 0.9974,
+      "latency_p50_ms": 21.74,
+      "latency_p95_ms": 25.84,
+      "latency_p99_ms": 34.48,
+      "qps": 273.3
     },
     "filtered": {
       "filter": {
         "package": "index"
       },
       "recall_at_10": 1.0,
-      "latency_p50_ms": 0.97,
-      "latency_p95_ms": 1.34
+      "latency_p50_ms": 22.32,
+      "latency_p95_ms": 24.38
+    },
+    "hybrid": {
+      "hybrid_recall_at_10": 1.0,
+      "hybrid_latency_p50_ms": 21.96,
+      "hybrid_latency_p95_ms": 24.17
+    },
+    "graph": {
+      "note": "Graph-boosted search is a DeepData-only feature. Requires entity extraction (LLM calls) and knowledge graph build. No competitor equivalent exists for head-to-head comparison.",
+      "status": "documented_differentiator"
+    },
+    "memory": {
+      "corpus_size": 562,
+      "api_memory_bytes": 0
+    }
+  },
+  "deepdata-grpc": {
+    "error": "<_InactiveRpcError of RPC that terminated with:\n\tstatus = StatusCode.UNIMPLEMENTED\n\tdetails = \"unknown service deepdata.v1.DeepData\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_status:12, grpc_message:\"unknown service deepdata.v1.DeepData\"}\"\n>"
+  },
+  "weaviate": {
+    "insert": {
+      "total_docs": 562,
+      "elapsed_sec": 12.55,
+      "inserts_per_sec": 44.8
+    },
+    "search": {
+      "recall_at_1": 1.0,
+      "recall_at_10": 1.0,
+      "recall_at_100": 0.9936,
+      "latency_p50_ms": 1.31,
+      "latency_p95_ms": 2.07,
+      "latency_p99_ms": 3.29,
+      "qps": 1828.1
+    },
+    "filtered": {
+      "filter": {
+        "package": "index"
+      },
+      "recall_at_10": 1.0,
+      "latency_p50_ms": 1.08,
+      "latency_p95_ms": 1.31
+    },
+    "hybrid": {
+      "hybrid_recall_at_10": 0.82,
+      "hybrid_latency_p50_ms": 1.67,
+      "hybrid_latency_p95_ms": 2.83
+    },
+    "graph": {
+      "status": "not_supported"
+    },
+    "memory": {
+      "corpus_size": 562
+    }
+  },
+  "milvus": {
+    "insert": {
+      "total_docs": 562,
+      "elapsed_sec": 119.334,
+      "inserts_per_sec": 4.7
+    },
+    "search": {
+      "recall_at_1": 1.0,
+      "recall_at_10": 1.0,
+      "recall_at_100": 1.0,
+      "latency_p50_ms": 3.6,
+      "latency_p95_ms": 4.16,
+      "latency_p99_ms": 626.45,
+      "qps": 272.3
+    },
+    "filtered": {
+      "filter": {
+        "package": "index"
+      },
+      "recall_at_10": 1.0,
+      "latency_p50_ms": 3.67,
+      "latency_p95_ms": 4.34
+    },
+    "hybrid": {
+      "hybrid_recall_at_10": 1.0,
+      "hybrid_latency_p50_ms": 3.56,
+      "hybrid_latency_p95_ms": 4.04
+    },
+    "graph": {
+      "status": "not_supported"
     },
     "memory": {
       "corpus_size": 562
@@ -29,31 +112,67 @@
   "qdrant": {
     "insert": {
       "total_docs": 562,
-      "elapsed_sec": 0.239,
-      "inserts_per_sec": 2352.2
+      "elapsed_sec": 0.224,
+      "inserts_per_sec": 2508.7
     },
     "search": {
       "recall_at_1": 1.0,
       "recall_at_10": 1.0,
       "recall_at_100": 1.0,
-      "latency_p50_ms": 1.69,
-      "latency_p95_ms": 2.44,
-      "latency_p99_ms": 3.55,
-      "qps": 829.8
+      "latency_p50_ms": 1.64,
+      "latency_p95_ms": 2.21,
+      "latency_p99_ms": 3.03,
+      "qps": 799.1
     },
     "filtered": {
       "filter": {
         "package": "index"
       },
       "recall_at_10": 1.0,
-      "latency_p50_ms": 1.56,
-      "latency_p95_ms": 1.8
+      "latency_p50_ms": 1.72,
+      "latency_p95_ms": 2.05
+    },
+    "hybrid": {
+      "status": "not_supported"
+    },
+    "graph": {
+      "status": "not_supported"
     },
     "memory": {
       "corpus_size": 562
     }
   },
-  "weaviate": {
-    "error": "Connection to Weaviate failed. Details: Error: [Errno 111] Connection refused. \nIs Weaviate running and reachable at http://localhost:8081?"
+  "chromadb": {
+    "insert": {
+      "total_docs": 562,
+      "elapsed_sec": 0.776,
+      "inserts_per_sec": 724.4
+    },
+    "search": {
+      "recall_at_1": 1.0,
+      "recall_at_10": 1.0,
+      "recall_at_100": 0.9956,
+      "latency_p50_ms": 1.69,
+      "latency_p95_ms": 1.94,
+      "latency_p99_ms": 13.47,
+      "qps": 674.8
+    },
+    "filtered": {
+      "filter": {
+        "package": "index"
+      },
+      "recall_at_10": 1.0,
+      "latency_p50_ms": 1.99,
+      "latency_p95_ms": 2.28
+    },
+    "hybrid": {
+      "status": "not_supported"
+    },
+    "graph": {
+      "status": "not_supported"
+    },
+    "memory": {
+      "corpus_size": 562
+    }
   }
 }
