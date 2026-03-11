@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -201,15 +200,6 @@ func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapsh
 	}
 	defer file.Close()
 
-	var writer io.Writer = file
-	var gzWriter *gzip.Writer
-
-	if ssm.config.CompressionEnabled {
-		gzWriter = gzip.NewWriter(file)
-		writer = gzWriter
-		defer gzWriter.Close()
-	}
-
 	// Filter out deleted vectors from the snapshot to prevent monotonic growth.
 	// Build a set of live indices (not marked as deleted).
 	liveIndices := make(map[int]bool, len(snapData.Seqs))
@@ -309,8 +299,15 @@ func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapsh
 		SumDocL:  filteredSumDocL,
 	}
 
-	encoder := json.NewEncoder(writer)
-	return encoder.Encode(data)
+	// Encode using cowrie binary format with zstd compression.
+	// Cowrie tensor encoding for vectors is ~60% smaller than JSON.
+	// Write directly to file — cowrie+zstd handles compression internally.
+	encoded, err := encodeSnapshotCowrie(data)
+	if err != nil {
+		return fmt.Errorf("failed to encode snapshot: %w", err)
+	}
+	_, err = file.Write(encoded)
+	return err
 }
 
 // LoadSnapshot loads a snapshot into the store
@@ -325,29 +322,9 @@ func (ssm *SnapshotSyncManager) LoadSnapshot(ctx context.Context, snapshotID str
 	}
 	defer file.Close()
 
-	var reader io.Reader = file
-
-	// Check if compressed by reading magic bytes
-	header := make([]byte, 2)
-	if _, err := file.Read(header); err != nil {
-		return fmt.Errorf("failed to read header: %w", err)
-	}
-	file.Seek(0, 0) // Reset to beginning
-
-	// Gzip magic number: 0x1f 0x8b
-	if header[0] == 0x1f && header[1] == 0x8b {
-		gzReader, err := gzip.NewReader(file)
-		if err != nil {
-			return fmt.Errorf("failed to create gzip reader: %w", err)
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	// Decode snapshot data
-	var data snapshotFileData
-	decoder := json.NewDecoder(reader)
-	if err := decoder.Decode(&data); err != nil {
+	// Read and decode — auto-detect format (gzip+JSON legacy vs cowrie binary)
+	data, err := decodeSnapshotAuto(file)
+	if err != nil {
 		return fmt.Errorf("failed to decode snapshot: %w", err)
 	}
 
@@ -431,28 +408,9 @@ func (ssm *SnapshotSyncManager) loadSnapshotMetadata(path string) (*StoreSnapsho
 	}
 	defer file.Close()
 
-	var reader io.Reader = file
-
-	// Check if compressed
-	header := make([]byte, 2)
-	if _, err := file.Read(header); err != nil {
-		return nil, err
-	}
-	file.Seek(0, 0)
-
-	if header[0] == 0x1f && header[1] == 0x8b {
-		gzReader, err := gzip.NewReader(file)
-		if err != nil {
-			return nil, err
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	// Just decode the beginning to get metadata
-	var data snapshotFileData
-	decoder := json.NewDecoder(reader)
-	if err := decoder.Decode(&data); err != nil {
+	// Auto-detect format and decode
+	data, err := decodeSnapshotAuto(file)
+	if err != nil {
 		return nil, err
 	}
 
@@ -461,11 +419,9 @@ func (ssm *SnapshotSyncManager) loadSnapshotMetadata(path string) (*StoreSnapsho
 
 // getSnapshotPath returns the full path for a snapshot
 func (ssm *SnapshotSyncManager) getSnapshotPath(snapshotID string) string {
-	ext := ".snapshot"
-	if ssm.config.CompressionEnabled {
-		ext = ".snapshot.gz"
-	}
-	return filepath.Join(ssm.config.SnapshotDir, snapshotID+ext)
+	// Cowrie+zstd snapshots use .snapshot.cwz extension.
+	// Legacy .snapshot.gz and .snapshot are still readable via decodeSnapshotAuto.
+	return filepath.Join(ssm.config.SnapshotDir, snapshotID+".snapshot.cwz")
 }
 
 // cleanupOldSnapshots removes old snapshots beyond limit
@@ -732,26 +688,9 @@ func (ssc *SnapshotSyncClient) FetchAndApplySnapshot(ctx context.Context, store 
 	}
 	defer file.Close()
 
-	var reader io.Reader = file
-
-	// Check if compressed
-	header := make([]byte, 2)
-	if _, err := file.Read(header); err != nil {
-		return nil, fmt.Errorf("failed to read header: %w", err)
-	}
-	file.Seek(0, 0)
-
-	if header[0] == 0x1f && header[1] == 0x8b {
-		gzReader, err := gzip.NewReader(file)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create gzip reader: %w", err)
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	var fileData snapshotFileData
-	if err := json.NewDecoder(reader).Decode(&fileData); err != nil {
+	// Auto-detect format and decode
+	fileData, err := decodeSnapshotAuto(file)
+	if err != nil {
 		return nil, fmt.Errorf("failed to decode snapshot: %w", err)
 	}
 

@@ -12,7 +12,6 @@ package wal
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -373,8 +372,8 @@ func (w *WAL) Write(entry *Entry) error {
 		entry.Timestamp = time.Now().UnixNano()
 	}
 
-	// Serialize entry
-	data, err := json.Marshal(entry)
+	// Serialize entry using cowrie binary format (vectors as tensors = ~60% smaller)
+	data, err := encodeEntryCowrie(entry)
 	if err != nil {
 		return fmt.Errorf("failed to serialize WAL entry: %w", err)
 	}

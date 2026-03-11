@@ -51,13 +51,20 @@ func (r *Reader) Next() (*Entry, error) {
 		return nil, fmt.Errorf("CRC mismatch: expected %08x, got %08x", expectedCRC, actualCRC)
 	}
 
-	// Deserialize entry
-	var entry Entry
-	if err := json.Unmarshal(data, &entry); err != nil {
-		return nil, fmt.Errorf("failed to deserialize entry: %w", err)
+	// Deserialize entry — auto-detect format for backward compatibility.
+	// Old WAL entries are JSON (starts with '{'), new ones are cowrie binary.
+	if isJSONPayload(data) {
+		var entry Entry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			return nil, fmt.Errorf("failed to deserialize JSON entry: %w", err)
+		}
+		return &entry, nil
 	}
-
-	return &entry, nil
+	entry, err := decodeEntryCowrie(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deserialize cowrie entry: %w", err)
+	}
+	return entry, nil
 }
 
 // SegmentReader reads all entries from a specific segment file

@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -520,26 +519,9 @@ func (fr *FollowerReplicator) applyStreamingSnapshot(ctx context.Context, path s
 	}
 	defer file.Close()
 
-	var reader io.Reader = file
-
-	// Check for gzip magic bytes
-	header := make([]byte, 2)
-	if _, err := file.Read(header); err != nil {
-		return 0, fmt.Errorf("failed to read header: %w", err)
-	}
-	file.Seek(0, 0)
-
-	if header[0] == 0x1f && header[1] == 0x8b {
-		gzReader, err := gzip.NewReader(file)
-		if err != nil {
-			return 0, fmt.Errorf("failed to create gzip reader: %w", err)
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	var fileData snapshotFileData
-	if err := json.NewDecoder(reader).Decode(&fileData); err != nil {
+	// Auto-detect format and decode (supports cowrie+zstd, gzip+JSON, raw JSON)
+	fileData, err := decodeSnapshotAuto(file)
+	if err != nil {
 		return 0, fmt.Errorf("failed to decode snapshot: %w", err)
 	}
 	if fileData.Metadata == nil {
