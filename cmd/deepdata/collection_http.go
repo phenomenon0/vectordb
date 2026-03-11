@@ -112,6 +112,11 @@ func (s *CollectionHTTPServer) Load(basePath string) error {
 	return nil
 }
 
+// Manager returns the underlying CollectionManager (used by gRPC server).
+func (s *CollectionHTTPServer) Manager() *vcollection.CollectionManager {
+	return s.manager
+}
+
 // EnableGraphRAG activates the GraphRAG index for graph-boosted hybrid search.
 func (s *CollectionHTTPServer) EnableGraphRAG(cfg graph.Config) {
 	s.graphIndex = graph.NewGraphIndex(cfg)

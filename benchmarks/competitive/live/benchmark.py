@@ -296,6 +296,8 @@ def create_adapter(name: str) -> VDBAdapter:
     cls = ALL_ADAPTERS[name]
     if name == "deepdata":
         return cls(url="http://localhost:8080")
+    elif name == "deepdata-grpc":
+        return cls(url="localhost:50051")
     elif name == "weaviate":
         return cls(url="http://localhost:8081")
     elif name == "milvus":

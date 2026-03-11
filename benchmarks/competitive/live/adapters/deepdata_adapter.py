@@ -94,13 +94,13 @@ class DeepDataAdapter(VDBAdapter):
         documents = data.get("documents", [])
         scores = data.get("scores", [])
         for j, doc in enumerate(documents):
-            internal_id = doc.get("ID", 0)
+            internal_id = doc.get("id", doc.get("ID", 0))
             chunk_id = self._id_map.get(internal_id, str(internal_id))
             score = scores[j] if j < len(scores) else 0.0
             results.append(SearchResult(
                 id=chunk_id,
                 score=score,
-                metadata=doc.get("Metadata", {}),
+                metadata=doc.get("metadata", doc.get("Metadata", {})),
             ))
         return results
 
@@ -128,7 +128,7 @@ class DeepDataAdapter(VDBAdapter):
         documents = data.get("documents", [])
         scores = data.get("scores", [])
         for j, doc in enumerate(documents):
-            internal_id = doc.get("ID", 0)
+            internal_id = doc.get("id", doc.get("ID", 0))
             chunk_id = self._id_map.get(internal_id, str(internal_id))
             score = scores[j] if j < len(scores) else 0.0
             results.append(SearchResult(id=chunk_id, score=score))

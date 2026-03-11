@@ -33,6 +33,11 @@ import (
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+
+	deepdatav1 "github.com/phenomenon0/vectordb/api/gen/deepdata/v1"
+	"google.golang.org/grpc"
+
+	"net"
 )
 
 // ======================================================================================
@@ -2282,6 +2287,30 @@ func main() {
 		}
 	}()
 
+	// gRPC server (GRPC_PORT=0 to disable, default 50051)
+	var grpcSrv *grpc.Server
+	grpcPort := envInt("GRPC_PORT", 50051)
+	if grpcPort > 0 {
+		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpcPort))
+		if err != nil {
+			logger.Error("failed to listen for gRPC", "error", err)
+		} else {
+			grpcSrv = grpc.NewServer(
+				grpc.MaxRecvMsgSize(64*1024*1024),
+				grpc.MaxSendMsgSize(64*1024*1024),
+			)
+			deepdatav1.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
+				manager: collectionHTTP.Manager(),
+			})
+			go func() {
+				logger.Info("grpc api listening", "addr", lis.Addr())
+				if err := grpcSrv.Serve(lis); err != nil {
+					logger.Error("grpc server error", "error", err)
+				}
+			}()
+		}
+	}
+
 	// Background compaction
 	go func() {
 		interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
@@ -2382,6 +2411,10 @@ func main() {
 	}
 
 	// Graceful shutdown sequence
+	if grpcSrv != nil {
+		fmt.Println(">>> Shutting down gRPC server...")
+		grpcSrv.GracefulStop()
+	}
 	fmt.Println(">>> Shutting down HTTP server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

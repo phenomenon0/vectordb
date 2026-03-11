@@ -1,0 +1,121 @@
+syntax = "proto3";
+package deepdata.v1;
+option go_package = "github.com/phenomenon0/vectordb/api/gen/deepdata/v1;deepdatav1";
+
+// ── Collection Management ────────────────────────────────────────────
+
+message VectorFieldConfig {
+  string name = 1;
+  int32  type = 2;   // 0=dense, 1=sparse
+  int32  dim  = 3;
+  string index_type = 4; // "hnsw", "ivf", "flat", "inverted"
+  map<string, double> index_params = 5;
+}
+
+message CreateCollectionRequest {
+  string name = 1;
+  repeated VectorFieldConfig fields = 2;
+}
+
+message CreateCollectionResponse {
+  string name = 1;
+}
+
+message DeleteCollectionRequest {
+  string name = 1;
+}
+
+message DeleteCollectionResponse {}
+
+// ── Vectors ──────────────────────────────────────────────────────────
+
+message DenseVector {
+  repeated float values = 1 [packed = true];
+}
+
+message SparseVector {
+  repeated uint32 indices = 1 [packed = true];
+  repeated float  values  = 2 [packed = true];
+  int32 dim = 3;
+}
+
+message VectorData {
+  oneof data {
+    DenseVector  dense  = 1;
+    SparseVector sparse = 2;
+  }
+}
+
+// ── Insert ───────────────────────────────────────────────────────────
+
+message InsertRequest {
+  string collection = 1;
+  map<string, VectorData> vectors  = 2;
+  map<string, string>     metadata = 3;
+  string text = 4; // optional document text
+}
+
+message InsertResponse {
+  uint64 id = 1;
+}
+
+// ── Batch Insert ─────────────────────────────────────────────────────
+
+message BatchDoc {
+  map<string, VectorData> vectors  = 1;
+  map<string, string>     metadata = 2;
+  string text = 3;
+}
+
+message BatchInsertRequest {
+  string collection = 1;
+  repeated BatchDoc docs = 2;
+}
+
+message BatchInsertResponse {
+  repeated uint64 ids = 1;
+  int32 inserted = 2;
+}
+
+// ── Search ───────────────────────────────────────────────────────────
+
+message SearchRequest {
+  string collection = 1;
+  map<string, VectorData> queries = 2;
+  int32 top_k     = 3;
+  int32 ef_search = 4;
+  bool  include_vectors = 5;
+  map<string, string> metadata_filter = 6;
+}
+
+message SearchHit {
+  uint64 id    = 1;
+  float  score = 2;
+  map<string, string>     metadata = 3;
+  map<string, DenseVector> vectors = 4;
+}
+
+message SearchResponse {
+  repeated SearchHit results = 1;
+  int32 candidates_examined  = 2;
+}
+
+// ── Delete ───────────────────────────────────────────────────────────
+
+message DeleteDocRequest {
+  string collection = 1;
+  uint64 doc_id     = 2;
+}
+
+message DeleteDocResponse {}
+
+// ── Service ──────────────────────────────────────────────────────────
+
+service DeepData {
+  rpc CreateCollection (CreateCollectionRequest) returns (CreateCollectionResponse);
+  rpc DeleteCollection (DeleteCollectionRequest) returns (DeleteCollectionResponse);
+  rpc Insert           (InsertRequest)           returns (InsertResponse);
+  rpc BatchInsert      (BatchInsertRequest)      returns (BatchInsertResponse);
+  rpc Search           (SearchRequest)           returns (SearchResponse);
+  rpc DeleteDoc        (DeleteDocRequest)        returns (DeleteDocResponse);
+}
