@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"math"
 	"os"
 	"sync"
 	"time"
@@ -108,8 +107,11 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 		}
 	}()
 
-	// Initialize temp file with initial size
+	// Initialize temp file with initial size (minimum 4KB to avoid mmap with size 0)
 	initialSize := d.mmapOffset
+	if initialSize < 4096 {
+		initialSize = 4096
+	}
 	if err := tempFile.Truncate(initialSize); err != nil {
 		return nil, fmt.Errorf("failed to resize temp file: %w", err)
 	}
@@ -119,129 +121,51 @@ func (d *DiskANNIndex) Compact(ctx context.Context) (*CompactionStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to mmap temp file: %w", err)
 	}
-	defer mmapUnmap(tempData)
-
-	// Copy non-deleted vectors to temp file
-	newOffset := int64(0)
-	newOffsetIndex := make(map[uint64]int64)
+	// Note: tempData may be replaced by writeCompactedVectors if it needs to grow.
+	// The final unmap is done explicitly below, not via defer.
 
 	// Collect all vector IDs from all sources
-	allIDs := make(map[uint64]bool)
+	allIDSet := make(map[uint64]bool)
 	d.graphStore.Range(func(id uint64, _ []uint64) bool {
-		allIDs[id] = true
+		allIDSet[id] = true
 		return true
 	})
 	for id := range d.memoryVectors {
-		allIDs[id] = true
+		allIDSet[id] = true
 	}
 	for id := range d.quantizedMemory {
-		allIDs[id] = true
+		allIDSet[id] = true
 	}
 	if d.quantizer != nil {
 		for id := range d.diskOffsetIndex {
-			allIDs[id] = true
+			allIDSet[id] = true
 		}
 	} else if d.mmapData != nil && d.mmapOffset > 0 {
-		// For unquantized disk vectors, scan mmap to find IDs
 		recordSize := int64(8 + d.dim*4)
 		for offset := int64(0); offset < d.mmapOffset; offset += recordSize {
 			if offset+8 > int64(len(d.mmapData)) {
 				break
 			}
 			id := binary.LittleEndian.Uint64(d.mmapData[offset:])
-			allIDs[id] = true
+			allIDSet[id] = true
 		}
 	}
 
-	// Iterate through all vectors
-	for id := range allIDs {
-		// Skip deleted vectors
-		if d.deleted[id] {
-			continue
-		}
+	allIDs := make([]uint64, 0, len(allIDSet))
+	for id := range allIDSet {
+		allIDs = append(allIDs, id)
+	}
 
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
+	// Phase 1: Parallel read of all non-deleted vectors
+	vectors, err := d.parallelReadVectors(ctx, allIDs)
+	if err != nil {
+		return nil, fmt.Errorf("parallel read failed: %w", err)
+	}
 
-		// Read vector from current mmap or memory
-		var vec []float32
-		var err error
-
-		// Try memory first
-		if v, ok := d.memoryVectors[id]; ok {
-			vec = v
-		} else if quantized, ok := d.quantizedMemory[id]; ok {
-			vec, err = d.quantizer.Dequantize(quantized)
-			if err != nil {
-				return nil, fmt.Errorf("failed to dequantize vector %d: %w", id, err)
-			}
-		} else {
-			// Read from disk
-			vec, err = d.readFromDisk(id)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read vector %d: %w", id, err)
-			}
-		}
-
-		// Write to temp file
-		if d.quantizer != nil {
-			// Write quantized data
-			quantized, err := d.quantizer.Quantize(vec)
-			if err != nil {
-				return nil, fmt.Errorf("failed to quantize vector %d: %w", id, err)
-			}
-
-			// Ensure space
-			recordSize := int64(8 + 4 + len(quantized)) // ID + length + data
-			if newOffset+recordSize > int64(len(tempData)) {
-				// Need to grow temp mmap
-				mmapUnmap(tempData)
-				newSize := newOffset * 2
-				if err := tempFile.Truncate(newSize); err != nil {
-					return nil, fmt.Errorf("failed to grow temp file: %w", err)
-				}
-				tempData, err = mmapCreate(int(tempFile.Fd()), int(newSize))
-				if err != nil {
-					return nil, fmt.Errorf("failed to remap temp file: %w", err)
-				}
-			}
-
-			// Write: ID + length + quantized data
-			binary.LittleEndian.PutUint64(tempData[newOffset:], id)
-			binary.LittleEndian.PutUint32(tempData[newOffset+8:], uint32(len(quantized)))
-			copy(tempData[newOffset+12:], quantized)
-
-			newOffsetIndex[id] = newOffset
-			newOffset += recordSize
-		} else {
-			// Write unquantized data
-			recordSize := int64(8 + d.dim*4) // ID + vector
-			if newOffset+recordSize > int64(len(tempData)) {
-				mmapUnmap(tempData)
-				newSize := newOffset * 2
-				if err := tempFile.Truncate(newSize); err != nil {
-					return nil, fmt.Errorf("failed to grow temp file: %w", err)
-				}
-				tempData, err = mmapCreate(int(tempFile.Fd()), int(newSize))
-				if err != nil {
-					return nil, fmt.Errorf("failed to remap temp file: %w", err)
-				}
-			}
-
-			// Write: ID + vector
-			newOffsetIndex[id] = newOffset
-			binary.LittleEndian.PutUint64(tempData[newOffset:], id)
-			for i, val := range vec {
-				bits := math.Float32bits(val)
-				binary.LittleEndian.PutUint32(tempData[newOffset+8+int64(i*4):], bits)
-			}
-
-			newOffset += recordSize
-		}
+	// Phase 2: Sequential write to compacted mmap
+	newOffset, newOffsetIndex, tempData, err := d.writeCompactedVectors(vectors, tempData, tempFile)
+	if err != nil {
+		return nil, fmt.Errorf("write compacted vectors: %w", err)
 	}
 
 	// Sync temp file

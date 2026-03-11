@@ -14,23 +14,45 @@ import (
 // Replaces snapshot-based replication with incremental WAL streaming
 // ===========================================================================================
 
+// WALStreamConfig configures the WAL stream buffer.
+type WALStreamConfig struct {
+	// MaxEntries is the maximum entries to keep in memory (default: 10000).
+	MaxEntries int
+}
+
+// DefaultWALStreamConfig returns sensible defaults matching current behavior.
+func DefaultWALStreamConfig() WALStreamConfig {
+	return WALStreamConfig{
+		MaxEntries: 10000,
+	}
+}
+
 // WALStream manages streaming WAL entries to replicas
 type WALStream struct {
 	mu      sync.RWMutex
 	entries []WalEntry // In-memory WAL buffer
 	nextSeq uint64     // Next sequence number to assign
 
-	maxEntries int    // Maximum entries to keep in memory (default: 10000)
+	maxEntries int    // Maximum entries to keep in memory
 	minSeq     uint64 // Minimum sequence number available
 }
 
-// NewWALStream creates a new WAL stream
+// NewWALStream creates a new WAL stream with default config.
 func NewWALStream() *WALStream {
+	return NewWALStreamWithConfig(DefaultWALStreamConfig())
+}
+
+// NewWALStreamWithConfig creates a new WAL stream with explicit configuration.
+func NewWALStreamWithConfig(cfg WALStreamConfig) *WALStream {
+	maxEntries := cfg.MaxEntries
+	if maxEntries <= 0 {
+		maxEntries = 10000
+	}
 	return &WALStream{
 		entries:    make([]WalEntry, 0, 1000),
 		nextSeq:    1,
 		minSeq:     1,
-		maxEntries: 10000,
+		maxEntries: maxEntries,
 	}
 }
 

@@ -64,8 +64,12 @@ type FollowerReplicatorConfig struct {
 	// AuthToken for WAL stream authentication
 	AuthToken string
 
-	// PollInterval is how often to check for new WAL entries
+	// PollInterval is how often to check for new WAL entries when caught up
 	PollInterval time.Duration
+
+	// FastPollInterval is how often to poll when entries are available (adaptive mode).
+	// Set to 0 to disable adaptive polling (use PollInterval always).
+	FastPollInterval time.Duration
 
 	// ReconnectInterval is how long to wait before reconnecting on failure
 	ReconnectInterval time.Duration
@@ -83,7 +87,8 @@ type FollowerReplicatorConfig struct {
 // DefaultFollowerReplicatorConfig returns sensible defaults
 func DefaultFollowerReplicatorConfig() FollowerReplicatorConfig {
 	return FollowerReplicatorConfig{
-		PollInterval:         100 * time.Millisecond, // Low latency replication
+		PollInterval:         1 * time.Second,         // Poll interval when caught up
+		FastPollInterval:     100 * time.Millisecond,  // Poll interval when entries available
 		ReconnectInterval:    5 * time.Second,
 		MaxReconnectAttempts: -1, // Infinite retries
 		BatchSize:            1000,
@@ -181,12 +186,15 @@ func (fr *FollowerReplicator) Stop() {
 	fmt.Printf("[FollowerReplicator] Stopped\n")
 }
 
-// replicationLoop is the main replication loop
+// replicationLoop is the main replication loop with adaptive polling.
+// When entries are available, polls at FastPollInterval for low latency.
+// When caught up, polls at PollInterval to reduce overhead.
 func (fr *FollowerReplicator) replicationLoop() {
 	defer fr.wg.Done()
 
 	reconnectAttempts := 0
-	pollTicker := time.NewTicker(fr.config.PollInterval)
+	currentInterval := fr.config.PollInterval
+	pollTicker := time.NewTicker(currentInterval)
 	defer pollTicker.Stop()
 
 	for {
@@ -195,7 +203,8 @@ func (fr *FollowerReplicator) replicationLoop() {
 			return
 
 		case <-pollTicker.C:
-			if err := fr.poll(); err != nil {
+			hadEntries, err := fr.pollAdaptive()
+			if err != nil {
 				fr.handleError(err)
 				reconnectAttempts++
 
@@ -216,9 +225,34 @@ func (fr *FollowerReplicator) replicationLoop() {
 			} else {
 				// Successful poll - reset reconnect counter
 				reconnectAttempts = 0
+
+				// Adaptive poll interval: fast when catching up, slow when caught up
+				newInterval := fr.config.PollInterval
+				if hadEntries && fr.config.FastPollInterval > 0 {
+					newInterval = fr.config.FastPollInterval
+				}
+				if newInterval != currentInterval {
+					currentInterval = newInterval
+					pollTicker.Reset(currentInterval)
+				}
 			}
 		}
 	}
+}
+
+// pollAdaptive wraps poll and returns whether entries were received.
+func (fr *FollowerReplicator) pollAdaptive() (hadEntries bool, err error) {
+	before := fr.getAppliedCount()
+	if err := fr.poll(); err != nil {
+		return false, err
+	}
+	return fr.getAppliedCount() > before, nil
+}
+
+func (fr *FollowerReplicator) getAppliedCount() uint64 {
+	fr.mu.RLock()
+	defer fr.mu.RUnlock()
+	return fr.stats.EntriesApplied
 }
 
 // poll fetches and applies new WAL entries
