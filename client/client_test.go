@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -103,5 +104,21 @@ func TestHTTPErrorSurface(t *testing.T) {
 		}
 	} else {
 		t.Fatalf("expected HTTPError, got %T", err)
+	}
+}
+
+func TestHTTP400ClassifiesAsValidationError(t *testing.T) {
+	ts := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("bad request"))
+	}))
+
+	c := New(ts.URL)
+	_, err := c.Delete(context.Background(), DeleteRequest{ID: "x"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected validation classification, got %v", err)
 	}
 }

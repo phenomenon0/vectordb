@@ -394,8 +394,8 @@ class TenantClient:
 
         tenant = client.tenant("org-123")
         tenant.create_collection("docs", fields=[...])
-        tenant.insert("docs", doc="Hello world")
-        results = tenant.search("docs", query="Hello", top_k=5)
+        tenant.insert("docs", vectors={"embedding": [0.1, 0.2, 0.3]})
+        results = tenant.search("docs", queries={"embedding": [0.1, 0.2, 0.3]}, top_k=5)
     """
 
     def __init__(self, client: DeepDataClient, tenant_id: str) -> None:
@@ -424,33 +424,28 @@ class TenantClient:
         self,
         collection: str,
         *,
-        doc: str,
-        vectors: dict[str, Any] | None = None,
+        vectors: dict[str, Any],
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Insert a document into a tenant collection."""
-        payload: dict[str, Any] = {"collection": collection, "doc": doc}
-        if vectors is not None:
-            payload["vectors"] = vectors
+        payload: dict[str, Any] = {"vectors": vectors}
         if metadata is not None:
             payload["metadata"] = metadata
-        return self._request("POST", "/insert", json=payload)
+        return self._request("POST", f"/collections/{collection}/docs", json=payload)
 
     def search(
         self,
         collection: str,
         *,
-        query: str | None = None,
-        queries: dict[str, Any] | None = None,
+        queries: dict[str, Any],
         top_k: int = 10,
+        ef_search: int | None = None,
     ) -> dict[str, Any]:
         """Search within a tenant collection."""
-        payload: dict[str, Any] = {"collection": collection, "top_k": top_k}
-        if query is not None:
-            payload["query"] = query
-        if queries is not None:
-            payload["queries"] = queries
-        return self._request("POST", "/search", json=payload)
+        payload: dict[str, Any] = {"queries": queries, "top_k": top_k}
+        if ef_search is not None:
+            payload["ef_search"] = ef_search
+        return self._request("POST", f"/collections/{collection}/search", json=payload)
 
     def info(self) -> dict[str, Any]:
         """Get tenant info."""

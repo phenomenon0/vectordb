@@ -356,31 +356,26 @@ class AsyncTenantClient:
         self,
         collection: str,
         *,
-        doc: str,
-        vectors: dict[str, Any] | None = None,
+        vectors: dict[str, Any],
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"collection": collection, "doc": doc}
-        if vectors is not None:
-            payload["vectors"] = vectors
+        payload: dict[str, Any] = {"vectors": vectors}
         if metadata is not None:
             payload["metadata"] = metadata
-        return await self._request("POST", "/insert", json=payload)
+        return await self._request("POST", f"/collections/{collection}/docs", json=payload)
 
     async def search(
         self,
         collection: str,
         *,
-        query: str | None = None,
-        queries: dict[str, Any] | None = None,
+        queries: dict[str, Any],
         top_k: int = 10,
+        ef_search: int | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"collection": collection, "top_k": top_k}
-        if query is not None:
-            payload["query"] = query
-        if queries is not None:
-            payload["queries"] = queries
-        return await self._request("POST", "/search", json=payload)
+        payload: dict[str, Any] = {"queries": queries, "top_k": top_k}
+        if ef_search is not None:
+            payload["ef_search"] = ef_search
+        return await self._request("POST", f"/collections/{collection}/search", json=payload)
 
     async def info(self) -> dict[str, Any]:
         return await self._request("GET", "")

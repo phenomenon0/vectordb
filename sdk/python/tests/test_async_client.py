@@ -65,6 +65,17 @@ class TestAsyncHealth:
 
 
 class TestAsyncErrors:
+    async def test_400(self) -> None:
+        with respx.mock:
+            respx.post(f"{BASE}/insert").mock(
+                return_value=httpx.Response(400, text="bad request")
+            )
+            async with AsyncDeepDataClient(BASE, retry=None) as client:
+                from deepdata.errors import ValidationError
+
+                with pytest.raises(ValidationError):
+                    await client.insert("")
+
     async def test_401(self) -> None:
         with respx.mock:
             respx.get(f"{BASE}/health").mock(
@@ -102,3 +113,27 @@ class TestAsyncCollections:
             async with AsyncDeepDataClient(BASE, retry=None) as client:
                 result = await client.delete_collection("papers")
                 assert result["status"] == "success"
+
+
+class TestAsyncTenantClient:
+    async def test_insert_uses_collection_docs_route(self) -> None:
+        with respx.mock:
+            route = respx.post(f"{BASE}/v3/tenants/tenant-123/collections/papers/docs").mock(
+                return_value=httpx.Response(200, json={"status": "success", "id": 11})
+            )
+            async with AsyncDeepDataClient(BASE, retry=None) as client:
+                tenant = client.tenant("tenant-123")
+                result = await tenant.insert("papers", vectors={"embedding": [0.1, 0.2]})
+                assert result["id"] == 11
+                assert route.called
+
+    async def test_search_uses_collection_search_route(self) -> None:
+        with respx.mock:
+            route = respx.post(f"{BASE}/v3/tenants/tenant-123/collections/papers/search").mock(
+                return_value=httpx.Response(200, json={"status": "success", "documents": []})
+            )
+            async with AsyncDeepDataClient(BASE, retry=None) as client:
+                tenant = client.tenant("tenant-123")
+                result = await tenant.search("papers", queries={"embedding": [0.1, 0.2]}, top_k=2)
+                assert result["status"] == "success"
+                assert route.called

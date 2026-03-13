@@ -71,7 +71,7 @@ func classifyHTTPError(statusCode int, body string) *APIError {
 		ae.Cause = ErrCollectionNotFound
 	case statusCode == 409:
 		ae.Cause = ErrCollectionExists
-	case statusCode == 422:
+	case statusCode == 400 || statusCode == 422:
 		ae.Cause = ErrValidation
 	case statusCode == 429:
 		ae.Cause = ErrRateLimited

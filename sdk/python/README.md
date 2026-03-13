@@ -92,8 +92,8 @@ client.delete_collection("papers")
 ```python
 tenant = client.tenant("org-123")
 tenant.create_collection("docs", fields=[...])
-tenant.insert("docs", doc="Hello world")
-results = tenant.search("docs", query="Hello", top_k=5)
+tenant.insert("docs", vectors={"embedding": [0.1, 0.2, 0.3]})
+results = tenant.search("docs", queries={"embedding": [0.1, 0.2, 0.3]}, top_k=5)
 ```
 
 ## Search Options

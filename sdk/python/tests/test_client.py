@@ -343,6 +343,14 @@ class TestSparseInsert:
 
 
 class TestErrorHandling:
+    def test_400_raises_validation_error(self) -> None:
+        with respx.mock:
+            respx.post(f"{BASE}/insert").mock(
+                return_value=httpx.Response(400, text="doc required")
+            )
+            with pytest.raises(ValidationError):
+                _client().insert("")
+
     def test_401_raises_authentication_error(self) -> None:
         with respx.mock:
             respx.get(f"{BASE}/health").mock(
@@ -400,6 +408,28 @@ class TestAuth:
             req = route.calls[0].request
             assert req.headers["authorization"] == "Bearer sk-test-token"
             assert req.headers["x-tenant-id"] == "tenant-123"
+
+
+class TestTenantClient:
+    def test_insert_uses_collection_docs_route(self) -> None:
+        with respx.mock:
+            route = respx.post(f"{BASE}/v3/tenants/tenant-123/collections/papers/docs").mock(
+                return_value=httpx.Response(200, json={"status": "success", "id": 7})
+            )
+            tenant = _client().tenant("tenant-123")
+            result = tenant.insert("papers", vectors={"embedding": [0.1, 0.2]}, metadata={"topic": "ml"})
+            assert result["id"] == 7
+            assert route.called
+
+    def test_search_uses_collection_search_route(self) -> None:
+        with respx.mock:
+            route = respx.post(f"{BASE}/v3/tenants/tenant-123/collections/papers/search").mock(
+                return_value=httpx.Response(200, json={"status": "success", "documents": []})
+            )
+            tenant = _client().tenant("tenant-123")
+            result = tenant.search("papers", queries={"embedding": [0.1, 0.2]}, top_k=3, ef_search=32)
+            assert result["status"] == "success"
+            assert route.called
 
 
 class TestRetry:

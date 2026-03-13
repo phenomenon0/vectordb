@@ -58,6 +58,12 @@ class TestClassifyError:
     def test_422(self) -> None:
         err = classify_error(422, "validation")
         assert isinstance(err, ValidationError)
+        assert err.status_code == 422
+
+    def test_400(self) -> None:
+        err = classify_error(400, "validation")
+        assert isinstance(err, ValidationError)
+        assert err.status_code == 400
 
     def test_429(self) -> None:
         err = classify_error(429, "rate limited")

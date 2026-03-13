@@ -62,10 +62,10 @@ class NotFoundError(APIError):
 
 
 class ValidationError(APIError):
-    """422 Unprocessable Entity."""
+    """400/422 validation failure."""
 
-    def __init__(self, message: str = "validation error") -> None:
-        super().__init__(422, message, retryable=False)
+    def __init__(self, message: str = "validation error", *, status_code: int = 422) -> None:
+        super().__init__(status_code, message, retryable=False)
 
 
 class RateLimitError(APIError):
@@ -100,8 +100,8 @@ def classify_error(status_code: int, body: str) -> APIError:
         return PermissionError(body)
     if status_code == 404:
         return NotFoundError(body)
-    if status_code == 422:
-        return ValidationError(body)
+    if status_code in (400, 422):
+        return ValidationError(body, status_code=status_code)
     if status_code == 429:
         return RateLimitError(body)
     if status_code >= 500:
