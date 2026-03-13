@@ -34,7 +34,17 @@
     ],
     "externalBin": [
       "binaries/deepdata"
-    ]
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist",
+      "signingIdentity": null,
+      "minimumSystemVersion": "10.15",
+      "frameworks": []
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "timestampUrl": ""
+    }
   },
   "plugins": {}
 }

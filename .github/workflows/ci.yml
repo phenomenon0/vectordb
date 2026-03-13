@@ -160,6 +160,21 @@ jobs:
           CGO_ENABLED=0 GOARCH=arm64 go build -ldflags="-s -w" -o desktop/src-tauri/binaries/deepdata-aarch64-apple-darwin ./cmd/deepdata/
           CGO_ENABLED=0 GOARCH=amd64 go build -ldflags="-s -w" -o desktop/src-tauri/binaries/deepdata-x86_64-apple-darwin ./cmd/deepdata/
 
+      - name: Import Apple signing certificate
+        if: matrix.target == 'macos' && env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" build.keychain
+          rm certificate.p12
+
       - name: Build Go sidecar (Windows)
         if: matrix.target == 'windows'
         shell: bash
@@ -172,11 +187,44 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked
 
+      - name: Ad-hoc sign sidecar (macOS, no certificate)
+        if: matrix.target == 'macos' && env.APPLE_CERTIFICATE == ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          for bin in desktop/src-tauri/binaries/deepdata-*-apple-darwin; do
+            codesign --force --sign - --entitlements desktop/src-tauri/entitlements.plist "$bin"
+          done
+
       - name: Build desktop app
         working-directory: desktop
         run: cargo tauri build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ''
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+
+      - name: Ad-hoc sign app bundle (macOS, no certificate)
+        if: matrix.target == 'macos' && env.APPLE_CERTIFICATE == ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          APP_BUNDLE=$(find desktop/src-tauri/target/release/bundle -name "*.app" -maxdepth 3 | head -1)
+          if [ -n "$APP_BUNDLE" ]; then
+            codesign --force --deep --sign - --entitlements desktop/src-tauri/entitlements.plist "$APP_BUNDLE"
+          fi
+
+      - name: Notarize (macOS, with certificate)
+        if: matrix.target == 'macos' && env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG=$(find desktop/src-tauri/target/release/bundle/dmg -name "*.dmg" | head -1)
+          if [ -n "$DMG" ]; then
+            xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+            xcrun stapler staple "$DMG"
+          fi
 
       - name: Upload desktop bundle
         uses: actions/upload-artifact@v4
