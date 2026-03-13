@@ -36,7 +36,7 @@ type FailoverManager struct {
 
 // shardFailoverState tracks failover state for a single shard
 type shardFailoverState struct {
-	shardID              int
+	shardID               int
 	primaryUnhealthySince *time.Time // When primary became unhealthy (nil if healthy)
 	failoverInProgress    bool
 	lastCheckTime         time.Time
@@ -228,10 +228,10 @@ func (fm *FailoverManager) performFailover(shardID int, oldPrimary *ShardNode, r
 			DecisionType: DecisionFailover,
 			ShardID:      shardID,
 			Payload: map[string]any{
-				"replica_id":       bestReplica.NodeID,
-				"replication_lag":  float64(bestReplica.ReplicationLag),
-				"old_primary":      oldPrimary.NodeID,
-				"unhealthy_since":  state.primaryUnhealthySince.Unix(),
+				"replica_id":      bestReplica.NodeID,
+				"replication_lag": float64(bestReplica.ReplicationLag),
+				"old_primary":     oldPrimary.NodeID,
+				"unhealthy_since": state.primaryUnhealthySince.Unix(),
 			},
 		}
 
@@ -411,6 +411,11 @@ func (fm *FailoverManager) ManualFailover(shardID int) error {
 		state = &shardFailoverState{shardID: shardID}
 		fm.shardStates[shardID] = state
 	}
+	if state.failoverInProgress {
+		fm.mu.Unlock()
+		return fmt.Errorf("failover already in progress for shard %d", shardID)
+	}
+	state.failoverInProgress = true
 	fm.mu.Unlock()
 
 	fmt.Printf("🔧 Manual failover triggered for shard %d\n", shardID)
@@ -433,9 +438,9 @@ func (fm *FailoverManager) GetFailoverStats() map[string]any {
 
 	for shardID, state := range fm.shardStates {
 		shardInfo := map[string]any{
-			"shard_id":            shardID,
+			"shard_id":             shardID,
 			"failover_in_progress": state.failoverInProgress,
-			"last_check":          state.lastCheckTime.Unix(),
+			"last_check":           state.lastCheckTime.Unix(),
 		}
 
 		if state.primaryUnhealthySince != nil {

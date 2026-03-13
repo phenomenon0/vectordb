@@ -214,6 +214,14 @@ func (le *LeaderElector) triggerElection(state *LeadershipState) {
 	// Re-acquire lock before modifying state
 	state.mu.Lock()
 
+	// Another leader may have advanced the epoch while we waited on quorum.
+	// Never let a stale election overwrite newer state.
+	if state.LeaderEpoch != newEpoch || state.ElectionState != PhaseElecting {
+		fmt.Printf("[LeaderElection] Shard %d: Discarding stale election result for epoch %d (current epoch %d, state %s)\n",
+			shardID, newEpoch, state.LeaderEpoch, state.ElectionState.String())
+		return // Caller still holds lock
+	}
+
 	if err != nil || !approved {
 		fmt.Printf("[LeaderElection] Shard %d: Election failed (epoch %d): %v\n",
 			shardID, newEpoch, err)
@@ -224,6 +232,7 @@ func (le *LeaderElector) triggerElection(state *LeadershipState) {
 	// We won the election!
 	state.CurrentLeader = le.nodeID
 	state.IsLeader = true
+	state.LeaderEpoch = newEpoch
 	state.LeaseExpiry = time.Now().Add(le.config.LeaderLeaseDuration)
 	state.ElectionState = PhaseStable
 	state.LastHeartbeat = time.Now()

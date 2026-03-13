@@ -89,8 +89,8 @@ type FollowerReplicatorConfig struct {
 // DefaultFollowerReplicatorConfig returns sensible defaults
 func DefaultFollowerReplicatorConfig() FollowerReplicatorConfig {
 	return FollowerReplicatorConfig{
-		PollInterval:         1 * time.Second,         // Poll interval when caught up
-		FastPollInterval:     100 * time.Millisecond,  // Poll interval when entries available
+		PollInterval:         1 * time.Second,        // Poll interval when caught up
+		FastPollInterval:     100 * time.Millisecond, // Poll interval when entries available
 		ReconnectInterval:    5 * time.Second,
 		MaxReconnectAttempts: -1, // Infinite retries
 		BatchSize:            1000,
@@ -529,28 +529,7 @@ func (fr *FollowerReplicator) applyStreamingSnapshot(ctx context.Context, path s
 	}
 
 	// Build SnapshotData
-	snapData := &SnapshotData{
-		Count:    fileData.Metadata.VectorCount,
-		Dim:      fileData.Metadata.Dimension,
-		IDs:      fileData.IDs,
-		Docs:     fileData.Docs,
-		Data:     fileData.Data,
-		Seqs:     fileData.Seqs,
-		Meta:     fileData.Meta,
-		NumMeta:  fileData.NumMeta,
-		TimeMeta: fileData.TimeMeta,
-		Deleted:  fileData.Deleted,
-		Coll:     fileData.Coll,
-		TenantID: fileData.TenantID,
-		LexTF:    fileData.LexTF,
-		DocLen:   fileData.DocLen,
-		DF:       fileData.DF,
-		SumDocL:  fileData.SumDocL,
-	}
-	snapData.IDToIx = make(map[uint64]int)
-	for i, seq := range fileData.Seqs {
-		snapData.IDToIx[seq] = i
-	}
+	snapData := snapshotDataFromFileData(fileData)
 
 	// Apply to store
 	fr.shard.store.StoreLock()

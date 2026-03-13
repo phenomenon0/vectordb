@@ -3,8 +3,9 @@ package cluster
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	"github.com/phenomenon0/vectordb/internal/testutil"
 )
 
 func TestSnapshotSyncEndToEnd(t *testing.T) {
@@ -77,11 +78,10 @@ func TestSnapshotTransferHandler(t *testing.T) {
 	snapshot.Checksum = snapshot.computeChecksum()
 
 	// Serve it via HTTP
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(snapshot)
 	}))
-	defer server.Close()
 
 	// Fetch and validate
 	resp, err := http.Get(server.URL + "/internal/snapshot")
@@ -108,11 +108,10 @@ func TestSnapshotTransferHandler(t *testing.T) {
 
 func TestWALStreamGapTriggersSnapshot(t *testing.T) {
 	// Simulate the WAL stream client seeing a 410 response
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := testutil.NewLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Always return 410 to simulate WAL gap
 		http.Error(w, "WAL entries trimmed", http.StatusGone)
 	}))
-	defer server.Close()
 
 	client := NewWALStreamClient(server.URL, "")
 	_, err := client.PullLatest()

@@ -459,6 +459,26 @@ func TestManualFailover(t *testing.T) {
 			t.Error("expected state to be created")
 		}
 	})
+
+	t.Run("rejects second manual trigger while in progress", func(t *testing.T) {
+		shards := map[int][]*ShardNode{
+			0: {
+				{NodeID: "primary-1", ShardID: 0, Role: RolePrimary, Healthy: true, LastSeen: now},
+				{NodeID: "replica-1", ShardID: 0, Role: RoleReplica, Healthy: true, LastSeen: now},
+			},
+		}
+		coordinator := mockDistributedVectorDB(shards)
+		fm := NewFailoverManager(coordinator, FailoverConfig{})
+		fm.shardStates[0] = &shardFailoverState{
+			shardID:            0,
+			failoverInProgress: true,
+		}
+
+		err := fm.ManualFailover(0)
+		if err == nil {
+			t.Fatal("expected error when manual failover is already in progress")
+		}
+	})
 }
 
 // TestPromoteReplica tests replica promotion

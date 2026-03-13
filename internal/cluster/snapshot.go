@@ -180,6 +180,7 @@ type snapshotFileData struct {
 	Docs     []string                        `json:"docs"`
 	IDs      []string                        `json:"ids"`
 	Seqs     []uint64                        `json:"seqs"`
+	IDToIx   map[uint64]int                  `json:"id_to_ix,omitempty"`
 	Meta     map[uint64]map[string]string    `json:"meta"`
 	NumMeta  map[uint64]map[string]float64   `json:"num_meta"`
 	TimeMeta map[uint64]map[string]time.Time `json:"time_meta"`
@@ -192,6 +193,87 @@ type snapshotFileData struct {
 	SumDocL  int                             `json:"sum_doc_l"`
 }
 
+func snapshotKeysByIndex(snapData *SnapshotData) ([]uint64, []bool) {
+	maxEntries := snapData.Count
+	if len(snapData.IDs) > maxEntries {
+		maxEntries = len(snapData.IDs)
+	}
+	if len(snapData.Docs) > maxEntries {
+		maxEntries = len(snapData.Docs)
+	}
+	if len(snapData.Seqs) > maxEntries {
+		maxEntries = len(snapData.Seqs)
+	}
+	if snapData.Dim > 0 {
+		if dataCount := len(snapData.Data) / snapData.Dim; dataCount > maxEntries {
+			maxEntries = dataCount
+		}
+	}
+
+	keys := make([]uint64, maxEntries)
+	present := make([]bool, maxEntries)
+
+	for key, idx := range snapData.IDToIx {
+		if idx < 0 || idx >= maxEntries {
+			continue
+		}
+		keys[idx] = key
+		present[idx] = true
+	}
+
+	for i := 0; i < maxEntries && i < len(snapData.Seqs); i++ {
+		if present[i] {
+			continue
+		}
+		keys[i] = snapData.Seqs[i]
+		present[i] = true
+	}
+
+	return keys, present
+}
+
+func snapshotDataFromFileData(data *snapshotFileData) *SnapshotData {
+	snapData := &SnapshotData{
+		IDs:      data.IDs,
+		Docs:     data.Docs,
+		Data:     data.Data,
+		Seqs:     data.Seqs,
+		IDToIx:   make(map[uint64]int),
+		Meta:     data.Meta,
+		NumMeta:  data.NumMeta,
+		TimeMeta: data.TimeMeta,
+		Deleted:  data.Deleted,
+		Coll:     data.Coll,
+		TenantID: data.TenantID,
+		LexTF:    data.LexTF,
+		DocLen:   data.DocLen,
+		DF:       data.DF,
+		SumDocL:  data.SumDocL,
+	}
+
+	if data.Metadata != nil {
+		snapData.Count = data.Metadata.VectorCount
+		snapData.Dim = data.Metadata.Dimension
+	} else {
+		snapData.Count = len(data.IDs)
+		if len(data.Seqs) > snapData.Count {
+			snapData.Count = len(data.Seqs)
+		}
+	}
+
+	if len(data.IDToIx) > 0 {
+		for key, idx := range data.IDToIx {
+			snapData.IDToIx[key] = idx
+		}
+	} else {
+		for i, seq := range data.Seqs {
+			snapData.IDToIx[seq] = i
+		}
+	}
+
+	return snapData
+}
+
 // writeSnapshot serializes store state to a file
 func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapshot, snapData *SnapshotData) error {
 	file, err := os.Create(path)
@@ -201,12 +283,14 @@ func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapsh
 	defer file.Close()
 
 	// Filter out deleted vectors from the snapshot to prevent monotonic growth.
-	// Build a set of live indices (not marked as deleted).
-	liveIndices := make(map[int]bool, len(snapData.Seqs))
-	for i, seq := range snapData.Seqs {
-		if !snapData.Deleted[seq] {
-			liveIndices[i] = true
+	// Store metadata is keyed by hashed document ID, not sequence number.
+	keysByIndex, hasKey := snapshotKeysByIndex(snapData)
+	liveIndices := make(map[int]bool, len(keysByIndex))
+	for i := range keysByIndex {
+		if hasKey[i] && snapData.Deleted[keysByIndex[i]] {
+			continue
 		}
+		liveIndices[i] = true
 	}
 
 	// Build filtered slices containing only live vectors
@@ -214,6 +298,7 @@ func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapsh
 	filteredDocs := make([]string, 0, len(liveIndices))
 	filteredIDs := make([]string, 0, len(liveIndices))
 	filteredSeqs := make([]uint64, 0, len(liveIndices))
+	filteredIDToIx := make(map[uint64]int, len(liveIndices))
 	filteredMeta := make(map[uint64]map[string]string, len(liveIndices))
 	filteredNumMeta := make(map[uint64]map[string]float64, len(liveIndices))
 	filteredTimeMeta := make(map[uint64]map[string]time.Time, len(liveIndices))
@@ -222,11 +307,12 @@ func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapsh
 	filteredLexTF := make(map[uint64]map[string]int, len(liveIndices))
 	filteredDocLen := make(map[uint64]int, len(liveIndices))
 
-	for i := 0; i < len(snapData.Seqs); i++ {
+	for i := range keysByIndex {
 		if !liveIndices[i] {
 			continue
 		}
-		seq := snapData.Seqs[i]
+		key := keysByIndex[i]
+		nextIdx := len(filteredIDs)
 
 		// Copy vector data (dim floats per vector)
 		start := i * snapData.Dim
@@ -240,39 +326,44 @@ func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapsh
 		if i < len(snapData.IDs) {
 			filteredIDs = append(filteredIDs, snapData.IDs[i])
 		}
-		filteredSeqs = append(filteredSeqs, seq)
+		if i < len(snapData.Seqs) {
+			filteredSeqs = append(filteredSeqs, snapData.Seqs[i])
+		}
+		if hasKey[i] {
+			filteredIDToIx[key] = nextIdx
+		}
 
-		if m, ok := snapData.Meta[seq]; ok {
-			filteredMeta[seq] = m
+		if m, ok := snapData.Meta[key]; ok {
+			filteredMeta[key] = m
 		}
-		if m, ok := snapData.NumMeta[seq]; ok {
-			filteredNumMeta[seq] = m
+		if m, ok := snapData.NumMeta[key]; ok {
+			filteredNumMeta[key] = m
 		}
-		if m, ok := snapData.TimeMeta[seq]; ok {
-			filteredTimeMeta[seq] = m
+		if m, ok := snapData.TimeMeta[key]; ok {
+			filteredTimeMeta[key] = m
 		}
-		if c, ok := snapData.Coll[seq]; ok {
-			filteredColl[seq] = c
+		if c, ok := snapData.Coll[key]; ok {
+			filteredColl[key] = c
 		}
-		if t, ok := snapData.TenantID[seq]; ok {
-			filteredTenantID[seq] = t
+		if t, ok := snapData.TenantID[key]; ok {
+			filteredTenantID[key] = t
 		}
-		if tf, ok := snapData.LexTF[seq]; ok {
-			filteredLexTF[seq] = tf
+		if tf, ok := snapData.LexTF[key]; ok {
+			filteredLexTF[key] = tf
 		}
-		if dl, ok := snapData.DocLen[seq]; ok {
-			filteredDocLen[seq] = dl
+		if dl, ok := snapData.DocLen[key]; ok {
+			filteredDocLen[key] = dl
 		}
 	}
 
 	// Rebuild DF from only live documents' term frequencies to remove dead terms
 	filteredDF := make(map[string]int, len(snapData.DF))
 	filteredSumDocL := 0
-	for seq, tf := range filteredLexTF {
+	for key, tf := range filteredLexTF {
 		for term := range tf {
 			filteredDF[term]++
 		}
-		if dl, ok := filteredDocLen[seq]; ok {
+		if dl, ok := filteredDocLen[key]; ok {
 			filteredSumDocL += dl
 		}
 	}
@@ -287,6 +378,7 @@ func (ssm *SnapshotSyncManager) writeSnapshot(path string, metadata *StoreSnapsh
 		Docs:     filteredDocs,
 		IDs:      filteredIDs,
 		Seqs:     filteredSeqs,
+		IDToIx:   filteredIDToIx,
 		Meta:     filteredMeta,
 		NumMeta:  filteredNumMeta,
 		TimeMeta: filteredTimeMeta,
@@ -329,30 +421,7 @@ func (ssm *SnapshotSyncManager) LoadSnapshot(ctx context.Context, snapshotID str
 	}
 
 	// Build SnapshotData and load into store
-	snapData := &SnapshotData{
-		Count:    data.Metadata.VectorCount,
-		Dim:      data.Metadata.Dimension,
-		IDs:      data.IDs,
-		Docs:     data.Docs,
-		Data:     data.Data,
-		Seqs:     data.Seqs,
-		Meta:     data.Meta,
-		NumMeta:  data.NumMeta,
-		TimeMeta: data.TimeMeta,
-		Deleted:  data.Deleted,
-		Coll:     data.Coll,
-		TenantID: data.TenantID,
-		LexTF:    data.LexTF,
-		DocLen:   data.DocLen,
-		DF:       data.DF,
-		SumDocL:  data.SumDocL,
-	}
-
-	// Rebuild idToIx mapping
-	snapData.IDToIx = make(map[uint64]int)
-	for i, seq := range data.Seqs {
-		snapData.IDToIx[seq] = i
-	}
+	snapData := snapshotDataFromFileData(data)
 
 	// Apply to store via interface
 	ssm.store.StoreLock()
@@ -695,30 +764,7 @@ func (ssc *SnapshotSyncClient) FetchAndApplySnapshot(ctx context.Context, store 
 	}
 
 	// Build SnapshotData
-	snapData := &SnapshotData{
-		Count:    fileData.Metadata.VectorCount,
-		Dim:      fileData.Metadata.Dimension,
-		IDs:      fileData.IDs,
-		Docs:     fileData.Docs,
-		Data:     fileData.Data,
-		Seqs:     fileData.Seqs,
-		Meta:     fileData.Meta,
-		NumMeta:  fileData.NumMeta,
-		TimeMeta: fileData.TimeMeta,
-		Deleted:  fileData.Deleted,
-		Coll:     fileData.Coll,
-		TenantID: fileData.TenantID,
-		LexTF:    fileData.LexTF,
-		DocLen:   fileData.DocLen,
-		DF:       fileData.DF,
-		SumDocL:  fileData.SumDocL,
-	}
-
-	// Rebuild idToIx mapping
-	snapData.IDToIx = make(map[uint64]int)
-	for i, seq := range fileData.Seqs {
-		snapData.IDToIx[seq] = i
-	}
+	snapData := snapshotDataFromFileData(fileData)
 
 	// Apply to store via interface
 	store.StoreLock()

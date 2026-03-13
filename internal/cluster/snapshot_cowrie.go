@@ -104,6 +104,9 @@ func encodeSnapshotCowrie(data *snapshotFileData) ([]byte, error) {
 	if len(data.Seqs) > 0 {
 		obj.Set("seqs", cowrieutil.EncodeUint64Array(data.Seqs))
 	}
+	if len(data.IDToIx) > 0 {
+		obj.Set("id_to_ix", cowrieutil.EncodeIntMapUint64(data.IDToIx))
+	}
 
 	// Maps
 	if len(data.Meta) > 0 {
@@ -203,6 +206,9 @@ func decodeSnapshotCowrie(raw []byte) (*snapshotFileData, error) {
 	}
 	if v := obj.Get("seqs"); v != nil {
 		data.Seqs = cowrieutil.DecodeUint64Array(v)
+	}
+	if v := obj.Get("id_to_ix"); v != nil {
+		data.IDToIx = cowrieutil.DecodeIntMapUint64(v)
 	}
 
 	// Maps
