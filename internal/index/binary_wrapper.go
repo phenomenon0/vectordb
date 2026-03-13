@@ -110,6 +110,9 @@ func (w *BinaryWrapper) Search(ctx context.Context, query []float32, k int, para
 	if len(query) != w.dim {
 		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", w.dim, len(query))
 	}
+	if k <= 0 {
+		return []Result{}, nil
+	}
 
 	// Extract Binary specific params
 	rescore := false
@@ -192,11 +195,6 @@ func (w *BinaryWrapper) Search(ctx context.Context, query []float32, k int, para
 func (w *BinaryWrapper) Delete(ctx context.Context, id uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
-	// Remove from full vectors if stored
-	if w.keepFull && w.vectors != nil {
-		delete(w.vectors, id)
-	}
 
 	// Binary index doesn't support delete yet
 	return fmt.Errorf("delete not yet implemented for Binary index")

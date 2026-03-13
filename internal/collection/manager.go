@@ -353,7 +353,7 @@ func (cm *CollectionManager) ValidateCollection(schema CollectionSchema) error {
 
 // persistedCollection holds the serialized state of a single collection.
 type persistedCollection struct {
-	Schema        CollectionSchema          `json:"schema"`
+	Schema        CollectionSchema           `json:"schema"`
 	Indexes       map[string]json.RawMessage `json:"indexes"`
 	SparseIndexes map[string]json.RawMessage `json:"sparse_indexes,omitempty"`
 	NextID        uint64                     `json:"next_id"`
@@ -436,12 +436,17 @@ func (cm *CollectionManager) Load(path string) error {
 		return fmt.Errorf("unmarshal state: %w", err)
 	}
 
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
+	loadedCollections := make(map[string]*Collection, len(state.Collections))
+	closeLoaded := func() {
+		for _, coll := range loadedCollections {
+			coll.Close()
+		}
+	}
 
 	for name, pc := range state.Collections {
 		coll, err := NewCollection(pc.Schema)
 		if err != nil {
+			closeLoaded()
 			return fmt.Errorf("recreate collection %s: %w", name, err)
 		}
 
@@ -451,6 +456,8 @@ func (cm *CollectionManager) Load(path string) error {
 			indexes[field] = []byte(raw)
 		}
 		if err := coll.ImportIndexes(indexes); err != nil {
+			coll.Close()
+			closeLoaded()
 			return fmt.Errorf("import indexes for %s: %w", name, err)
 		}
 
@@ -461,6 +468,8 @@ func (cm *CollectionManager) Load(path string) error {
 				sparseIndexes[field] = []byte(raw)
 			}
 			if err := coll.ImportSparseIndexes(sparseIndexes); err != nil {
+				coll.Close()
+				closeLoaded()
 				return fmt.Errorf("import sparse indexes for %s: %w", name, err)
 			}
 		}
@@ -478,7 +487,16 @@ func (cm *CollectionManager) Load(path string) error {
 		}
 
 		coll.SetNextID(pc.NextID)
-		cm.collections[name] = coll
+		loadedCollections[name] = coll
+	}
+
+	cm.mu.Lock()
+	oldCollections := cm.collections
+	cm.collections = loadedCollections
+	cm.mu.Unlock()
+
+	for _, coll := range oldCollections {
+		coll.Close()
 	}
 
 	return nil

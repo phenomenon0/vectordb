@@ -26,16 +26,16 @@ type Posting struct {
 type InvertedIndex struct {
 	mu sync.RWMutex
 
-	dim            int                         // Maximum dimension
-	postings       map[uint32][]Posting        // term_id -> postings list
-	docNorms       map[uint64]float32          // doc_id -> L2 norm
-	docLengths     map[uint64]float32          // doc_id -> sum of values
-	docVectors     map[uint64]*SparseVector    // doc_id -> original vector
-	avgDocLength   float32                     // average document length
-	totalDocs      int                         // total documents indexed
-	totalDocLength float32                     // sum of all document lengths (for incremental avgDocLength)
-	totalPostings  int                         // total postings across all terms (for O(1) Stats)
-	termDocCounts  map[uint32]int              // term_id -> number of docs containing term
+	dim            int                      // Maximum dimension
+	postings       map[uint32][]Posting     // term_id -> postings list
+	docNorms       map[uint64]float32       // doc_id -> L2 norm
+	docLengths     map[uint64]float32       // doc_id -> sum of values
+	docVectors     map[uint64]*SparseVector // doc_id -> original vector
+	avgDocLength   float32                  // average document length
+	totalDocs      int                      // total documents indexed
+	totalDocLength float32                  // sum of all document lengths (for incremental avgDocLength)
+	totalPostings  int                      // total postings across all terms (for O(1) Stats)
+	termDocCounts  map[uint32]int           // term_id -> number of docs containing term
 
 	// BM25 parameters
 	k1 float32 // Term frequency saturation (default: 1.2)
@@ -127,7 +127,8 @@ type SearchResult struct {
 // Search performs BM25-based sparse vector search.
 //
 // BM25 Formula:
-//   score(D, Q) = Σ IDF(qi) * (f(qi, D) * (k1 + 1)) / (f(qi, D) + k1 * (1 - b + b * |D| / avgdl))
+//
+//	score(D, Q) = Σ IDF(qi) * (f(qi, D) * (k1 + 1)) / (f(qi, D) + k1 * (1 - b + b * |D| / avgdl))
 //
 // Where:
 //   - IDF(qi) = log((N - df(qi) + 0.5) / (df(qi) + 0.5) + 1)
@@ -390,11 +391,11 @@ func (idx *InvertedIndex) Count() int {
 
 // Stats returns index statistics.
 type IndexStats struct {
-	TotalDocs     int
-	TotalTerms    int
-	AvgDocLength  float32
-	AvgPostings   float32
-	MemoryUsage   int64
+	TotalDocs    int
+	TotalTerms   int
+	AvgDocLength float32
+	AvgPostings  float32
+	MemoryUsage  int64
 }
 
 func (idx *InvertedIndex) Stats() IndexStats {
@@ -408,10 +409,10 @@ func (idx *InvertedIndex) Stats() IndexStats {
 
 	// Estimate memory usage
 	memoryUsage := int64(0)
-	memoryUsage += int64(len(idx.postings)) * 8                    // map overhead
-	memoryUsage += int64(idx.totalPostings) * 12                    // postings (8 bytes docID + 4 bytes score)
-	memoryUsage += int64(len(idx.docVectors)) * (8 + 8 + 8)        // maps overhead
-	memoryUsage += int64(len(idx.docVectors)) * 32                 // vector overhead estimate
+	memoryUsage += int64(len(idx.postings)) * 8             // map overhead
+	memoryUsage += int64(idx.totalPostings) * 12            // postings (8 bytes docID + 4 bytes score)
+	memoryUsage += int64(len(idx.docVectors)) * (8 + 8 + 8) // maps overhead
+	memoryUsage += int64(len(idx.docVectors)) * 32          // vector overhead estimate
 
 	return IndexStats{
 		TotalDocs:    idx.totalDocs,
@@ -424,9 +425,9 @@ func (idx *InvertedIndex) Stats() IndexStats {
 
 // persistedSparseIndex is the serialization format for InvertedIndex.
 type persistedSparseIndex struct {
-	Dim  int                          `json:"dim"`
-	K1   float32                      `json:"k1"`
-	B    float32                      `json:"b"`
+	Dim  int                            `json:"dim"`
+	K1   float32                        `json:"k1"`
+	B    float32                        `json:"b"`
 	Docs map[string]*persistedSparseDoc `json:"docs"` // docID (string) -> sparse vector
 }
 
@@ -501,7 +502,7 @@ func (idx *InvertedIndex) Import(data []byte) error {
 		docLength := float32(0)
 		for i, termID := range vec.Indices {
 			score := vec.Values[i]
-			docLength += score
+			docLength += float32(math.Abs(float64(score)))
 
 			idx.postings[termID] = append(idx.postings[termID], Posting{
 				DocID: docID,

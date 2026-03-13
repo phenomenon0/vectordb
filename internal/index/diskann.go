@@ -39,9 +39,9 @@ type DiskANNIndex struct {
 
 	// Index structure
 	graphStore     GraphStore // Neighbor graph (abstracted for memory/disk backends)
-	maxDegree      int       // Maximum edges per node
-	efConstruction int                 // Expansion factor during construction
-	efSearch       int                 // Expansion factor during search
+	maxDegree      int        // Maximum edges per node
+	efConstruction int        // Expansion factor during construction
+	efSearch       int        // Expansion factor during search
 
 	// Metadata storage (for filtered search)
 	metadata   map[uint64]map[string]interface{}
@@ -450,6 +450,7 @@ func (d *DiskANNIndex) buildEdges(newID uint64, newVec []float32) error {
 				}
 				farthestIdx := d.findFarthest(neighborVec, neighbors)
 				neighbors[farthestIdx] = newID
+				d.graphStore.SetNeighbors(neighborID, neighbors)
 			}
 		}
 	}
@@ -715,6 +716,9 @@ func (d *DiskANNIndex) readFromDiskLinearScan(id uint64) ([]float32, error) {
 func (d *DiskANNIndex) Search(ctx context.Context, query []float32, k int, params SearchParams) ([]Result, error) {
 	if len(query) != d.dim {
 		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", d.dim, len(query))
+	}
+	if k <= 0 {
+		return []Result{}, nil
 	}
 
 	d.mu.RLock()

@@ -16,12 +16,12 @@ import (
 // - 95%+ recall with proper nprobe settings
 // - Thread-safe for concurrent reads/writes
 type IVFBinaryWrapper struct {
-	mu        sync.RWMutex
-	index     *IVFBinaryIndex
-	dim       int
-	trained   bool
-	vectors   map[uint64][]float32 // Store original vectors for rescoring (optional)
-	keepFull  bool                 // Whether to keep full vectors for rescoring
+	mu       sync.RWMutex
+	index    *IVFBinaryIndex
+	dim      int
+	trained  bool
+	vectors  map[uint64][]float32 // Store original vectors for rescoring (optional)
+	keepFull bool                 // Whether to keep full vectors for rescoring
 }
 
 // IVFBinarySearchParams are parameters specific to IVF-Binary search
@@ -138,11 +138,14 @@ func (w *IVFBinaryWrapper) AddBatch(ids []uint64, vectors []float32) error {
 }
 
 func (w *IVFBinaryWrapper) Search(ctx context.Context, query []float32, k int, params SearchParams) ([]Result, error) {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	if len(query) != w.dim {
 		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", w.dim, len(query))
+	}
+	if k <= 0 {
+		return []Result{}, nil
 	}
 
 	// Extract IVF-Binary specific params
@@ -150,13 +153,24 @@ func (w *IVFBinaryWrapper) Search(ctx context.Context, query []float32, k int, p
 	rescore := false
 	candidates := k * 10
 
-	if ivfParams, ok := params.(IVFBinarySearchParams); ok {
+	switch ivfParams := params.(type) {
+	case IVFBinarySearchParams:
 		if ivfParams.NProbe > 0 {
 			nprobe = ivfParams.NProbe
 		}
 		rescore = ivfParams.Rescore && w.keepFull
 		if ivfParams.Candidates > 0 {
 			candidates = ivfParams.Candidates
+		}
+	case *IVFBinarySearchParams:
+		if ivfParams != nil {
+			if ivfParams.NProbe > 0 {
+				nprobe = ivfParams.NProbe
+			}
+			rescore = ivfParams.Rescore && w.keepFull
+			if ivfParams.Candidates > 0 {
+				candidates = ivfParams.Candidates
+			}
 		}
 	}
 
@@ -200,11 +214,6 @@ func (w *IVFBinaryWrapper) Search(ctx context.Context, query []float32, k int, p
 func (w *IVFBinaryWrapper) Delete(ctx context.Context, id uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
-	// Remove from full vectors if stored
-	if w.keepFull && w.vectors != nil {
-		delete(w.vectors, id)
-	}
 
 	// IVF-Binary doesn't support delete yet, return error
 	// TODO: Implement tombstone-based deletion

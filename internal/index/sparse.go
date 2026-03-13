@@ -23,12 +23,12 @@ type SparseCoO struct {
 type SparseIndex struct {
 	mu sync.RWMutex
 
-	dim      int                      // Vector dimension
-	vectors  map[uint64]*SparseCoO    // ID -> sparse vector
-	inverted map[uint32][]uint64      // Dimension index -> list of vector IDs
-	norms    map[uint64]float32       // Pre-computed norms for cosine similarity
-	count    int                      // Total vectors added
-	deleted  map[uint64]bool          // Tombstone deletions
+	dim      int                   // Vector dimension
+	vectors  map[uint64]*SparseCoO // ID -> sparse vector
+	inverted map[uint32][]uint64   // Dimension index -> list of vector IDs
+	norms    map[uint64]float32    // Pre-computed norms for cosine similarity
+	count    int                   // Total vectors added
+	deleted  map[uint64]bool       // Tombstone deletions
 
 	distanceMetric string // "cosine", "dot", "jaccard"
 }
@@ -131,6 +131,9 @@ func (s *SparseIndex) Add(ctx context.Context, id uint64, vector []float32) erro
 func (s *SparseIndex) Search(ctx context.Context, query []float32, k int, params SearchParams) ([]Result, error) {
 	if len(query) != s.dim {
 		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", s.dim, len(query))
+	}
+	if k <= 0 {
+		return []Result{}, nil
 	}
 
 	s.mu.RLock()

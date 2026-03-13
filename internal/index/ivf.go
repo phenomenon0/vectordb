@@ -224,6 +224,9 @@ func (ivf *IVFIndex) Search(ctx context.Context, query []float32, k int, params 
 	if len(query) != ivf.dim {
 		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", ivf.dim, len(query))
 	}
+	if k <= 0 {
+		return []Result{}, nil
+	}
 
 	ivf.mu.RLock()
 	defer ivf.mu.RUnlock()

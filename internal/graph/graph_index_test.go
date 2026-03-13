@@ -148,6 +148,45 @@ func TestGraphIndexRemoveDocument(t *testing.T) {
 	}
 }
 
+func TestGraphIndexReindexClearsStaleMembership(t *testing.T) {
+	g := NewGraphIndex(DefaultConfig())
+
+	g.AddKnowledgeGraph(1, &extraction.KnowledgeGraph{
+		Nodes: []extraction.Node{
+			{ID: "alice", Name: "Alice", Type: "PERSON"},
+		},
+	})
+
+	g.AddKnowledgeGraph(1, &extraction.KnowledgeGraph{
+		Nodes: []extraction.Node{
+			{ID: "bob", Name: "Bob", Type: "PERSON"},
+		},
+	})
+
+	if docs := g.nodeDocMap["alice"]; docs != nil && docs[1] {
+		t.Fatal("re-indexed document should be removed from stale node membership")
+	}
+
+	if nodes := g.docNodes[1]; nodes["alice"] {
+		t.Fatal("re-indexed document should not retain stale node membership")
+	}
+
+	if nodes := g.docNodes[1]; !nodes["bob"] {
+		t.Fatal("re-indexed document should retain new node membership")
+	}
+
+	foundBob := false
+	for _, result := range g.Search([]string{"bob"}, 10) {
+		if result.DocID == 1 {
+			foundBob = true
+			break
+		}
+	}
+	if !foundBob {
+		t.Fatal("re-indexed document should remain discoverable for new node membership")
+	}
+}
+
 func TestGraphIndexNilKnowledgeGraph(t *testing.T) {
 	g := NewGraphIndex(DefaultConfig())
 	g.AddKnowledgeGraph(1, nil) // Should not panic
