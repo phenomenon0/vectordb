@@ -1611,7 +1611,23 @@ func (r *SimpleReranker) Rerank(query string, docs []string, topK int) ([]string
 			bestDocs[minIdx] = doc
 		}
 	}
-	return bestDocs, bestScores, "Simple rerank", nil
+
+	order := make([]int, len(bestScores))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool {
+		return bestScores[order[i]] > bestScores[order[j]]
+	})
+
+	sortedDocs := make([]string, 0, len(order))
+	sortedScores := make([]float32, 0, len(order))
+	for _, idx := range order {
+		sortedDocs = append(sortedDocs, bestDocs[idx])
+		sortedScores = append(sortedScores, bestScores[idx])
+	}
+
+	return sortedDocs, sortedScores, "Simple rerank", nil
 }
 
 // ======================================================================================

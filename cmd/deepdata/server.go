@@ -181,13 +181,23 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 					return
 				}
 
+				requestedTenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+				if requestedTenantID != "" && !isValidTenantID(requestedTenantID) {
+					http.Error(w, "invalid X-Tenant-ID header", http.StatusBadRequest)
+					return
+				}
+				tenantID := "default"
+				if requestedTenantID != "" {
+					tenantID = requestedTenantID
+				}
+
 				// Use default tenant context for non-JWT mode
 				if tenantCtx == nil {
 					tenantCtx = &security.TenantContext{
-						TenantID:    "default",
+						TenantID:    tenantID,
 						Permissions: map[string]bool{"read": true, "write": true},
 						Collections: make(map[string]bool),
-						IsAdmin:     store.jwtMgr == nil && store.apiToken == "",
+						IsAdmin:     store.jwtMgr == nil && store.apiToken == "" && requestedTenantID == "",
 					}
 				}
 			}
@@ -634,6 +644,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			http.Error(w, fmt.Sprintf("query too long: max %d bytes", MaxQueryLength), http.StatusBadRequest)
 			return
 		}
+		if req.TopK < 0 {
+			http.Error(w, "top_k must be >= 0", http.StatusBadRequest)
+			return
+		}
+		if req.Offset < 0 {
+			http.Error(w, "offset must be >= 0", http.StatusBadRequest)
+			return
+		}
+		if req.Limit < 0 {
+			http.Error(w, "limit must be >= 0", http.StatusBadRequest)
+			return
+		}
+		if req.PageSize < 0 {
+			http.Error(w, "page_size must be >= 0", http.StatusBadRequest)
+			return
+		}
 
 		// Start telemetry span for search operation
 		_, span := telemetry.StartSearch(r.Context(), req.Collection, req.TopK, req.Mode)
@@ -688,14 +714,39 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if req.PageSize > 0 {
 			pageSize = req.PageSize
 		}
+
+		queryHash := hashQueryCursor(
+			req.Query,
+			req.TopK,
+			pageSize,
+			req.Limit,
+			req.Meta,
+			req.MetaAny,
+			req.MetaNot,
+			req.MetaRanges,
+			req.Collection,
+			req.Mode,
+			req.ScoreMode,
+			req.EfSearch,
+			req.HybridAlpha,
+			tenantID,
+		)
+
 		offset := req.Offset
+		var cursor pageCursor
+		hasCursor := false
 		if req.PageToken != "" {
-			if v, err := decodePageToken(req.PageToken); err == nil {
-				offset = v.Offset
-				if v.FilterHash != hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode) {
-					http.Error(w, "page token invalid for current query", http.StatusBadRequest)
-					return
-				}
+			v, err := decodePageToken(req.PageToken)
+			if err != nil {
+				http.Error(w, "invalid page token", http.StatusBadRequest)
+				return
+			}
+			offset = v.Offset
+			hasCursor = true
+			cursor = v
+			if v.FilterHash != queryHash {
+				http.Error(w, "page token invalid for current query", http.StatusBadRequest)
+				return
 			}
 		}
 
@@ -804,6 +855,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				return resultItems[i].score > resultItems[j].score
 			})
 		}
+		if hasCursor && cursor.Offset > 0 {
+			if cursor.Offset > len(resultItems) || resultItems[cursor.Offset-1].seq != cursor.LastSeq {
+				http.Error(w, "page token is stale; rerun the query", http.StatusBadRequest)
+				return
+			}
+		}
 
 		start := offset
 		if start > len(resultItems) {
@@ -821,7 +878,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		nextPage := ""
 		if end < len(resultItems) && len(pageItems) > 0 {
 			lastSeq := pageItems[len(pageItems)-1].seq
-			nextPage = encodePageToken(offset+pageSize, hashFilters(req.Meta, req.MetaAny, req.MetaNot, req.MetaRanges, req.Collection, req.Mode, req.ScoreMode), lastSeq)
+			nextPage = encodePageToken(end, queryHash, lastSeq)
 		}
 
 		pageDocs := make([]string, 0, len(pageItems))
@@ -2534,7 +2591,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			}
 
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, X-Tenant-ID")
 			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 
 			// Handle preflight OPTIONS requests
@@ -3086,8 +3143,12 @@ func decodePageToken(tok string) (pageCursor, error) {
 	return cur, nil
 }
 
-func hashFilters(meta map[string]string, any []map[string]string, not map[string]string, ranges []RangeFilter, coll string, mode string, scoreMode string) string {
+func hashQueryCursor(query string, topK int, pageSize int, limit int, meta map[string]string, any []map[string]string, not map[string]string, ranges []RangeFilter, coll string, mode string, scoreMode string, efSearch int, hybridAlpha float64, tenantID string) string {
 	type filterHash struct {
+		Query     string              `json:"query"`
+		TopK      int                 `json:"top_k"`
+		PageSize  int                 `json:"page_size"`
+		Limit     int                 `json:"limit"`
 		Meta      map[string]string   `json:"meta"`
 		Any       []map[string]string `json:"any"`
 		Not       map[string]string   `json:"not"`
@@ -3095,8 +3156,17 @@ func hashFilters(meta map[string]string, any []map[string]string, not map[string
 		Coll      string              `json:"coll"`
 		Mode      string              `json:"mode"`
 		ScoreMode string              `json:"score_mode"`
+		EfSearch  int                 `json:"ef_search"`
+		TenantID  string              `json:"tenant_id"`
+	}
+	type hybridHash struct {
+		Alpha float64 `json:"alpha"`
 	}
 	payload := filterHash{
+		Query:     query,
+		TopK:      topK,
+		PageSize:  pageSize,
+		Limit:     limit,
 		Meta:      meta,
 		Any:       any,
 		Not:       not,
@@ -3104,8 +3174,18 @@ func hashFilters(meta map[string]string, any []map[string]string, not map[string
 		Coll:      coll,
 		Mode:      mode,
 		ScoreMode: scoreMode,
+		EfSearch:  efSearch,
+		TenantID:  tenantID,
 	}
-	b, _ := json.Marshal(payload)
+	b, _ := json.Marshal(struct {
+		Filters filterHash `json:"filters"`
+		Hybrid  hybridHash `json:"hybrid"`
+	}{
+		Filters: payload,
+		Hybrid: hybridHash{
+			Alpha: hybridAlpha,
+		},
+	})
 	sum := fnv.New64a()
 	_, _ = sum.Write(b)
 	return fmt.Sprintf("%x", sum.Sum64())

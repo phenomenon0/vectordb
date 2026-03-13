@@ -195,3 +195,40 @@ func TestCollectionHTTPHandleSearchCanOmitVectors(t *testing.T) {
 		t.Fatal("expected vectors to be omitted when include_vectors=false")
 	}
 }
+
+func TestCollectionHTTPHandleGetDocuments(t *testing.T) {
+	server := setupCollectionHTTPServerForSearch(t)
+
+	body, err := json.Marshal(map[string]interface{}{
+		"ids": []uint64{2, 4, 999},
+	})
+	if err != nil {
+		t.Fatalf("marshal request failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v2/collections/test/get", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.handleCollectionOps(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Status    string                 `json:"status"`
+		Documents []vcollection.Document `json:"documents"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if resp.Status != "success" {
+		t.Fatalf("unexpected status payload: %+v", resp)
+	}
+	if len(resp.Documents) != 2 {
+		t.Fatalf("expected 2 found documents, got %d", len(resp.Documents))
+	}
+	if resp.Documents[0].ID != 2 || resp.Documents[1].ID != 4 {
+		t.Fatalf("unexpected document ids: [%d %d]", resp.Documents[0].ID, resp.Documents[1].ID)
+	}
+}

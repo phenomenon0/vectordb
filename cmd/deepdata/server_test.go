@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phenomenon0/vectordb/client"
@@ -224,6 +225,211 @@ func TestHTTPQueryPaginationUsesPageToken(t *testing.T) {
 	}
 	if page3.Next != "" {
 		t.Fatalf("expected final page to have empty next token, got %q", page3.Next)
+	}
+}
+
+func TestHTTPQueryPaginationRejectsChangedQuery(t *testing.T) {
+	emb := &testEmbedder{
+		dim: 2,
+		vectors: map[string][]float32{
+			"apple alpha": {1, 0},
+			"apple beta":  {1, 0},
+			"apple":       {1, 0},
+		},
+	}
+	store := NewVectorStore(10, emb.Dim())
+	handler, _ := newHTTPHandler(store, emb, identityReranker{}, "")
+
+	for _, doc := range []struct {
+		id  string
+		doc string
+	}{
+		{id: "doc-1", doc: "apple alpha"},
+		{id: "doc-2", doc: "apple beta"},
+	} {
+		vec, err := emb.Embed(doc.doc)
+		if err != nil {
+			t.Fatalf("embed failed: %v", err)
+		}
+		if _, err := store.Add(vec, doc.doc, doc.id, nil, "default", ""); err != nil {
+			t.Fatalf("add failed: %v", err)
+		}
+	}
+
+	request := func(query string, pageToken string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"query":      query,
+			"top_k":      2,
+			"mode":       "lex",
+			"page_size":  1,
+			"limit":      1,
+			"page_token": pageToken,
+		})
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/query", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}
+
+	first := request("apple", "")
+	if first.Code != http.StatusOK {
+		t.Fatalf("unexpected first-page status %d: %s", first.Code, first.Body.String())
+	}
+	var page struct {
+		Next string `json:"next"`
+	}
+	if err := json.NewDecoder(first.Body).Decode(&page); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if page.Next == "" {
+		t.Fatal("expected next page token")
+	}
+
+	changed := request("banana", page.Next)
+	if changed.Code != http.StatusBadRequest {
+		t.Fatalf("expected changed query to fail, got %d: %s", changed.Code, changed.Body.String())
+	}
+	if !strings.Contains(changed.Body.String(), "page token invalid") {
+		t.Fatalf("unexpected error body: %s", changed.Body.String())
+	}
+}
+
+func TestHTTPQueryPaginationRejectsStalePageToken(t *testing.T) {
+	emb := &testEmbedder{
+		dim: 2,
+		vectors: map[string][]float32{
+			"apple alpha": {1, 0},
+			"apple beta":  {1, 0},
+			"apple gamma": {1, 0},
+			"apple":       {1, 0},
+		},
+	}
+	store := NewVectorStore(10, emb.Dim())
+	handler, _ := newHTTPHandler(store, emb, identityReranker{}, "")
+
+	for _, doc := range []struct {
+		id  string
+		doc string
+	}{
+		{id: "doc-1", doc: "apple alpha"},
+		{id: "doc-2", doc: "apple beta"},
+		{id: "doc-3", doc: "apple gamma"},
+	} {
+		vec, err := emb.Embed(doc.doc)
+		if err != nil {
+			t.Fatalf("embed failed: %v", err)
+		}
+		if _, err := store.Add(vec, doc.doc, doc.id, nil, "default", ""); err != nil {
+			t.Fatalf("add failed: %v", err)
+		}
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"query":     "apple",
+		"top_k":     3,
+		"mode":      "lex",
+		"page_size": 1,
+		"limit":     1,
+	})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/query", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", w.Code, w.Body.String())
+	}
+
+	var page struct {
+		Next string `json:"next"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&page); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if page.Next == "" {
+		t.Fatal("expected next page token")
+	}
+
+	if err := store.Delete("doc-1"); err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+
+	nextBody, err := json.Marshal(map[string]any{
+		"query":      "apple",
+		"top_k":      3,
+		"mode":       "lex",
+		"page_size":  1,
+		"limit":      1,
+		"page_token": page.Next,
+	})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	nextReq := httptest.NewRequest(http.MethodPost, "/query", bytes.NewReader(nextBody))
+	nextReq.Header.Set("Content-Type", "application/json")
+	nextResp := httptest.NewRecorder()
+	handler.ServeHTTP(nextResp, nextReq)
+	if nextResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected stale token to fail, got %d: %s", nextResp.Code, nextResp.Body.String())
+	}
+	if !strings.Contains(nextResp.Body.String(), "stale") {
+		t.Fatalf("unexpected stale-token body: %s", nextResp.Body.String())
+	}
+}
+
+func TestHTTPQueryHonorsTenantHeaderWithoutJWT(t *testing.T) {
+	store := NewVectorStore(10, 3)
+	emb := NewHashEmbedder(3)
+	handler, _ := newHTTPHandler(store, emb, identityReranker{}, "")
+
+	for _, doc := range []struct {
+		text     string
+		tenantID string
+	}{
+		{text: "tenant alpha report", tenantID: "tenant-a"},
+		{text: "tenant beta report", tenantID: "tenant-b"},
+	} {
+		vec, err := emb.Embed(doc.text)
+		if err != nil {
+			t.Fatalf("embed failed: %v", err)
+		}
+		if _, err := store.Add(vec, doc.text, "", nil, "default", doc.tenantID); err != nil {
+			t.Fatalf("add failed: %v", err)
+		}
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"query": "tenant report",
+		"top_k": 10,
+		"mode":  "scan",
+	})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/query", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Docs []string `json:"docs"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(resp.Docs) != 1 || resp.Docs[0] != "tenant alpha report" {
+		t.Fatalf("unexpected tenant-scoped docs: %+v", resp.Docs)
 	}
 }
 

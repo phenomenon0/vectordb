@@ -219,10 +219,12 @@ func (s *CollectionHTTPServer) handleCollectionOps(w http.ResponseWriter, r *htt
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	} else if len(parts) == 2 {
-		// /v2/collections/{name}/stats
+		// /v2/collections/{name}/stats|get
 		operation := parts[1]
 		if operation == "stats" && r.Method == http.MethodGet {
 			s.handleCollectionStats(w, r, collectionName)
+		} else if operation == "get" && r.Method == http.MethodPost {
+			s.handleCollectionGetDocuments(w, r, collectionName)
 		} else {
 			http.Error(w, "unknown operation or method not allowed", http.StatusBadRequest)
 		}
@@ -277,6 +279,40 @@ func (s *CollectionHTTPServer) handleCollectionStats(w http.ResponseWriter, r *h
 		"name":          name,
 		"doc_count":     info.DocCount,
 		"manager_stats": stats,
+	})
+}
+
+func (s *CollectionHTTPServer) handleCollectionGetDocuments(w http.ResponseWriter, r *http.Request, name string) {
+	if _, err := s.manager.GetCollection(name); err != nil {
+		http.Error(w, fmt.Sprintf("collection not found: %v", err), http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		IDs []uint64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	if len(req.IDs) == 0 {
+		http.Error(w, "at least one id required", http.StatusBadRequest)
+		return
+	}
+
+	documents := make([]vcollection.Document, 0, len(req.IDs))
+	for _, id := range req.IDs {
+		doc, err := s.manager.GetDocument(name, id)
+		if err != nil {
+			continue
+		}
+		documents = append(documents, *doc)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"documents": documents,
 	})
 }
 
@@ -903,14 +939,14 @@ func (s *CollectionHTTPServer) handleDiscover(w http.ResponseWriter, r *http.Req
 	}
 
 	var raw struct {
-		Collection   string                 `json:"collection"`
-		Field        string                 `json:"field"`
-		TargetID     uint64                 `json:"target_id"`
-		TargetVector []float32              `json:"target_vector"`
+		Collection   string                    `json:"collection"`
+		Field        string                    `json:"field"`
+		TargetID     uint64                    `json:"target_id"`
+		TargetVector []float32                 `json:"target_vector"`
 		Context      []vcollection.ContextPair `json:"context"`
-		TopK         int                    `json:"top_k"`
-		EfSearch     int                    `json:"ef_search"`
-		Filters      map[string]interface{} `json:"filters,omitempty"`
+		TopK         int                       `json:"top_k"`
+		EfSearch     int                       `json:"ef_search"`
+		Filters      map[string]interface{}    `json:"filters,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
