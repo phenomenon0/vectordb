@@ -82,32 +82,6 @@
       }
       delete rewrittenBody.ids;
       delete rewrittenBody.collection;
-    } else if (parsed.pathname === '/v2/search') {
-      rewrittenBody = {
-        query: body.query || body.text || '',
-        top_k: body.top_k || 10,
-        collection: body.collection || '',
-        include_meta: true
-      };
-
-      if (body.metadata && !body.meta) {
-        rewrittenBody.meta = body.metadata;
-      } else if (body.meta) {
-        rewrittenBody.meta = body.meta;
-      }
-
-      if (body.mode === 'keyword') {
-        rewrittenBody.mode = 'lex';
-        rewrittenBody.score_mode = 'lexical';
-      } else {
-        rewrittenBody.mode = 'ann';
-        rewrittenBody.score_mode = body.mode === 'hybrid' ? 'hybrid' : 'vector';
-        if (typeof body.alpha === 'number') {
-          rewrittenBody.hybrid_alpha = body.alpha;
-        }
-      }
-
-      parsed.pathname = '/query';
     }
 
     nextInit.headers = headers;
