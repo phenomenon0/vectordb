@@ -218,6 +218,8 @@ func NewOnnxEmbedder(modelPath, tokenizerPath string, dim, maxLen int) (Embedder
 
 func (o *OnnxEmbedder) Dim() int { return o.dim }
 
+func (o *OnnxEmbedder) EmbedQuery(text string) ([]float32, error) { return o.Embed(text) }
+
 func (o *OnnxEmbedder) Embed(text string) ([]float32, error) {
 	if o.sess == nil || o.tok == nil {
 		return o.fallback.Embed(text)

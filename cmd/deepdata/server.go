@@ -538,6 +538,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			http.Error(w, "dimension must be positive", http.StatusBadRequest)
 			return
 		}
+		if req.Dimension != store.Dim {
+			http.Error(w, fmt.Sprintf("sparse vector dimension %d does not match store dimension %d", req.Dimension, store.Dim), http.StatusBadRequest)
+			return
+		}
 
 		// Check collection access
 		if req.Collection == "" {
@@ -754,7 +758,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		qVec := []float32{}
 		var err error
 		if req.Mode != "lex" {
-			qVec, err = embedder.Embed(req.Query)
+			qVec, err = embedder.EmbedQuery(req.Query)
 			if err != nil {
 				http.Error(w, "embed error: "+err.Error(), http.StatusInternalServerError)
 				return
@@ -1012,6 +1016,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 		if req.Dimension <= 0 {
 			http.Error(w, "dimension must be positive", http.StatusBadRequest)
+			return
+		}
+		if req.Dimension != store.Dim {
+			http.Error(w, fmt.Sprintf("sparse vector dimension %d does not match store dimension %d", req.Dimension, store.Dim), http.StatusBadRequest)
 			return
 		}
 		if req.TopK <= 0 {
@@ -1456,6 +1464,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	} else {
 		// Serve dashboard at /dashboard/
 		mux.Handle("/dashboard/", http.StripPrefix("/dashboard/", http.FileServer(http.FS(webUISubFS))))
+
+		// Serve /assets/ from dist (Vite builds with absolute /assets/ paths)
+		mux.Handle("/assets/", http.FileServer(http.FS(webUISubFS)))
 
 		// Redirect root to dashboard
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -2068,10 +2079,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		var req struct {
-			Type  string `json:"type"`  // "ollama", "openai", "hash"
-			Model string `json:"model"` // model name
-			URL   string `json:"url"`   // for ollama: base URL
-			Key   string `json:"key"`   // for openai: API key
+			Type      string `json:"type"`      // "ollama", "openai", "gemini", "voyage", "jina", "cohere", "mistral", "hash"
+			Model     string `json:"model"`     // model name
+			URL       string `json:"url"`       // for ollama: base URL
+			Key       string `json:"key"`       // API key for the provider
+			Dimension int    `json:"dimension"` // for providers with configurable dimensions (gemini, voyage, jina)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
@@ -2087,6 +2099,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		var newEmb Embedder
 		var newDim int
 		var errMsg string
+		var newEmbType, newEmbModel string
 
 		switch req.Type {
 		case "ollama":
@@ -2115,11 +2128,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			}
 			newDim = len(vec)
 			newEmb = emb
-			if CurrentMode != nil {
-				CurrentMode.EmbedderType = "ollama"
-				CurrentMode.EmbedderModel = model
-				CurrentMode.Dimension = newDim
-			}
+			newEmbType = "ollama"
+			newEmbModel = model
 
 		case "openai":
 			key := req.Key
@@ -2138,11 +2148,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			}
 			newDim = len(vec)
 			newEmb = emb
-			if CurrentMode != nil {
-				CurrentMode.EmbedderType = "openai"
-				CurrentMode.EmbedderModel = "text-embedding-3-small"
-				CurrentMode.Dimension = newDim
-			}
+			newEmbType = "openai"
+			newEmbModel = "text-embedding-3-small"
 
 		case "hash":
 			dim := 384
@@ -2153,14 +2160,142 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			}
 			newEmb = NewHashEmbedder(dim)
 			newDim = dim
-			if CurrentMode != nil {
-				CurrentMode.EmbedderType = "hash"
-				CurrentMode.EmbedderModel = fmt.Sprintf("hash-%d", dim)
-				CurrentMode.Dimension = dim
+			newEmbType = "hash"
+			newEmbModel = fmt.Sprintf("hash-%d", dim)
+
+		case "gemini":
+			key := req.Key
+			if key == "" {
+				key = os.Getenv("GOOGLE_API_KEY")
 			}
+			if key == "" {
+				key = os.Getenv("GEMINI_API_KEY")
+			}
+			if key == "" {
+				errMsg = "Google/Gemini API key required (pass 'key' field or set GOOGLE_API_KEY)"
+				break
+			}
+			dim := req.Dimension
+			if dim <= 0 {
+				dim = 3072
+			}
+			emb := NewGeminiEmbedder(key, dim)
+			vec, err := emb.Embed("dimension test")
+			if err != nil {
+				errMsg = "gemini embed failed: " + err.Error()
+				break
+			}
+			newDim = len(vec)
+			newEmb = emb
+			newEmbType = "gemini"
+			newEmbModel = "gemini-embedding-2-preview"
+
+		case "voyage":
+			key := req.Key
+			if key == "" {
+				key = os.Getenv("VOYAGE_API_KEY")
+			}
+			if key == "" {
+				errMsg = "Voyage API key required (pass 'key' field or set VOYAGE_API_KEY)"
+				break
+			}
+			model := req.Model
+			if model == "" {
+				model = "voyage-4-large"
+			}
+			dim := req.Dimension
+			if dim <= 0 {
+				dim = 1024
+			}
+			emb := NewVoyageEmbedder(key, model, dim)
+			vec, err := emb.Embed("dimension test")
+			if err != nil {
+				errMsg = "voyage embed failed: " + err.Error()
+				break
+			}
+			newDim = len(vec)
+			newEmb = emb
+			newEmbType = "voyage"
+			newEmbModel = model
+
+		case "jina":
+			key := req.Key
+			if key == "" {
+				key = os.Getenv("JINA_API_KEY")
+			}
+			if key == "" {
+				errMsg = "Jina API key required (pass 'key' field or set JINA_API_KEY)"
+				break
+			}
+			model := req.Model
+			if model == "" {
+				model = "jina-embeddings-v3"
+			}
+			dim := req.Dimension
+			if dim <= 0 {
+				dim = 1024
+			}
+			emb := NewJinaEmbedder(key, model, dim)
+			vec, err := emb.Embed("dimension test")
+			if err != nil {
+				errMsg = "jina embed failed: " + err.Error()
+				break
+			}
+			newDim = len(vec)
+			newEmb = emb
+			newEmbType = "jina"
+			newEmbModel = model
+
+		case "cohere":
+			key := req.Key
+			if key == "" {
+				key = os.Getenv("COHERE_API_KEY")
+			}
+			if key == "" {
+				errMsg = "Cohere API key required (pass 'key' field or set COHERE_API_KEY)"
+				break
+			}
+			model := req.Model
+			if model == "" {
+				model = "embed-english-v3.0"
+			}
+			emb := NewCohereEmbedder(key, model)
+			vec, err := emb.Embed("dimension test")
+			if err != nil {
+				errMsg = "cohere embed failed: " + err.Error()
+				break
+			}
+			newDim = len(vec)
+			newEmb = emb
+			newEmbType = "cohere"
+			newEmbModel = model
+
+		case "mistral":
+			key := req.Key
+			if key == "" {
+				key = os.Getenv("MISTRAL_API_KEY")
+			}
+			if key == "" {
+				errMsg = "Mistral API key required (pass 'key' field or set MISTRAL_API_KEY)"
+				break
+			}
+			model := req.Model
+			if model == "" {
+				model = "mistral-embed"
+			}
+			emb := NewMistralEmbedder(key, model)
+			vec, err := emb.Embed("dimension test")
+			if err != nil {
+				errMsg = "mistral embed failed: " + err.Error()
+				break
+			}
+			newDim = len(vec)
+			newEmb = emb
+			newEmbType = "mistral"
+			newEmbModel = model
 
 		default:
-			errMsg = "unknown embedder type: " + req.Type + " (valid: ollama, openai, hash)"
+			errMsg = "unknown embedder type: " + req.Type + " (valid: ollama, openai, gemini, voyage, jina, cohere, mistral, hash)"
 		}
 
 		if errMsg != "" {
@@ -2168,8 +2303,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
+		// Block swaps that would change dimension — existing vectors become incompatible
+		if newDim != store.Dim {
+			sendResponse(w, r, map[string]any{
+				"ok":    false,
+				"error": fmt.Sprintf("cannot swap to embedder with dimension %d: store requires dimension %d (create a new collection for different dimensions)", newDim, store.Dim),
+			})
+			return
+		}
+
 		oldDim := se.Dim()
 		se.Swap(newEmb)
+		if CurrentMode != nil {
+			CurrentMode.EmbedderType = newEmbType
+			CurrentMode.EmbedderModel = newEmbModel
+			CurrentMode.Dimension = newDim
+		}
 
 		sendResponse(w, r, map[string]any{
 			"ok":                true,
@@ -2356,7 +2505,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		var req struct {
-			Text string `json:"text"`
+			Text    string `json:"text"`
+			Purpose string `json:"purpose"` // "query" or "document" (default: "document")
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
@@ -2368,7 +2518,13 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 
-		vec, err := embedder.Embed(req.Text)
+		var vec []float32
+		var err error
+		if req.Purpose == "query" {
+			vec, err = embedder.EmbedQuery(req.Text)
+		} else {
+			vec, err = embedder.Embed(req.Text)
+		}
 		if err != nil {
 			http.Error(w, fmt.Sprintf("embedding failed: %v", err), http.StatusInternalServerError)
 			return
@@ -2399,7 +2555,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		var req struct {
-			Texts []string `json:"texts"`
+			Texts   []string `json:"texts"`
+			Purpose string   `json:"purpose"` // "query" or "document" (default: "document")
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
@@ -2413,7 +2570,13 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		embeddings := make([][]float32, len(req.Texts))
 		for i, text := range req.Texts {
-			vec, err := embedder.Embed(text)
+			var vec []float32
+			var err error
+			if req.Purpose == "query" {
+				vec, err = embedder.EmbedQuery(text)
+			} else {
+				vec, err = embedder.Embed(text)
+			}
 			if err != nil {
 				http.Error(w, fmt.Sprintf("embedding failed for text %d: %v", i, err), http.StatusInternalServerError)
 				return

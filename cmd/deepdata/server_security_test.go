@@ -19,6 +19,8 @@ func (e *failingEmbedder) Embed(text string) ([]float32, error) {
 	return nil, http.ErrHandlerTimeout
 }
 
+func (e *failingEmbedder) EmbedQuery(text string) ([]float32, error) { return e.Embed(text) }
+
 func (e *failingEmbedder) Dim() int { return 3 }
 
 func TestCORSDefaultDoesNotAllowCredentials(t *testing.T) {

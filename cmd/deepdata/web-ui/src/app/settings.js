@@ -121,8 +121,11 @@ export const settingsMixin = {
     this.embTestResult = null
     const body = { type: this.embType, model: this.embModel }
     if (this.embType === 'ollama') body.url = this.embUrl || 'http://localhost:11434'
-    if (this.embType === 'openai') body.key = this.embKey
+    if (['openai', 'gemini', 'voyage', 'jina', 'cohere', 'mistral'].includes(this.embType)) body.key = this.embKey
     if (this.embType === 'hash') body.model = this.embModel || '384'
+    if (this.embDimOverride && ['gemini', 'voyage', 'jina'].includes(this.embType)) {
+      body.dimension = parseInt(this.embDimOverride)
+    }
     const r = await this.api('POST', '/api/config/embedder', body)
     this.embSaving = false
     if (r.ok && r.data.ok) {

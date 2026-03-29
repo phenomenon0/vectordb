@@ -1112,7 +1112,8 @@ func loadHNSWConfig() hnswConfig {
 // ======================================================================================
 
 type Embedder interface {
-	Embed(text string) ([]float32, error)
+	Embed(text string) ([]float32, error)      // encode as document (for indexing)
+	EmbedQuery(text string) ([]float32, error)  // encode as query (for searching)
 	Dim() int
 }
 
@@ -1131,6 +1132,13 @@ func (s *SwappableEmbedder) Embed(text string) ([]float32, error) {
 	e := s.inner
 	s.mu.RUnlock()
 	return e.Embed(text)
+}
+
+func (s *SwappableEmbedder) EmbedQuery(text string) ([]float32, error) {
+	s.mu.RLock()
+	e := s.inner
+	s.mu.RUnlock()
+	return e.EmbedQuery(text)
 }
 
 func (s *SwappableEmbedder) Dim() int {
@@ -1165,6 +1173,8 @@ func NewHashEmbedder(dim int) *HashEmbedder {
 }
 
 func (e *HashEmbedder) Dim() int { return e.dim }
+
+func (e *HashEmbedder) EmbedQuery(text string) ([]float32, error) { return e.Embed(text) }
 
 func (e *HashEmbedder) Embed(text string) ([]float32, error) {
 	if text == "" {
@@ -1209,6 +1219,8 @@ func NewOpenAIEmbedder(apiKey string) *OpenAIEmbedder {
 }
 
 func (e *OpenAIEmbedder) Dim() int { return e.dim }
+
+func (e *OpenAIEmbedder) EmbedQuery(text string) ([]float32, error) { return e.Embed(text) }
 
 func (e *OpenAIEmbedder) Embed(text string) ([]float32, error) {
 	if text == "" {
@@ -1268,11 +1280,13 @@ func (e *OpenAIEmbedder) Embed(text string) ([]float32, error) {
 	return vec, nil
 }
 
-// OllamaEmbedder uses Ollama's local embedding models
+// OllamaEmbedder uses Ollama's local embedding models.
+// Supports prefix-based asymmetry for nomic-embed-text models.
 type OllamaEmbedder struct {
 	baseURL string
 	model   string
 	dim     int
+	isNomic bool // nomic models use "search_query: " / "search_document: " prefixes
 	client  *http.Client
 }
 
@@ -1282,10 +1296,12 @@ func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
 	if model == "granite-embedding" {
 		dim = 384
 	}
+	isNomic := strings.Contains(model, "nomic")
 	return &OllamaEmbedder{
 		baseURL: baseURL,
 		model:   model,
 		dim:     dim,
+		isNomic: isNomic,
 		client:  &http.Client{Timeout: 60 * time.Second},
 	}
 }
@@ -1296,26 +1312,40 @@ func (e *OllamaEmbedder) Dim() int { return e.dim }
 const MaxChunkChars = 6000
 
 func (e *OllamaEmbedder) Embed(text string) ([]float32, error) {
+	if e.isNomic {
+		return e.embedWithPrefix(text, "search_document: ")
+	}
+	return e.embedWithPrefix(text, "")
+}
+
+func (e *OllamaEmbedder) EmbedQuery(text string) ([]float32, error) {
+	if e.isNomic {
+		return e.embedWithPrefix(text, "search_query: ")
+	}
+	return e.embedWithPrefix(text, "")
+}
+
+func (e *OllamaEmbedder) embedWithPrefix(text, prefix string) ([]float32, error) {
 	if text == "" {
 		text = "empty"
 	}
 
 	// If text is short enough, embed directly
 	if len(text) <= MaxChunkChars {
-		return e.embedSingle(text)
+		return e.embedSingle(prefix + text)
 	}
 
 	// Long text: chunk and average embeddings (late chunking / pooling)
 	chunks := smartChunk(text, MaxChunkChars, 200) // 200 char overlap
 	if len(chunks) == 0 {
-		return e.embedSingle(text[:MaxChunkChars])
+		return e.embedSingle(prefix + text[:MaxChunkChars])
 	}
 
 	// Embed each chunk and compute weighted average
 	var allVecs [][]float32
 	var weights []float32
 	for _, chunk := range chunks {
-		vec, err := e.embedSingle(chunk)
+		vec, err := e.embedSingle(prefix + chunk)
 		if err != nil {
 			continue // Skip failed chunks
 		}
@@ -1384,7 +1414,9 @@ func (e *OllamaEmbedder) embedSingle(text string) ([]float32, error) {
 			vec[i] /= float32(norm)
 		}
 	}
-	e.dim = len(vec)
+	if e.dim == 0 {
+		e.dim = len(vec)
+	}
 	return vec, nil
 }
 
@@ -1579,7 +1611,7 @@ type SimpleReranker struct {
 }
 
 func (r *SimpleReranker) Rerank(query string, docs []string, topK int) ([]string, []float32, string, error) {
-	qVec, err := r.Embedder.Embed(query)
+	qVec, err := r.Embedder.EmbedQuery(query)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -2217,7 +2249,6 @@ func main() {
 
 	// Use mode-specific index path
 	indexPath := GetIndexPath(modeConfig.Mode)
-	defaultDim := modeConfig.Dimension
 
 	initMetrics()
 
@@ -2244,15 +2275,16 @@ func main() {
 	var embedder Embedder
 	if os.Getenv("USE_HASH_EMBEDDER") == "1" {
 		logger.Info("using hash embedder (low-memory mode)")
-		embedder = NewHashEmbedder(defaultDim)
+		embedder = NewHashEmbedder(modeConfig.Dimension)
 	} else {
 		// Use mode-aware embedder factory
 		embedder, err = InitEmbedderForMode(modeConfig, costTracker)
 		if err != nil {
 			logger.Error("failed to initialize embedder", "error", err)
-			// Fall back to hash embedder
+			// Fall back to hash embedder — use modeConfig.Dimension which
+			// InitEmbedderForMode may have updated before failing
 			logger.Warn("falling back to hash embedder")
-			embedder = NewHashEmbedder(defaultDim)
+			embedder = NewHashEmbedder(modeConfig.Dimension)
 		}
 	}
 

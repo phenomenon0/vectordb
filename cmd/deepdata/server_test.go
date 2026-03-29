@@ -20,6 +20,8 @@ type testEmbedder struct {
 	vectors map[string][]float32
 }
 
+func (e *testEmbedder) EmbedQuery(text string) ([]float32, error) { return e.Embed(text) }
+
 func (e *testEmbedder) Embed(text string) ([]float32, error) {
 	vec, ok := e.vectors[text]
 	if !ok {

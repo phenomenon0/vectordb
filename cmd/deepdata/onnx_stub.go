@@ -12,6 +12,10 @@ func (o *OnnxEmbedder) Embed(text string) ([]float32, error) {
 	return nil, fmt.Errorf("onnx embedder not enabled (build with -tags onnx)")
 }
 
+func (o *OnnxEmbedder) EmbedQuery(text string) ([]float32, error) {
+	return nil, fmt.Errorf("onnx embedder not enabled (build with -tags onnx)")
+}
+
 func (o *OnnxEmbedder) Dim() int { return 0 }
 
 // OnnxCrossEncoderReranker is a placeholder when built without the "onnx" tag.

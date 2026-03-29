@@ -27,7 +27,8 @@ type WalEntry struct {
 
 // Embedder is the interface cluster code needs for embedding text.
 type Embedder interface {
-	Embed(text string) ([]float32, error)
+	Embed(text string) ([]float32, error)      // encode as document
+	EmbedQuery(text string) ([]float32, error)  // encode as query
 	Dim() int
 }
 

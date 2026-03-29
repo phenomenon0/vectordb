@@ -82,7 +82,7 @@
       <div>
         <div class="onboarding-header">
           <h2>Configure Embedder</h2>
-          <p x-text="onboardingMode === 'local' ? 'Set up your local Ollama instance' : 'Enter your OpenAI API key'"></p>
+          <p x-text="onboardingMode === 'local' ? 'Set up your local Ollama instance' : 'Choose your embedding provider'"></p>
         </div>
         <div class="onboarding-body">
           <!-- Local / Ollama config -->
@@ -103,22 +103,48 @@
               }">Test Connection</button>
             </div>
           </template>
-          <!-- Pro / OpenAI config -->
+          <!-- Pro / Cloud provider config -->
           <template x-if="onboardingMode === 'pro'">
             <div>
               <div class="form-group mb-8">
-                <label>OpenAI API Key</label>
-                <input class="input" type="password" x-model="onboardingApiKey" placeholder="sk-...">
+                <label>Embedding Provider</label>
+                <select class="select" x-model="onboardingEmbedderType">
+                  <option value="openai">OpenAI (1536d, $0.02/1M tok)</option>
+                  <option value="gemini">Google Gemini (up to 3072d, $0.20/1M tok)</option>
+                  <option value="voyage">Voyage AI (up to 2048d, $0.12/1M tok)</option>
+                  <option value="jina">Jina AI (up to 1024d)</option>
+                  <option value="cohere">Cohere (1024d, $0.10/1M tok)</option>
+                  <option value="mistral">Mistral (1024d, $0.15/1M tok)</option>
+                </select>
               </div>
-              <p class="text-muted text-xs mb-8">Your key is stored locally and used only for embedding requests.</p>
+              <div class="form-group mb-8">
+                <label x-text="({
+                  openai: 'OpenAI API Key',
+                  gemini: 'Google / Gemini API Key',
+                  voyage: 'Voyage API Key',
+                  jina: 'Jina API Key',
+                  cohere: 'Cohere API Key',
+                  mistral: 'Mistral API Key'
+                })[onboardingEmbedderType] || 'API Key'"></label>
+                <input class="input" type="password" x-model="onboardingApiKey"
+                  :placeholder="onboardingEmbedderType === 'openai' ? 'sk-...' : 'your-api-key'">
+              </div>
+              <div class="form-group mb-8" x-show="['gemini','voyage','jina'].includes(onboardingEmbedderType)">
+                <label>Dimension <span class="text-muted text-xs">(optional, uses provider default if empty)</span></label>
+                <input class="input" type="number" x-model="onboardingDimension"
+                  :placeholder="({gemini:'3072', voyage:'1024', jina:'1024'})[onboardingEmbedderType] || ''">
+              </div>
+              <p class="text-muted text-xs mb-8">Your key is sent to the DeepData server and used only for embedding requests.</p>
               <button class="btn btn-sm btn-primary" data-testid="test-embedder" @click="async () => {
                 if (!onboardingApiKey) { toast('Enter an API key first', 'err'); return; }
                 try {
-                  const r = await fetch('https://api.openai.com/v1/models', { headers: { 'Authorization': 'Bearer ' + onboardingApiKey } });
-                  if (r.ok) toast('API key valid!', 'ok');
-                  else toast('Invalid API key', 'err');
+                  const body = { type: onboardingEmbedderType, key: onboardingApiKey };
+                  if (onboardingDimension) body.dimension = parseInt(onboardingDimension);
+                  const r = await api('POST', '/api/config/embedder', body);
+                  if (r.ok && r.data.ok) toast('Connected! (' + r.data.type + ', dim=' + r.data.dimension + ')', 'ok');
+                  else toast(r.data?.error || 'Connection failed', 'err');
                 } catch(e) { toast('Connection failed: ' + e.message, 'err'); }
-              }">Test Connection</button>
+              }">Test &amp; Apply</button>
             </div>
           </template>
         </div>
@@ -1260,8 +1286,13 @@
           <div class="form-group" style="flex:1">
             <label>Type</label>
             <select class="select" x-model="embType">
-              <option value="ollama">Ollama</option>
-              <option value="openai">OpenAI</option>
+              <option value="ollama">Ollama (local)</option>
+              <option value="openai">OpenAI (1536d)</option>
+              <option value="gemini">Google Gemini (up to 3072d)</option>
+              <option value="voyage">Voyage AI (up to 2048d)</option>
+              <option value="jina">Jina AI (up to 1024d)</option>
+              <option value="cohere">Cohere (1024d)</option>
+              <option value="mistral">Mistral (1024d)</option>
               <option value="hash">Hash (fallback)</option>
             </select>
           </div>
@@ -1273,9 +1304,13 @@
             <label>Ollama URL</label>
             <input class="input" x-model="embUrl" placeholder="http://localhost:11434">
           </div>
-          <div class="form-group" style="flex:1" x-show="embType === 'openai'">
-            <label>OpenAI Key</label>
-            <input class="input" type="password" x-model="embKey" placeholder="sk-...">
+          <div class="form-group" style="flex:1" x-show="['openai','gemini','voyage','jina','cohere','mistral'].includes(embType)">
+            <label x-text="({openai:'OpenAI Key', gemini:'Google/Gemini Key', voyage:'Voyage Key', jina:'Jina Key', cohere:'Cohere Key', mistral:'Mistral Key'})[embType] || 'API Key'"></label>
+            <input class="input" type="password" x-model="embKey" :placeholder="embType === 'openai' ? 'sk-...' : 'your-api-key'">
+          </div>
+          <div class="form-group" style="flex:1" x-show="['gemini','voyage','jina'].includes(embType)">
+            <label>Dimension <span class="text-muted text-xs">(optional)</span></label>
+            <input class="input" type="number" x-model="embDimOverride" :placeholder="({gemini:'3072', voyage:'1024', jina:'1024'})[embType] || ''">
           </div>
           <div class="form-group" style="flex:1" x-show="embType === 'hash'">
             <label>Dimension</label>

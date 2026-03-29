@@ -35,7 +35,8 @@ type ModeConfig struct {
 }
 
 // Predefined mode configurations
-// Note: LOCAL mode dimension is set dynamically based on available embedder
+// Default: PRO mode (1536d OpenAI). Falls back to LOCAL if OPENAI_API_KEY is not set.
+// LOCAL mode dimension is set dynamically based on available embedder:
 // - ONNX (bge-small): 384d
 // - Ollama (nomic-embed-text): 768d
 // - Hash fallback: configurable (default 384)
@@ -64,13 +65,13 @@ var ModeConfigs = map[VectorDBMode]ModeConfig{
 var CurrentMode *ModeConfig
 
 // LoadModeFromEnv loads the mode configuration from environment variables
-// Defaults to LOCAL mode if not specified
+// Defaults to PRO mode; falls back to LOCAL if OPENAI_API_KEY is not set
 func LoadModeFromEnv() (*ModeConfig, error) {
 	modeStr := strings.ToLower(os.Getenv("VECTORDB_MODE"))
-	
-	// Default to LOCAL mode (safe, free)
+
+	// Default to PRO mode (industry-standard 1536d OpenAI embeddings)
 	if modeStr == "" {
-		modeStr = string(ModeLocal)
+		modeStr = string(ModePro)
 	}
 
 	mode := VectorDBMode(modeStr)
@@ -79,10 +80,13 @@ func LoadModeFromEnv() (*ModeConfig, error) {
 		return nil, fmt.Errorf("unknown mode: %s (valid: local, pro)", modeStr)
 	}
 
-	// PRO mode requires OpenAI API key
+	// PRO mode requires OpenAI API key — gracefully fall back to LOCAL
 	if mode == ModePro {
 		if os.Getenv("OPENAI_API_KEY") == "" {
-			return nil, fmt.Errorf("PRO mode requires OPENAI_API_KEY environment variable")
+			fmt.Println("WARNING: PRO mode requires OPENAI_API_KEY — falling back to LOCAL mode")
+			fmt.Println("         Set OPENAI_API_KEY or use VECTORDB_MODE=local to silence this warning")
+			mode = ModeLocal
+			config = ModeConfigs[mode]
 		}
 	}
 
@@ -202,16 +206,4 @@ func PrintModeBanner(config *ModeConfig) {
 	fmt.Printf("║  Data:      %-50s ║\n", GetDataDirectory(config.Mode))
 	fmt.Println("╚════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
-}
-
-// ValidateDimension checks if a vector dimension matches the current mode
-func ValidateDimension(dim int) error {
-	if CurrentMode == nil {
-		return fmt.Errorf("mode not initialized")
-	}
-	if dim != CurrentMode.Dimension {
-		return fmt.Errorf("dimension mismatch: expected %d (%s mode), got %d", 
-			CurrentMode.Dimension, CurrentMode.Mode, dim)
-	}
-	return nil
 }
