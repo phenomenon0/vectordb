@@ -10,13 +10,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetch(api("/api/config"))
+    // Initialize session (creates user cookie if needed), then check onboarding
+    fetch(api("/api/session"))
+      .then(() => fetch(api("/api/config")))
       .then((r) => r.json())
       .then((cfg) => setOnboarded(cfg.isOnboarded))
       .catch(() => setOnboarded(false));
   }, []);
 
-  // Loading state
   if (onboarded === null) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-surface">
@@ -26,25 +27,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </h1>
           <div className="flex items-center justify-center gap-2">
             <span className="w-1.5 h-3 bg-primary animate-pulse" />
-            <span className="text-[11px] text-muted">
-              Loading...
-            </span>
+            <span className="text-[11px] text-muted">Loading...</span>
           </div>
         </div>
       </div>
     );
   }
 
-  // Onboarding
   if (!onboarded) {
-    return (
-      <Onboarding
-        onComplete={() => setOnboarded(true)}
-      />
-    );
+    return <Onboarding onComplete={() => setOnboarded(true)} />;
   }
 
-  // Main app shell
   return (
     <div className="flex min-h-screen">
       <Sidebar />
