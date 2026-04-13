@@ -228,6 +228,48 @@ func TestLogError(t *testing.T) {
 	}
 }
 
+func TestLogErrorIncludesRequestID(t *testing.T) {
+	logger, path := initToFile(LevelInfo, "json")
+	testErr := errors.New("db timeout")
+
+	// Context with a request ID should emit request_id in the log
+	ctx := context.WithValue(context.Background(), RequestIDKey, "abc123def456")
+	logger.LogError(ctx, "query", testErr, "collection", "docs")
+	output := readAndClean(path)
+
+	var m map[string]interface{}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	last := lines[len(lines)-1]
+	if err := json.Unmarshal([]byte(last), &m); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, last)
+	}
+	if m["request_id"] != "abc123def456" {
+		t.Errorf("request_id = %v, want 'abc123def456'", m["request_id"])
+	}
+	if m["collection"] != "docs" {
+		t.Errorf("collection = %v, want 'docs'", m["collection"])
+	}
+}
+
+func TestLogErrorOmitsRequestIDWhenAbsent(t *testing.T) {
+	logger, path := initToFile(LevelInfo, "json")
+	testErr := errors.New("db timeout")
+
+	// Context without request ID should NOT emit request_id field
+	logger.LogError(context.Background(), "query", testErr)
+	output := readAndClean(path)
+
+	var m map[string]interface{}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	last := lines[len(lines)-1]
+	if err := json.Unmarshal([]byte(last), &m); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, last)
+	}
+	if _, exists := m["request_id"]; exists {
+		t.Errorf("request_id should not be present when context has no request ID, got %v", m["request_id"])
+	}
+}
+
 func TestOperationLogs(t *testing.T) {
 	logger, path := initToFile(LevelDebug, "json")
 	ctx := context.Background()

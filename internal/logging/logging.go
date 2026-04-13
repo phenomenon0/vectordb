@@ -128,10 +128,21 @@ func (l *Logger) Error(msg string, keysAndValues ...interface{}) {
 	}
 }
 
+// RequestIDKey is the context key used to store a per-request correlation ID.
+// The HTTP request-ID middleware stores it; LogError automatically extracts it.
+type requestIDKeyType struct{}
+
+// RequestIDKey is the context value key for the per-request correlation ID.
+var RequestIDKey = requestIDKeyType{}
+
 // LogError logs an error with context and structured key-value pairs.
+// If the context carries a request ID (via RequestIDKey), it is included automatically.
 func (l *Logger) LogError(ctx context.Context, operation string, err error, keysAndValues ...interface{}) {
-	args := make([]interface{}, 0, 4+len(keysAndValues))
+	args := make([]interface{}, 0, 6+len(keysAndValues))
 	args = append(args, "operation", operation, "error", err)
+	if id, ok := ctx.Value(RequestIDKey).(string); ok && id != "" {
+		args = append(args, "request_id", id)
+	}
 	args = append(args, keysAndValues...)
 	l.slog.ErrorContext(ctx, "operation failed", args...)
 }

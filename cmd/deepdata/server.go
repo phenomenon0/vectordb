@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -30,6 +32,25 @@ import (
 	"github.com/phenomenon0/vectordb/internal/telemetry"
 
 )
+
+// ===========================================================================================
+// REQUEST ID
+// ===========================================================================================
+
+// generateRequestID returns a 16-byte random hex string (32 chars).
+func generateRequestID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// requestIDFromContext extracts the request ID from the context, or returns "".
+func requestIDFromContext(ctx context.Context) string {
+	if id, ok := ctx.Value(logging.RequestIDKey).(string); ok {
+		return id
+	}
+	return ""
+}
 
 // ===========================================================================================
 // CONFIGURABLE REQUEST LIMITS
@@ -101,7 +122,7 @@ func encodeResponse(w http.ResponseWriter, r *http.Request, v any) error {
 // Use this instead of ignoring encodeResponse errors.
 func sendResponse(w http.ResponseWriter, r *http.Request, v any) {
 	if err := encodeResponse(w, r, v); err != nil {
-		logging.Default().Error("failed to encode response", "error", err, "path", r.URL.Path)
+		logging.Default().Error("failed to encode response", "error", err, "path", r.URL.Path, "request_id", requestIDFromContext(r.Context()))
 	}
 }
 
@@ -2833,11 +2854,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if err := recover(); err != nil {
-					// Log the panic with stack trace
+					// Log the panic with stack trace and request ID for correlation
 					logging.Default().Error("panic recovered in HTTP handler",
 						"error", err,
 						"path", r.URL.Path,
 						"method", r.Method,
+						"request_id", requestIDFromContext(r.Context()),
 					)
 					// Return 500 error to client instead of closing connection — never expose panic details
 					http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -3325,7 +3347,23 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		})
 	}
 
-	return recoveryMiddleware(requestTimeoutMiddleware(corsMiddleware(otelMiddleware(mux)))), collectionHTTP
+	// Request ID middleware — generates a unique ID for every request, stores it
+	// in the context for structured logging, and echoes it in the X-Request-ID
+	// response header so clients can correlate responses with server-side logs.
+	// If the client or reverse proxy already provides X-Request-ID, it is reused.
+	requestIDMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := r.Header.Get("X-Request-ID")
+			if id == "" {
+				id = generateRequestID()
+			}
+			w.Header().Set("X-Request-ID", id)
+			ctx := context.WithValue(r.Context(), logging.RequestIDKey, id)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	return requestIDMiddleware(recoveryMiddleware(requestTimeoutMiddleware(corsMiddleware(otelMiddleware(mux))))), collectionHTTP
 }
 
 func ageMillis(path string, fallback time.Time) int64 {
