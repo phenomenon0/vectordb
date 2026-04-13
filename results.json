@@ -1,0 +1,79 @@
+{
+  "settings": {
+    "port": 8080,
+    "n_search": 200,
+    "warmup": 10,
+    "concurrency": 8,
+    "concurrent_duration_s": 5.0,
+    "deepdata_batch_size": 5000,
+    "qdrant_batch_size": 500,
+    "startup_timeout_s": 20.0,
+    "settle_time_s": 1.0
+  },
+  "results": [
+    {
+      "vdb": "deepdata",
+      "dataset": "sift-100k",
+      "dim": 128,
+      "n_vectors": 100000,
+      "n_queries": 10000,
+      "recall_at_10": 1.0,
+      "recall_at_100": 0.997,
+      "insert_qps": 1339.5,
+      "search_serial_qps": 348.2,
+      "search_concurrent_qps": 2251.2,
+      "search_p50_ms": 2.73,
+      "search_p95_ms": 4.05,
+      "search_p99_ms": 5.61,
+      "error": ""
+    },
+    {
+      "vdb": "qdrant",
+      "dataset": "sift-100k",
+      "dim": 128,
+      "n_vectors": 100000,
+      "n_queries": 10000,
+      "recall_at_10": 1.0,
+      "recall_at_100": 1.0,
+      "insert_qps": 30909.1,
+      "search_serial_qps": 479.8,
+      "search_concurrent_qps": 866.2,
+      "search_p50_ms": 2.02,
+      "search_p95_ms": 2.5,
+      "search_p99_ms": 2.85,
+      "error": ""
+    },
+    {
+      "vdb": "deepdata",
+      "dataset": "glove-100d-full",
+      "dim": 100,
+      "n_vectors": 399000,
+      "n_queries": 1000,
+      "recall_at_10": 0.9637,
+      "recall_at_100": 0.9172,
+      "insert_qps": 844.6,
+      "search_serial_qps": 326.4,
+      "search_concurrent_qps": 2235.4,
+      "search_p50_ms": 3.0,
+      "search_p95_ms": 3.63,
+      "search_p99_ms": 4.91,
+      "error": ""
+    },
+    {
+      "vdb": "qdrant",
+      "dataset": "glove-100d-full",
+      "dim": 100,
+      "n_vectors": 399000,
+      "n_queries": 1000,
+      "recall_at_10": 1.0,
+      "recall_at_100": 1.0,
+      "insert_qps": 35986.4,
+      "search_serial_qps": 237.2,
+      "search_concurrent_qps": 343.0,
+      "search_p50_ms": 4.2,
+      "search_p95_ms": 4.56,
+      "search_p99_ms": 5.0,
+      "error": ""
+    }
+  ]
+}

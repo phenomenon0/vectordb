@@ -6,6 +6,8 @@ vectordb-server
 cmd/gentoken/gentoken
 *.exe
 *.zip
+cli
+deepdata-server
 
 # Data
 data/

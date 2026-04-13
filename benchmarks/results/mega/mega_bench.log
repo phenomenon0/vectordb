@@ -1,0 +1,575 @@
+[08:07:13] VDBs: deepdata-grpc, deepdata-http, qdrant, weaviate, milvus, chromadb
+[08:07:13] Datasets: sift-100k, glove-100d, code-562
+[08:07:13] ef_search: [16, 32, 64, 128, 256, 512]
+[08:07:13] n_search: 100
+[08:07:13] Total combos: 108
+[08:07:13] 
+[08:07:13] Building DeepData server...
+[08:07:15] Build OK
+[08:07:15] Starting competitor containers...
+[08:07:15] All containers ready: {'qdrant': True, 'weaviate': True, 'chromadb': True, 'milvus': True}
+[08:07:15] Loading sift-100k...
+[08:07:15]   100,000 base, 10,000 queries
+[08:07:15] Loading glove-100d...
+[08:07:19]   10,000 base, 1,000 queries
+[08:07:19] Loading code-562...
+[08:07:19]   562 base, 50 queries
+[08:07:19] RUN: deepdata-grpc|sift-100k|ef=16
+[08:07:38]   R@10=0.9956  QPS=6498  P50=0.5ms
+[08:07:38] RUN: deepdata-http|sift-100k|ef=16
+[08:07:57]   R@10=0.9978  QPS=1763  P50=1.6ms
+[08:07:57] RUN: qdrant|sift-100k|ef=16
+[08:08:05]   R@10=1.0000  QPS=508  P50=2.1ms
+[08:08:05] RUN: weaviate|sift-100k|ef=16
+[08:08:22]   R@10=0.9989  QPS=2240  P50=1.4ms
+[08:08:22] RUN: milvus|sift-100k|ef=16
+[08:08:33]   R@10=0.0000  QPS=946  P50=1.9ms
+[08:08:33] RUN: chromadb|sift-100k|ef=16
+[08:09:18]   R@10=0.9978  QPS=1062  P50=1.5ms
+[08:09:18] RUN: deepdata-grpc|sift-100k|ef=32
+[08:09:37]   R@10=0.9967  QPS=5194  P50=0.6ms
+[08:09:37] RUN: deepdata-http|sift-100k|ef=32
+[08:09:57]   R@10=0.9978  QPS=1606  P50=1.6ms
+[08:09:57] RUN: qdrant|sift-100k|ef=32
+[08:10:05]   R@10=1.0000  QPS=549  P50=1.8ms
+[08:10:05] RUN: weaviate|sift-100k|ef=32
+[08:10:21]   R@10=0.9989  QPS=2240  P50=1.3ms
+[08:10:21] RUN: milvus|sift-100k|ef=32
+[08:10:33]   R@10=0.0000  QPS=899  P50=4.1ms
+[08:10:33] RUN: chromadb|sift-100k|ef=32
+[08:11:09]   R@10=0.9989  QPS=1055  P50=1.6ms
+[08:11:09] RUN: deepdata-grpc|sift-100k|ef=64
+[08:11:28]   R@10=0.9967  QPS=3579  P50=0.5ms
+[08:11:28] RUN: deepdata-http|sift-100k|ef=64
+[08:16:34] VDBs: deepdata-grpc, deepdata-http, qdrant, weaviate, milvus, chromadb
+[08:16:34] Datasets: sift-100k, glove-100d, code-562
+[08:16:34] ef_search: [16, 32, 64, 128, 256, 512]
+[08:16:34] n_search: 100
+[08:16:34] Total combos: 108
+[08:16:34] 
+[08:16:34] Building DeepData server...
+[08:16:34] Build OK
+[08:16:34] Starting competitor containers...
+[08:16:35] All containers ready: {'qdrant': True, 'weaviate': True, 'chromadb': True, 'milvus': True}
+[08:16:35] Loading sift-100k...
+[08:16:35]   100,000 base, 10,000 queries
+[08:16:35] Loading glove-100d...
+[08:16:39]   10,000 base, 1,000 queries
+[08:16:39] Loading code-562...
+[08:16:39]   562 base, 50 queries
+[08:16:39] RUN: deepdata-grpc|sift-100k|ef=16
+[08:16:59]   R@10=0.9978  QPS=6683  P50=0.5ms
+[08:16:59] RUN: deepdata-http|sift-100k|ef=16
+[08:17:18]   R@10=0.9967  QPS=1844  P50=1.5ms
+[08:17:18] RUN: qdrant|sift-100k|ef=16
+[08:17:26]   R@10=1.0000  QPS=547  P50=1.9ms
+[08:17:26] RUN: weaviate|sift-100k|ef=16
+[08:17:42]   R@10=0.9989  QPS=2454  P50=1.2ms
+[08:17:42] RUN: milvus|sift-100k|ef=16
+[08:17:54]   R@10=0.0000  QPS=1160  P50=3.6ms
+[08:17:54] RUN: chromadb|sift-100k|ef=16
+[08:18:51] VDBs: deepdata-grpc, deepdata-http, qdrant, weaviate, milvus, chromadb
+[08:18:51] Datasets: sift-100k, glove-100d, code-562
+[08:18:51] ef_search: [16, 32, 64, 128, 256, 512]
+[08:18:51] n_search: 100
+[08:18:51] Total combos: 108
+[08:18:51] 
+[08:18:51] Loading sift-100k...
+[08:18:51]   100,000 base, 10,000 queries
+[08:18:51] Loading glove-100d...
+[08:18:56]   10,000 base, 1,000 queries
+[08:18:56] Loading code-562...
+[08:18:56]   562 base, 50 queries
+[08:18:56] SKIP (cached): deepdata-grpc|sift-100k|ef=16
+[08:18:56] SKIP (cached): deepdata-http|sift-100k|ef=16
+[08:18:56] SKIP (cached): qdrant|sift-100k|ef=16
+[08:18:56] SKIP (cached): weaviate|sift-100k|ef=16
+[08:18:56] SKIP (cached): milvus|sift-100k|ef=16
+[08:18:56] RUN: deepdata-grpc|sift-100k|ef=32
+[08:19:14]   R@10=0.9978  QPS=5101  P50=0.5ms
+[08:19:14] RUN: deepdata-http|sift-100k|ef=32
+[08:19:31] VDBs: deepdata-grpc, deepdata-http, qdrant, weaviate, milvus, chromadb
+[08:19:31] Datasets: sift-100k, glove-100d, code-562
+[08:19:31] ef_search: [16, 32, 64, 128, 256, 512]
+[08:19:31] n_search: 100
+[08:19:31] Total combos: 108
+[08:19:31] 
+[08:19:31] Loading sift-100k...
+[08:19:31]   100,000 base, 10,000 queries
+[08:19:31] Loading glove-100d...
+[08:19:34]   10,000 base, 1,000 queries
+[08:19:34] Loading code-562...
+[08:19:34]   562 base, 50 queries
+[08:19:34] SKIP (cached): deepdata-grpc|sift-100k|ef=16
+[08:19:34] SKIP (cached): deepdata-http|sift-100k|ef=16
+[08:19:34] SKIP (cached): qdrant|sift-100k|ef=16
+[08:19:34] SKIP (cached): weaviate|sift-100k|ef=16
+[08:19:34] SKIP (cached): milvus|sift-100k|ef=16
+[08:19:34] RUN: chromadb|sift-100k|ef=16
+[08:20:16]   R@10=0.9978  QPS=1118  P50=1.4ms
+[08:20:16] SKIP (cached): deepdata-grpc|sift-100k|ef=32
+[08:20:16] RUN: deepdata-http|sift-100k|ef=32
+[08:20:34]   R@10=0.9967  QPS=1718  P50=1.6ms
+[08:20:34] RUN: qdrant|sift-100k|ef=32
+[08:20:43]   R@10=1.0000  QPS=535  P50=1.8ms
+[08:20:43] RUN: weaviate|sift-100k|ef=32
+[08:20:59]   R@10=0.9989  QPS=2218  P50=1.4ms
+[08:20:59] RUN: milvus|sift-100k|ef=32
+[08:21:10]   R@10=0.0000  QPS=982  P50=1.2ms
+[08:21:10] RUN: chromadb|sift-100k|ef=32
+[08:21:55]   R@10=0.9967  QPS=1124  P50=1.6ms
+[08:21:55] RUN: deepdata-grpc|sift-100k|ef=64
+[08:22:14]   R@10=0.9978  QPS=3782  P50=0.5ms
+[08:22:14] RUN: deepdata-http|sift-100k|ef=64
+[08:22:33]   R@10=0.9978  QPS=1460  P50=1.6ms
+[08:22:33] RUN: qdrant|sift-100k|ef=64
+[08:22:41]   R@10=1.0000  QPS=534  P50=1.8ms
+[08:22:41] RUN: weaviate|sift-100k|ef=64
+[08:22:57]   R@10=0.9989  QPS=2085  P50=1.3ms
+[08:22:57] RUN: milvus|sift-100k|ef=64
+[08:23:09]   R@10=0.0000  QPS=1069  P50=3.1ms
+[08:23:09] RUN: chromadb|sift-100k|ef=64
+[08:23:47]   R@10=0.9989  QPS=1086  P50=1.4ms
+[08:23:47] RUN: deepdata-grpc|sift-100k|ef=128
+[08:24:06]   R@10=0.9989  QPS=2385  P50=0.6ms
+[08:24:06] RUN: deepdata-http|sift-100k|ef=128
+[08:24:24]   R@10=0.9989  QPS=1208  P50=1.6ms
+[08:24:24] RUN: qdrant|sift-100k|ef=128
+[08:24:33]   R@10=1.0000  QPS=538  P50=1.9ms
+[08:24:33] RUN: weaviate|sift-100k|ef=128
+[08:24:48]   R@10=0.9989  QPS=1905  P50=1.4ms
+[08:24:48] RUN: milvus|sift-100k|ef=128
+[08:25:00]   R@10=0.0000  QPS=1080  P50=3.2ms
+[08:25:00] RUN: chromadb|sift-100k|ef=128
+[08:25:41]   R@10=0.9989  QPS=1064  P50=1.5ms
+[08:25:41] RUN: deepdata-grpc|sift-100k|ef=256
+[08:25:59]   R@10=1.0000  QPS=1418  P50=0.9ms
+[08:25:59] RUN: deepdata-http|sift-100k|ef=256
+[08:26:18]   R@10=1.0000  QPS=914  P50=2.2ms
+[08:26:18] RUN: qdrant|sift-100k|ef=256
+[08:26:26]   R@10=1.0000  QPS=545  P50=2.2ms
+[08:26:26] RUN: weaviate|sift-100k|ef=256
+[08:26:42]   R@10=1.0000  QPS=1438  P50=1.8ms
+[08:26:42] RUN: milvus|sift-100k|ef=256
+[08:26:54]   R@10=0.0000  QPS=1325  P50=1.4ms
+[08:26:54] RUN: chromadb|sift-100k|ef=256
+[08:27:39]   R@10=1.0000  QPS=998  P50=1.6ms
+[08:27:39] RUN: deepdata-grpc|sift-100k|ef=512
+[08:27:57]   R@10=1.0000  QPS=675  P50=1.8ms
+[08:27:57] RUN: deepdata-http|sift-100k|ef=512
+[08:28:16]   R@10=1.0000  QPS=512  P50=2.9ms
+[08:28:16] RUN: qdrant|sift-100k|ef=512
+[08:28:25]   R@10=1.0000  QPS=546  P50=1.9ms
+[08:28:25] RUN: weaviate|sift-100k|ef=512
+[08:28:41]   R@10=1.0000  QPS=1085  P50=2.5ms
+[08:28:41] RUN: milvus|sift-100k|ef=512
+[08:28:52]   R@10=0.0000  QPS=930  P50=1.1ms
+[08:28:52] RUN: chromadb|sift-100k|ef=512
+[08:29:35]   R@10=1.0000  QPS=942  P50=1.8ms
+[08:29:35] RUN: deepdata-grpc|glove-100d|ef=16
+[08:29:43]   R@10=0.9889  QPS=8320  P50=0.3ms
+[08:29:43] RUN: deepdata-http|glove-100d|ef=16
+[08:29:51]   R@10=0.9889  QPS=2034  P50=1.3ms
+[08:29:51] RUN: qdrant|glove-100d|ef=16
+[08:29:57]   R@10=1.0000  QPS=1106  P50=1.0ms
+[08:29:57] RUN: weaviate|glove-100d|ef=16
+[08:30:06]   R@10=0.9878  QPS=2651  P50=1.0ms
+[08:30:06] RUN: milvus|glove-100d|ef=16
+[08:30:16]   R@10=0.0000  QPS=342  P50=3.3ms
+[08:30:16] RUN: chromadb|glove-100d|ef=16
+[08:30:23]   R@10=0.9856  QPS=1123  P50=1.2ms
+[08:30:23] RUN: deepdata-grpc|glove-100d|ef=32
+[08:30:31]   R@10=0.9900  QPS=6936  P50=0.3ms
+[08:30:31] RUN: deepdata-http|glove-100d|ef=32
+[08:30:39]   R@10=0.9911  QPS=1961  P50=1.4ms
+[08:30:39] RUN: qdrant|glove-100d|ef=32
+[08:30:44]   R@10=1.0000  QPS=1080  P50=0.9ms
+[08:30:44] RUN: weaviate|glove-100d|ef=32
+[08:30:53]   R@10=0.9867  QPS=2536  P50=1.2ms
+[08:30:53] RUN: milvus|glove-100d|ef=32
+[08:31:04]   R@10=0.0000  QPS=346  P50=3.3ms
+[08:31:04] RUN: chromadb|glove-100d|ef=32
+[08:31:11]   R@10=0.9844  QPS=1148  P50=1.2ms
+[08:31:11] RUN: deepdata-grpc|glove-100d|ef=64
+[08:31:18]   [deepdata-grpc|glove-100d|ef=64] attempt 1/2 failed: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNAVAILABLE
+	details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"
+	debug_error_string = "UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"}"
+>
+[08:31:22]   [deepdata-grpc|glove-100d|ef=64] attempt 2/2 failed: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNAVAILABLE
+	details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"
+	debug_error_string = "UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)", grpc_status:14}"
+>
+[08:31:23] RUN: deepdata-http|glove-100d|ef=64
+[08:31:36]   R@10=0.9889  QPS=1673  P50=1.4ms
+[08:31:36] RUN: qdrant|glove-100d|ef=64
+[08:31:41]   R@10=1.0000  QPS=1120  P50=1.1ms
+[08:31:41] RUN: weaviate|glove-100d|ef=64
+[08:31:50]   R@10=0.9867  QPS=2421  P50=1.0ms
+[08:31:50] RUN: milvus|glove-100d|ef=64
+[08:32:01]   R@10=0.0000  QPS=1899  P50=0.6ms
+[08:32:01] RUN: chromadb|glove-100d|ef=64
+[08:32:09]   R@10=0.9867  QPS=1097  P50=1.2ms
+[08:32:09] RUN: deepdata-grpc|glove-100d|ef=128
+[08:32:17]   R@10=0.9944  QPS=3408  P50=0.4ms
+[08:32:17] RUN: deepdata-http|glove-100d|ef=128
+[08:32:25]   R@10=0.9956  QPS=1453  P50=1.4ms
+[08:32:25] RUN: qdrant|glove-100d|ef=128
+[08:32:30]   R@10=1.0000  QPS=1060  P50=1.0ms
+[08:32:30] RUN: weaviate|glove-100d|ef=128
+[08:32:39]   R@10=0.9911  QPS=2158  P50=1.2ms
+[08:32:39] RUN: milvus|glove-100d|ef=128
+[08:32:50]   R@10=0.0000  QPS=1843  P50=0.6ms
+[08:32:50] RUN: chromadb|glove-100d|ef=128
+[08:32:58]   R@10=0.9922  QPS=1078  P50=1.3ms
+[08:32:58] RUN: deepdata-grpc|glove-100d|ef=256
+[08:33:05]   [deepdata-grpc|glove-100d|ef=256] attempt 1/2 failed: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNAVAILABLE
+	details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"
+	debug_error_string = "UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"}"
+>
+[08:33:09]   [deepdata-grpc|glove-100d|ef=256] attempt 2/2 failed: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNAVAILABLE
+	details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"
+	debug_error_string = "UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"}"
+>
+[08:33:10] RUN: deepdata-http|glove-100d|ef=256
+[08:33:23]   R@10=0.9989  QPS=1053  P50=1.6ms
+[08:33:23] RUN: qdrant|glove-100d|ef=256
+[08:33:28]   R@10=1.0000  QPS=1036  P50=1.1ms
+[08:33:28] RUN: weaviate|glove-100d|ef=256
+[08:33:38]   R@10=0.9978  QPS=1702  P50=1.2ms
+[08:33:38] RUN: milvus|glove-100d|ef=256
+[08:33:47]   R@10=0.0000  QPS=331  P50=3.3ms
+[08:33:47] RUN: chromadb|glove-100d|ef=256
+[08:33:54]   R@10=0.9989  QPS=1036  P50=1.3ms
+[08:33:54] RUN: deepdata-grpc|glove-100d|ef=512
+[08:34:02]   [deepdata-grpc|glove-100d|ef=512] attempt 1/2 failed: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNAVAILABLE
+	details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"
+	debug_error_string = "UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)", grpc_status:14}"
+>
+[08:34:06]   [deepdata-grpc|glove-100d|ef=512] attempt 2/2 failed: <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNAVAILABLE
+	details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"
+	debug_error_string = "UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"}"
+>
+[08:34:06] RUN: deepdata-http|glove-100d|ef=512
+[08:34:19]   R@10=1.0000  QPS=599  P50=2.6ms
+[08:34:19] RUN: qdrant|glove-100d|ef=512
+[08:34:25]   R@10=1.0000  QPS=1048  P50=1.1ms
+[08:34:25] RUN: weaviate|glove-100d|ef=512
+[08:34:34]   R@10=1.0000  QPS=1305  P50=1.7ms
+[08:34:34] RUN: milvus|glove-100d|ef=512
+[08:34:44]   R@10=0.0000  QPS=337  P50=3.6ms
+[08:34:44] RUN: chromadb|glove-100d|ef=512
+[08:34:51]   R@10=1.0000  QPS=933  P50=1.5ms
+[08:34:51] RUN: deepdata-grpc|code-562|ef=16
+[08:34:53]   [deepdata-grpc|code-562|ef=16] attempt 1/2 failed: list index out of range
+[08:34:56]   [deepdata-grpc|code-562|ef=16] attempt 2/2 failed: list index out of range
+[08:34:56] RUN: deepdata-http|code-562|ef=16
+[08:34:59]   [deepdata-http|code-562|ef=16] attempt 1/2 failed: list index out of range
+[08:35:03]   [deepdata-http|code-562|ef=16] attempt 2/2 failed: list index out of range
+[08:35:03] RUN: qdrant|code-562|ef=16
+[08:35:04]   [qdrant|code-562|ef=16] attempt 1/2 failed: list index out of range
+[08:35:06]   [qdrant|code-562|ef=16] attempt 2/2 failed: list index out of range
+[08:35:06] RUN: weaviate|code-562|ef=16
+[08:35:09]   [weaviate|code-562|ef=16] attempt 1/2 failed: list index out of range
+[08:35:13]   [weaviate|code-562|ef=16] attempt 2/2 failed: list index out of range
+[08:35:13] RUN: milvus|code-562|ef=16
+[08:35:18]   [milvus|code-562|ef=16] attempt 1/2 failed: list index out of range
+[08:35:25]   [milvus|code-562|ef=16] attempt 2/2 failed: list index out of range
+[08:35:26] RUN: chromadb|code-562|ef=16
+[08:35:26]   [chromadb|code-562|ef=16] attempt 1/2 failed: list index out of range
+[08:35:29]   [chromadb|code-562|ef=16] attempt 2/2 failed: list index out of range
+[08:35:29] RUN: deepdata-grpc|code-562|ef=32
+[08:35:31]   [deepdata-grpc|code-562|ef=32] attempt 1/2 failed: list index out of range
+[08:35:34]   [deepdata-grpc|code-562|ef=32] attempt 2/2 failed: list index out of range
+[08:35:34] RUN: deepdata-http|code-562|ef=32
+[08:35:37]   [deepdata-http|code-562|ef=32] attempt 1/2 failed: list index out of range
+[08:35:41]   [deepdata-http|code-562|ef=32] attempt 2/2 failed: list index out of range
+[08:35:41] RUN: qdrant|code-562|ef=32
+[08:35:42]   [qdrant|code-562|ef=32] attempt 1/2 failed: list index out of range
+[08:35:44]   [qdrant|code-562|ef=32] attempt 2/2 failed: list index out of range
+[08:35:44] RUN: weaviate|code-562|ef=32
+[08:35:47]   [weaviate|code-562|ef=32] attempt 1/2 failed: list index out of range
+[08:35:51]   [weaviate|code-562|ef=32] attempt 2/2 failed: list index out of range
+[08:35:51] RUN: milvus|code-562|ef=32
+[08:35:56]   [milvus|code-562|ef=32] attempt 1/2 failed: list index out of range
+[08:36:04]   [milvus|code-562|ef=32] attempt 2/2 failed: list index out of range
+[08:36:04] RUN: chromadb|code-562|ef=32
+[08:36:04]   [chromadb|code-562|ef=32] attempt 1/2 failed: list index out of range
+[08:36:07]   [chromadb|code-562|ef=32] attempt 2/2 failed: list index out of range
+[08:36:07] RUN: deepdata-grpc|code-562|ef=64
+[08:36:09]   [deepdata-grpc|code-562|ef=64] attempt 1/2 failed: list index out of range
+[08:36:12]   [deepdata-grpc|code-562|ef=64] attempt 2/2 failed: list index out of range
+[08:36:12] RUN: deepdata-http|code-562|ef=64
+[08:36:15]   [deepdata-http|code-562|ef=64] attempt 1/2 failed: list index out of range
+[08:36:19]   [deepdata-http|code-562|ef=64] attempt 2/2 failed: list index out of range
+[08:36:19] RUN: qdrant|code-562|ef=64
+[08:36:20]   [qdrant|code-562|ef=64] attempt 1/2 failed: list index out of range
+[08:36:22]   [qdrant|code-562|ef=64] attempt 2/2 failed: list index out of range
+[08:36:22] RUN: weaviate|code-562|ef=64
+[08:36:24]   [weaviate|code-562|ef=64] attempt 1/2 failed: list index out of range
+[08:36:29]   [weaviate|code-562|ef=64] attempt 2/2 failed: list index out of range
+[08:36:29] RUN: milvus|code-562|ef=64
+[08:36:33]   [milvus|code-562|ef=64] attempt 1/2 failed: list index out of range
+[08:36:41]   [milvus|code-562|ef=64] attempt 2/2 failed: list index out of range
+[08:36:41] RUN: chromadb|code-562|ef=64
+[08:36:41]   [chromadb|code-562|ef=64] attempt 1/2 failed: list index out of range
+[08:36:44]   [chromadb|code-562|ef=64] attempt 2/2 failed: list index out of range
+[08:36:44] RUN: deepdata-grpc|code-562|ef=128
+[08:36:46]   [deepdata-grpc|code-562|ef=128] attempt 1/2 failed: list index out of range
+[08:36:49]   [deepdata-grpc|code-562|ef=128] attempt 2/2 failed: list index out of range
+[08:36:49] RUN: deepdata-http|code-562|ef=128
+[08:36:52]   [deepdata-http|code-562|ef=128] attempt 1/2 failed: list index out of range
+[08:36:56]   [deepdata-http|code-562|ef=128] attempt 2/2 failed: list index out of range
+[08:36:56] RUN: qdrant|code-562|ef=128
+[08:36:57]   [qdrant|code-562|ef=128] attempt 1/2 failed: list index out of range
+[08:36:59]   [qdrant|code-562|ef=128] attempt 2/2 failed: list index out of range
+[08:36:59] RUN: weaviate|code-562|ef=128
+[08:37:02]   [weaviate|code-562|ef=128] attempt 1/2 failed: list index out of range
+[08:37:06]   [weaviate|code-562|ef=128] attempt 2/2 failed: list index out of range
+[08:37:06] RUN: milvus|code-562|ef=128
+[08:37:11]   [milvus|code-562|ef=128] attempt 1/2 failed: list index out of range
+[08:37:19]   [milvus|code-562|ef=128] attempt 2/2 failed: list index out of range
+[08:37:19] RUN: chromadb|code-562|ef=128
+[08:37:19]   [chromadb|code-562|ef=128] attempt 1/2 failed: list index out of range
+[08:37:22]   [chromadb|code-562|ef=128] attempt 2/2 failed: list index out of range
+[08:37:22] RUN: deepdata-grpc|code-562|ef=256
+[08:37:24]   [deepdata-grpc|code-562|ef=256] attempt 1/2 failed: list index out of range
+[08:37:27]   [deepdata-grpc|code-562|ef=256] attempt 2/2 failed: list index out of range
+[08:37:27] RUN: deepdata-http|code-562|ef=256
+[08:37:30]   [deepdata-http|code-562|ef=256] attempt 1/2 failed: list index out of range
+[08:37:34]   [deepdata-http|code-562|ef=256] attempt 2/2 failed: list index out of range
+[08:37:34] RUN: qdrant|code-562|ef=256
+[08:37:35]   [qdrant|code-562|ef=256] attempt 1/2 failed: list index out of range
+[08:37:37]   [qdrant|code-562|ef=256] attempt 2/2 failed: list index out of range
+[08:37:37] RUN: weaviate|code-562|ef=256
+[08:37:40]   [weaviate|code-562|ef=256] attempt 1/2 failed: list index out of range
+[08:37:44]   [weaviate|code-562|ef=256] attempt 2/2 failed: list index out of range
+[08:37:44] RUN: milvus|code-562|ef=256
+[08:37:49]   [milvus|code-562|ef=256] attempt 1/2 failed: list index out of range
+[08:37:57]   [milvus|code-562|ef=256] attempt 2/2 failed: list index out of range
+[08:37:57] RUN: chromadb|code-562|ef=256
+[08:37:58]   [chromadb|code-562|ef=256] attempt 1/2 failed: list index out of range
+[08:38:01]   [chromadb|code-562|ef=256] attempt 2/2 failed: list index out of range
+[08:38:01] RUN: deepdata-grpc|code-562|ef=512
+[08:38:02]   [deepdata-grpc|code-562|ef=512] attempt 1/2 failed: list index out of range
+[08:38:05]   [deepdata-grpc|code-562|ef=512] attempt 2/2 failed: list index out of range
+[08:38:06] RUN: deepdata-http|code-562|ef=512
+[08:38:08]   [deepdata-http|code-562|ef=512] attempt 1/2 failed: list index out of range
+[08:38:12]   [deepdata-http|code-562|ef=512] attempt 2/2 failed: list index out of range
+[08:38:13] RUN: qdrant|code-562|ef=512
+[08:38:13]   [qdrant|code-562|ef=512] attempt 1/2 failed: list index out of range
+[08:38:15]   [qdrant|code-562|ef=512] attempt 2/2 failed: list index out of range
+[08:38:15] RUN: weaviate|code-562|ef=512
+[08:38:18]   [weaviate|code-562|ef=512] attempt 1/2 failed: list index out of range
+[08:38:23]   [weaviate|code-562|ef=512] attempt 2/2 failed: list index out of range
+[08:38:23] RUN: milvus|code-562|ef=512
+[08:38:26]   [milvus|code-562|ef=512] attempt 1/2 failed: list index out of range
+[08:38:33]   [milvus|code-562|ef=512] attempt 2/2 failed: list index out of range
+[08:38:33] RUN: chromadb|code-562|ef=512
+[08:38:34]   [chromadb|code-562|ef=512] attempt 1/2 failed: list index out of range
+[08:38:37]   [chromadb|code-562|ef=512] attempt 2/2 failed: list index out of range
+[08:38:37] 
+=== FAILURE MODE TESTS ===
+[08:38:37]   Failure mode [empty_collection_search]: PASS — status=200, docs=0
+[08:38:38]   Failure mode [k_greater_than_n]: PASS — asked k=1000, got 3 from 3 vectors
+[08:38:38]   Failure mode [zero_vector_query]: PASS — status=200
+[08:38:38]   Failure mode [duplicate_id_import]: PASS — status=200
+[08:38:38]   Failure mode [search_nonexistent_collection]: PASS — status=500
+[08:38:38]   Failure mode [grpc_empty_collection_search]: PASS — got 0 results
+[08:38:39]   Failure mode [very_high_ef_search]: PASS — ef_search=10000, status=200
+[08:38:39] 
+Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[08:38:39] Checkpoint at /home/omen/Documents/Project/DeepData/benchmarks/results/mega/checkpoint.json
+[08:38:39] Total results: 69, failures: 40
+[08:55:02] VDBs: deepdata-grpc, deepdata-http, qdrant, weaviate, milvus, chromadb
+[08:55:02] Datasets: sift-100k, glove-100d, code-562
+[08:55:02] ef_search: [16, 32, 64, 128, 256, 512]
+[08:55:02] n_search: 100
+[08:55:02] Total combos: 108
+[08:55:02] 
+[08:55:02] Building DeepData server...
+[08:55:02] Build OK
+[08:55:02] Loading sift-100k...
+[08:55:02]   100,000 base, 10,000 queries
+[08:55:02] Loading glove-100d...
+[08:55:05]   10,000 base, 1,000 queries
+[08:55:05] Loading code-562...
+[08:55:05]   562 base, 50 queries
+[08:55:05] SKIP (cached): deepdata-grpc|sift-100k|ef=16
+[08:55:05] SKIP (cached): deepdata-http|sift-100k|ef=16
+[08:55:05] SKIP (cached): qdrant|sift-100k|ef=16
+[08:55:05] SKIP (cached): weaviate|sift-100k|ef=16
+[08:55:05] SKIP (cached): milvus|sift-100k|ef=16
+[08:55:05] RUN: chromadb|sift-100k|ef=16
+[08:55:48]   R@10=0.9989  QPS=1138  P50=1.5ms
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=32
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=32
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=32
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=32
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=32
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=32
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=64
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=64
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=64
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=64
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=64
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=64
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=128
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=128
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=128
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=128
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=128
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=128
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=256
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=256
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=256
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=256
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=256
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=256
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=512
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=512
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=512
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=512
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=512
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=512
+[08:55:48] SKIP (cached): deepdata-grpc|glove-100d|ef=16
+[08:55:48] SKIP (cached): deepdata-http|glove-100d|ef=16
+[08:55:48] SKIP (cached): qdrant|glove-100d|ef=16
+[08:55:48] SKIP (cached): weaviate|glove-100d|ef=16
+[08:55:48] SKIP (cached): milvus|glove-100d|ef=16
+[08:55:48] SKIP (cached): chromadb|glove-100d|ef=16
+[08:55:48] SKIP (cached): deepdata-grpc|glove-100d|ef=32
+[08:55:48] SKIP (cached): deepdata-http|glove-100d|ef=32
+[08:55:48] SKIP (cached): qdrant|glove-100d|ef=32
+[08:55:48] SKIP (cached): weaviate|glove-100d|ef=32
+[08:55:48] SKIP (cached): milvus|glove-100d|ef=32
+[08:55:48] SKIP (cached): chromadb|glove-100d|ef=32
+[08:55:48] RUN: deepdata-grpc|glove-100d|ef=64
+[08:55:59]   R@10=0.9911  QPS=5572  P50=0.4ms
+[08:55:59] SKIP (cached): deepdata-http|glove-100d|ef=64
+[08:55:59] SKIP (cached): qdrant|glove-100d|ef=64
+[08:55:59] SKIP (cached): weaviate|glove-100d|ef=64
+[08:55:59] SKIP (cached): milvus|glove-100d|ef=64
+[08:55:59] SKIP (cached): chromadb|glove-100d|ef=64
+[08:55:59] SKIP (cached): deepdata-grpc|glove-100d|ef=128
+[08:55:59] SKIP (cached): deepdata-http|glove-100d|ef=128
+[08:55:59] SKIP (cached): qdrant|glove-100d|ef=128
+[08:55:59] SKIP (cached): weaviate|glove-100d|ef=128
+[08:55:59] SKIP (cached): milvus|glove-100d|ef=128
+[08:55:59] SKIP (cached): chromadb|glove-100d|ef=128
+[08:55:59] RUN: deepdata-grpc|glove-100d|ef=256
+[08:56:07]   R@10=0.9989  QPS=1867  P50=0.6ms
+[08:56:07] SKIP (cached): deepdata-http|glove-100d|ef=256
+[08:56:07] SKIP (cached): qdrant|glove-100d|ef=256
+[08:56:07] SKIP (cached): weaviate|glove-100d|ef=256
+[08:56:07] SKIP (cached): milvus|glove-100d|ef=256
+[08:56:07] SKIP (cached): chromadb|glove-100d|ef=256
+[08:56:07] RUN: deepdata-grpc|glove-100d|ef=512
+[08:56:15]   R@10=1.0000  QPS=852  P50=1.4ms
+[08:56:15] SKIP (cached): deepdata-http|glove-100d|ef=512
+[08:56:15] SKIP (cached): qdrant|glove-100d|ef=512
+[08:56:15] SKIP (cached): weaviate|glove-100d|ef=512
+[08:56:15] SKIP (cached): milvus|glove-100d|ef=512
+[08:56:15] SKIP (cached): chromadb|glove-100d|ef=512
+[08:56:15] RUN: deepdata-grpc|code-562|ef=16
+[08:56:22]   R@10=1.0000  QPS=6102  P50=0.3ms
+[08:56:22] RUN: deepdata-http|code-562|ef=16
+[08:56:30]   R@10=1.0000  QPS=410  P50=11.5ms
+[08:56:30] RUN: qdrant|code-562|ef=16
+[08:56:35]   R@10=1.0000  QPS=939  P50=1.1ms
+[08:56:35] RUN: weaviate|code-562|ef=16
+[08:56:43]   R@10=1.0000  QPS=2457  P50=1.1ms
+[08:56:43] RUN: milvus|code-562|ef=16
+[08:56:53]   R@10=0.0000  QPS=1607  P50=0.7ms
+[08:56:53] RUN: chromadb|code-562|ef=16
+[08:56:59]   R@10=1.0000  QPS=979  P50=1.4ms
+[08:56:59] RUN: deepdata-grpc|code-562|ef=32
+[08:57:06]   R@10=1.0000  QPS=5475  P50=0.3ms
+[08:57:06] RUN: deepdata-http|code-562|ef=32
+[08:57:14]   R@10=1.0000  QPS=396  P50=11.2ms
+[08:57:14] RUN: qdrant|code-562|ef=32
+[08:57:20]   R@10=1.0000  QPS=887  P50=1.1ms
+[08:57:20] RUN: weaviate|code-562|ef=32
+[08:57:27]   R@10=0.9975  QPS=2295  P50=1.1ms
+[08:57:27] RUN: milvus|code-562|ef=32
+[08:57:37]   R@10=0.0000  QPS=1349  P50=0.9ms
+[08:57:37] RUN: chromadb|code-562|ef=32
+[08:57:43]   R@10=1.0000  QPS=894  P50=1.4ms
+[08:57:43] RUN: deepdata-grpc|code-562|ef=64
+[08:57:50]   R@10=1.0000  QPS=4401  P50=0.3ms
+[08:57:50] RUN: deepdata-http|code-562|ef=64
+[08:57:58]   R@10=1.0000  QPS=390  P50=11.2ms
+[08:57:58] RUN: qdrant|code-562|ef=64
+[08:58:03]   R@10=1.0000  QPS=926  P50=1.2ms
+[08:58:03] RUN: weaviate|code-562|ef=64
+[08:58:11]   R@10=1.0000  QPS=2258  P50=1.1ms
+[08:58:11] RUN: milvus|code-562|ef=64
+[08:58:20]   R@10=0.0000  QPS=1324  P50=0.8ms
+[08:58:20] RUN: chromadb|code-562|ef=64
+[08:58:26]   R@10=1.0000  QPS=904  P50=1.5ms
+[08:58:26] RUN: deepdata-grpc|code-562|ef=128
+[08:58:33]   R@10=1.0000  QPS=3538  P50=0.3ms
+[08:58:33] RUN: deepdata-http|code-562|ef=128
+[08:58:41]   R@10=1.0000  QPS=384  P50=11.1ms
+[08:58:41] RUN: qdrant|code-562|ef=128
+[08:58:46]   R@10=1.0000  QPS=932  P50=1.1ms
+[08:58:46] RUN: weaviate|code-562|ef=128
+[08:58:54]   R@10=1.0000  QPS=2089  P50=1.0ms
+[08:58:54] RUN: milvus|code-562|ef=128
+[08:59:03]   R@10=0.0000  QPS=1328  P50=0.8ms
+[08:59:03] RUN: chromadb|code-562|ef=128
+[08:59:09]   R@10=0.9975  QPS=898  P50=1.4ms
+[08:59:09] RUN: deepdata-grpc|code-562|ef=256
+[08:59:16]   R@10=1.0000  QPS=2601  P50=0.4ms
+[08:59:16] RUN: deepdata-http|code-562|ef=256
+[08:59:24]   R@10=1.0000  QPS=377  P50=11.7ms
+[08:59:24] RUN: qdrant|code-562|ef=256
+[08:59:29]   R@10=1.0000  QPS=917  P50=1.2ms
+[08:59:29] RUN: weaviate|code-562|ef=256
+[08:59:37]   R@10=1.0000  QPS=1948  P50=1.2ms
+[08:59:37] RUN: milvus|code-562|ef=256
+[08:59:47]   R@10=0.0000  QPS=1360  P50=0.8ms
+[08:59:47] RUN: chromadb|code-562|ef=256
+[08:59:52]   R@10=1.0000  QPS=883  P50=1.5ms
+[08:59:52] RUN: deepdata-grpc|code-562|ef=512
+[08:59:59]   R@10=1.0000  QPS=1879  P50=0.6ms
+[08:59:59] RUN: deepdata-http|code-562|ef=512
+[09:00:07]   R@10=1.0000  QPS=352  P50=11.6ms
+[09:00:07] RUN: qdrant|code-562|ef=512
+[09:00:13]   R@10=1.0000  QPS=920  P50=1.1ms
+[09:00:13] RUN: weaviate|code-562|ef=512
+[09:00:20]   R@10=1.0000  QPS=1692  P50=1.2ms
+[09:00:20] RUN: milvus|code-562|ef=512
+[09:00:30]   R@10=0.0000  QPS=1583  P50=0.8ms
+[09:00:30] RUN: chromadb|code-562|ef=512
+[09:00:36]   R@10=1.0000  QPS=842  P50=1.6ms
+[09:00:36] 
+=== FAILURE MODE TESTS ===
+[09:00:51]   Failure mode [empty_collection_search]: PASS — status=200, docs=0
+[09:00:52]   Failure mode [k_greater_than_n]: PASS — asked k=1000, got 3 from 3 vectors
+[09:00:52]   Failure mode [zero_vector_query]: PASS — status=200
+[09:00:52]   Failure mode [duplicate_id_import]: PASS — status=200
+[09:00:52]   Failure mode [search_nonexistent_collection]: PASS — status=500
+[09:00:52]   Failure mode [grpc_empty_collection_search]: FAIL — <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNAVAILABLE
+	details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"
+	debug_error_string = "UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"}"
+>
+[09:00:53]   Failure mode [very_high_ef_search]: PASS — ef_search=10000, status=200
+[09:00:53] 
+Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[09:00:53] Checkpoint at /home/omen/Documents/Project/DeepData/benchmarks/results/mega/checkpoint.json
+[09:00:53] Total results: 109, failures: 0
+[09:11:05]   Failure mode [empty_collection_search]: PASS — status=200, docs=0
+[09:11:05]   Failure mode [k_greater_than_n]: PASS — asked k=1000, got 3 from 3 vectors
+[09:11:06]   Failure mode [zero_vector_query]: PASS — status=200
+[09:11:06]   Failure mode [duplicate_id_import]: PASS — status=200
+[09:11:06]   Failure mode [search_nonexistent_collection]: PASS — status=500
+[09:11:06]   Failure mode [grpc_empty_collection_search]: PASS — got 0 results
+[09:11:06]   Failure mode [very_high_ef_search]: PASS — ef_search=10000, status=200
+[09:12:10] Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md

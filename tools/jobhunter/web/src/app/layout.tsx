@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Poppins, Inter, JetBrains_Mono } from "next/font/google";
+import { AnimatedFavicon } from "@/components/animated-favicon";
 import "./globals.css";
 
 const poppins = Poppins({
@@ -39,7 +40,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body className="font-sans antialiased">{children}</body>
+      <body className="font-sans antialiased">
+        <AnimatedFavicon />
+        {children}
+      </body>
     </html>
   );
 }

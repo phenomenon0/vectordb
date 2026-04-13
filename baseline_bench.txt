@@ -1,0 +1,60 @@
+goos: linux
+goarch: amd64
+pkg: github.com/phenomenon0/vectordb/internal/index
+cpu: AMD Ryzen 7 7700X 8-Core Processor             
+BenchmarkDiskANNWithoutLRU-16              	    3376	    345164 ns/op	  288295 B/op	    1720 allocs/op
+BenchmarkDiskANNWithoutLRU-16              	    3687	    367343 ns/op	  292520 B/op	    1747 allocs/op
+BenchmarkDiskANNWithoutLRU-16              	    3510	    335243 ns/op	  263225 B/op	    1580 allocs/op
+BenchmarkDiskANNWithLRU-16                 	    3757	    333215 ns/op	  260624 B/op	    1559 allocs/op
+BenchmarkDiskANNWithLRU-16                 	    3181	    346602 ns/op	  261525 B/op	    1560 allocs/op
+BenchmarkDiskANNWithLRU-16                 	    3375	    335452 ns/op	  258884 B/op	    1558 allocs/op
+BenchmarkDiskANNAdd-16                     	   10000	   1016970 ns/op	  346965 B/op	    1988 allocs/op
+BenchmarkDiskANNAdd-16                     	   10000	   1033997 ns/op	  346524 B/op	    1986 allocs/op
+BenchmarkDiskANNAdd-16                     	   10000	   1025037 ns/op	  346882 B/op	    1989 allocs/op
+BenchmarkDiskANNSearch-16                  	    3627	    298204 ns/op	   51649 B/op	     169 allocs/op
+BenchmarkDiskANNSearch-16                  	    4275	    278906 ns/op	   51653 B/op	     169 allocs/op
+BenchmarkDiskANNSearch-16                  	    3566	    287656 ns/op	   51456 B/op	     168 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize100-16   	     154	   7516537 ns/op	  419072 B/op	     591 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize100-16   	     156	   7967116 ns/op	  419181 B/op	     591 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize100-16   	     151	   7781489 ns/op	  418880 B/op	     590 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize500-16   	      19	  58006278 ns/op	 6932440 B/op	    2622 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize500-16   	      20	  59852347 ns/op	 6932802 B/op	    2626 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize500-16   	      18	  60546782 ns/op	 6932896 B/op	    2627 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize1000-16  	       4	 256275750 ns/op	26150952 B/op	    5146 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize1000-16  	       4	 256927662 ns/op	26149304 B/op	    5141 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize1000-16  	       4	 261997049 ns/op	26151236 B/op	    5146 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize5000-16  	       1	14398593794 ns/op	622304264 B/op	   25300 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize5000-16  	       1	15495916886 ns/op	622302792 B/op	   25283 allocs/op
+BenchmarkDiskANNBatchAdd/BatchSize5000-16  	       1	15203626772 ns/op	622302216 B/op	   25277 allocs/op
+BenchmarkDiskANNParallelVsSequential/Sequential-16         	       2	 500372794 ns/op	51327200 B/op	  304806 allocs/op
+BenchmarkDiskANNParallelVsSequential/Sequential-16         	       3	 488533189 ns/op	51307509 B/op	  304805 allocs/op
+BenchmarkDiskANNParallelVsSequential/Sequential-16         	       2	 540958724 ns/op	51328192 B/op	  304806 allocs/op
+BenchmarkDiskANNParallelVsSequential/Parallel-16           	       5	 247676780 ns/op	26149422 B/op	    5142 allocs/op
+BenchmarkDiskANNParallelVsSequential/Parallel-16           	       5	 233351445 ns/op	26150612 B/op	    5154 allocs/op
+BenchmarkDiskANNParallelVsSequential/Parallel-16           	       4	 261521408 ns/op	26149696 B/op	    5145 allocs/op
+BenchmarkDiskANNParallelSearch/ParallelBatch-16            	     159	   7300176 ns/op	 4080552 B/op	   16906 allocs/op
+BenchmarkDiskANNParallelSearch/ParallelBatch-16            	     164	   7406130 ns/op	 4090888 B/op	   16908 allocs/op
+BenchmarkDiskANNParallelSearch/ParallelBatch-16            	     150	   7441341 ns/op	 4076902 B/op	   16906 allocs/op
+BenchmarkDiskANNParallelSearch/Sequential-16               	      46	  25483201 ns/op	 4031652 B/op	   16776 allocs/op
+BenchmarkDiskANNParallelSearch/Sequential-16               	      46	  25738927 ns/op	 4095072 B/op	   16783 allocs/op
+BenchmarkDiskANNParallelSearch/Sequential-16               	      49	  25280596 ns/op	 4091198 B/op	   16783 allocs/op
+BenchmarkDiskANNNoQuantization_10K-16                      	    2997	    432839 ns/op	   64073 B/op	     199 allocs/op
+BenchmarkDiskANNNoQuantization_10K-16                      	    2967	    395675 ns/op	   67664 B/op	     208 allocs/op
+BenchmarkDiskANNNoQuantization_10K-16                      	    2932	    404973 ns/op	   65727 B/op	     204 allocs/op
+BenchmarkDiskANNFloat16_10K-16                             	    1224	    926663 ns/op	  942099 B/op	     780 allocs/op
+BenchmarkDiskANNFloat16_10K-16                             	    1293	   1026243 ns/op	  961688 B/op	     797 allocs/op
+BenchmarkDiskANNFloat16_10K-16                             	    1166	   1021293 ns/op	  971908 B/op	     802 allocs/op
+BenchmarkDiskANNUint8_10K-16                               	    1662	    813213 ns/op	  987976 B/op	     809 allocs/op
+BenchmarkDiskANNUint8_10K-16                               	    1176	   2428498 ns/op	  945936 B/op	     787 allocs/op
+BenchmarkDiskANNUint8_10K-16                               	    1426	    746118 ns/op	  933283 B/op	     781 allocs/op
+BenchmarkDiskANNNoQuantization_100K-16                     	    2254	    493804 ns/op	   56097 B/op	     179 allocs/op
+BenchmarkDiskANNNoQuantization_100K-16                     	    2538	    894633 ns/op	   55520 B/op	     179 allocs/op
+BenchmarkDiskANNNoQuantization_100K-16                     	    2514	    525735 ns/op	   56215 B/op	     180 allocs/op
+BenchmarkDiskANNFloat16_100K-16                            	    1088	   1122547 ns/op	  980900 B/op	     782 allocs/op
+BenchmarkDiskANNFloat16_100K-16                            	    1185	   1106988 ns/op	 1011132 B/op	     802 allocs/op
+BenchmarkDiskANNFloat16_100K-16                            	    1170	   1026961 ns/op	  995817 B/op	     791 allocs/op
+BenchmarkDiskANNUint8_100K-16                              	    1519	    756511 ns/op	 1016325 B/op	     807 allocs/op
+BenchmarkDiskANNUint8_100K-16                              	    1544	    736126 ns/op	  975527 B/op	     783 allocs/op
+BenchmarkDiskANNUint8_100K-16                              	    1561	    742564 ns/op	 1008337 B/op	     803 allocs/op
+PASS
+ok  	github.com/phenomenon0/vectordb/internal/index	9027.459s
