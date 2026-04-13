@@ -2215,13 +2215,20 @@ func main() {
 		os.Setenv("OLLAMA_URL", *flagEmbURL)
 	}
 
-	// Initialize structured logging
+	// Initialize structured logging (JSON by default, LOG_FORMAT=text for dev)
 	logConfig := logging.DefaultConfig()
 	if os.Getenv("LOG_FORMAT") == "text" {
 		logConfig.Format = "text"
 	}
-	if os.Getenv("LOG_LEVEL") == "debug" {
+	switch os.Getenv("LOG_LEVEL") {
+	case "debug":
 		logConfig.Level = logging.LevelDebug
+	case "warn":
+		logConfig.Level = logging.LevelWarn
+	case "error":
+		logConfig.Level = logging.LevelError
+	default:
+		// "info" or unset → LevelInfo (already the default)
 	}
 	logger := logging.Init(logConfig)
 	logger.Info("initializing vector engine")
