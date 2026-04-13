@@ -29,7 +29,6 @@ import (
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // ===========================================================================================
@@ -1399,7 +1398,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		sendResponse(w, r, response)
 	})))
 
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", globalMetrics.Handler())
 
 	// Kubernetes-style health probes
 	// /healthz - Liveness probe: Is the process alive and not deadlocked?
