@@ -36,6 +36,9 @@ import (
 
 	deepdatav1 "github.com/phenomenon0/vectordb/api/gen/deepdata/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"net"
 )
@@ -2444,15 +2447,7 @@ func main() {
 			grpcSrv = grpc.NewServer(
 				grpc.MaxRecvMsgSize(64*1024*1024),
 				grpc.MaxSendMsgSize(64*1024*1024),
-				grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
-					defer func() {
-						if r := recover(); r != nil {
-							logger.Error("panic recovered in gRPC handler", "error", r, "method", info.FullMethod)
-							err = fmt.Errorf("internal error: %v", r)
-						}
-					}()
-					return handler(ctx, req)
-				}),
+				grpc.UnaryInterceptor(grpcAuthInterceptor(store.jwtMgr, store.apiToken, store.requireAuth, logger)),
 			)
 			deepdatav1.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
 				manager: collectionHTTP.Manager(),
@@ -2586,7 +2581,17 @@ func main() {
 	// Graceful shutdown sequence
 	if grpcSrv != nil {
 		logging.Default().Info("shutting down gRPC server")
-		grpcSrv.GracefulStop()
+		grpcDone := make(chan struct{})
+		go func() {
+			grpcSrv.GracefulStop()
+			close(grpcDone)
+		}()
+		select {
+		case <-grpcDone:
+		case <-time.After(30 * time.Second):
+			logging.Default().Warn("gRPC graceful shutdown timed out, forcing stop")
+			grpcSrv.Stop()
+		}
 	}
 	logging.Default().Info("shutting down HTTP server")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -2755,4 +2760,70 @@ func fileSize(path string) int64 {
 		return 0
 	}
 	return info.Size()
+}
+
+// grpcAuthInterceptor returns a gRPC unary interceptor that mirrors the HTTP
+// guard middleware: JWT validation, legacy API-token checking, and requireAuth
+// enforcement. On success it injects a *security.TenantContext into the
+// context so downstream handlers can inspect tenant identity and permissions.
+func grpcAuthInterceptor(jwtMgr *security.JWTManager, apiToken string, requireAuth bool, logger *logging.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		// Panic recovery — same as before, prevents crashes from taking down the process
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("panic recovered in gRPC handler", "error", r, "method", info.FullMethod)
+				err = status.Errorf(codes.Internal, "internal error")
+			}
+		}()
+
+		// Extract auth token from gRPC metadata (mirrors HTTP Authorization header)
+		token := ""
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			if vals := md.Get("authorization"); len(vals) > 0 {
+				token = strings.TrimPrefix(vals[0], "Bearer ")
+			}
+		}
+
+		var tenantCtx *security.TenantContext
+
+		if jwtMgr != nil {
+			if token == "" {
+				if requireAuth {
+					return nil, status.Error(codes.Unauthenticated, "missing authentication token")
+				}
+				tenantCtx = &security.TenantContext{
+					TenantID:    "default",
+					Permissions: map[string]bool{"read": true, "write": true},
+					Collections: make(map[string]bool),
+				}
+			} else {
+				var valErr error
+				tenantCtx, valErr = jwtMgr.ValidateTenantToken(token)
+				if valErr != nil {
+					return nil, status.Errorf(codes.Unauthenticated, "invalid token: %v", valErr)
+				}
+			}
+		} else {
+			authenticated := false
+			if apiToken != "" {
+				if token == apiToken {
+					authenticated = true
+				} else if token != "" {
+					return nil, status.Error(codes.Unauthenticated, "unauthorized")
+				}
+			}
+			if requireAuth && !authenticated {
+				return nil, status.Error(codes.Unauthenticated, "unauthorized")
+			}
+			tenantCtx = &security.TenantContext{
+				TenantID:    "default",
+				Permissions: map[string]bool{"read": true, "write": true},
+				Collections: make(map[string]bool),
+				IsAdmin:     jwtMgr == nil && apiToken == "",
+			}
+		}
+
+		ctx = context.WithValue(ctx, security.TenantContextKey, tenantCtx)
+		return handler(ctx, req)
+	}
 }
