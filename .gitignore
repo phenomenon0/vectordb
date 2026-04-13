@@ -1,7 +1,7 @@
 # Binaries
 bin/
-deepdata
-vectordb
+/deepdata
+/vectordb
 vectordb-server
 cmd/gentoken/gentoken
 *.exe

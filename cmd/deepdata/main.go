@@ -2227,6 +2227,17 @@ func main() {
 	logger.Info("initializing vector engine")
 
 	// ==========================================================================
+	// Startup Config Validation — fail fast on invalid env var values
+	// ==========================================================================
+	if configErrs := validateEnvConfig(logger); len(configErrs) > 0 {
+		for _, e := range configErrs {
+			logger.Error("invalid configuration", "detail", e)
+		}
+		fmt.Fprintf(os.Stderr, "FATAL: %d configuration error(s) — fix the environment variables above and restart\n", len(configErrs))
+		os.Exit(1)
+	}
+
+	// ==========================================================================
 	// Mode System Initialization (LOCAL or PRO)
 	// ==========================================================================
 	modeConfig, err := LoadModeFromEnv()
@@ -2536,20 +2547,124 @@ func main() {
 
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			logging.Default().Warn("invalid integer env var, using default", "key", key, "value", v, "default", def)
+			return def
 		}
+		return n
 	}
 	return def
 }
 
 func envInt64(key string, def int64) int64 {
 	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			return n
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			logging.Default().Warn("invalid positive integer env var, using default", "key", key, "value", v, "default", def)
+			return def
 		}
+		return n
 	}
 	return def
+}
+
+// validateEnvConfig checks all known environment variables for valid values at
+// startup. If any env var is set to an unparseable or out-of-range value, this
+// returns a list of errors. The caller should log them and exit — fail-fast
+// prevents silent misconfiguration in production.
+func validateEnvConfig(logger *logging.Logger) []string {
+	var errs []string
+
+	// Helper: check that an env var, if set, parses as a positive integer
+	checkPosInt := func(key string) {
+		if v := os.Getenv(key); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s=%q is not a valid integer", key, v))
+			} else if n <= 0 {
+				errs = append(errs, fmt.Sprintf("%s=%d must be positive", key, n))
+			}
+		}
+	}
+
+	// Helper: check that an env var, if set, parses as a non-negative integer
+	checkNonNegInt := func(key string) {
+		if v := os.Getenv(key); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s=%q is not a valid integer", key, v))
+			} else if n < 0 {
+				errs = append(errs, fmt.Sprintf("%s=%d must be non-negative", key, n))
+			}
+		}
+	}
+
+	// Helper: check positive int64
+	checkPosInt64 := func(key string) {
+		if v := os.Getenv(key); v != "" {
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s=%q is not a valid integer", key, v))
+			} else if n <= 0 {
+				errs = append(errs, fmt.Sprintf("%s=%d must be positive", key, n))
+			}
+		}
+	}
+
+	// Helper: check positive float
+	checkPosFloat := func(key string) {
+		if v := os.Getenv(key); v != "" {
+			n, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s=%q is not a valid float", key, v))
+			} else if n <= 0 {
+				errs = append(errs, fmt.Sprintf("%s=%f must be positive", key, n))
+			}
+		}
+	}
+
+	// STORAGE_FORMAT: must be a registered format name
+	if v := os.Getenv("STORAGE_FORMAT"); v != "" {
+		if storage.Get(v) == nil {
+			errs = append(errs, fmt.Sprintf("STORAGE_FORMAT=%q is not a registered format (available: %v)", v, storage.List()))
+		}
+	}
+
+	// LOG_LEVEL: only "debug" or "" (info) are meaningful
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		switch strings.ToLower(v) {
+		case "debug", "info", "warn", "error":
+			// valid
+		default:
+			errs = append(errs, fmt.Sprintf("LOG_LEVEL=%q is not valid (use: debug, info, warn, error)", v))
+		}
+	}
+
+	// Integer config vars
+	checkPosInt("PORT")
+	checkNonNegInt("VECTOR_CAPACITY")
+	checkPosInt64("WAL_MAX_BYTES")
+	checkPosInt("WAL_MAX_OPS")
+	checkPosInt("HNSW_M")
+	checkPosFloat("HNSW_ML")
+	checkPosInt("HNSW_EFSEARCH")
+	checkPosInt("TENANT_RPS")
+	checkPosInt("TENANT_BURST")
+	checkPosInt("MAX_TENANTS")
+	checkPosInt("MAX_COLLECTIONS")
+	checkPosInt("HTTP_READ_TIMEOUT_SEC")
+	checkPosInt("HTTP_WRITE_TIMEOUT_SEC")
+	checkPosInt("HTTP_REQUEST_TIMEOUT_SEC")
+
+	// EMBED_DIM: positive integer if set
+	checkPosInt("EMBED_DIM")
+
+	// ONNX_EMBED_MAX_LEN / ONNX_RERANK_MAX_LEN: positive integer if set
+	checkPosInt("ONNX_EMBED_MAX_LEN")
+	checkPosInt("ONNX_RERANK_MAX_LEN")
+
+	return errs
 }
 
 func fileSize(path string) int64 {
