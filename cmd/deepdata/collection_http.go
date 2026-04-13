@@ -600,7 +600,7 @@ type SearchRequest struct {
 	QueryText      string                          `json:"query_text"` // text query for GraphRAG entity matching
 	TopK           int                             `json:"top_k"`
 	EfSearch       int                             `json:"ef_search,omitempty"`       // HNSW ef_search override (0 = server default)
-	IncludeVectors *bool                           `json:"include_vectors,omitempty"` // include vectors in response (nil = default true)
+	IncludeVectors *bool                           `json:"include_vectors,omitempty"` // include vectors in response (nil = default false)
 	Offset         int                             `json:"offset,omitempty"`
 	Filters        map[string]interface{}          `json:"filters,omitempty"`
 	HybridParams   *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`

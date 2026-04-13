@@ -421,7 +421,7 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 		}
 	}
 
-	includeVectors := true
+	includeVectors := false
 	if req.IncludeVectors != nil {
 		includeVectors = *req.IncludeVectors
 	}
