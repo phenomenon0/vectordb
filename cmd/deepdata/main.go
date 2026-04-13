@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -112,7 +111,8 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		"ef_search": cfg.EfSearch,
 	})
 	if err != nil {
-		log.Fatalf("failed to create default HNSW index: %v", err)
+		logging.Default().Error("failed to create default HNSW index", "error", err)
+		os.Exit(1)
 	}
 
 	// Initialize JWT manager if configured
@@ -234,7 +234,7 @@ func (vs *VectorStore) commitNewVectorLocked(v []float32, doc, id string, meta m
 func (vs *VectorStore) rollbackNewVectorLocked(idx index.Index, collection string, createdIndex bool, hid uint64, tenantID string, totalBytes int64) {
 	if idx != nil {
 		if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
-			fmt.Printf("warning: failed to rollback index insert for %d: %v\n", hid, err)
+			logging.Default().Warn("failed to rollback index insert", "hid", hid, "error", err)
 		}
 	}
 	if createdIndex {
@@ -349,7 +349,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 
 		restoreCurrent := func() {
 			if err := currentIdx.Add(context.Background(), hid, oldVec); err != nil {
-				fmt.Printf("warning: failed to restore index entry for %s: %v\n", id, err)
+				logging.Default().Warn("failed to restore index entry", "id", id, "error", err)
 			}
 		}
 
@@ -367,7 +367,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 
 		if err := vs.appendWAL("upsert", id, doc, meta, v, targetCollection, tenantID); err != nil {
 			if errDel := targetIdx.Delete(context.Background(), hid); errDel != nil && !isNotFoundError(errDel) {
-				fmt.Printf("warning: failed to rollback updated index entry for %s: %v\n", id, errDel)
+				logging.Default().Warn("failed to rollback updated index entry", "id", id, "error", errDel)
 			}
 			if createdIndex {
 				delete(vs.indexes, targetCollection)
@@ -423,11 +423,11 @@ func (vs *VectorStore) Delete(id string) error {
 	}
 	if idx, ok := vs.indexes[delCollection]; ok && idx != nil {
 		if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
-			fmt.Printf("warning: failed to delete from index for %s: %v\n", id, err)
+			logging.Default().Warn("failed to delete from index", "id", id, "collection", delCollection, "error", err)
 		}
 	} else if idx := vs.indexes["default"]; idx != nil {
 		if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
-			fmt.Printf("warning: failed to delete from default index for %s: %v\n", id, err)
+			logging.Default().Warn("failed to delete from default index", "id", id, "error", err)
 		}
 	}
 
@@ -914,7 +914,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		// Try to load with configured format, fall back to gob for backward compatibility
 		payload, loadedFormat := tryLoadPayload(path)
 		if payload == nil {
-			fmt.Printf("warning: failed to load index with any format, rebuilding\n")
+			logging.Default().Warn("failed to load index with any format, rebuilding")
 			return NewVectorStore(capacity, dim), false
 		}
 		_ = loadedFormat // format used for loading (for logging if needed)
@@ -975,10 +975,10 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		if !vs.validateChecksum() {
 			oldFormula := fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
 			if vs.checksum == oldFormula {
-				fmt.Printf("info: migrating checksum from old formula\n")
+				logging.Default().Info("migrating checksum from old formula")
 				vs.checksum = vs.computeChecksum()
 			} else {
-				fmt.Printf("warning: checksum mismatch; continuing with loaded snapshot\n")
+				logging.Default().Warn("checksum mismatch; continuing with loaded snapshot")
 			}
 		}
 		for i, idStr := range vs.IDs {
@@ -1017,11 +1017,11 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 				// Create HNSW index for this collection
 				idx, err := index.NewHNSWIndex(vs.Dim, nil)
 				if err != nil {
-					fmt.Printf("warning: failed to create index for collection %s: %v\n", collName, err)
+					logging.Default().Warn("failed to create index for collection", "collection", collName, "error", err)
 					continue
 				}
 				if err := idx.Import(data); err != nil {
-					fmt.Printf("warning: failed to import index for collection %s: %v\n", collName, err)
+					logging.Default().Warn("failed to import index for collection", "collection", collName, "error", err)
 					continue
 				}
 				vs.indexes[collName] = idx
@@ -1050,14 +1050,14 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 				}
 				vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
 				if err := defaultIdx.Add(context.Background(), hid, vec); err != nil {
-					fmt.Printf("warning: failed to migrate vector %s: %v\n", idStr, err)
+					logging.Default().Warn("failed to migrate vector", "id", idStr, "error", err)
 					continue
 				}
 				migrated++
 			}
 			vs.indexes["default"] = defaultIdx
 			if migrated > 0 {
-				fmt.Printf("Migrated %d vectors to index abstraction\n", migrated)
+				logging.Default().Info("migrated vectors to index abstraction", "count", migrated)
 			}
 		}
 
@@ -1073,10 +1073,10 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		// Rebuild metadata bitmap index from persisted Meta
 		if vs.metaIndex != nil && len(vs.Meta) > 0 {
 			vs.metaIndex.RebuildFromMeta(vs.Meta, vs.Deleted)
-			fmt.Printf("Rebuilt metadata index: %d documents indexed\n", vs.metaIndex.GetDocumentCount())
+			logging.Default().Info("rebuilt metadata index", "documents_indexed", vs.metaIndex.GetDocumentCount())
 		}
 		if err := replayWAL(vs); err != nil {
-			fmt.Printf("WARNING: WAL replay failed: %v - some data may be lost!\n", err)
+			logging.Default().Error("WAL replay failed — some data may be lost", "error", err)
 			vs.walReplayError = err // Store error for inspection
 		}
 		return vs, true
@@ -2050,9 +2050,9 @@ func replayWAL(vs *VectorStore) error {
 
 	if len(replayErrors) > 0 {
 		// Log errors but don't fail - partial replay is better than none
-		fmt.Printf("WAL replay completed with %d errors\n", len(replayErrors))
+		logging.Default().Warn("WAL replay completed with errors", "error_count", len(replayErrors))
 		for _, e := range replayErrors {
-			fmt.Printf("  - %v\n", e)
+			logging.Default().Warn("WAL replay error", "error", e)
 		}
 	}
 
@@ -2078,7 +2078,7 @@ func (vs *VectorStore) validateChecksum() bool {
 func initEmbedder(defaultDim int) Embedder {
 	// Priority 1: OpenAI embeddings (highest quality, requires API key)
 	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
-		fmt.Println(">>> Using OpenAI embedder (text-embedding-3-small)")
+		logging.Default().Info("using OpenAI embedder", "model", "text-embedding-3-small")
 		return NewOpenAIEmbedder(apiKey)
 	}
 
@@ -2096,7 +2096,7 @@ func initEmbedder(defaultDim int) Embedder {
 	if resp, err := client.Get(ollamaURL + "/api/tags"); err == nil {
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
-			fmt.Printf(">>> Using Ollama embedder (%s)\n", ollamaModel)
+			logging.Default().Info("using Ollama embedder", "model", ollamaModel)
 			return NewOllamaEmbedder(ollamaURL, ollamaModel)
 		}
 	}
@@ -2125,14 +2125,14 @@ func initEmbedder(defaultDim int) Embedder {
 	}
 	if modelPath != "" && tokPath != "" {
 		if emb, err := NewOnnxEmbedder(modelPath, tokPath, defaultDim, maxLen); err == nil {
-			fmt.Println(">>> Using ONNX embedder:", modelPath)
+			logging.Default().Info("using ONNX embedder", "model_path", modelPath)
 			return emb
 		}
-		fmt.Println(">>> ONNX init failed")
+		logging.Default().Warn("ONNX embedder init failed")
 	}
 
 	// Priority 4: Hash embedder (fallback, low quality)
-	fmt.Println(">>> Using hash embedder (set OPENAI_API_KEY or start Ollama for better quality)")
+	logging.Default().Info("using hash embedder (set OPENAI_API_KEY or start Ollama for better quality)")
 	return NewHashEmbedder(defaultDim)
 }
 
@@ -2147,10 +2147,10 @@ func initReranker(embedder Embedder) Reranker {
 	}
 	if modelPath != "" && tokPath != "" {
 		if rr, err := NewOnnxCrossEncoderReranker(modelPath, tokPath, maxLen); err == nil {
-			fmt.Println("Using ONNX reranker:", modelPath)
+			logging.Default().Info("using ONNX reranker", "model_path", modelPath)
 			return rr
 		}
-		fmt.Println("Falling back to simple reranker (ONNX init failed)")
+		logging.Default().Warn("falling back to simple reranker (ONNX init failed)")
 	}
 	return &SimpleReranker{Embedder: embedder}
 }
@@ -2162,12 +2162,12 @@ func warmupModels(embedder Embedder, reranker Reranker) {
 	}
 	if embedder != nil {
 		if _, err := embedder.Embed("warmup"); err != nil {
-			fmt.Printf("embedder warmup warning: %v\n", err)
+			logging.Default().Warn("embedder warmup failed", "error", err)
 		}
 	}
 	if reranker != nil {
 		if _, _, _, err := reranker.Rerank("warmup", []string{"warmup"}, 1); err != nil {
-			fmt.Printf("reranker warmup warning: %v\n", err)
+			logging.Default().Warn("reranker warmup failed", "error", err)
 		}
 	}
 }
@@ -2250,7 +2250,6 @@ func main() {
 	modeConfig, err := LoadModeFromEnv()
 	if err != nil {
 		logger.Error("failed to load mode configuration", "error", err)
-		fmt.Printf("ERROR: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -2504,9 +2503,9 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	// Wait for shutdown signal
-	fmt.Println(">>> Server running. Press Ctrl+C to stop.")
+	logging.Default().Info("server running, press Ctrl+C to stop")
 	sig := <-sigCh
-	fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
+	logging.Default().Info("received signal, initiating graceful shutdown", "signal", sig)
 
 	// Stop background compaction
 	close(compactStop)
@@ -2518,15 +2517,15 @@ func main() {
 
 	// Graceful shutdown sequence
 	if grpcSrv != nil {
-		fmt.Println(">>> Shutting down gRPC server...")
+		logging.Default().Info("shutting down gRPC server")
 		grpcSrv.GracefulStop()
 	}
-	fmt.Println(">>> Shutting down HTTP server...")
+	logging.Default().Info("shutting down HTTP server")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		fmt.Printf("HTTP server shutdown error: %v\n", err)
+		logging.Default().Error("HTTP server shutdown error", "error", err)
 	}
 
 	// Wait for background goroutines to finish before final save
@@ -2537,7 +2536,7 @@ func main() {
 	logger.Info("waiting for in-flight WAL snapshots to finish...")
 	store.bgWg.Wait()
 
-	fmt.Println(">>> Saving final snapshot...")
+	logging.Default().Info("saving final snapshot")
 	if err := store.Save(indexPath); err != nil {
 		logger.Error("failed to save final snapshot", "error", err)
 	} else {

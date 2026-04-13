@@ -581,7 +581,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		if err := encodeResponse(w, r, map[string]any{"id": id}); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -1130,7 +1130,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		if err := encodeResponse(w, r, response); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -1209,7 +1209,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		telemetry.RecordOK(span)
 
 		if err := encodeResponse(w, r, map[string]any{"deleted": req.ID}); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -1469,7 +1469,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Serve Web UI Dashboard
 	webUISubFS, err := fs.Sub(webUIFS, "web-ui/dist")
 	if err != nil {
-		fmt.Printf("Warning: failed to create web UI sub-filesystem: %v\n", err)
+		logging.Default().Warn("failed to create web UI sub-filesystem", "error", err)
 	} else {
 		// Serve dashboard at /dashboard/
 		mux.Handle("/dashboard/", http.StripPrefix("/dashboard/", http.FileServer(http.FS(webUISubFS))))
@@ -1700,7 +1700,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"count":   store.Count,
 			"deleted": len(store.Deleted),
 		}); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -2018,7 +2018,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Initialize collection HTTP server for multi-vector support
 	collectionHTTP := NewCollectionHTTPServer(indexPath + ".collections")
 	if err := collectionHTTP.Load(indexPath + ".collections"); err != nil {
-		fmt.Printf("Warning: failed to load collection state: %v\n", err)
+		logging.Default().Warn("failed to load collection state", "error", err)
 	}
 	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
 
