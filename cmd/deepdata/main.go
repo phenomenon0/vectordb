@@ -95,6 +95,9 @@ type VectorStore struct {
 	// Recovery state
 	walReplayError error // Non-nil if WAL replay failed during load
 
+	// Background goroutine lifecycle
+	bgWg sync.WaitGroup // Tracks in-flight background snapshot goroutines
+
 	// Limits (configurable via env vars)
 	maxCollections int // MAX_COLLECTIONS (default 10,000)
 }
@@ -1973,7 +1976,9 @@ func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec
 
 		if doSnapshot {
 			snapPath := strings.TrimSuffix(vs.walPath, ".wal")
+			vs.bgWg.Add(1)
 			go func() {
+				defer vs.bgWg.Done()
 				if err := vs.Save(snapPath); err == nil {
 					if err := os.Truncate(vs.walPath, 0); err != nil {
 						logging.Default().Warn("failed to truncate WAL", "error", err)
@@ -2377,23 +2382,31 @@ func main() {
 	}
 
 	// Background compaction
+	compactDone := make(chan struct{})
+	compactStop := make(chan struct{})
 	go func() {
+		defer close(compactDone)
 		interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
 		tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0
 		t := time.NewTicker(interval)
 		defer t.Stop()
-		for range t.C {
-			store.RLock()
-			total := store.Count
-			deleted := len(store.Deleted)
-			store.RUnlock()
-			if total == 0 {
-				continue
-			}
-			if float64(deleted)/float64(total) >= tombstoneThreshold {
-				logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
-				if err := store.Compact(indexPath); err != nil {
-					logger.Error("compact error", "error", err)
+		for {
+			select {
+			case <-compactStop:
+				return
+			case <-t.C:
+				store.RLock()
+				total := store.Count
+				deleted := len(store.Deleted)
+				store.RUnlock()
+				if total == 0 {
+					continue
+				}
+				if float64(deleted)/float64(total) >= tombstoneThreshold {
+					logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
+					if err := store.Compact(indexPath); err != nil {
+						logger.Error("compact error", "error", err)
+					}
 				}
 			}
 		}
@@ -2401,6 +2414,7 @@ func main() {
 
 	// Background Obsidian vault sync
 	var obsidianSyncCancel context.CancelFunc
+	obsidianDone := make(chan struct{})
 	{
 		cfg := obsidian.LoadOrDetectConfig(dataDir)
 		obsidian.ApplyEnvOverrides(&cfg)
@@ -2453,11 +2467,17 @@ func main() {
 				}
 			}
 
-			go obsidian.SyncLoop(syncCtx, cfg, logger, embedFn, upsertFn, deleteFn, iterFn)
+			go func() {
+				defer close(obsidianDone)
+				obsidian.SyncLoop(syncCtx, cfg, logger, embedFn, upsertFn, deleteFn, iterFn)
+			}()
 			logger.Info("obsidian auto-sync started", "vault", cfg.VaultPath, "interval", cfg.Interval)
-		} else if vaults := obsidian.DetectVaults(); len(vaults) > 0 {
-			logger.Info("obsidian vault detected (not syncing — set OBSIDIAN_VAULT to enable)",
-				"vault", vaults[0])
+		} else {
+			close(obsidianDone) // Not started — unblock shutdown wait
+			if vaults := obsidian.DetectVaults(); len(vaults) > 0 {
+				logger.Info("obsidian vault detected (not syncing — set OBSIDIAN_VAULT to enable)",
+					"vault", vaults[0])
+			}
 		}
 	}
 
@@ -2469,6 +2489,9 @@ func main() {
 	fmt.Println(">>> Server running. Press Ctrl+C to stop.")
 	sig := <-sigCh
 	fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
+
+	// Stop background compaction
+	close(compactStop)
 
 	// Stop obsidian sync
 	if obsidianSyncCancel != nil {
@@ -2487,6 +2510,14 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		fmt.Printf("HTTP server shutdown error: %v\n", err)
 	}
+
+	// Wait for background goroutines to finish before final save
+	logger.Info("waiting for background compaction to finish...")
+	<-compactDone
+	logger.Info("waiting for obsidian sync to finish...")
+	<-obsidianDone
+	logger.Info("waiting for in-flight WAL snapshots to finish...")
+	store.bgWg.Wait()
 
 	fmt.Println(">>> Saving final snapshot...")
 	if err := store.Save(indexPath); err != nil {
