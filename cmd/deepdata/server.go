@@ -1328,6 +1328,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		deleted := len(store.Deleted)
 		active := total - deleted
 		lastSaved := store.lastSaved
+		walReplayErr := store.walReplayError
 		_, embedderIsONNX := embedder.(*OnnxEmbedder)
 		_, embedderIsOpenAI := embedder.(*OpenAIEmbedder)
 		_, embedderIsTracked := embedder.(*TrackedEmbedder)
@@ -1365,8 +1366,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Build response with mode info
+		healthy := walReplayErr == nil
 		response := map[string]any{
-			"ok":              true,
+			"ok":              healthy,
 			"total":           total,
 			"active":          active,
 			"deleted":         deleted,
@@ -1383,6 +1385,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				"type": map[bool]string{true: "onnx", false: "simple"}[rerankerIsONNX],
 			},
 			"collections": collections,
+		}
+
+		if walReplayErr != nil {
+			response["wal_replay_error"] = walReplayErr.Error()
 		}
 
 		// Add mode information if available
@@ -1425,6 +1431,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		store.RLock()
 		storeReady := store.Count >= 0 && store.Dim > 0
 		indexCount := len(store.indexes)
+		walErr := store.walReplayError
 		store.RUnlock()
 
 		if !storeReady {
@@ -1432,6 +1439,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 		if indexCount == 0 {
 			issues = append(issues, "no index available")
+		}
+		if walErr != nil {
+			issues = append(issues, "wal replay failed: "+walErr.Error())
 		}
 
 		// Check 2: Embedder is initialized.
@@ -3237,7 +3247,27 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		io.Copy(w, resp.Body)
 	}))
 
-	return recoveryMiddleware(corsMiddleware(otelMiddleware(mux))), collectionHTTP
+	// Request context timeout middleware — cancels handler context after the deadline.
+	// This is separate from HTTP server WriteTimeout (which is a hard TCP-level cutoff).
+	// The context timeout lets handlers cooperatively abort long operations.
+	// Streaming endpoints (snapshot, export) should check ctx.Done() and handle gracefully.
+	requestTimeoutSec := envInt("HTTP_REQUEST_TIMEOUT_SEC", 120)
+	requestTimeoutMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Skip timeout for streaming/long-running endpoints
+			p := r.URL.Path
+			if strings.HasPrefix(p, "/snapshot") || strings.HasPrefix(p, "/export") ||
+				strings.HasPrefix(p, "/import") || p == "/metrics" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), time.Duration(requestTimeoutSec)*time.Second)
+			defer cancel()
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	return recoveryMiddleware(requestTimeoutMiddleware(corsMiddleware(otelMiddleware(mux)))), collectionHTTP
 }
 
 func ageMillis(path string, fallback time.Time) int64 {

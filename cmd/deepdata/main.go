@@ -829,10 +829,12 @@ func (vs *VectorStore) Save(path string) error {
 
 	if err := format.Save(f, payload); err != nil {
 		_ = f.Close()
+		_ = os.Remove(tmp)
 		vs.RUnlock()
 		return err
 	}
 	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		vs.RUnlock()
 		return err
 	}
@@ -2017,7 +2019,7 @@ func replayWAL(vs *VectorStore) error {
 	for {
 		var e walEntry
 		if err := dec.Decode(&e); err != nil {
-			if err.Error() != "EOF" {
+			if err != io.EOF {
 				replayErrors = append(replayErrors, fmt.Errorf("WAL decode error: %w", err))
 			}
 			break
@@ -2328,6 +2330,8 @@ func main() {
 		Addr:              addr,
 		Handler:           finalHandler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       time.Duration(envInt("HTTP_READ_TIMEOUT_SEC", 60)) * time.Second,
+		WriteTimeout:      time.Duration(envInt("HTTP_WRITE_TIMEOUT_SEC", 300)) * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
@@ -2350,6 +2354,15 @@ func main() {
 			grpcSrv = grpc.NewServer(
 				grpc.MaxRecvMsgSize(64*1024*1024),
 				grpc.MaxSendMsgSize(64*1024*1024),
+				grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+					defer func() {
+						if r := recover(); r != nil {
+							logger.Error("panic recovered in gRPC handler", "error", r, "method", info.FullMethod)
+							err = fmt.Errorf("internal error: %v", r)
+						}
+					}()
+					return handler(ctx, req)
+				}),
 			)
 			deepdatav1.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
 				manager: collectionHTTP.Manager(),
