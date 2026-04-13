@@ -836,6 +836,15 @@ func (vs *VectorStore) Save(path string) error {
 		vs.RUnlock()
 		return err
 	}
+	// Sync to durable storage before closing — without this, os.Rename could
+	// succeed but the file contents may not be persisted on power loss, leaving
+	// a corrupt or zero-length snapshot after the WAL has already been removed.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		vs.RUnlock()
+		return err
+	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
 		vs.RUnlock()
@@ -1074,6 +1083,21 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		if vs.metaIndex != nil && len(vs.Meta) > 0 {
 			vs.metaIndex.RebuildFromMeta(vs.Meta, vs.Deleted)
 			logging.Default().Info("rebuilt metadata index", "documents_indexed", vs.metaIndex.GetDocumentCount())
+		}
+		// Rebuild numeric/time range indexes from persisted NumMeta/TimeMeta.
+		// Without this, range-filter queries return empty results after restart.
+		for hid, nums := range vs.NumMeta {
+			for k, v := range nums {
+				vs.numIndex[k] = append(vs.numIndex[k], numEntry{ID: hid, V: v})
+			}
+		}
+		for hid, times := range vs.TimeMeta {
+			for k, t := range times {
+				vs.timeIndex[k] = append(vs.timeIndex[k], timeEntry{ID: hid, T: t})
+			}
+		}
+		if len(vs.NumMeta) > 0 || len(vs.TimeMeta) > 0 {
+			logging.Default().Info("rebuilt range indexes", "numeric_docs", len(vs.NumMeta), "time_docs", len(vs.TimeMeta))
 		}
 		if err := replayWAL(vs); err != nil {
 			logging.Default().Error("WAL replay failed — some data may be lost", "error", err)

@@ -1023,3 +1023,123 @@ func TestUpsertMovingCollectionRemovesOldIndexEntry(t *testing.T) {
 		t.Fatal("moved document is not searchable in new collection")
 	}
 }
+
+func TestPersistenceRangeIndexRebuild(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.gob")
+
+	vs := NewVectorStore(10, 3)
+
+	// Insert documents with numeric metadata that will be parsed by ingestMeta
+	_, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", map[string]string{"price": "10.5", "tag": "a"}, "c1", "")
+	if err != nil {
+		t.Fatalf("failed to add doc-1: %v", err)
+	}
+	_, err = vs.Add([]float32{0, 1, 0}, "doc-2", "id2", map[string]string{"price": "25.0", "tag": "b"}, "c1", "")
+	if err != nil {
+		t.Fatalf("failed to add doc-2: %v", err)
+	}
+	_, err = vs.Add([]float32{0, 0, 1}, "doc-3", "id3", map[string]string{"price": "50.0", "tag": "c"}, "c1", "")
+	if err != nil {
+		t.Fatalf("failed to add doc-3: %v", err)
+	}
+
+	// Verify range query works before save
+	min := 10.0
+	max := 30.0
+	candidates := vs.candidateIDsForRange([]RangeFilter{{Key: "price", Min: &min, Max: &max}})
+	if len(candidates) != 2 {
+		t.Fatalf("pre-save: expected 2 candidates in [10,30], got %d", len(candidates))
+	}
+
+	if err := vs.Save(path); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	// Reload from disk
+	vs2, loaded := loadOrInitStore(path, 10, 3)
+	if !loaded {
+		t.Fatal("expected to load snapshot")
+	}
+
+	// Verify range query works AFTER reload — this was broken before the fix
+	candidates2 := vs2.candidateIDsForRange([]RangeFilter{{Key: "price", Min: &min, Max: &max}})
+	if len(candidates2) != 2 {
+		t.Fatalf("post-reload: expected 2 candidates in [10,30], got %d", len(candidates2))
+	}
+
+	// Verify the correct document IDs are in the result
+	hid1 := hashID("id1")
+	hid2 := hashID("id2")
+	if _, ok := candidates2[hid1]; !ok {
+		t.Fatal("post-reload: id1 (price=10.5) missing from range [10,30]")
+	}
+	if _, ok := candidates2[hid2]; !ok {
+		t.Fatal("post-reload: id2 (price=25.0) missing from range [10,30]")
+	}
+	hid3 := hashID("id3")
+	if _, ok := candidates2[hid3]; ok {
+		t.Fatal("post-reload: id3 (price=50.0) should NOT be in range [10,30]")
+	}
+}
+
+func TestPersistenceTimeIndexRebuild(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.gob")
+
+	vs := NewVectorStore(10, 3)
+
+	t1 := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	t2 := time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	t3 := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+
+	_, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", map[string]string{"created": t1}, "c1", "")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	_, err = vs.Add([]float32{0, 1, 0}, "doc-2", "id2", map[string]string{"created": t2}, "c1", "")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	_, err = vs.Add([]float32{0, 0, 1}, "doc-3", "id3", map[string]string{"created": t3}, "c1", "")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Range filter: Q1 2024 only
+	rangeStart := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	rangeEnd := time.Date(2024, 3, 31, 23, 59, 59, 0, time.UTC).Format(time.RFC3339)
+
+	candidates := vs.candidateIDsForRange([]RangeFilter{{Key: "created", TimeMin: rangeStart, TimeMax: rangeEnd}})
+	if len(candidates) != 1 {
+		t.Fatalf("pre-save: expected 1 candidate in Q1 2024, got %d", len(candidates))
+	}
+
+	if err := vs.Save(path); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	vs2, loaded := loadOrInitStore(path, 10, 3)
+	if !loaded {
+		t.Fatal("expected to load snapshot")
+	}
+
+	candidates2 := vs2.candidateIDsForRange([]RangeFilter{{Key: "created", TimeMin: rangeStart, TimeMax: rangeEnd}})
+	if len(candidates2) != 1 {
+		t.Fatalf("post-reload: expected 1 candidate in Q1 2024, got %d", len(candidates2))
+	}
+
+	hid1 := hashID("id1")
+	if _, ok := candidates2[hid1]; !ok {
+		t.Fatal("post-reload: id1 (Jan 2024) missing from Q1 2024 range")
+	}
+
+	// Broader range should return all 3
+	allRange := vs2.candidateIDsForRange([]RangeFilter{{Key: "created",
+		TimeMin: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		TimeMax: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	}})
+	if len(allRange) != 3 {
+		t.Fatalf("post-reload: expected 3 candidates in full range, got %d", len(allRange))
+	}
+}
