@@ -14,8 +14,10 @@ import (
 func TestMemoryFootprint(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
 	scale := 10_000
+	dims := []int{128, 768}
 	if testing.Short() {
 		scale = 5_000
+		dims = []int{128} // skip 768-dim in short mode (too slow under race detector)
 	}
 
 	type memCase struct {
@@ -34,7 +36,7 @@ func TestMemoryFootprint(t *testing.T) {
 		{"diskann", map[string]interface{}{"max_degree": 32, "ef_construction": 100, "memory_limit": 100000, "metric": "cosine"}, "none"},
 	}
 
-	for _, dim := range []int{128, 768} {
+	for _, dim := range dims {
 		vectors := testdata.GenerateClusteredVectors(scale, dim, 20, 0.15, rng)
 
 		for _, tc := range cases {
