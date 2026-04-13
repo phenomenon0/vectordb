@@ -1410,3 +1410,179 @@ func TestFrozenWALRecoveryOnStartup(t *testing.T) {
 		t.Fatalf("expected frozen WAL to be cleaned up after replay, got err=%v", err)
 	}
 }
+
+// TestFullLifecyclePersistence is a comprehensive end-to-end persistence test
+// that verifies ALL production data paths survive a save→reload cycle:
+// ANN search, BM25 lexical search, metadata filters, range filters,
+// collection isolation, deleted docs, and new writes after reload.
+func TestFullLifecyclePersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.gob")
+
+	vs := NewVectorStore(100, 3)
+	vs.walPath = path + ".wal"
+
+	// --- Phase 1: Populate diverse data ---
+
+	// Default collection docs
+	mustAdd := func(vec []float32, doc, id string, meta map[string]string, coll string) {
+		t.Helper()
+		if _, err := vs.Add(vec, doc, id, meta, coll, ""); err != nil {
+			t.Fatalf("add %s: %v", id, err)
+		}
+	}
+
+	mustAdd([]float32{1.0, 0.0, 0.0}, "machine learning neural networks deep learning", "ml-1",
+		map[string]string{"topic": "ml", "price": "29.99"}, "")
+	mustAdd([]float32{0.9, 0.1, 0.0}, "transformer attention mechanism NLP", "ml-2",
+		map[string]string{"topic": "ml", "price": "49.99"}, "")
+	mustAdd([]float32{0.0, 1.0, 0.0}, "PostgreSQL relational database SQL", "db-1",
+		map[string]string{"topic": "databases", "price": "19.99"}, "")
+	mustAdd([]float32{0.0, 0.9, 0.1}, "Redis in-memory cache data store", "db-2",
+		map[string]string{"topic": "databases", "price": "9.99"}, "")
+	mustAdd([]float32{0.0, 0.0, 1.0}, "Kubernetes container orchestration", "infra-1",
+		map[string]string{"topic": "infrastructure", "price": "39.99"}, "")
+
+	// Science collection docs
+	mustAdd([]float32{0.5, 0.5, 0.0}, "mitochondria ATP cellular energy", "bio-1",
+		map[string]string{"topic": "biology"}, "science")
+	mustAdd([]float32{0.5, 0.0, 0.5}, "photosynthesis light energy plants", "bio-2",
+		map[string]string{"topic": "biology"}, "science")
+
+	// Delete one doc
+	if err := vs.Delete("db-2"); err != nil {
+		t.Fatalf("delete db-2: %v", err)
+	}
+
+	// --- Phase 1b: Capture pre-save state ---
+	preSaveCount := vs.Count
+	preSaveActive := vs.Count - len(vs.Deleted)
+	preSaveDeleted := vs.Deleted[hashID("db-2")]
+
+	// ANN search pre-save
+	preANNIxs := vs.SearchANN([]float32{1.0, 0.0, 0.0}, 1)
+	preANNID := vs.GetID(preANNIxs[0])
+
+	// BM25 search pre-save
+	preBM25Ixs := vs.SearchLex(tokenize("PostgreSQL relational database"), 1)
+	preBM25ID := vs.GetID(preBM25Ixs[0])
+
+	// Range filter pre-save
+	min, max := 20.0, 50.0
+	preCandidates := vs.candidateIDsForRange([]RangeFilter{{Key: "price", Min: &min, Max: &max}})
+
+	// Collection pre-save
+	var preSciCount int
+	for _, hid := range vs.idToIx {
+		_ = hid // just need iteration
+	}
+	for _, id := range vs.IDs {
+		hid := hashID(id)
+		if !vs.Deleted[hid] && vs.Coll[hid] == "science" {
+			preSciCount++
+		}
+	}
+
+	// --- Phase 2: Save and reload ---
+	if err := vs.Save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	// Delete WAL after Save — mirrors the production shutdown path where
+	// all writers are drained before Save+WAL cleanup.
+	os.Remove(vs.walPath)
+
+	vs2, loaded := loadOrInitStore(path, 100, 3)
+	if !loaded {
+		t.Fatal("expected to load snapshot")
+	}
+
+	// --- Phase 3: Verify everything survived ---
+
+	// 3a: Counts
+	if vs2.Count != preSaveCount {
+		t.Errorf("count: got %d, want %d", vs2.Count, preSaveCount)
+	}
+	if vs2.Count - len(vs2.Deleted) != preSaveActive {
+		t.Errorf("active count: got %d, want %d", vs2.Count - len(vs2.Deleted), preSaveActive)
+	}
+	if !vs2.Deleted[hashID("db-2")] != !preSaveDeleted {
+		t.Error("deleted flag for db-2 not preserved")
+	}
+
+	// 3b: ANN search returns same result
+	postANNIxs := vs2.SearchANN([]float32{1.0, 0.0, 0.0}, 1)
+	if len(postANNIxs) == 0 {
+		t.Fatal("ANN search returned 0 results after reload")
+	}
+	postANNID := vs2.GetID(postANNIxs[0])
+	if postANNID != preANNID {
+		t.Errorf("ANN top result after reload: got %q, want %q", postANNID, preANNID)
+	}
+
+	// 3c: Deleted doc doesn't appear in ANN results
+	annAll := vs2.SearchANN([]float32{0.0, 0.9, 0.1}, 10)
+	for _, ix := range annAll {
+		if vs2.GetID(ix) == "db-2" {
+			t.Error("deleted doc db-2 appeared in ANN results after reload")
+		}
+	}
+
+	// 3d: BM25 search returns same result
+	postBM25Ixs := vs2.SearchLex(tokenize("PostgreSQL relational database"), 1)
+	if len(postBM25Ixs) == 0 {
+		t.Fatal("BM25 search returned 0 results after reload")
+	}
+	postBM25ID := vs2.GetID(postBM25Ixs[0])
+	if postBM25ID != preBM25ID {
+		t.Errorf("BM25 top result after reload: got %q, want %q", postBM25ID, preBM25ID)
+	}
+
+	// 3e: BM25 does not return deleted doc
+	bm25All := vs2.SearchLex(tokenize("Redis in-memory cache"), 10)
+	for _, ix := range bm25All {
+		if vs2.GetID(ix) == "db-2" {
+			t.Error("deleted doc db-2 appeared in BM25 results after reload")
+		}
+	}
+
+	// 3f: Range filter works after reload
+	postCandidates := vs2.candidateIDsForRange([]RangeFilter{{Key: "price", Min: &min, Max: &max}})
+	if len(postCandidates) != len(preCandidates) {
+		t.Errorf("range filter [%.0f,%.0f] after reload: got %d candidates, want %d",
+			min, max, len(postCandidates), len(preCandidates))
+	}
+
+	// 3g: Metadata filter works
+	filtered := vs2.GetPreFilteredIDs(map[string]string{"topic": "ml"})
+	if len(filtered) < 2 {
+		t.Errorf("metadata filter topic=ml after reload: got %d results, want >= 2", len(filtered))
+	}
+
+	// 3h: Collection isolation survives
+	var postSciCount int
+	for _, id := range vs2.IDs {
+		hid := hashID(id)
+		if !vs2.Deleted[hid] && vs2.Coll[hid] == "science" {
+			postSciCount++
+		}
+	}
+	if postSciCount != preSciCount {
+		t.Errorf("science collection doc count: got %d, want %d", postSciCount, preSciCount)
+	}
+
+	// 3i: New inserts work after reload
+	if _, err := vs2.Add([]float32{0.3, 0.3, 0.3}, "post-reload insert test", "post-reload-1",
+		map[string]string{"topic": "test"}, "", ""); err != nil {
+		t.Fatalf("insert after reload failed: %v", err)
+	}
+	postReloadIxs := vs2.SearchANN([]float32{0.3, 0.3, 0.3}, 1)
+	if len(postReloadIxs) == 0 || vs2.GetID(postReloadIxs[0]) != "post-reload-1" {
+		t.Error("newly inserted doc not found in ANN search after reload")
+	}
+
+	// 3j: BM25 on newly inserted doc works
+	postReloadBM25 := vs2.SearchLex(tokenize("post-reload insert test"), 1)
+	if len(postReloadBM25) == 0 || vs2.GetID(postReloadBM25[0]) != "post-reload-1" {
+		t.Error("newly inserted doc not found in BM25 search after reload")
+	}
+}

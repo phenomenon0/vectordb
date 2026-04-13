@@ -4,7 +4,8 @@
 #
 # Covers: server boot, Ollama embedder, insert, query, semantic accuracy,
 # metadata filtering, batch, upsert, delete, collections, hybrid/BM25,
-# scroll, compact, export/import, concurrency, edge cases, WAL persistence.
+# scroll, compact, export/import, concurrency, edge cases, WAL persistence,
+# restart persistence (data survival across server restart), graceful shutdown.
 #
 # Usage:
 #   ./tests/smoke_test.sh
@@ -521,8 +522,9 @@ echo ""
 echo -e "${BLD}[20] Metrics${RST}"
 
 M=$(curl -sf "$BASE/metrics")
-assert_contains "has go_goroutines" "$M" "go_goroutines"
-assert_contains "has go_memstats" "$M" "go_memstats"
+assert_contains "has vectordb_operations_total" "$M" "vectordb_operations_total"
+assert_contains "has vectordb_http_requests_total" "$M" "vectordb_http_requests_total"
+assert_contains "has vectordb_query_duration_seconds" "$M" "vectordb_query_duration_seconds"
 echo ""
 
 # ── 21. WAL & Persistence ────────────────────────────────────────────────
@@ -704,3 +706,187 @@ assert_eq "GET / → 302 redirect" "302" "$DASH_CODE"
 # GET /dashboard/ → 200 (serves web UI)
 DASH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/dashboard/")
 assert "GET /dashboard/ → 200 or 404" "[[ $DASH_CODE == '200' || $DASH_CODE == '404' ]]"
+echo ""
+
+# ── 31. Restart Persistence ──────────────────────────────────────────────
+echo -e "${BLD}[31] Restart Persistence${RST}"
+
+# Capture pre-restart state
+PRE_HEALTH=$(curl -sf "$BASE/health")
+PRE_TOTAL=$(jv "$PRE_HEALTH" '.total')
+PRE_ACTIVE=$(jv "$PRE_HEALTH" '.active')
+PRE_DELETED=$(jv "$PRE_HEALTH" '.deleted')
+PRE_COLLS=$(echo "$PRE_HEALTH" | jq '.collections | keys | sort' 2>/dev/null)
+
+# Verify a specific doc is queryable before restart (default collection)
+PRE_QUERY=$(post "$BASE/query" '{"query":"SQL relational database management","top_k":1,"mode":"bm25"}')
+PRE_TOP=$(jv "$PRE_QUERY" '.ids[0]')
+
+# Verify science collection doc
+PRE_SCI=$(post "$BASE/query" '{"query":"mitochondria ATP","top_k":1,"collection":"science"}')
+PRE_SCI_TOP=$(jv "$PRE_SCI" '.ids[0]')
+
+echo -e "  Pre-restart: total=${YEL}${PRE_TOTAL}${RST} active=${YEL}${PRE_ACTIVE}${RST} deleted=${YEL}${PRE_DELETED}${RST}"
+
+# ── Graceful shutdown via SIGTERM ──
+echo -n "  Stopping server (SIGTERM)..."
+kill -TERM "$SERVER_PID" 2>/dev/null || true
+# Wait for process to exit (up to 30s)
+for i in $(seq 1 60); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo " stopped (${i}x0.5s)"
+        break
+    fi
+    sleep 0.5
+done
+if kill -0 "$SERVER_PID" 2>/dev/null; then
+    echo -e " ${RED}TIMEOUT — force killing${RST}"
+    kill -9 "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+else
+    wait "$SERVER_PID" 2>/dev/null || true
+fi
+SERVER_PID=""
+
+# Verify data files exist on disk after shutdown
+SNAP_COUNT=$(find "$BASE_DIR" -name "*.gob" -o -name "*.cowrie" -o -name "*.cowrie.zst" 2>/dev/null | wc -l)
+assert "snapshot file exists on disk after shutdown" "[[ $SNAP_COUNT -ge 1 ]]"
+
+# ── Restart server with same data dir ──
+echo -n "  Restarting server on :${PORT}..."
+VECTORDB_BASE_DIR="$BASE_DIR" \
+VECTORDB_MODE="$TEST_MODE" \
+HYDRATION_COUNT=0 \
+PORT="$PORT" \
+"$BINARY" serve --port "$PORT" --mode "$TEST_MODE" >>"$BASE_DIR/server.log" 2>&1 &
+SERVER_PID=$!
+
+for i in $(seq 1 60); do
+    if curl -sf "$BASE/healthz" >/dev/null 2>&1; then
+        echo " ready (${i}x0.5s)"
+        break
+    fi
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo -e " ${RED}CRASHED on restart${RST}"
+        echo "  Server log tail:"
+        tail -20 "$BASE_DIR/server.log" 2>/dev/null || true
+        SERVER_PID=""
+        FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1))
+        exit 1
+    fi
+    echo -n "."
+    sleep 0.5
+done
+curl -sf "$BASE/healthz" >/dev/null 2>&1 || { echo -e " ${RED}TIMEOUT on restart${RST}"; exit 1; }
+
+# ── Verify data survived restart ──
+POST_HEALTH=$(curl -sf "$BASE/health")
+POST_TOTAL=$(jv "$POST_HEALTH" '.total')
+POST_ACTIVE=$(jv "$POST_HEALTH" '.active')
+POST_DELETED=$(jv "$POST_HEALTH" '.deleted')
+POST_COLLS=$(echo "$POST_HEALTH" | jq '.collections | keys | sort' 2>/dev/null)
+
+echo -e "  Post-restart: total=${YEL}${POST_TOTAL}${RST} active=${YEL}${POST_ACTIVE}${RST} deleted=${YEL}${POST_DELETED}${RST}"
+
+assert_eq "total vectors survived restart" "$PRE_TOTAL" "$POST_TOTAL"
+assert_eq "active vectors survived restart" "$PRE_ACTIVE" "$POST_ACTIVE"
+assert_eq "deleted count survived restart" "$PRE_DELETED" "$POST_DELETED"
+assert_eq "collections survived restart" "$PRE_COLLS" "$POST_COLLS"
+
+# Verify BM25 keyword search still works (proves sparse index rebuilt)
+POST_QUERY=$(post "$BASE/query" '{"query":"SQL relational database management","top_k":1,"mode":"bm25"}')
+POST_TOP=$(jv "$POST_QUERY" '.ids[0]')
+assert_eq "BM25 query returns same doc after restart" "$PRE_TOP" "$POST_TOP"
+
+# Verify ANN search in default collection
+POST_ANN=$(post "$BASE/query" '{"query":"how do neural networks learn?","top_k":1}')
+POST_ANN_TOP=$(jv "$POST_ANN" '.ids[0]')
+assert "ANN query returns result after restart" "[[ -n '$POST_ANN_TOP' && '$POST_ANN_TOP' != 'null' ]]"
+
+# Verify cross-collection isolation survives restart
+POST_SCI=$(post "$BASE/query" '{"query":"mitochondria ATP","top_k":1,"collection":"science"}')
+POST_SCI_TOP=$(jv "$POST_SCI" '.ids[0]')
+assert_eq "collection query returns same doc after restart" "$PRE_SCI_TOP" "$POST_SCI_TOP"
+
+# Verify science collection docs don't leak into default after restart
+POST_LEAK=$(post "$BASE/query" '{"query":"mitochondria ATP","top_k":10}')
+LEAK_BIO=$(echo "$POST_LEAK" | jq '[.ids[] // empty] | any(. == "bio-101")' 2>/dev/null || echo "false")
+assert_eq "collection isolation survived restart" "false" "$LEAK_BIO"
+
+# Verify metadata survived
+POST_META=$(post "$BASE/query" '{"query":"technology","top_k":5,"include_meta":true,"meta":{"topic":"machine-learning"}}')
+META_COUNT=$(jv "$POST_META" '.ids | length')
+assert "metadata filter works after restart" "[[ $META_COUNT -ge 1 ]]"
+
+# Verify health endpoint reports ok after restart
+POST_OK=$(jv "$POST_HEALTH" '.ok')
+assert_eq "health.ok=true after restart" "true" "$POST_OK"
+
+# Verify readiness after restart
+assert_http "GET /readyz → 200 after restart" "200" "$BASE/readyz"
+
+# Verify metrics endpoint works after restart
+POST_METRICS=$(curl -sf "$BASE/metrics")
+assert_contains "metrics endpoint works after restart" "$POST_METRICS" "vectordb_operations_total"
+
+# Verify new inserts work after restart
+R=$(post "$BASE/insert" '{"doc":"Post-restart test document about verification","id":"restart-test-1"}')
+assert_eq "insert works after restart" "restart-test-1" "$(jv "$R" '.id')"
+
+# Verify the new insert is queryable
+R=$(post "$BASE/query" '{"query":"post-restart verification","top_k":1,"mode":"bm25"}')
+assert_eq "new doc queryable after restart" "restart-test-1" "$(jv "$R" '.ids[0]')"
+
+echo ""
+
+# ── 32. Graceful Shutdown Behavior ───────────────────────────────────────
+echo -e "${BLD}[32] Graceful Shutdown${RST}"
+
+# Insert a doc, then immediately SIGTERM — verify it survives the next restart
+R=$(post "$BASE/insert" '{"doc":"Graceful shutdown durability test document","id":"shutdown-test-1"}')
+assert_eq "insert shutdown-test-1" "shutdown-test-1" "$(jv "$R" '.id')"
+
+echo -n "  Stopping server (SIGTERM)..."
+kill -TERM "$SERVER_PID" 2>/dev/null || true
+for i in $(seq 1 60); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo " stopped (${i}x0.5s)"
+        break
+    fi
+    sleep 0.5
+done
+if kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill -9 "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+else
+    wait "$SERVER_PID" 2>/dev/null || true
+fi
+SERVER_PID=""
+
+echo -n "  Restarting server on :${PORT}..."
+VECTORDB_BASE_DIR="$BASE_DIR" \
+VECTORDB_MODE="$TEST_MODE" \
+HYDRATION_COUNT=0 \
+PORT="$PORT" \
+"$BINARY" serve --port "$PORT" --mode "$TEST_MODE" >>"$BASE_DIR/server.log" 2>&1 &
+SERVER_PID=$!
+
+for i in $(seq 1 60); do
+    if curl -sf "$BASE/healthz" >/dev/null 2>&1; then
+        echo " ready (${i}x0.5s)"
+        break
+    fi
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo -e " ${RED}CRASHED on 2nd restart${RST}"
+        SERVER_PID=""
+        FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1))
+        exit 1
+    fi
+    echo -n "."
+    sleep 0.5
+done
+curl -sf "$BASE/healthz" >/dev/null 2>&1 || { echo -e " ${RED}TIMEOUT on 2nd restart${RST}"; exit 1; }
+
+# Verify the just-inserted doc survived shutdown → restart
+R=$(post "$BASE/query" '{"query":"graceful shutdown durability","top_k":1,"mode":"bm25"}')
+assert_eq "shutdown-test-1 survived restart" "shutdown-test-1" "$(jv "$R" '.ids[0]')"
