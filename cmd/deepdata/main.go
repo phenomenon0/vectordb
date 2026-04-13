@@ -856,7 +856,6 @@ func (vs *VectorStore) Save(path string) error {
 	// Capture snapshot metadata while under read lock, then update mutable fields under write lock.
 	newChecksum := vs.computeChecksum()
 	lastSaved := payload.LastSaved
-	walPath := vs.walPath
 	vs.RUnlock()
 
 	vs.Lock()
@@ -864,15 +863,13 @@ func (vs *VectorStore) Save(path string) error {
 	vs.lastSaved = lastSaved
 	vs.Unlock()
 
-	// Rename FIRST to atomically commit the new snapshot, THEN delete the WAL.
-	// The previous order (delete WAL → rename) had a data-loss window: if the
-	// process crashes between the two operations, the WAL is gone but the new
-	// snapshot is not yet in place — any writes only in the WAL are lost.
+	// Rename atomically commits the new snapshot.
+	// WAL cleanup is the caller's responsibility — Save() must not delete the
+	// WAL because background snapshot goroutines race with concurrent appendWAL
+	// writers: entries written after the RLock was released but before this point
+	// would be lost if we deleted the WAL here.
 	if err := os.Rename(tmp, path); err != nil {
 		return err
-	}
-	if walPath != "" {
-		_ = os.Remove(walPath)
 	}
 	return nil
 }
@@ -1107,6 +1104,20 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		}
 		if len(vs.NumMeta) > 0 || len(vs.TimeMeta) > 0 {
 			logging.Default().Info("rebuilt range indexes", "numeric_docs", len(vs.NumMeta), "time_docs", len(vs.TimeMeta))
+		}
+		// Recover any frozen WAL left by a crash during background snapshot.
+		// The frozen WAL contains entries from before the rotation — replay it
+		// first since those entries are older than any entries in the current WAL.
+		frozenPath := vs.walPath + ".frozen"
+		if _, ferr := os.Stat(frozenPath); ferr == nil {
+			logging.Default().Warn("found frozen WAL from interrupted snapshot, replaying", "path", frozenPath)
+			savedPath := vs.walPath
+			vs.walPath = frozenPath
+			if err := replayWAL(vs); err != nil {
+				logging.Default().Error("frozen WAL replay failed", "error", err)
+				vs.walReplayError = err
+			}
+			vs.walPath = savedPath
 		}
 		if err := replayWAL(vs); err != nil {
 			logging.Default().Error("WAL replay failed — some data may be lost", "error", err)
@@ -2009,16 +2020,35 @@ func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec
 
 		if doSnapshot && vs.snapshotRunning.CompareAndSwap(false, true) {
 			snapPath := strings.TrimSuffix(vs.walPath, ".wal")
-			vs.bgWg.Add(1)
-			go func() {
-				defer vs.bgWg.Done()
-				defer vs.snapshotRunning.Store(false)
-				if err := vs.Save(snapPath); err == nil {
-					if err := os.Truncate(vs.walPath, 0); err != nil {
-						logging.Default().Warn("failed to truncate WAL", "error", err)
+			// Rotate the WAL under walMu: rename the current WAL to a frozen
+			// path so the snapshot goroutine can safely delete it after Save()
+			// without racing with concurrent appendWAL writers — new writes
+			// will create a fresh WAL file via O_CREATE|O_APPEND.
+			frozenWAL := vs.walPath + ".frozen"
+			vs.walMu.Lock()
+			rotateErr := os.Rename(vs.walPath, frozenWAL)
+			vs.walOps = 0
+			vs.walMu.Unlock()
+			if rotateErr != nil {
+				logging.Default().Warn("failed to rotate WAL for snapshot", "error", rotateErr)
+				vs.snapshotRunning.Store(false)
+			} else {
+				vs.bgWg.Add(1)
+				go func() {
+					defer vs.bgWg.Done()
+					defer vs.snapshotRunning.Store(false)
+					if err := vs.Save(snapPath); err == nil {
+						_ = os.Remove(frozenWAL)
+					} else {
+						// Save failed — restore the frozen WAL so entries aren't lost.
+						// If a new WAL was created concurrently, the rename will fail
+						// and the frozen WAL stays for the next snapshot attempt.
+						if renameErr := os.Rename(frozenWAL, vs.walPath); renameErr != nil {
+							logging.Default().Warn("failed to restore frozen WAL", "error", renameErr, "frozen_path", frozenWAL)
+						}
 					}
-				}
-			}()
+				}()
+			}
 		}
 	}
 
@@ -2579,6 +2609,11 @@ func main() {
 		logger.Error("failed to save final snapshot", "error", err)
 	} else {
 		logger.Info("final snapshot saved successfully")
+		// Clean up WAL after successful save — safe here because shutdown has
+		// drained all writers (bgWg.Wait completed above, HTTP/gRPC stopped).
+		if store.walPath != "" {
+			_ = os.Remove(store.walPath)
+		}
 	}
 	if err := collectionHTTP.Save(indexPath + ".collections"); err != nil {
 		logger.Error("failed to save collection state", "error", err)

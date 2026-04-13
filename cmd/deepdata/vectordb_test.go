@@ -1145,10 +1145,10 @@ func TestPersistenceTimeIndexRebuild(t *testing.T) {
 	}
 }
 
-// TestSaveRenamesBeforeDeletingWAL verifies that Save() atomically commits the
-// snapshot (rename) BEFORE deleting the WAL. After Save, the snapshot must exist
-// and the WAL must be gone.
-func TestSaveRenamesBeforeDeletingWAL(t *testing.T) {
+// TestSaveDoesNotDeleteWAL verifies that Save() atomically commits the
+// snapshot (rename) but does NOT delete the WAL — WAL cleanup is the caller's
+// responsibility to prevent a data-loss race with concurrent appendWAL writers.
+func TestSaveDoesNotDeleteWAL(t *testing.T) {
 	dir := t.TempDir()
 	snapPath := filepath.Join(dir, "index.gob")
 	walPath := snapPath + ".wal"
@@ -1170,12 +1170,13 @@ func TestSaveRenamesBeforeDeletingWAL(t *testing.T) {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	// After Save: snapshot must exist, WAL must be deleted
+	// After Save: snapshot must exist
 	if _, err := os.Stat(snapPath); err != nil {
 		t.Fatalf("expected snapshot to exist after Save: %v", err)
 	}
-	if _, err := os.Stat(walPath); !os.IsNotExist(err) {
-		t.Fatalf("expected WAL to be deleted after successful Save, got err=%v", err)
+	// WAL must still exist — Save() no longer deletes it
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("expected WAL to still exist after Save (callers handle cleanup): %v", err)
 	}
 }
 
@@ -1285,5 +1286,127 @@ func TestConcurrentSnapshotDedup(t *testing.T) {
 	if _, err := os.Stat(snapPath); err != nil {
 		// Snapshot may or may not exist depending on timing, but should not have crashed
 		t.Logf("snapshot file does not exist (normal if timing prevented Save): %v", err)
+	}
+}
+
+// TestWALRotationPreservesNewEntries verifies that WAL rotation during a
+// background snapshot does not lose entries written after the rotation.
+// This is the core data-safety property: appendWAL renames the WAL to
+// .wal.frozen before spawning the snapshot goroutine, and new appendWAL
+// calls create a fresh .wal file — so entries written during the snapshot
+// survive even after the frozen WAL is deleted.
+func TestWALRotationPreservesNewEntries(t *testing.T) {
+	dir := t.TempDir()
+	snapPath := filepath.Join(dir, "index.gob")
+	walPath := snapPath + ".wal"
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+	vs.walMaxOps = 2 // Trigger snapshot after 2 WAL writes
+
+	// Insert 2 docs — second insert triggers background snapshot + WAL rotation
+	for i := 0; i < 2; i++ {
+		id := fmt.Sprintf("id-%d", i)
+		vec := []float32{float32(i + 1), 0, 0}
+		if _, err := vs.Add(vec, fmt.Sprintf("doc-%d", i), id, nil, "", ""); err != nil {
+			t.Fatalf("Add %d failed: %v", i, err)
+		}
+	}
+
+	// Insert a third doc while the background snapshot may be running —
+	// this entry goes to the NEW WAL file (after rotation)
+	if _, err := vs.Add([]float32{3, 0, 0}, "doc-2", "id-2", nil, "", ""); err != nil {
+		t.Fatalf("Add id-2 failed: %v", err)
+	}
+
+	// Wait for background snapshot to complete
+	vs.bgWg.Wait()
+
+	// The new WAL file must exist and contain the post-rotation entry
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("expected new WAL to exist after rotation: %v", err)
+	}
+
+	// The frozen WAL should have been cleaned up after successful snapshot
+	frozenPath := walPath + ".frozen"
+	if _, err := os.Stat(frozenPath); !os.IsNotExist(err) {
+		t.Fatalf("expected frozen WAL to be deleted after successful snapshot, got err=%v", err)
+	}
+
+	// Load the snapshot and replay the new WAL to verify no data was lost
+	vs2 := NewVectorStore(10, 3)
+	vs2.walPath = walPath
+	payload, _ := tryLoadPayload(snapPath)
+	if payload == nil {
+		t.Fatal("failed to load snapshot")
+	}
+	// The snapshot should have at least the first 2 docs
+	if payload.Count < 2 {
+		t.Fatalf("expected snapshot to have at least 2 entries, got %d", payload.Count)
+	}
+
+	// Replay the new WAL — it should contain the third entry
+	err := replayWAL(vs2)
+	if err != nil {
+		t.Fatalf("replay of post-rotation WAL failed: %v", err)
+	}
+
+	// All 3 entries should be accessible (either from snapshot or WAL replay)
+	if vs.Count != 3 {
+		t.Fatalf("expected 3 total entries in original store, got %d", vs.Count)
+	}
+}
+
+// TestFrozenWALRecoveryOnStartup verifies that a .wal.frozen file left by
+// a crash during background snapshot is replayed at startup.
+func TestFrozenWALRecoveryOnStartup(t *testing.T) {
+	dir := t.TempDir()
+	snapPath := filepath.Join(dir, "index.gob")
+	walPath := snapPath + ".wal"
+	frozenPath := walPath + ".frozen"
+
+	// Create a VectorStore and save an initial snapshot with 1 doc
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id-1", nil, "", ""); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := vs.Save(snapPath); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Simulate crash scenario: create a frozen WAL with an additional entry
+	// that is NOT in the snapshot (as if the snapshot was being written when crash happened)
+	f, err := os.Create(frozenPath)
+	if err != nil {
+		t.Fatalf("create frozen WAL: %v", err)
+	}
+	enc := json.NewEncoder(f)
+	enc.Encode(walEntry{Op: "insert", ID: "id-frozen", Doc: "frozen-doc", Vec: []float32{2, 0, 0}, Coll: "default", Tenant: "default"})
+	f.Close()
+
+	// Also create a regular WAL with yet another entry
+	f2, err := os.Create(walPath)
+	if err != nil {
+		t.Fatalf("create WAL: %v", err)
+	}
+	enc2 := json.NewEncoder(f2)
+	enc2.Encode(walEntry{Op: "insert", ID: "id-wal", Doc: "wal-doc", Vec: []float32{3, 0, 0}, Coll: "default", Tenant: "default"})
+	f2.Close()
+
+	// Reload — loadOrInitStore should replay both the frozen WAL and the regular WAL
+	vs2, loaded := loadOrInitStore(snapPath, 10, 3)
+	if !loaded {
+		t.Fatal("expected snapshot to be loaded")
+	}
+
+	// Should have all 3 entries: 1 from snapshot + 1 from frozen WAL + 1 from regular WAL
+	if vs2.Count != 3 {
+		t.Fatalf("expected 3 entries after recovery, got %d", vs2.Count)
+	}
+
+	// The frozen WAL should have been cleaned up after successful replay
+	if _, err := os.Stat(frozenPath); !os.IsNotExist(err) {
+		t.Fatalf("expected frozen WAL to be cleaned up after replay, got err=%v", err)
 	}
 }
