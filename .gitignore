@@ -21,3 +21,4 @@ desktop/node_modules/
 desktop/src-tauri/target/
 __pycache__/
 *.pyc
+.pytest_cache/
