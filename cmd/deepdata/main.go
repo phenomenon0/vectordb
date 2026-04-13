@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -95,7 +96,8 @@ type VectorStore struct {
 	walReplayError error // Non-nil if WAL replay failed during load
 
 	// Background goroutine lifecycle
-	bgWg sync.WaitGroup // Tracks in-flight background snapshot goroutines
+	bgWg             sync.WaitGroup // Tracks in-flight background snapshot goroutines
+	snapshotRunning  atomic.Bool    // Guards against concurrent background snapshots racing on .tmp file
 
 	// Limits (configurable via env vars)
 	maxCollections int // MAX_COLLECTIONS (default 10,000)
@@ -862,10 +864,17 @@ func (vs *VectorStore) Save(path string) error {
 	vs.lastSaved = lastSaved
 	vs.Unlock()
 
+	// Rename FIRST to atomically commit the new snapshot, THEN delete the WAL.
+	// The previous order (delete WAL → rename) had a data-loss window: if the
+	// process crashes between the two operations, the WAL is gone but the new
+	// snapshot is not yet in place — any writes only in the WAL are lost.
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
 	if walPath != "" {
 		_ = os.Remove(walPath)
 	}
-	return os.Rename(tmp, path)
+	return nil
 }
 
 // getStorageFormat returns the configured storage format from env var.
@@ -1998,11 +2007,12 @@ func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec
 		}
 		vs.walMu.Unlock()
 
-		if doSnapshot {
+		if doSnapshot && vs.snapshotRunning.CompareAndSwap(false, true) {
 			snapPath := strings.TrimSuffix(vs.walPath, ".wal")
 			vs.bgWg.Add(1)
 			go func() {
 				defer vs.bgWg.Done()
+				defer vs.snapshotRunning.Store(false)
 				if err := vs.Save(snapPath); err == nil {
 					if err := os.Truncate(vs.walPath, 0); err != nil {
 						logging.Default().Warn("failed to truncate WAL", "error", err)
@@ -2073,13 +2083,17 @@ func replayWAL(vs *VectorStore) error {
 	}
 
 	if len(replayErrors) > 0 {
-		// Log errors but don't fail - partial replay is better than none
-		logging.Default().Warn("WAL replay completed with errors", "error_count", len(replayErrors))
+		logging.Default().Error("WAL replay completed with errors — WAL preserved for manual inspection",
+			"error_count", len(replayErrors), "wal_path", path)
 		for _, e := range replayErrors {
 			logging.Default().Warn("WAL replay error", "error", e)
 		}
+		// Return an error so walReplayError is set, /health and /readyz report
+		// unhealthy, and the WAL is preserved for operator inspection/recovery.
+		return fmt.Errorf("WAL replay had %d errors", len(replayErrors))
 	}
 
+	// All entries replayed successfully — safe to remove the WAL.
 	_ = os.Remove(path)
 	return nil
 }

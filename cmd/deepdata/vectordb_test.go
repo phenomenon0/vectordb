@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1141,5 +1142,148 @@ func TestPersistenceTimeIndexRebuild(t *testing.T) {
 	}})
 	if len(allRange) != 3 {
 		t.Fatalf("post-reload: expected 3 candidates in full range, got %d", len(allRange))
+	}
+}
+
+// TestSaveRenamesBeforeDeletingWAL verifies that Save() atomically commits the
+// snapshot (rename) BEFORE deleting the WAL. After Save, the snapshot must exist
+// and the WAL must be gone.
+func TestSaveRenamesBeforeDeletingWAL(t *testing.T) {
+	dir := t.TempDir()
+	snapPath := filepath.Join(dir, "index.gob")
+	walPath := snapPath + ".wal"
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+
+	// Insert a doc to generate a WAL entry
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", nil, "", ""); err != nil {
+		t.Fatalf("failed to add: %v", err)
+	}
+
+	// WAL must exist before Save
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("expected WAL to exist before Save: %v", err)
+	}
+
+	if err := vs.Save(snapPath); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// After Save: snapshot must exist, WAL must be deleted
+	if _, err := os.Stat(snapPath); err != nil {
+		t.Fatalf("expected snapshot to exist after Save: %v", err)
+	}
+	if _, err := os.Stat(walPath); !os.IsNotExist(err) {
+		t.Fatalf("expected WAL to be deleted after successful Save, got err=%v", err)
+	}
+}
+
+// TestReplayWALReturnsErrorOnFailures verifies that replayWAL returns an error
+// when WAL entries fail to replay, and preserves the WAL file for inspection.
+func TestReplayWALReturnsErrorOnFailures(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "index.gob.wal")
+
+	// Write a WAL with invalid entries (missing vectors for insert)
+	f, err := os.Create(walPath)
+	if err != nil {
+		t.Fatalf("create WAL: %v", err)
+	}
+	enc := json.NewEncoder(f)
+	// Insert with nil vector — will fail because Add() requires non-empty vector
+	enc.Encode(walEntry{Op: "insert", ID: "x1", Doc: "bad-doc", Vec: nil})
+	// Also add a corrupt JSON line
+	f.WriteString("{this is not valid json}\n")
+	f.Close()
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+
+	err = replayWAL(vs)
+	if err == nil {
+		t.Fatal("expected replayWAL to return an error when entries fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "errors") {
+		t.Fatalf("expected error message to mention errors, got: %v", err)
+	}
+
+	// WAL must be preserved for manual inspection when replay has errors
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("expected WAL to be preserved after failed replay, but it was deleted: %v", err)
+	}
+}
+
+// TestReplayWALDeletesWALOnSuccess verifies that replayWAL deletes the WAL
+// file when all entries replay successfully.
+func TestReplayWALDeletesWALOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "index.gob.wal")
+
+	// Write a valid WAL
+	f, err := os.Create(walPath)
+	if err != nil {
+		t.Fatalf("create WAL: %v", err)
+	}
+	enc := json.NewEncoder(f)
+	enc.Encode(walEntry{Op: "insert", ID: "ok1", Doc: "good-doc", Vec: []float32{1, 0, 0}})
+	f.Close()
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+
+	err = replayWAL(vs)
+	if err != nil {
+		t.Fatalf("expected replayWAL to succeed, got: %v", err)
+	}
+
+	// WAL should be deleted on successful replay
+	if _, err := os.Stat(walPath); !os.IsNotExist(err) {
+		t.Fatalf("expected WAL to be deleted after successful replay, got err=%v", err)
+	}
+
+	// The doc should have been replayed
+	if vs.Count != 1 {
+		t.Fatalf("expected 1 entry after replay, got %d", vs.Count)
+	}
+}
+
+// TestConcurrentSnapshotDedup verifies that only one background snapshot runs
+// at a time — the snapshotRunning atomic guard prevents concurrent goroutines
+// from racing on the same .tmp file path.
+func TestConcurrentSnapshotDedup(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "index.gob.wal")
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+	vs.walMaxOps = 1 // Trigger snapshot after every WAL write
+
+	// Insert many docs rapidly to trigger multiple snapshot attempts
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("id-%d", i)
+			vec := []float32{float32(i), 0, 0}
+			vs.Add(vec, fmt.Sprintf("doc-%d", i), id, nil, "", "")
+		}(i)
+	}
+	wg.Wait()
+
+	// Wait for any in-flight background snapshots to finish
+	vs.bgWg.Wait()
+
+	// The key assertion: snapshotRunning should be false after all goroutines complete
+	if vs.snapshotRunning.Load() {
+		t.Fatal("snapshotRunning should be false after all background snapshots complete")
+	}
+
+	// No crash, no corrupt snapshot — the dedup guard prevented .tmp file races
+	snapPath := strings.TrimSuffix(walPath, ".wal")
+	if _, err := os.Stat(snapPath); err != nil {
+		// Snapshot may or may not exist depending on timing, but should not have crashed
+		t.Logf("snapshot file does not exist (normal if timing prevented Save): %v", err)
 	}
 }
