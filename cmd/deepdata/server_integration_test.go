@@ -284,6 +284,124 @@ func TestHTTPHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestHealthzReturnsOKWhenLockFree(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if w.Body.String() != "ok" {
+		t.Errorf("expected body 'ok', got %q", w.Body.String())
+	}
+}
+
+func TestHealthzReturns503WhenLockHeld(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
+
+	// Hold the write lock so RLock blocks
+	store.Lock()
+	defer store.Unlock()
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+
+	start := time.Now()
+	handler.ServeHTTP(w, req)
+	elapsed := time.Since(start)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when lock is held, got %d", w.Code)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("healthz should timeout in ~5s, took %v", elapsed)
+	}
+}
+
+func TestHealthzNoGoroutineLeakOnTimeout(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
+
+	// Hold the write lock, fire multiple healthz probes
+	store.Lock()
+
+	const probes = 2
+	for i := 0; i < probes; i++ {
+		req := httptest.NewRequest("GET", "/healthz", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("probe %d: expected 503, got %d", i, w.Code)
+		}
+	}
+
+	// Release the lock — all blocked goroutines should complete
+	store.Unlock()
+
+	// Give goroutines time to drain
+	time.Sleep(100 * time.Millisecond)
+	// If goroutines leaked, the race detector would catch them on a
+	// second lock cycle. Verify the lock is functional:
+	store.RLock()
+	store.RUnlock()
+}
+
+func TestReadyzReturns503WhenLockHeld(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
+
+	// Hold the write lock so readyz's goroutine blocks on RLock
+	store.Lock()
+	defer store.Unlock()
+
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	w := httptest.NewRecorder()
+
+	start := time.Now()
+	handler.ServeHTTP(w, req)
+	elapsed := time.Since(start)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when lock is held, got %d", w.Code)
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("readyz should timeout in ~5s, took %v", elapsed)
+	}
+
+	// Verify the response reports the lock timeout issue
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	issues, ok := resp["issues"].([]any)
+	if !ok || len(issues) == 0 {
+		t.Fatal("expected issues in response")
+	}
+	found := false
+	for _, issue := range issues {
+		if s, ok := issue.(string); ok && s == "lock acquisition timeout — snapshot or heavy write in progress" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected lock timeout issue, got %v", issues)
+	}
+}
+
 func TestHTTPRateLimiting(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	store.rl = newRateLimiter(2, 2, 0, time.Minute) // 2 requests per minute

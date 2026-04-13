@@ -1403,20 +1403,27 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Kubernetes-style health probes
 	// /healthz - Liveness probe: Is the process alive and not deadlocked?
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		// Liveness check: verify we can acquire locks (not deadlocked)
-		done := make(chan bool, 1)
+		// Liveness check: verify we can acquire locks (not deadlocked).
+		// Use a context-aware pattern to avoid leaking goroutines when the
+		// timeout fires while the lock is still held (e.g., during a snapshot).
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		done := make(chan struct{})
 		go func() {
 			store.RLock()
 			store.RUnlock()
-			done <- true
+			close(done)
 		}()
 
 		select {
 		case <-done:
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("ok"))
-		case <-time.After(5 * time.Second):
-			// Deadlock detected - process should be restarted
+		case <-ctx.Done():
+			// Lock could not be acquired within timeout — possible deadlock
+			// or long-running write operation (snapshot). The goroutine will
+			// eventually complete when the lock is released and be collected.
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write([]byte("deadlock detected"))
 		}
@@ -1424,23 +1431,52 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 	// /readyz - Readiness probe: Is the service ready to accept traffic?
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		// Use a timeout to prevent readiness probes from hanging indefinitely
+		// when the write lock is held during long snapshot operations.
+		type storeState struct {
+			ready      bool
+			indexCount int
+			walErr     error
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		stateCh := make(chan storeState, 1)
+		go func() {
+			store.RLock()
+			s := storeState{
+				ready:      store.Count >= 0 && store.Dim > 0,
+				indexCount: len(store.indexes),
+				walErr:     store.walReplayError,
+			}
+			store.RUnlock()
+			stateCh <- s
+		}()
+
+		var state storeState
+		var lockAcquired bool
+		select {
+		case state = <-stateCh:
+			lockAcquired = true
+		case <-ctx.Done():
+			lockAcquired = false
+		}
+
 		issues := []string{}
 
-		// Check 1: Store is initialized
-		store.RLock()
-		storeReady := store.Count >= 0 && store.Dim > 0
-		indexCount := len(store.indexes)
-		walErr := store.walReplayError
-		store.RUnlock()
-
-		if !storeReady {
-			issues = append(issues, "store not initialized")
-		}
-		if indexCount == 0 {
-			issues = append(issues, "no index available")
-		}
-		if walErr != nil {
-			issues = append(issues, "wal replay failed: "+walErr.Error())
+		if !lockAcquired {
+			issues = append(issues, "lock acquisition timeout — snapshot or heavy write in progress")
+		} else {
+			if !state.ready {
+				issues = append(issues, "store not initialized")
+			}
+			if state.indexCount == 0 {
+				issues = append(issues, "no index available")
+			}
+			if state.walErr != nil {
+				issues = append(issues, "wal replay failed: "+state.walErr.Error())
+			}
 		}
 
 		// Check 2: Embedder is initialized.
