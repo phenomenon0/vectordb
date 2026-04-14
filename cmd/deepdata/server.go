@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -475,7 +476,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 			vec, err := embedder.Embed(d.Doc)
 			if err != nil {
-				errors = append(errors, fmt.Sprintf("doc %d: embed error: %v", i, err))
+				logging.Default().Error("batch embed failed", "doc_index", i, "error", err, "request_id", requestIDFromContext(r.Context()))
+				errors = append(errors, fmt.Sprintf("doc %d: embed failed", i))
 				continue
 			}
 
@@ -486,7 +488,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				id, err = store.Add(vec, d.Doc, d.ID, d.Meta, collection, tenantID)
 			}
 			if err != nil {
-				errors = append(errors, fmt.Sprintf("doc %d: insert error: %v", i, err))
+				logging.Default().Error("batch insert failed", "doc_index", i, "error", err, "request_id", requestIDFromContext(r.Context()))
+				errors = append(errors, fmt.Sprintf("doc %d: insert failed", i))
 				continue
 			}
 			ids = append(ids, id)
@@ -1502,7 +1505,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				issues = append(issues, "no index available")
 			}
 			if state.walErr != nil {
-				issues = append(issues, "wal replay failed: "+state.walErr.Error())
+				logging.Default().Error("readyz: WAL replay error", "error", state.walErr)
+				issues = append(issues, "wal replay failed")
 			}
 		}
 
@@ -2854,12 +2858,14 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if err := recover(); err != nil {
-					// Log the panic with stack trace and request ID for correlation
+					stack := make([]byte, 4096)
+					n := runtime.Stack(stack, false)
 					logging.Default().Error("panic recovered in HTTP handler",
 						"error", err,
 						"path", r.URL.Path,
 						"method", r.Method,
 						"request_id", requestIDFromContext(r.Context()),
+						"stack", string(stack[:n]),
 					)
 					// Return 500 error to client instead of closing connection — never expose panic details
 					http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -3356,6 +3362,11 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			id := r.Header.Get("X-Request-ID")
 			if id == "" {
 				id = generateRequestID()
+			}
+			// Cap client-supplied IDs to prevent log inflation and strip
+			// non-printable characters to avoid log injection.
+			if len(id) > 128 {
+				id = id[:128]
 			}
 			w.Header().Set("X-Request-ID", id)
 			ctx := context.WithValue(r.Context(), logging.RequestIDKey, id)
