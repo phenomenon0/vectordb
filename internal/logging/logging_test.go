@@ -304,7 +304,7 @@ func TestOperationLogs(t *testing.T) {
 
 func TestDefaultLoggerLazyInit(t *testing.T) {
 	// Reset the default logger
-	defaultLogger = nil
+	ResetForTesting()
 	l := Default()
 	if l == nil {
 		t.Fatal("Default() returned nil")

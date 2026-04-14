@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"hash/fnv"
@@ -401,11 +402,17 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 	return vs.addNewLocked(v, doc, id, meta, collection, tenantID, false)
 }
 
-// isNotFoundError checks if an error is a "not found" type error that can be safely ignored
+// isNotFoundError checks if an error is a "not found" type error that can be safely ignored.
+// Prefers the sentinel index.ErrNotFound via errors.Is, with a string fallback for
+// legacy backends that haven't adopted the sentinel yet.
 func isNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, index.ErrNotFound) {
+		return true
+	}
+	// Fallback for index backends that don't yet wrap index.ErrNotFound
 	errStr := strings.ToLower(err.Error())
 	return strings.Contains(errStr, "not found") ||
 		strings.Contains(errStr, "not exist") ||
@@ -2800,7 +2807,8 @@ func grpcAuthInterceptor(jwtMgr *security.JWTManager, apiToken string, requireAu
 				var valErr error
 				tenantCtx, valErr = jwtMgr.ValidateTenantToken(token)
 				if valErr != nil {
-					return nil, status.Errorf(codes.Unauthenticated, "invalid token: %v", valErr)
+					logging.Default().Error("gRPC JWT validation failed", "error", valErr)
+					return nil, status.Error(codes.Unauthenticated, "invalid token")
 				}
 			}
 		} else {

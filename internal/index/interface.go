@@ -2,9 +2,14 @@ package index
 
 import (
 	"context"
+	"errors"
 
 	"github.com/phenomenon0/vectordb/internal/filter"
 )
+
+// ErrNotFound is returned when a vector ID does not exist in the index.
+// Index implementations should wrap this sentinel so callers can use errors.Is.
+var ErrNotFound = errors.New("not found")
 
 // Index is the core interface for vector indexes in VectorDB.
 // All index implementations (HNSW, IVF, FLAT, DiskANN) must implement this interface.

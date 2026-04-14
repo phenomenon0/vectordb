@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 )
 
@@ -320,8 +321,11 @@ func (cm *CollectionManager) RenameCollection(oldName, newName string) error {
 		return fmt.Errorf("collection %s already exists", newName)
 	}
 
-	// Update schema name directly in the collection
+	// Update schema name under the collection's own lock to prevent
+	// races with concurrent readers (e.g., Search reading coll.schema.Name).
+	coll.mu.Lock()
 	coll.schema.Name = newName
+	coll.mu.Unlock()
 
 	// Rename in map
 	delete(cm.collections, oldName)
@@ -418,7 +422,28 @@ func (cm *CollectionManager) Save(path string) error {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0644)
+	// Atomic write: write to temp file, fsync, then rename.
+	// Prevents corrupt snapshots on crash mid-write.
+	tmpPath := path + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // Load deserializes collections from a JSON file.
@@ -478,8 +503,12 @@ func (cm *CollectionManager) Load(path string) error {
 		if pc.Docs != nil {
 			docs := make(map[uint64]*Document, len(pc.Docs))
 			for idStr, doc := range pc.Docs {
-				var id uint64
-				fmt.Sscanf(idStr, "%d", &id)
+				id, err := strconv.ParseUint(idStr, 10, 64)
+				if err != nil {
+					coll.Close()
+					closeLoaded()
+					return fmt.Errorf("invalid document ID %q in collection %s: %w", idStr, name, err)
+				}
 				doc.ID = id
 				docs[id] = doc
 			}

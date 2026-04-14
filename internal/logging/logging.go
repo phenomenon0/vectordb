@@ -8,6 +8,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -44,7 +45,10 @@ type Logger struct {
 	slog  *slog.Logger
 }
 
-var defaultLogger *Logger
+var (
+	defaultLogger *Logger
+	defaultMu     sync.Mutex
+)
 
 // toSlogLevel converts our Level to slog.Level.
 func toSlogLevel(l Level) slog.Level {
@@ -78,25 +82,41 @@ func Init(cfg Config) *Logger {
 		handler = slog.NewJSONHandler(output, opts)
 	}
 
-	defaultLogger = &Logger{
+	l := &Logger{
 		level: cfg.Level,
 		slog:  slog.New(handler),
 	}
-	return defaultLogger
+	defaultMu.Lock()
+	defaultLogger = l
+	defaultMu.Unlock()
+	return l
 }
 
 // Default returns the default logger instance.
+// Safe for concurrent use.
 func Default() *Logger {
+	defaultMu.Lock()
 	if defaultLogger == nil {
+		defaultMu.Unlock()
 		Init(DefaultConfig())
+		defaultMu.Lock()
 	}
-	return defaultLogger
+	l := defaultLogger
+	defaultMu.Unlock()
+	return l
 }
 
-// FromContext returns a logger from context.
-// If the context carries slog attributes (via slog.NewLogLogger or similar),
-// they will be included. Falls back to the receiver logger.
-func (l *Logger) FromContext(ctx context.Context) *Logger {
+// ResetForTesting resets global logger state. Only for use in tests.
+func ResetForTesting() {
+	defaultMu.Lock()
+	defaultLogger = nil
+	defaultMu.Unlock()
+}
+
+// FromContext returns the receiver logger.
+// This is a convenience method for call-site consistency; context-based
+// attribute propagation is handled by LogError's automatic RequestIDKey extraction.
+func (l *Logger) FromContext(_ context.Context) *Logger {
 	return l
 }
 
