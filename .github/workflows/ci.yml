@@ -18,10 +18,26 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+      - name: Run go vet
+        run: go vet ./...
+        env:
+          CGO_ENABLED: '0'
       - name: Run Go tests
         run: go test ./... -timeout 300s -count=1
         env:
           CGO_ENABLED: '0'
+
+  test-go-race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run Go tests with race detector
+        run: go test -race -short -timeout 300s -count=1 ./...
+        env:
+          CGO_ENABLED: '1'
 
   build-ui:
     runs-on: ubuntu-latest

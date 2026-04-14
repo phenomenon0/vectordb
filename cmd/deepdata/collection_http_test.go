@@ -157,7 +157,7 @@ func TestCollectionHTTPHandleSearchRejectsNegativeOffset(t *testing.T) {
 	}
 }
 
-func TestCollectionHTTPHandleSearchIncludesVectorsByDefault(t *testing.T) {
+func TestCollectionHTTPHandleSearchOmitsVectorsByDefault(t *testing.T) {
 	server := setupCollectionHTTPServerForSearch(t)
 
 	resp, _ := runCollectionSearch(t, server, map[string]interface{}{
@@ -171,8 +171,28 @@ func TestCollectionHTTPHandleSearchIncludesVectorsByDefault(t *testing.T) {
 	if len(resp.Documents) != 1 {
 		t.Fatalf("expected 1 document, got %d", len(resp.Documents))
 	}
+	if resp.Documents[0].Vectors != nil {
+		t.Fatal("expected vectors to be omitted by default")
+	}
+}
+
+func TestCollectionHTTPHandleSearchIncludesVectorsWhenRequested(t *testing.T) {
+	server := setupCollectionHTTPServerForSearch(t)
+
+	resp, _ := runCollectionSearch(t, server, map[string]interface{}{
+		"collection": "test",
+		"queries": map[string]interface{}{
+			"embedding": []float32{1.0, 0.0, 0.0, 0.0},
+		},
+		"top_k":           1,
+		"include_vectors": true,
+	}, http.StatusOK)
+
+	if len(resp.Documents) != 1 {
+		t.Fatalf("expected 1 document, got %d", len(resp.Documents))
+	}
 	if len(resp.Documents[0].Vectors) == 0 {
-		t.Fatal("expected vectors in default search response")
+		t.Fatal("expected vectors when include_vectors=true")
 	}
 }
 

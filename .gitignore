@@ -1,11 +1,13 @@
 # Binaries
 bin/
-deepdata
-vectordb
+/deepdata
+/vectordb
 vectordb-server
 cmd/gentoken/gentoken
 *.exe
 *.zip
+cli
+deepdata-server
 
 # Data
 data/
@@ -19,3 +21,5 @@ desktop/node_modules/
 desktop/src-tauri/target/
 __pycache__/
 *.pyc
+.pytest_cache/
+.env

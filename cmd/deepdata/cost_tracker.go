@@ -9,6 +9,8 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/phenomenon0/vectordb/internal/logging"
 )
 
 // ======================================================================================
@@ -151,7 +153,7 @@ func (ct *CostTracker) RecordEmbedding(tokens int, model string, operation strin
 	`, string(ct.mode), model, tokens, cost, operation)
 
 	if err != nil {
-		fmt.Printf("Warning: failed to record embedding cost: %v\n", err)
+		logging.Default().Warn("failed to record embedding cost", "error", err)
 	}
 
 	// Update daily rollup (async-safe with UPSERT)
@@ -166,7 +168,7 @@ func (ct *CostTracker) RecordEmbedding(tokens int, model string, operation strin
 	`, today, string(ct.mode), tokens, cost)
 
 	if err != nil {
-		fmt.Printf("Warning: failed to update daily rollup: %v\n", err)
+		logging.Default().Warn("failed to update daily rollup", "error", err)
 	}
 }
 

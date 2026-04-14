@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -29,8 +31,26 @@ import (
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// ===========================================================================================
+// REQUEST ID
+// ===========================================================================================
+
+// generateRequestID returns a 16-byte random hex string (32 chars).
+func generateRequestID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// requestIDFromContext extracts the request ID from the context, or returns "".
+func requestIDFromContext(ctx context.Context) string {
+	if id, ok := ctx.Value(logging.RequestIDKey).(string); ok {
+		return id
+	}
+	return ""
+}
 
 // ===========================================================================================
 // CONFIGURABLE REQUEST LIMITS
@@ -102,7 +122,7 @@ func encodeResponse(w http.ResponseWriter, r *http.Request, v any) error {
 // Use this instead of ignoring encodeResponse errors.
 func sendResponse(w http.ResponseWriter, r *http.Request, v any) {
 	if err := encodeResponse(w, r, v); err != nil {
-		logging.Default().Error("failed to encode response", "error", err, "path", r.URL.Path)
+		logging.Default().Error("failed to encode response", "error", err, "path", r.URL.Path, "request_id", requestIDFromContext(r.Context()))
 	}
 }
 
@@ -159,7 +179,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 					var err error
 					tenantCtx, err = store.jwtMgr.ValidateTenantToken(jwtToken)
 					if err != nil {
-						http.Error(w, "unauthorized: invalid token: "+err.Error(), http.StatusUnauthorized)
+						logging.Default().Warn("JWT validation failed", "error", err, "path", r.URL.Path)
+						http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
 						return
 					}
 					authenticated = true
@@ -327,7 +348,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		vec, err := embedder.Embed(req.Doc)
 		if err != nil {
 			telemetry.RecordError(span, err)
-			http.Error(w, "embed error: "+err.Error(), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "embed", err, "path", r.URL.Path)
+			http.Error(w, "embedding failed", http.StatusInternalServerError)
 			return
 		}
 
@@ -346,7 +368,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if err != nil {
 			telemetry.RecordError(span, err)
 			logging.Default().LogError(r.Context(), "insert", err, "collection", req.Collection, "tenant_id", tenantID)
-			http.Error(w, fmt.Sprintf("failed to insert document: %v", err), http.StatusInternalServerError)
+			http.Error(w, "failed to insert document", http.StatusInternalServerError)
 			return
 		}
 
@@ -577,12 +599,13 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			id, err = store.Add(vec, req.Doc, req.ID, req.Meta, req.Collection, tenantID)
 		}
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to insert sparse vector: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "insert_sparse", err, "collection", req.Collection)
+			http.Error(w, "failed to insert document", http.StatusInternalServerError)
 			return
 		}
 
 		if err := encodeResponse(w, r, map[string]any{"id": id}); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -760,7 +783,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		if req.Mode != "lex" {
 			qVec, err = embedder.EmbedQuery(req.Query)
 			if err != nil {
-				http.Error(w, "embed error: "+err.Error(), http.StatusInternalServerError)
+				logging.Default().LogError(r.Context(), "embed_query", err, "mode", req.Mode)
+				http.Error(w, "embedding failed", http.StatusInternalServerError)
 				return
 			}
 		}
@@ -893,7 +917,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		rDocs, rerankScores, stats, err := reranker.Rerank(req.Query, pageDocs, req.Limit)
 		if err != nil {
 			telemetry.RecordError(span, err)
-			http.Error(w, "rerank error: "+err.Error(), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "rerank", err)
+			http.Error(w, "reranking failed", http.StatusInternalServerError)
 			return
 		}
 
@@ -1131,7 +1156,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		if err := encodeResponse(w, r, response); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -1202,7 +1227,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		if err := store.Delete(req.ID); err != nil {
 			telemetry.RecordError(span, err)
-			http.Error(w, fmt.Sprintf("failed to delete document: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "delete", err, "id", req.ID)
+			http.Error(w, "failed to delete document", http.StatusInternalServerError)
 			return
 		}
 
@@ -1210,7 +1236,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		telemetry.RecordOK(span)
 
 		if err := encodeResponse(w, r, map[string]any{"deleted": req.ID}); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -1328,6 +1354,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		deleted := len(store.Deleted)
 		active := total - deleted
 		lastSaved := store.lastSaved
+		walReplayErr := store.walReplayError
 		_, embedderIsONNX := embedder.(*OnnxEmbedder)
 		_, embedderIsOpenAI := embedder.(*OpenAIEmbedder)
 		_, embedderIsTracked := embedder.(*TrackedEmbedder)
@@ -1365,8 +1392,9 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Build response with mode info
+		healthy := walReplayErr == nil
 		response := map[string]any{
-			"ok":              true,
+			"ok":              healthy,
 			"total":           total,
 			"active":          active,
 			"deleted":         deleted,
@@ -1385,6 +1413,10 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"collections": collections,
 		}
 
+		if walReplayErr != nil {
+			response["wal_replay_error"] = walReplayErr.Error()
+		}
+
 		// Add mode information if available
 		if CurrentMode != nil {
 			response["mode"] = GetModeInfo(CurrentMode)
@@ -1393,25 +1425,32 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		sendResponse(w, r, response)
 	})))
 
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", globalMetrics.Handler())
 
 	// Kubernetes-style health probes
 	// /healthz - Liveness probe: Is the process alive and not deadlocked?
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		// Liveness check: verify we can acquire locks (not deadlocked)
-		done := make(chan bool, 1)
+		// Liveness check: verify we can acquire locks (not deadlocked).
+		// Use a context-aware pattern to avoid leaking goroutines when the
+		// timeout fires while the lock is still held (e.g., during a snapshot).
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		done := make(chan struct{})
 		go func() {
 			store.RLock()
 			store.RUnlock()
-			done <- true
+			close(done)
 		}()
 
 		select {
 		case <-done:
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("ok"))
-		case <-time.After(5 * time.Second):
-			// Deadlock detected - process should be restarted
+		case <-ctx.Done():
+			// Lock could not be acquired within timeout — possible deadlock
+			// or long-running write operation (snapshot). The goroutine will
+			// eventually complete when the lock is released and be collected.
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write([]byte("deadlock detected"))
 		}
@@ -1419,19 +1458,52 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 	// /readyz - Readiness probe: Is the service ready to accept traffic?
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		// Use a timeout to prevent readiness probes from hanging indefinitely
+		// when the write lock is held during long snapshot operations.
+		type storeState struct {
+			ready      bool
+			indexCount int
+			walErr     error
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		stateCh := make(chan storeState, 1)
+		go func() {
+			store.RLock()
+			s := storeState{
+				ready:      store.Count >= 0 && store.Dim > 0,
+				indexCount: len(store.indexes),
+				walErr:     store.walReplayError,
+			}
+			store.RUnlock()
+			stateCh <- s
+		}()
+
+		var state storeState
+		var lockAcquired bool
+		select {
+		case state = <-stateCh:
+			lockAcquired = true
+		case <-ctx.Done():
+			lockAcquired = false
+		}
+
 		issues := []string{}
 
-		// Check 1: Store is initialized
-		store.RLock()
-		storeReady := store.Count >= 0 && store.Dim > 0
-		indexCount := len(store.indexes)
-		store.RUnlock()
-
-		if !storeReady {
-			issues = append(issues, "store not initialized")
-		}
-		if indexCount == 0 {
-			issues = append(issues, "no index available")
+		if !lockAcquired {
+			issues = append(issues, "lock acquisition timeout — snapshot or heavy write in progress")
+		} else {
+			if !state.ready {
+				issues = append(issues, "store not initialized")
+			}
+			if state.indexCount == 0 {
+				issues = append(issues, "no index available")
+			}
+			if state.walErr != nil {
+				issues = append(issues, "wal replay failed: "+state.walErr.Error())
+			}
 		}
 
 		// Check 2: Embedder is initialized.
@@ -1460,7 +1532,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Serve Web UI Dashboard
 	webUISubFS, err := fs.Sub(webUIFS, "web-ui/dist")
 	if err != nil {
-		fmt.Printf("Warning: failed to create web UI sub-filesystem: %v\n", err)
+		logging.Default().Warn("failed to create web UI sub-filesystem", "error", err)
 	} else {
 		// Serve dashboard at /dashboard/
 		mux.Handle("/dashboard/", http.StripPrefix("/dashboard/", http.FileServer(http.FS(webUISubFS))))
@@ -1506,7 +1578,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 		if err := store.Compact(indexPath); err != nil {
-			http.Error(w, fmt.Sprintf("compact failed: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "compact", err)
+			http.Error(w, "compact failed", http.StatusInternalServerError)
 			return
 		}
 		sendResponse(w, r, map[string]any{"ok": true})
@@ -1555,17 +1628,20 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		// Phase 1: Validate imported snapshot
 		tmp, err := os.CreateTemp("", "vectordb-import-*.gob")
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to create temp file: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "import_create_temp", err)
+			http.Error(w, "import failed: server error", http.StatusInternalServerError)
 			return
 		}
 		defer os.Remove(tmp.Name())
 
 		if _, err := io.Copy(tmp, r.Body); err != nil {
-			http.Error(w, fmt.Sprintf("failed to read snapshot: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "import_read_snapshot", err)
+			http.Error(w, "import failed: unable to read snapshot", http.StatusInternalServerError)
 			return
 		}
 		if err := tmp.Close(); err != nil {
-			http.Error(w, fmt.Sprintf("failed to close temp file: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "import_close_temp", err)
+			http.Error(w, "import failed: server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -1594,7 +1670,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		store.RLock()
 		if err := store.Save(backupPath); err != nil {
 			store.RUnlock()
-			http.Error(w, fmt.Sprintf("failed to create backup: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "import_backup", err, "backup_path", backupPath)
+			http.Error(w, "import failed: unable to create backup", http.StatusInternalServerError)
 			return
 		}
 		store.RUnlock()
@@ -1678,7 +1755,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			store.TenantID = oldTenantID
 			store.metaIndex = oldMetaIndex
 			store.Unlock()
-			http.Error(w, fmt.Sprintf("import failed, rolled back: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "import_save", err)
+			http.Error(w, "import failed, rolled back", http.StatusInternalServerError)
 			os.Remove(backupPath)
 			return
 		}
@@ -1691,7 +1769,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"count":   store.Count,
 			"deleted": len(store.Deleted),
 		}); err != nil {
-			fmt.Printf("error encoding response: %v\n", err)
+			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
 	})))
 
@@ -2009,7 +2087,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Initialize collection HTTP server for multi-vector support
 	collectionHTTP := NewCollectionHTTPServer(indexPath + ".collections")
 	if err := collectionHTTP.Load(indexPath + ".collections"); err != nil {
-		fmt.Printf("Warning: failed to load collection state: %v\n", err)
+		logging.Default().Warn("failed to load collection state", "error", err)
 	}
 	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
 
@@ -2448,7 +2526,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		days := 30 // Default to last 30 days
 		dailyStats, err := costTracker.GetDailyStats(days)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to get daily stats: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "get_daily_stats", err)
+			http.Error(w, "failed to get daily stats", http.StatusInternalServerError)
 			return
 		}
 
@@ -2478,7 +2557,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 		csv, err := costTracker.ExportCSV()
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to export costs: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "export_costs", err)
+			http.Error(w, "failed to export costs", http.StatusInternalServerError)
 			return
 		}
 
@@ -2526,7 +2606,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			vec, err = embedder.Embed(req.Text)
 		}
 		if err != nil {
-			http.Error(w, fmt.Sprintf("embedding failed: %v", err), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "embed", err, "purpose", req.Purpose)
+			http.Error(w, "embedding failed", http.StatusInternalServerError)
 			return
 		}
 
@@ -2578,7 +2659,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				vec, err = embedder.Embed(text)
 			}
 			if err != nil {
-				http.Error(w, fmt.Sprintf("embedding failed for text %d: %v", i, err), http.StatusInternalServerError)
+				logging.Default().LogError(r.Context(), "embed_batch", err, "text_index", i, "purpose", req.Purpose)
+				http.Error(w, fmt.Sprintf("embedding failed for text %d", i), http.StatusInternalServerError)
 				return
 			}
 			embeddings[i] = vec
@@ -2772,14 +2854,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if err := recover(); err != nil {
-					// Log the panic with stack trace
+					// Log the panic with stack trace and request ID for correlation
 					logging.Default().Error("panic recovered in HTTP handler",
 						"error", err,
 						"path", r.URL.Path,
 						"method", r.Method,
+						"request_id", requestIDFromContext(r.Context()),
 					)
-					// Return 500 error to client instead of closing connection
-					http.Error(w, fmt.Sprintf("internal server error: %v", err), http.StatusInternalServerError)
+					// Return 500 error to client instead of closing connection — never expose panic details
+					http.Error(w, "internal server error", http.StatusInternalServerError)
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -2867,7 +2950,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		if err := obsidian.SaveConfig(configDir, cfg); err != nil {
-			http.Error(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "save_obsidian_config", err)
+			http.Error(w, "failed to save config", http.StatusInternalServerError)
 			return
 		}
 
@@ -2889,7 +2973,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		cfg.Enabled = false
 		cfg.VaultPath = ""
 		if err := obsidian.SaveConfig(configDir, cfg); err != nil {
-			http.Error(w, "failed to save config: "+err.Error(), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "disable_obsidian_config", err)
+			http.Error(w, "failed to save config", http.StatusInternalServerError)
 			return
 		}
 		sendResponse(w, r, map[string]any{"ok": true, "note": "restart server to stop sync"})
@@ -3087,7 +3172,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			err := saveAnnotations(anns)
 			annotationMu.Unlock()
 			if err != nil {
-				http.Error(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+				logging.Default().LogError(r.Context(), "save_annotation", err)
+				http.Error(w, "save failed", http.StatusInternalServerError)
 				return
 			}
 			sendResponse(w, r, map[string]any{"ok": true})
@@ -3113,7 +3199,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			err := saveAnnotations(anns)
 			annotationMu.Unlock()
 			if err != nil {
-				http.Error(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+				logging.Default().LogError(r.Context(), "delete_annotation", err)
+				http.Error(w, "save failed", http.StatusInternalServerError)
 				return
 			}
 			sendResponse(w, r, map[string]any{"ok": true})
@@ -3198,7 +3285,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			return
 		}
 		if _, err := io.Copy(part, audioData); err != nil {
-			http.Error(w, "read error: "+err.Error(), http.StatusInternalServerError)
+			logging.Default().LogError(r.Context(), "whisper_read", err)
+			http.Error(w, "failed to read audio data", http.StatusInternalServerError)
 			return
 		}
 		mw.WriteField("model", "whisper-1")
@@ -3221,14 +3309,16 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		client := &http.Client{Timeout: 120 * time.Second}
 		resp, err := client.Do(whisperReq)
 		if err != nil {
-			http.Error(w, "whisper API error: "+err.Error(), http.StatusBadGateway)
+			logging.Default().LogError(r.Context(), "whisper_api", err)
+			http.Error(w, "transcription service unavailable", http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
-			http.Error(w, "whisper API error "+fmt.Sprint(resp.StatusCode)+": "+string(body), resp.StatusCode)
+			logging.Default().Warn("whisper API error", "status", resp.StatusCode, "body", string(body))
+			http.Error(w, fmt.Sprintf("transcription service error (status %d)", resp.StatusCode), resp.StatusCode)
 			return
 		}
 
@@ -3237,7 +3327,43 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		io.Copy(w, resp.Body)
 	}))
 
-	return recoveryMiddleware(corsMiddleware(otelMiddleware(mux))), collectionHTTP
+	// Request context timeout middleware — cancels handler context after the deadline.
+	// This is separate from HTTP server WriteTimeout (which is a hard TCP-level cutoff).
+	// The context timeout lets handlers cooperatively abort long operations.
+	// Streaming endpoints (snapshot, export) should check ctx.Done() and handle gracefully.
+	requestTimeoutSec := envInt("HTTP_REQUEST_TIMEOUT_SEC", 120)
+	requestTimeoutMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Skip timeout for streaming/long-running endpoints
+			p := r.URL.Path
+			if strings.HasPrefix(p, "/snapshot") || strings.HasPrefix(p, "/export") ||
+				strings.HasPrefix(p, "/import") || p == "/metrics" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), time.Duration(requestTimeoutSec)*time.Second)
+			defer cancel()
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	// Request ID middleware — generates a unique ID for every request, stores it
+	// in the context for structured logging, and echoes it in the X-Request-ID
+	// response header so clients can correlate responses with server-side logs.
+	// If the client or reverse proxy already provides X-Request-ID, it is reused.
+	requestIDMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := r.Header.Get("X-Request-ID")
+			if id == "" {
+				id = generateRequestID()
+			}
+			w.Header().Set("X-Request-ID", id)
+			ctx := context.WithValue(r.Context(), logging.RequestIDKey, id)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	return requestIDMiddleware(recoveryMiddleware(requestTimeoutMiddleware(corsMiddleware(otelMiddleware(mux))))), collectionHTTP
 }
 
 func ageMillis(path string, fallback time.Time) int64 {

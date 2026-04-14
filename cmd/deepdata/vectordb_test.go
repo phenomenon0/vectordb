@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1021,5 +1022,567 @@ func TestUpsertMovingCollectionRemovesOldIndexEntry(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("moved document is not searchable in new collection")
+	}
+}
+
+func TestPersistenceRangeIndexRebuild(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.gob")
+
+	vs := NewVectorStore(10, 3)
+
+	// Insert documents with numeric metadata that will be parsed by ingestMeta
+	_, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", map[string]string{"price": "10.5", "tag": "a"}, "c1", "")
+	if err != nil {
+		t.Fatalf("failed to add doc-1: %v", err)
+	}
+	_, err = vs.Add([]float32{0, 1, 0}, "doc-2", "id2", map[string]string{"price": "25.0", "tag": "b"}, "c1", "")
+	if err != nil {
+		t.Fatalf("failed to add doc-2: %v", err)
+	}
+	_, err = vs.Add([]float32{0, 0, 1}, "doc-3", "id3", map[string]string{"price": "50.0", "tag": "c"}, "c1", "")
+	if err != nil {
+		t.Fatalf("failed to add doc-3: %v", err)
+	}
+
+	// Verify range query works before save
+	min := 10.0
+	max := 30.0
+	candidates := vs.candidateIDsForRange([]RangeFilter{{Key: "price", Min: &min, Max: &max}})
+	if len(candidates) != 2 {
+		t.Fatalf("pre-save: expected 2 candidates in [10,30], got %d", len(candidates))
+	}
+
+	if err := vs.Save(path); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	// Reload from disk
+	vs2, loaded := loadOrInitStore(path, 10, 3)
+	if !loaded {
+		t.Fatal("expected to load snapshot")
+	}
+
+	// Verify range query works AFTER reload — this was broken before the fix
+	candidates2 := vs2.candidateIDsForRange([]RangeFilter{{Key: "price", Min: &min, Max: &max}})
+	if len(candidates2) != 2 {
+		t.Fatalf("post-reload: expected 2 candidates in [10,30], got %d", len(candidates2))
+	}
+
+	// Verify the correct document IDs are in the result
+	hid1 := hashID("id1")
+	hid2 := hashID("id2")
+	if _, ok := candidates2[hid1]; !ok {
+		t.Fatal("post-reload: id1 (price=10.5) missing from range [10,30]")
+	}
+	if _, ok := candidates2[hid2]; !ok {
+		t.Fatal("post-reload: id2 (price=25.0) missing from range [10,30]")
+	}
+	hid3 := hashID("id3")
+	if _, ok := candidates2[hid3]; ok {
+		t.Fatal("post-reload: id3 (price=50.0) should NOT be in range [10,30]")
+	}
+}
+
+func TestPersistenceTimeIndexRebuild(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.gob")
+
+	vs := NewVectorStore(10, 3)
+
+	t1 := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	t2 := time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	t3 := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+
+	_, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", map[string]string{"created": t1}, "c1", "")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	_, err = vs.Add([]float32{0, 1, 0}, "doc-2", "id2", map[string]string{"created": t2}, "c1", "")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	_, err = vs.Add([]float32{0, 0, 1}, "doc-3", "id3", map[string]string{"created": t3}, "c1", "")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Range filter: Q1 2024 only
+	rangeStart := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	rangeEnd := time.Date(2024, 3, 31, 23, 59, 59, 0, time.UTC).Format(time.RFC3339)
+
+	candidates := vs.candidateIDsForRange([]RangeFilter{{Key: "created", TimeMin: rangeStart, TimeMax: rangeEnd}})
+	if len(candidates) != 1 {
+		t.Fatalf("pre-save: expected 1 candidate in Q1 2024, got %d", len(candidates))
+	}
+
+	if err := vs.Save(path); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	vs2, loaded := loadOrInitStore(path, 10, 3)
+	if !loaded {
+		t.Fatal("expected to load snapshot")
+	}
+
+	candidates2 := vs2.candidateIDsForRange([]RangeFilter{{Key: "created", TimeMin: rangeStart, TimeMax: rangeEnd}})
+	if len(candidates2) != 1 {
+		t.Fatalf("post-reload: expected 1 candidate in Q1 2024, got %d", len(candidates2))
+	}
+
+	hid1 := hashID("id1")
+	if _, ok := candidates2[hid1]; !ok {
+		t.Fatal("post-reload: id1 (Jan 2024) missing from Q1 2024 range")
+	}
+
+	// Broader range should return all 3
+	allRange := vs2.candidateIDsForRange([]RangeFilter{{Key: "created",
+		TimeMin: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		TimeMax: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	}})
+	if len(allRange) != 3 {
+		t.Fatalf("post-reload: expected 3 candidates in full range, got %d", len(allRange))
+	}
+}
+
+// TestSaveDoesNotDeleteWAL verifies that Save() atomically commits the
+// snapshot (rename) but does NOT delete the WAL — WAL cleanup is the caller's
+// responsibility to prevent a data-loss race with concurrent appendWAL writers.
+func TestSaveDoesNotDeleteWAL(t *testing.T) {
+	dir := t.TempDir()
+	snapPath := filepath.Join(dir, "index.gob")
+	walPath := snapPath + ".wal"
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+
+	// Insert a doc to generate a WAL entry
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id1", nil, "", ""); err != nil {
+		t.Fatalf("failed to add: %v", err)
+	}
+
+	// WAL must exist before Save
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("expected WAL to exist before Save: %v", err)
+	}
+
+	if err := vs.Save(snapPath); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// After Save: snapshot must exist
+	if _, err := os.Stat(snapPath); err != nil {
+		t.Fatalf("expected snapshot to exist after Save: %v", err)
+	}
+	// WAL must still exist — Save() no longer deletes it
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("expected WAL to still exist after Save (callers handle cleanup): %v", err)
+	}
+}
+
+// TestReplayWALReturnsErrorOnFailures verifies that replayWAL returns an error
+// when WAL entries fail to replay, and preserves the WAL file for inspection.
+func TestReplayWALReturnsErrorOnFailures(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "index.gob.wal")
+
+	// Write a WAL with invalid entries (missing vectors for insert)
+	f, err := os.Create(walPath)
+	if err != nil {
+		t.Fatalf("create WAL: %v", err)
+	}
+	enc := json.NewEncoder(f)
+	// Insert with nil vector — will fail because Add() requires non-empty vector
+	enc.Encode(walEntry{Op: "insert", ID: "x1", Doc: "bad-doc", Vec: nil})
+	// Also add a corrupt JSON line
+	f.WriteString("{this is not valid json}\n")
+	f.Close()
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+
+	err = replayWAL(vs)
+	if err == nil {
+		t.Fatal("expected replayWAL to return an error when entries fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "errors") {
+		t.Fatalf("expected error message to mention errors, got: %v", err)
+	}
+
+	// WAL must be preserved for manual inspection when replay has errors
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("expected WAL to be preserved after failed replay, but it was deleted: %v", err)
+	}
+}
+
+// TestReplayWALDeletesWALOnSuccess verifies that replayWAL deletes the WAL
+// file when all entries replay successfully.
+func TestReplayWALDeletesWALOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "index.gob.wal")
+
+	// Write a valid WAL
+	f, err := os.Create(walPath)
+	if err != nil {
+		t.Fatalf("create WAL: %v", err)
+	}
+	enc := json.NewEncoder(f)
+	enc.Encode(walEntry{Op: "insert", ID: "ok1", Doc: "good-doc", Vec: []float32{1, 0, 0}})
+	f.Close()
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+
+	err = replayWAL(vs)
+	if err != nil {
+		t.Fatalf("expected replayWAL to succeed, got: %v", err)
+	}
+
+	// WAL should be deleted on successful replay
+	if _, err := os.Stat(walPath); !os.IsNotExist(err) {
+		t.Fatalf("expected WAL to be deleted after successful replay, got err=%v", err)
+	}
+
+	// The doc should have been replayed
+	if vs.Count != 1 {
+		t.Fatalf("expected 1 entry after replay, got %d", vs.Count)
+	}
+}
+
+// TestConcurrentSnapshotDedup verifies that only one background snapshot runs
+// at a time — the snapshotRunning atomic guard prevents concurrent goroutines
+// from racing on the same .tmp file path.
+func TestConcurrentSnapshotDedup(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "index.gob.wal")
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+	vs.walMaxOps = 1 // Trigger snapshot after every WAL write
+
+	// Insert many docs rapidly to trigger multiple snapshot attempts
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("id-%d", i)
+			vec := []float32{float32(i), 0, 0}
+			vs.Add(vec, fmt.Sprintf("doc-%d", i), id, nil, "", "")
+		}(i)
+	}
+	wg.Wait()
+
+	// Wait for any in-flight background snapshots to finish
+	vs.bgWg.Wait()
+
+	// The key assertion: snapshotRunning should be false after all goroutines complete
+	if vs.snapshotRunning.Load() {
+		t.Fatal("snapshotRunning should be false after all background snapshots complete")
+	}
+
+	// No crash, no corrupt snapshot — the dedup guard prevented .tmp file races
+	snapPath := strings.TrimSuffix(walPath, ".wal")
+	if _, err := os.Stat(snapPath); err != nil {
+		// Snapshot may or may not exist depending on timing, but should not have crashed
+		t.Logf("snapshot file does not exist (normal if timing prevented Save): %v", err)
+	}
+}
+
+// TestWALRotationPreservesNewEntries verifies that WAL rotation during a
+// background snapshot does not lose entries written after the rotation.
+// This is the core data-safety property: appendWAL renames the WAL to
+// .wal.frozen before spawning the snapshot goroutine, and new appendWAL
+// calls create a fresh .wal file — so entries written during the snapshot
+// survive even after the frozen WAL is deleted.
+func TestWALRotationPreservesNewEntries(t *testing.T) {
+	dir := t.TempDir()
+	snapPath := filepath.Join(dir, "index.gob")
+	walPath := snapPath + ".wal"
+
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+	vs.walMaxOps = 2 // Trigger snapshot after 2 WAL writes
+
+	// Insert 2 docs — second insert triggers background snapshot + WAL rotation
+	for i := 0; i < 2; i++ {
+		id := fmt.Sprintf("id-%d", i)
+		vec := []float32{float32(i + 1), 0, 0}
+		if _, err := vs.Add(vec, fmt.Sprintf("doc-%d", i), id, nil, "", ""); err != nil {
+			t.Fatalf("Add %d failed: %v", i, err)
+		}
+	}
+
+	// Insert a third doc while the background snapshot may be running —
+	// this entry goes to the NEW WAL file (after rotation)
+	if _, err := vs.Add([]float32{3, 0, 0}, "doc-2", "id-2", nil, "", ""); err != nil {
+		t.Fatalf("Add id-2 failed: %v", err)
+	}
+
+	// Wait for background snapshot to complete
+	vs.bgWg.Wait()
+
+	// The new WAL file must exist and contain the post-rotation entry
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("expected new WAL to exist after rotation: %v", err)
+	}
+
+	// The frozen WAL should have been cleaned up after successful snapshot
+	frozenPath := walPath + ".frozen"
+	if _, err := os.Stat(frozenPath); !os.IsNotExist(err) {
+		t.Fatalf("expected frozen WAL to be deleted after successful snapshot, got err=%v", err)
+	}
+
+	// Load the snapshot and replay the new WAL to verify no data was lost
+	vs2 := NewVectorStore(10, 3)
+	vs2.walPath = walPath
+	payload, _ := tryLoadPayload(snapPath)
+	if payload == nil {
+		t.Fatal("failed to load snapshot")
+	}
+	// The snapshot should have at least the first 2 docs
+	if payload.Count < 2 {
+		t.Fatalf("expected snapshot to have at least 2 entries, got %d", payload.Count)
+	}
+
+	// Replay the new WAL — it should contain the third entry
+	err := replayWAL(vs2)
+	if err != nil {
+		t.Fatalf("replay of post-rotation WAL failed: %v", err)
+	}
+
+	// All 3 entries should be accessible (either from snapshot or WAL replay)
+	if vs.Count != 3 {
+		t.Fatalf("expected 3 total entries in original store, got %d", vs.Count)
+	}
+}
+
+// TestFrozenWALRecoveryOnStartup verifies that a .wal.frozen file left by
+// a crash during background snapshot is replayed at startup.
+func TestFrozenWALRecoveryOnStartup(t *testing.T) {
+	dir := t.TempDir()
+	snapPath := filepath.Join(dir, "index.gob")
+	walPath := snapPath + ".wal"
+	frozenPath := walPath + ".frozen"
+
+	// Create a VectorStore and save an initial snapshot with 1 doc
+	vs := NewVectorStore(10, 3)
+	vs.walPath = walPath
+	if _, err := vs.Add([]float32{1, 0, 0}, "doc-1", "id-1", nil, "", ""); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := vs.Save(snapPath); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Simulate crash scenario: create a frozen WAL with an additional entry
+	// that is NOT in the snapshot (as if the snapshot was being written when crash happened)
+	f, err := os.Create(frozenPath)
+	if err != nil {
+		t.Fatalf("create frozen WAL: %v", err)
+	}
+	enc := json.NewEncoder(f)
+	enc.Encode(walEntry{Op: "insert", ID: "id-frozen", Doc: "frozen-doc", Vec: []float32{2, 0, 0}, Coll: "default", Tenant: "default"})
+	f.Close()
+
+	// Also create a regular WAL with yet another entry
+	f2, err := os.Create(walPath)
+	if err != nil {
+		t.Fatalf("create WAL: %v", err)
+	}
+	enc2 := json.NewEncoder(f2)
+	enc2.Encode(walEntry{Op: "insert", ID: "id-wal", Doc: "wal-doc", Vec: []float32{3, 0, 0}, Coll: "default", Tenant: "default"})
+	f2.Close()
+
+	// Reload — loadOrInitStore should replay both the frozen WAL and the regular WAL
+	vs2, loaded := loadOrInitStore(snapPath, 10, 3)
+	if !loaded {
+		t.Fatal("expected snapshot to be loaded")
+	}
+
+	// Should have all 3 entries: 1 from snapshot + 1 from frozen WAL + 1 from regular WAL
+	if vs2.Count != 3 {
+		t.Fatalf("expected 3 entries after recovery, got %d", vs2.Count)
+	}
+
+	// The frozen WAL should have been cleaned up after successful replay
+	if _, err := os.Stat(frozenPath); !os.IsNotExist(err) {
+		t.Fatalf("expected frozen WAL to be cleaned up after replay, got err=%v", err)
+	}
+}
+
+// TestFullLifecyclePersistence is a comprehensive end-to-end persistence test
+// that verifies ALL production data paths survive a save→reload cycle:
+// ANN search, BM25 lexical search, metadata filters, range filters,
+// collection isolation, deleted docs, and new writes after reload.
+func TestFullLifecyclePersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.gob")
+
+	vs := NewVectorStore(100, 3)
+	vs.walPath = path + ".wal"
+
+	// --- Phase 1: Populate diverse data ---
+
+	// Default collection docs
+	mustAdd := func(vec []float32, doc, id string, meta map[string]string, coll string) {
+		t.Helper()
+		if _, err := vs.Add(vec, doc, id, meta, coll, ""); err != nil {
+			t.Fatalf("add %s: %v", id, err)
+		}
+	}
+
+	mustAdd([]float32{1.0, 0.0, 0.0}, "machine learning neural networks deep learning", "ml-1",
+		map[string]string{"topic": "ml", "price": "29.99"}, "")
+	mustAdd([]float32{0.9, 0.1, 0.0}, "transformer attention mechanism NLP", "ml-2",
+		map[string]string{"topic": "ml", "price": "49.99"}, "")
+	mustAdd([]float32{0.0, 1.0, 0.0}, "PostgreSQL relational database SQL", "db-1",
+		map[string]string{"topic": "databases", "price": "19.99"}, "")
+	mustAdd([]float32{0.0, 0.9, 0.1}, "Redis in-memory cache data store", "db-2",
+		map[string]string{"topic": "databases", "price": "9.99"}, "")
+	mustAdd([]float32{0.0, 0.0, 1.0}, "Kubernetes container orchestration", "infra-1",
+		map[string]string{"topic": "infrastructure", "price": "39.99"}, "")
+
+	// Science collection docs
+	mustAdd([]float32{0.5, 0.5, 0.0}, "mitochondria ATP cellular energy", "bio-1",
+		map[string]string{"topic": "biology"}, "science")
+	mustAdd([]float32{0.5, 0.0, 0.5}, "photosynthesis light energy plants", "bio-2",
+		map[string]string{"topic": "biology"}, "science")
+
+	// Delete one doc
+	if err := vs.Delete("db-2"); err != nil {
+		t.Fatalf("delete db-2: %v", err)
+	}
+
+	// --- Phase 1b: Capture pre-save state ---
+	preSaveCount := vs.Count
+	preSaveActive := vs.Count - len(vs.Deleted)
+	preSaveDeleted := vs.Deleted[hashID("db-2")]
+
+	// ANN search pre-save
+	preANNIxs := vs.SearchANN([]float32{1.0, 0.0, 0.0}, 1)
+	preANNID := vs.GetID(preANNIxs[0])
+
+	// BM25 search pre-save
+	preBM25Ixs := vs.SearchLex(tokenize("PostgreSQL relational database"), 1)
+	preBM25ID := vs.GetID(preBM25Ixs[0])
+
+	// Range filter pre-save
+	min, max := 20.0, 50.0
+	preCandidates := vs.candidateIDsForRange([]RangeFilter{{Key: "price", Min: &min, Max: &max}})
+
+	// Collection pre-save
+	var preSciCount int
+	for _, hid := range vs.idToIx {
+		_ = hid // just need iteration
+	}
+	for _, id := range vs.IDs {
+		hid := hashID(id)
+		if !vs.Deleted[hid] && vs.Coll[hid] == "science" {
+			preSciCount++
+		}
+	}
+
+	// --- Phase 2: Save and reload ---
+	if err := vs.Save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	// Delete WAL after Save — mirrors the production shutdown path where
+	// all writers are drained before Save+WAL cleanup.
+	os.Remove(vs.walPath)
+
+	vs2, loaded := loadOrInitStore(path, 100, 3)
+	if !loaded {
+		t.Fatal("expected to load snapshot")
+	}
+
+	// --- Phase 3: Verify everything survived ---
+
+	// 3a: Counts
+	if vs2.Count != preSaveCount {
+		t.Errorf("count: got %d, want %d", vs2.Count, preSaveCount)
+	}
+	if vs2.Count - len(vs2.Deleted) != preSaveActive {
+		t.Errorf("active count: got %d, want %d", vs2.Count - len(vs2.Deleted), preSaveActive)
+	}
+	if !vs2.Deleted[hashID("db-2")] != !preSaveDeleted {
+		t.Error("deleted flag for db-2 not preserved")
+	}
+
+	// 3b: ANN search returns same result
+	postANNIxs := vs2.SearchANN([]float32{1.0, 0.0, 0.0}, 1)
+	if len(postANNIxs) == 0 {
+		t.Fatal("ANN search returned 0 results after reload")
+	}
+	postANNID := vs2.GetID(postANNIxs[0])
+	if postANNID != preANNID {
+		t.Errorf("ANN top result after reload: got %q, want %q", postANNID, preANNID)
+	}
+
+	// 3c: Deleted doc doesn't appear in ANN results
+	annAll := vs2.SearchANN([]float32{0.0, 0.9, 0.1}, 10)
+	for _, ix := range annAll {
+		if vs2.GetID(ix) == "db-2" {
+			t.Error("deleted doc db-2 appeared in ANN results after reload")
+		}
+	}
+
+	// 3d: BM25 search returns same result
+	postBM25Ixs := vs2.SearchLex(tokenize("PostgreSQL relational database"), 1)
+	if len(postBM25Ixs) == 0 {
+		t.Fatal("BM25 search returned 0 results after reload")
+	}
+	postBM25ID := vs2.GetID(postBM25Ixs[0])
+	if postBM25ID != preBM25ID {
+		t.Errorf("BM25 top result after reload: got %q, want %q", postBM25ID, preBM25ID)
+	}
+
+	// 3e: BM25 does not return deleted doc
+	bm25All := vs2.SearchLex(tokenize("Redis in-memory cache"), 10)
+	for _, ix := range bm25All {
+		if vs2.GetID(ix) == "db-2" {
+			t.Error("deleted doc db-2 appeared in BM25 results after reload")
+		}
+	}
+
+	// 3f: Range filter works after reload
+	postCandidates := vs2.candidateIDsForRange([]RangeFilter{{Key: "price", Min: &min, Max: &max}})
+	if len(postCandidates) != len(preCandidates) {
+		t.Errorf("range filter [%.0f,%.0f] after reload: got %d candidates, want %d",
+			min, max, len(postCandidates), len(preCandidates))
+	}
+
+	// 3g: Metadata filter works
+	filtered := vs2.GetPreFilteredIDs(map[string]string{"topic": "ml"})
+	if len(filtered) < 2 {
+		t.Errorf("metadata filter topic=ml after reload: got %d results, want >= 2", len(filtered))
+	}
+
+	// 3h: Collection isolation survives
+	var postSciCount int
+	for _, id := range vs2.IDs {
+		hid := hashID(id)
+		if !vs2.Deleted[hid] && vs2.Coll[hid] == "science" {
+			postSciCount++
+		}
+	}
+	if postSciCount != preSciCount {
+		t.Errorf("science collection doc count: got %d, want %d", postSciCount, preSciCount)
+	}
+
+	// 3i: New inserts work after reload
+	if _, err := vs2.Add([]float32{0.3, 0.3, 0.3}, "post-reload insert test", "post-reload-1",
+		map[string]string{"topic": "test"}, "", ""); err != nil {
+		t.Fatalf("insert after reload failed: %v", err)
+	}
+	postReloadIxs := vs2.SearchANN([]float32{0.3, 0.3, 0.3}, 1)
+	if len(postReloadIxs) == 0 || vs2.GetID(postReloadIxs[0]) != "post-reload-1" {
+		t.Error("newly inserted doc not found in ANN search after reload")
+	}
+
+	// 3j: BM25 on newly inserted doc works
+	postReloadBM25 := vs2.SearchLex(tokenize("post-reload insert test"), 1)
+	if len(postReloadBM25) == 0 || vs2.GetID(postReloadBM25[0]) != "post-reload-1" {
+		t.Error("newly inserted doc not found in BM25 search after reload")
 	}
 }

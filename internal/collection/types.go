@@ -345,7 +345,7 @@ type SearchRequest struct {
 	// HNSW ef_search override (0 = use server default)
 	EfSearch int `json:"ef_search,omitempty"`
 
-	// Whether to include vectors in the response (nil = default true)
+	// Whether to include vectors in the response (nil = default false)
 	IncludeVectors *bool `json:"include_vectors,omitempty"`
 
 	// Metadata filters (optional)

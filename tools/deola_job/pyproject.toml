@@ -1,0 +1,19 @@
+[project]
+name = "jobhunter"
+version = "0.1.0"
+description = "AI-powered job hunting CLI: scrape, filter, tailor resumes, track applications"
+requires-python = ">=3.11"
+dependencies = [
+    "python-jobspy>=1.1.75",
+    "anthropic>=0.80.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "pdfplumber>=0.11.0",
+]
+
+[project.scripts]
+jobhunter = "jobhunter.main:app"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

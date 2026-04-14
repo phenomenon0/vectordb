@@ -65,12 +65,14 @@ func diskannEfValues() []paramSweep {
 func runRecallSuite(t *testing.T, indexType string, baseConfig map[string]interface{}, sweeps []paramSweep) {
 	scale := 10_000
 	numQueries := 100
+	dims := []int{128, 768}
 	if testing.Short() {
 		scale = 5_000
 		numQueries = 50
+		dims = []int{128} // skip 768-dim in short mode (too slow under race detector)
 	}
 
-	for _, dim := range []int{128, 768} {
+	for _, dim := range dims {
 		vectors, queries := testdata.GenerateClusteredDataset(scale, numQueries, dim, 20, 0.15, 42)
 
 		// Compute ground truth

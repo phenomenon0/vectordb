@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -20,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -36,6 +36,9 @@ import (
 
 	deepdatav1 "github.com/phenomenon0/vectordb/api/gen/deepdata/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"net"
 )
@@ -95,6 +98,10 @@ type VectorStore struct {
 	// Recovery state
 	walReplayError error // Non-nil if WAL replay failed during load
 
+	// Background goroutine lifecycle
+	bgWg             sync.WaitGroup // Tracks in-flight background snapshot goroutines
+	snapshotRunning  atomic.Bool    // Guards against concurrent background snapshots racing on .tmp file
+
 	// Limits (configurable via env vars)
 	maxCollections int // MAX_COLLECTIONS (default 10,000)
 }
@@ -109,7 +116,8 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		"ef_search": cfg.EfSearch,
 	})
 	if err != nil {
-		log.Fatalf("failed to create default HNSW index: %v", err)
+		logging.Default().Error("failed to create default HNSW index", "error", err)
+		os.Exit(1)
 	}
 
 	// Initialize JWT manager if configured
@@ -231,7 +239,7 @@ func (vs *VectorStore) commitNewVectorLocked(v []float32, doc, id string, meta m
 func (vs *VectorStore) rollbackNewVectorLocked(idx index.Index, collection string, createdIndex bool, hid uint64, tenantID string, totalBytes int64) {
 	if idx != nil {
 		if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
-			fmt.Printf("warning: failed to rollback index insert for %d: %v\n", hid, err)
+			logging.Default().Warn("failed to rollback index insert", "hid", hid, "error", err)
 		}
 	}
 	if createdIndex {
@@ -346,7 +354,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 
 		restoreCurrent := func() {
 			if err := currentIdx.Add(context.Background(), hid, oldVec); err != nil {
-				fmt.Printf("warning: failed to restore index entry for %s: %v\n", id, err)
+				logging.Default().Warn("failed to restore index entry", "id", id, "error", err)
 			}
 		}
 
@@ -364,7 +372,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 
 		if err := vs.appendWAL("upsert", id, doc, meta, v, targetCollection, tenantID); err != nil {
 			if errDel := targetIdx.Delete(context.Background(), hid); errDel != nil && !isNotFoundError(errDel) {
-				fmt.Printf("warning: failed to rollback updated index entry for %s: %v\n", id, errDel)
+				logging.Default().Warn("failed to rollback updated index entry", "id", id, "error", errDel)
 			}
 			if createdIndex {
 				delete(vs.indexes, targetCollection)
@@ -420,11 +428,11 @@ func (vs *VectorStore) Delete(id string) error {
 	}
 	if idx, ok := vs.indexes[delCollection]; ok && idx != nil {
 		if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
-			fmt.Printf("warning: failed to delete from index for %s: %v\n", id, err)
+			logging.Default().Warn("failed to delete from index", "id", id, "collection", delCollection, "error", err)
 		}
 	} else if idx := vs.indexes["default"]; idx != nil {
 		if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
-			fmt.Printf("warning: failed to delete from default index for %s: %v\n", id, err)
+			logging.Default().Warn("failed to delete from default index", "id", id, "error", err)
 		}
 	}
 
@@ -829,10 +837,21 @@ func (vs *VectorStore) Save(path string) error {
 
 	if err := format.Save(f, payload); err != nil {
 		_ = f.Close()
+		_ = os.Remove(tmp)
+		vs.RUnlock()
+		return err
+	}
+	// Sync to durable storage before closing — without this, os.Rename could
+	// succeed but the file contents may not be persisted on power loss, leaving
+	// a corrupt or zero-length snapshot after the WAL has already been removed.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		vs.RUnlock()
 		return err
 	}
 	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		vs.RUnlock()
 		return err
 	}
@@ -840,7 +859,6 @@ func (vs *VectorStore) Save(path string) error {
 	// Capture snapshot metadata while under read lock, then update mutable fields under write lock.
 	newChecksum := vs.computeChecksum()
 	lastSaved := payload.LastSaved
-	walPath := vs.walPath
 	vs.RUnlock()
 
 	vs.Lock()
@@ -848,10 +866,15 @@ func (vs *VectorStore) Save(path string) error {
 	vs.lastSaved = lastSaved
 	vs.Unlock()
 
-	if walPath != "" {
-		_ = os.Remove(walPath)
+	// Rename atomically commits the new snapshot.
+	// WAL cleanup is the caller's responsibility — Save() must not delete the
+	// WAL because background snapshot goroutines race with concurrent appendWAL
+	// writers: entries written after the RLock was released but before this point
+	// would be lost if we deleted the WAL here.
+	if err := os.Rename(tmp, path); err != nil {
+		return err
 	}
-	return os.Rename(tmp, path)
+	return nil
 }
 
 // getStorageFormat returns the configured storage format from env var.
@@ -909,7 +932,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		// Try to load with configured format, fall back to gob for backward compatibility
 		payload, loadedFormat := tryLoadPayload(path)
 		if payload == nil {
-			fmt.Printf("warning: failed to load index with any format, rebuilding\n")
+			logging.Default().Warn("failed to load index with any format, rebuilding")
 			return NewVectorStore(capacity, dim), false
 		}
 		_ = loadedFormat // format used for loading (for logging if needed)
@@ -970,10 +993,10 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		if !vs.validateChecksum() {
 			oldFormula := fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
 			if vs.checksum == oldFormula {
-				fmt.Printf("info: migrating checksum from old formula\n")
+				logging.Default().Info("migrating checksum from old formula")
 				vs.checksum = vs.computeChecksum()
 			} else {
-				fmt.Printf("warning: checksum mismatch; continuing with loaded snapshot\n")
+				logging.Default().Warn("checksum mismatch; continuing with loaded snapshot")
 			}
 		}
 		for i, idStr := range vs.IDs {
@@ -1012,11 +1035,11 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 				// Create HNSW index for this collection
 				idx, err := index.NewHNSWIndex(vs.Dim, nil)
 				if err != nil {
-					fmt.Printf("warning: failed to create index for collection %s: %v\n", collName, err)
+					logging.Default().Warn("failed to create index for collection", "collection", collName, "error", err)
 					continue
 				}
 				if err := idx.Import(data); err != nil {
-					fmt.Printf("warning: failed to import index for collection %s: %v\n", collName, err)
+					logging.Default().Warn("failed to import index for collection", "collection", collName, "error", err)
 					continue
 				}
 				vs.indexes[collName] = idx
@@ -1045,14 +1068,14 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 				}
 				vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
 				if err := defaultIdx.Add(context.Background(), hid, vec); err != nil {
-					fmt.Printf("warning: failed to migrate vector %s: %v\n", idStr, err)
+					logging.Default().Warn("failed to migrate vector", "id", idStr, "error", err)
 					continue
 				}
 				migrated++
 			}
 			vs.indexes["default"] = defaultIdx
 			if migrated > 0 {
-				fmt.Printf("Migrated %d vectors to index abstraction\n", migrated)
+				logging.Default().Info("migrated vectors to index abstraction", "count", migrated)
 			}
 		}
 
@@ -1068,10 +1091,39 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		// Rebuild metadata bitmap index from persisted Meta
 		if vs.metaIndex != nil && len(vs.Meta) > 0 {
 			vs.metaIndex.RebuildFromMeta(vs.Meta, vs.Deleted)
-			fmt.Printf("Rebuilt metadata index: %d documents indexed\n", vs.metaIndex.GetDocumentCount())
+			logging.Default().Info("rebuilt metadata index", "documents_indexed", vs.metaIndex.GetDocumentCount())
+		}
+		// Rebuild numeric/time range indexes from persisted NumMeta/TimeMeta.
+		// Without this, range-filter queries return empty results after restart.
+		for hid, nums := range vs.NumMeta {
+			for k, v := range nums {
+				vs.numIndex[k] = append(vs.numIndex[k], numEntry{ID: hid, V: v})
+			}
+		}
+		for hid, times := range vs.TimeMeta {
+			for k, t := range times {
+				vs.timeIndex[k] = append(vs.timeIndex[k], timeEntry{ID: hid, T: t})
+			}
+		}
+		if len(vs.NumMeta) > 0 || len(vs.TimeMeta) > 0 {
+			logging.Default().Info("rebuilt range indexes", "numeric_docs", len(vs.NumMeta), "time_docs", len(vs.TimeMeta))
+		}
+		// Recover any frozen WAL left by a crash during background snapshot.
+		// The frozen WAL contains entries from before the rotation — replay it
+		// first since those entries are older than any entries in the current WAL.
+		frozenPath := vs.walPath + ".frozen"
+		if _, ferr := os.Stat(frozenPath); ferr == nil {
+			logging.Default().Warn("found frozen WAL from interrupted snapshot, replaying", "path", frozenPath)
+			savedPath := vs.walPath
+			vs.walPath = frozenPath
+			if err := replayWAL(vs); err != nil {
+				logging.Default().Error("frozen WAL replay failed", "error", err)
+				vs.walReplayError = err
+			}
+			vs.walPath = savedPath
 		}
 		if err := replayWAL(vs); err != nil {
-			fmt.Printf("WARNING: WAL replay failed: %v - some data may be lost!\n", err)
+			logging.Default().Error("WAL replay failed — some data may be lost", "error", err)
 			vs.walReplayError = err // Store error for inspection
 		}
 		return vs, true
@@ -1969,15 +2021,37 @@ func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec
 		}
 		vs.walMu.Unlock()
 
-		if doSnapshot {
+		if doSnapshot && vs.snapshotRunning.CompareAndSwap(false, true) {
 			snapPath := strings.TrimSuffix(vs.walPath, ".wal")
-			go func() {
-				if err := vs.Save(snapPath); err == nil {
-					if err := os.Truncate(vs.walPath, 0); err != nil {
-						logging.Default().Warn("failed to truncate WAL", "error", err)
+			// Rotate the WAL under walMu: rename the current WAL to a frozen
+			// path so the snapshot goroutine can safely delete it after Save()
+			// without racing with concurrent appendWAL writers — new writes
+			// will create a fresh WAL file via O_CREATE|O_APPEND.
+			frozenWAL := vs.walPath + ".frozen"
+			vs.walMu.Lock()
+			rotateErr := os.Rename(vs.walPath, frozenWAL)
+			vs.walOps = 0
+			vs.walMu.Unlock()
+			if rotateErr != nil {
+				logging.Default().Warn("failed to rotate WAL for snapshot", "error", rotateErr)
+				vs.snapshotRunning.Store(false)
+			} else {
+				vs.bgWg.Add(1)
+				go func() {
+					defer vs.bgWg.Done()
+					defer vs.snapshotRunning.Store(false)
+					if err := vs.Save(snapPath); err == nil {
+						_ = os.Remove(frozenWAL)
+					} else {
+						// Save failed — restore the frozen WAL so entries aren't lost.
+						// If a new WAL was created concurrently, the rename will fail
+						// and the frozen WAL stays for the next snapshot attempt.
+						if renameErr := os.Rename(frozenWAL, vs.walPath); renameErr != nil {
+							logging.Default().Warn("failed to restore frozen WAL", "error", renameErr, "frozen_path", frozenWAL)
+						}
 					}
-				}
-			}()
+				}()
+			}
 		}
 	}
 
@@ -2017,7 +2091,7 @@ func replayWAL(vs *VectorStore) error {
 	for {
 		var e walEntry
 		if err := dec.Decode(&e); err != nil {
-			if err.Error() != "EOF" {
+			if err != io.EOF {
 				replayErrors = append(replayErrors, fmt.Errorf("WAL decode error: %w", err))
 			}
 			break
@@ -2042,13 +2116,17 @@ func replayWAL(vs *VectorStore) error {
 	}
 
 	if len(replayErrors) > 0 {
-		// Log errors but don't fail - partial replay is better than none
-		fmt.Printf("WAL replay completed with %d errors\n", len(replayErrors))
+		logging.Default().Error("WAL replay completed with errors — WAL preserved for manual inspection",
+			"error_count", len(replayErrors), "wal_path", path)
 		for _, e := range replayErrors {
-			fmt.Printf("  - %v\n", e)
+			logging.Default().Warn("WAL replay error", "error", e)
 		}
+		// Return an error so walReplayError is set, /health and /readyz report
+		// unhealthy, and the WAL is preserved for operator inspection/recovery.
+		return fmt.Errorf("WAL replay had %d errors", len(replayErrors))
 	}
 
+	// All entries replayed successfully — safe to remove the WAL.
 	_ = os.Remove(path)
 	return nil
 }
@@ -2071,7 +2149,7 @@ func (vs *VectorStore) validateChecksum() bool {
 func initEmbedder(defaultDim int) Embedder {
 	// Priority 1: OpenAI embeddings (highest quality, requires API key)
 	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
-		fmt.Println(">>> Using OpenAI embedder (text-embedding-3-small)")
+		logging.Default().Info("using OpenAI embedder", "model", "text-embedding-3-small")
 		return NewOpenAIEmbedder(apiKey)
 	}
 
@@ -2089,7 +2167,7 @@ func initEmbedder(defaultDim int) Embedder {
 	if resp, err := client.Get(ollamaURL + "/api/tags"); err == nil {
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
-			fmt.Printf(">>> Using Ollama embedder (%s)\n", ollamaModel)
+			logging.Default().Info("using Ollama embedder", "model", ollamaModel)
 			return NewOllamaEmbedder(ollamaURL, ollamaModel)
 		}
 	}
@@ -2118,14 +2196,14 @@ func initEmbedder(defaultDim int) Embedder {
 	}
 	if modelPath != "" && tokPath != "" {
 		if emb, err := NewOnnxEmbedder(modelPath, tokPath, defaultDim, maxLen); err == nil {
-			fmt.Println(">>> Using ONNX embedder:", modelPath)
+			logging.Default().Info("using ONNX embedder", "model_path", modelPath)
 			return emb
 		}
-		fmt.Println(">>> ONNX init failed")
+		logging.Default().Warn("ONNX embedder init failed")
 	}
 
 	// Priority 4: Hash embedder (fallback, low quality)
-	fmt.Println(">>> Using hash embedder (set OPENAI_API_KEY or start Ollama for better quality)")
+	logging.Default().Info("using hash embedder (set OPENAI_API_KEY or start Ollama for better quality)")
 	return NewHashEmbedder(defaultDim)
 }
 
@@ -2140,10 +2218,10 @@ func initReranker(embedder Embedder) Reranker {
 	}
 	if modelPath != "" && tokPath != "" {
 		if rr, err := NewOnnxCrossEncoderReranker(modelPath, tokPath, maxLen); err == nil {
-			fmt.Println("Using ONNX reranker:", modelPath)
+			logging.Default().Info("using ONNX reranker", "model_path", modelPath)
 			return rr
 		}
-		fmt.Println("Falling back to simple reranker (ONNX init failed)")
+		logging.Default().Warn("falling back to simple reranker (ONNX init failed)")
 	}
 	return &SimpleReranker{Embedder: embedder}
 }
@@ -2155,12 +2233,12 @@ func warmupModels(embedder Embedder, reranker Reranker) {
 	}
 	if embedder != nil {
 		if _, err := embedder.Embed("warmup"); err != nil {
-			fmt.Printf("embedder warmup warning: %v\n", err)
+			logging.Default().Warn("embedder warmup failed", "error", err)
 		}
 	}
 	if reranker != nil {
 		if _, _, _, err := reranker.Rerank("warmup", []string{"warmup"}, 1); err != nil {
-			fmt.Printf("reranker warmup warning: %v\n", err)
+			logging.Default().Warn("reranker warmup failed", "error", err)
 		}
 	}
 }
@@ -2208,16 +2286,34 @@ func main() {
 		os.Setenv("OLLAMA_URL", *flagEmbURL)
 	}
 
-	// Initialize structured logging
+	// Initialize structured logging (JSON by default, LOG_FORMAT=text for dev)
 	logConfig := logging.DefaultConfig()
 	if os.Getenv("LOG_FORMAT") == "text" {
 		logConfig.Format = "text"
 	}
-	if os.Getenv("LOG_LEVEL") == "debug" {
+	switch os.Getenv("LOG_LEVEL") {
+	case "debug":
 		logConfig.Level = logging.LevelDebug
+	case "warn":
+		logConfig.Level = logging.LevelWarn
+	case "error":
+		logConfig.Level = logging.LevelError
+	default:
+		// "info" or unset → LevelInfo (already the default)
 	}
 	logger := logging.Init(logConfig)
 	logger.Info("initializing vector engine")
+
+	// ==========================================================================
+	// Startup Config Validation — fail fast on invalid env var values
+	// ==========================================================================
+	if configErrs := validateEnvConfig(logger); len(configErrs) > 0 {
+		for _, e := range configErrs {
+			logger.Error("invalid configuration", "detail", e)
+		}
+		fmt.Fprintf(os.Stderr, "FATAL: %d configuration error(s) — fix the environment variables above and restart\n", len(configErrs))
+		os.Exit(1)
+	}
 
 	// ==========================================================================
 	// Mode System Initialization (LOCAL or PRO)
@@ -2225,7 +2321,6 @@ func main() {
 	modeConfig, err := LoadModeFromEnv()
 	if err != nil {
 		logger.Error("failed to load mode configuration", "error", err)
-		fmt.Printf("ERROR: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -2328,6 +2423,8 @@ func main() {
 		Addr:              addr,
 		Handler:           finalHandler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       time.Duration(envInt("HTTP_READ_TIMEOUT_SEC", 60)) * time.Second,
+		WriteTimeout:      time.Duration(envInt("HTTP_WRITE_TIMEOUT_SEC", 300)) * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
@@ -2350,6 +2447,7 @@ func main() {
 			grpcSrv = grpc.NewServer(
 				grpc.MaxRecvMsgSize(64*1024*1024),
 				grpc.MaxSendMsgSize(64*1024*1024),
+				grpc.UnaryInterceptor(grpcAuthInterceptor(store.jwtMgr, store.apiToken, store.requireAuth, logger)),
 			)
 			deepdatav1.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
 				manager: collectionHTTP.Manager(),
@@ -2364,23 +2462,31 @@ func main() {
 	}
 
 	// Background compaction
+	compactDone := make(chan struct{})
+	compactStop := make(chan struct{})
 	go func() {
+		defer close(compactDone)
 		interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
 		tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0
 		t := time.NewTicker(interval)
 		defer t.Stop()
-		for range t.C {
-			store.RLock()
-			total := store.Count
-			deleted := len(store.Deleted)
-			store.RUnlock()
-			if total == 0 {
-				continue
-			}
-			if float64(deleted)/float64(total) >= tombstoneThreshold {
-				logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
-				if err := store.Compact(indexPath); err != nil {
-					logger.Error("compact error", "error", err)
+		for {
+			select {
+			case <-compactStop:
+				return
+			case <-t.C:
+				store.RLock()
+				total := store.Count
+				deleted := len(store.Deleted)
+				store.RUnlock()
+				if total == 0 {
+					continue
+				}
+				if float64(deleted)/float64(total) >= tombstoneThreshold {
+					logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
+					if err := store.Compact(indexPath); err != nil {
+						logger.Error("compact error", "error", err)
+					}
 				}
 			}
 		}
@@ -2388,6 +2494,7 @@ func main() {
 
 	// Background Obsidian vault sync
 	var obsidianSyncCancel context.CancelFunc
+	obsidianDone := make(chan struct{})
 	{
 		cfg := obsidian.LoadOrDetectConfig(dataDir)
 		obsidian.ApplyEnvOverrides(&cfg)
@@ -2440,11 +2547,17 @@ func main() {
 				}
 			}
 
-			go obsidian.SyncLoop(syncCtx, cfg, logger, embedFn, upsertFn, deleteFn, iterFn)
+			go func() {
+				defer close(obsidianDone)
+				obsidian.SyncLoop(syncCtx, cfg, logger, embedFn, upsertFn, deleteFn, iterFn)
+			}()
 			logger.Info("obsidian auto-sync started", "vault", cfg.VaultPath, "interval", cfg.Interval)
-		} else if vaults := obsidian.DetectVaults(); len(vaults) > 0 {
-			logger.Info("obsidian vault detected (not syncing — set OBSIDIAN_VAULT to enable)",
-				"vault", vaults[0])
+		} else {
+			close(obsidianDone) // Not started — unblock shutdown wait
+			if vaults := obsidian.DetectVaults(); len(vaults) > 0 {
+				logger.Info("obsidian vault detected (not syncing — set OBSIDIAN_VAULT to enable)",
+					"vault", vaults[0])
+			}
 		}
 	}
 
@@ -2453,9 +2566,12 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	// Wait for shutdown signal
-	fmt.Println(">>> Server running. Press Ctrl+C to stop.")
+	logging.Default().Info("server running, press Ctrl+C to stop")
 	sig := <-sigCh
-	fmt.Printf("\n>>> Received signal %v, initiating graceful shutdown...\n", sig)
+	logging.Default().Info("received signal, initiating graceful shutdown", "signal", sig)
+
+	// Stop background compaction
+	close(compactStop)
 
 	// Stop obsidian sync
 	if obsidianSyncCancel != nil {
@@ -2464,22 +2580,45 @@ func main() {
 
 	// Graceful shutdown sequence
 	if grpcSrv != nil {
-		fmt.Println(">>> Shutting down gRPC server...")
-		grpcSrv.GracefulStop()
+		logging.Default().Info("shutting down gRPC server")
+		grpcDone := make(chan struct{})
+		go func() {
+			grpcSrv.GracefulStop()
+			close(grpcDone)
+		}()
+		select {
+		case <-grpcDone:
+		case <-time.After(30 * time.Second):
+			logging.Default().Warn("gRPC graceful shutdown timed out, forcing stop")
+			grpcSrv.Stop()
+		}
 	}
-	fmt.Println(">>> Shutting down HTTP server...")
+	logging.Default().Info("shutting down HTTP server")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		fmt.Printf("HTTP server shutdown error: %v\n", err)
+		logging.Default().Error("HTTP server shutdown error", "error", err)
 	}
 
-	fmt.Println(">>> Saving final snapshot...")
+	// Wait for background goroutines to finish before final save
+	logger.Info("waiting for background compaction to finish...")
+	<-compactDone
+	logger.Info("waiting for obsidian sync to finish...")
+	<-obsidianDone
+	logger.Info("waiting for in-flight WAL snapshots to finish...")
+	store.bgWg.Wait()
+
+	logging.Default().Info("saving final snapshot")
 	if err := store.Save(indexPath); err != nil {
 		logger.Error("failed to save final snapshot", "error", err)
 	} else {
 		logger.Info("final snapshot saved successfully")
+		// Clean up WAL after successful save — safe here because shutdown has
+		// drained all writers (bgWg.Wait completed above, HTTP/gRPC stopped).
+		if store.walPath != "" {
+			_ = os.Remove(store.walPath)
+		}
 	}
 	if err := collectionHTTP.Save(indexPath + ".collections"); err != nil {
 		logger.Error("failed to save collection state", "error", err)
@@ -2492,20 +2631,124 @@ func main() {
 
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			logging.Default().Warn("invalid integer env var, using default", "key", key, "value", v, "default", def)
+			return def
 		}
+		return n
 	}
 	return def
 }
 
 func envInt64(key string, def int64) int64 {
 	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			return n
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			logging.Default().Warn("invalid positive integer env var, using default", "key", key, "value", v, "default", def)
+			return def
 		}
+		return n
 	}
 	return def
+}
+
+// validateEnvConfig checks all known environment variables for valid values at
+// startup. If any env var is set to an unparseable or out-of-range value, this
+// returns a list of errors. The caller should log them and exit — fail-fast
+// prevents silent misconfiguration in production.
+func validateEnvConfig(logger *logging.Logger) []string {
+	var errs []string
+
+	// Helper: check that an env var, if set, parses as a positive integer
+	checkPosInt := func(key string) {
+		if v := os.Getenv(key); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s=%q is not a valid integer", key, v))
+			} else if n <= 0 {
+				errs = append(errs, fmt.Sprintf("%s=%d must be positive", key, n))
+			}
+		}
+	}
+
+	// Helper: check that an env var, if set, parses as a non-negative integer
+	checkNonNegInt := func(key string) {
+		if v := os.Getenv(key); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s=%q is not a valid integer", key, v))
+			} else if n < 0 {
+				errs = append(errs, fmt.Sprintf("%s=%d must be non-negative", key, n))
+			}
+		}
+	}
+
+	// Helper: check positive int64
+	checkPosInt64 := func(key string) {
+		if v := os.Getenv(key); v != "" {
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s=%q is not a valid integer", key, v))
+			} else if n <= 0 {
+				errs = append(errs, fmt.Sprintf("%s=%d must be positive", key, n))
+			}
+		}
+	}
+
+	// Helper: check positive float
+	checkPosFloat := func(key string) {
+		if v := os.Getenv(key); v != "" {
+			n, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s=%q is not a valid float", key, v))
+			} else if n <= 0 {
+				errs = append(errs, fmt.Sprintf("%s=%f must be positive", key, n))
+			}
+		}
+	}
+
+	// STORAGE_FORMAT: must be a registered format name
+	if v := os.Getenv("STORAGE_FORMAT"); v != "" {
+		if storage.Get(v) == nil {
+			errs = append(errs, fmt.Sprintf("STORAGE_FORMAT=%q is not a registered format (available: %v)", v, storage.List()))
+		}
+	}
+
+	// LOG_LEVEL: only "debug" or "" (info) are meaningful
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		switch strings.ToLower(v) {
+		case "debug", "info", "warn", "error":
+			// valid
+		default:
+			errs = append(errs, fmt.Sprintf("LOG_LEVEL=%q is not valid (use: debug, info, warn, error)", v))
+		}
+	}
+
+	// Integer config vars
+	checkPosInt("PORT")
+	checkNonNegInt("VECTOR_CAPACITY")
+	checkPosInt64("WAL_MAX_BYTES")
+	checkPosInt("WAL_MAX_OPS")
+	checkPosInt("HNSW_M")
+	checkPosFloat("HNSW_ML")
+	checkPosInt("HNSW_EFSEARCH")
+	checkPosInt("TENANT_RPS")
+	checkPosInt("TENANT_BURST")
+	checkPosInt("MAX_TENANTS")
+	checkPosInt("MAX_COLLECTIONS")
+	checkPosInt("HTTP_READ_TIMEOUT_SEC")
+	checkPosInt("HTTP_WRITE_TIMEOUT_SEC")
+	checkPosInt("HTTP_REQUEST_TIMEOUT_SEC")
+
+	// EMBED_DIM: positive integer if set
+	checkPosInt("EMBED_DIM")
+
+	// ONNX_EMBED_MAX_LEN / ONNX_RERANK_MAX_LEN: positive integer if set
+	checkPosInt("ONNX_EMBED_MAX_LEN")
+	checkPosInt("ONNX_RERANK_MAX_LEN")
+
+	return errs
 }
 
 func fileSize(path string) int64 {
@@ -2517,4 +2760,70 @@ func fileSize(path string) int64 {
 		return 0
 	}
 	return info.Size()
+}
+
+// grpcAuthInterceptor returns a gRPC unary interceptor that mirrors the HTTP
+// guard middleware: JWT validation, legacy API-token checking, and requireAuth
+// enforcement. On success it injects a *security.TenantContext into the
+// context so downstream handlers can inspect tenant identity and permissions.
+func grpcAuthInterceptor(jwtMgr *security.JWTManager, apiToken string, requireAuth bool, logger *logging.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		// Panic recovery — same as before, prevents crashes from taking down the process
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("panic recovered in gRPC handler", "error", r, "method", info.FullMethod)
+				err = status.Errorf(codes.Internal, "internal error")
+			}
+		}()
+
+		// Extract auth token from gRPC metadata (mirrors HTTP Authorization header)
+		token := ""
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			if vals := md.Get("authorization"); len(vals) > 0 {
+				token = strings.TrimPrefix(vals[0], "Bearer ")
+			}
+		}
+
+		var tenantCtx *security.TenantContext
+
+		if jwtMgr != nil {
+			if token == "" {
+				if requireAuth {
+					return nil, status.Error(codes.Unauthenticated, "missing authentication token")
+				}
+				tenantCtx = &security.TenantContext{
+					TenantID:    "default",
+					Permissions: map[string]bool{"read": true, "write": true},
+					Collections: make(map[string]bool),
+				}
+			} else {
+				var valErr error
+				tenantCtx, valErr = jwtMgr.ValidateTenantToken(token)
+				if valErr != nil {
+					return nil, status.Errorf(codes.Unauthenticated, "invalid token: %v", valErr)
+				}
+			}
+		} else {
+			authenticated := false
+			if apiToken != "" {
+				if token == apiToken {
+					authenticated = true
+				} else if token != "" {
+					return nil, status.Error(codes.Unauthenticated, "unauthorized")
+				}
+			}
+			if requireAuth && !authenticated {
+				return nil, status.Error(codes.Unauthenticated, "unauthorized")
+			}
+			tenantCtx = &security.TenantContext{
+				TenantID:    "default",
+				Permissions: map[string]bool{"read": true, "write": true},
+				Collections: make(map[string]bool),
+				IsAdmin:     jwtMgr == nil && apiToken == "",
+			}
+		}
+
+		ctx = context.WithValue(ctx, security.TenantContextKey, tenantCtx)
+		return handler(ctx, req)
+	}
 }

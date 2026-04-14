@@ -1,0 +1,306 @@
+[08:55:02] VDBs: deepdata-grpc, deepdata-http, qdrant, weaviate, milvus, chromadb
+[08:55:02] Datasets: sift-100k, glove-100d, code-562
+[08:55:02] ef_search: [16, 32, 64, 128, 256, 512]
+[08:55:02] n_search: 100
+[08:55:02] Total combos: 108
+[08:55:02] 
+[08:55:02] Building DeepData server...
+[08:55:02] Build OK
+[08:55:02] Loading sift-100k...
+[08:55:02]   100,000 base, 10,000 queries
+[08:55:02] Loading glove-100d...
+  Computing brute-force ground truth (1000 queries, k=100)...
+    50/1000 queries done
+    100/1000 queries done
+    150/1000 queries done
+    200/1000 queries done
+    250/1000 queries done
+    300/1000 queries done
+    350/1000 queries done
+    400/1000 queries done
+    450/1000 queries done
+    500/1000 queries done
+    550/1000 queries done
+    600/1000 queries done
+    650/1000 queries done
+    700/1000 queries done
+    750/1000 queries done
+    800/1000 queries done
+    850/1000 queries done
+    900/1000 queries done
+    950/1000 queries done
+    1000/1000 queries done
+[08:55:05]   10,000 base, 1,000 queries
+[08:55:05] Loading code-562...
+[08:55:05]   562 base, 50 queries
+[08:55:05] SKIP (cached): deepdata-grpc|sift-100k|ef=16
+[08:55:05] SKIP (cached): deepdata-http|sift-100k|ef=16
+[08:55:05] SKIP (cached): qdrant|sift-100k|ef=16
+[08:55:05] SKIP (cached): weaviate|sift-100k|ef=16
+[08:55:05] SKIP (cached): milvus|sift-100k|ef=16
+[08:55:05] RUN: chromadb|sift-100k|ef=16
+[08:55:48]   R@10=0.9989  QPS=1138  P50=1.5ms
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=32
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=32
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=32
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=32
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=32
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=32
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=64
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=64
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=64
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=64
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=64
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=64
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=128
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=128
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=128
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=128
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=128
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=128
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=256
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=256
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=256
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=256
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=256
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=256
+[08:55:48] SKIP (cached): deepdata-grpc|sift-100k|ef=512
+[08:55:48] SKIP (cached): deepdata-http|sift-100k|ef=512
+[08:55:48] SKIP (cached): qdrant|sift-100k|ef=512
+[08:55:48] SKIP (cached): weaviate|sift-100k|ef=512
+[08:55:48] SKIP (cached): milvus|sift-100k|ef=512
+[08:55:48] SKIP (cached): chromadb|sift-100k|ef=512
+[08:55:48] SKIP (cached): deepdata-grpc|glove-100d|ef=16
+[08:55:48] SKIP (cached): deepdata-http|glove-100d|ef=16
+[08:55:48] SKIP (cached): qdrant|glove-100d|ef=16
+[08:55:48] SKIP (cached): weaviate|glove-100d|ef=16
+[08:55:48] SKIP (cached): milvus|glove-100d|ef=16
+[08:55:48] SKIP (cached): chromadb|glove-100d|ef=16
+[08:55:48] SKIP (cached): deepdata-grpc|glove-100d|ef=32
+[08:55:48] SKIP (cached): deepdata-http|glove-100d|ef=32
+[08:55:48] SKIP (cached): qdrant|glove-100d|ef=32
+[08:55:48] SKIP (cached): weaviate|glove-100d|ef=32
+[08:55:48] SKIP (cached): milvus|glove-100d|ef=32
+[08:55:48] SKIP (cached): chromadb|glove-100d|ef=32
+[08:55:48] RUN: deepdata-grpc|glove-100d|ef=64
+[08:55:59]   R@10=0.9911  QPS=5572  P50=0.4ms
+[08:55:59] SKIP (cached): deepdata-http|glove-100d|ef=64
+[08:55:59] SKIP (cached): qdrant|glove-100d|ef=64
+[08:55:59] SKIP (cached): weaviate|glove-100d|ef=64
+[08:55:59] SKIP (cached): milvus|glove-100d|ef=64
+[08:55:59] SKIP (cached): chromadb|glove-100d|ef=64
+[08:55:59] SKIP (cached): deepdata-grpc|glove-100d|ef=128
+[08:55:59] SKIP (cached): deepdata-http|glove-100d|ef=128
+[08:55:59] SKIP (cached): qdrant|glove-100d|ef=128
+[08:55:59] SKIP (cached): weaviate|glove-100d|ef=128
+[08:55:59] SKIP (cached): milvus|glove-100d|ef=128
+[08:55:59] SKIP (cached): chromadb|glove-100d|ef=128
+[08:55:59] RUN: deepdata-grpc|glove-100d|ef=256
+[08:56:07]   R@10=0.9989  QPS=1867  P50=0.6ms
+[08:56:07] SKIP (cached): deepdata-http|glove-100d|ef=256
+[08:56:07] SKIP (cached): qdrant|glove-100d|ef=256
+[08:56:07] SKIP (cached): weaviate|glove-100d|ef=256
+[08:56:07] SKIP (cached): milvus|glove-100d|ef=256
+[08:56:07] SKIP (cached): chromadb|glove-100d|ef=256
+[08:56:07] RUN: deepdata-grpc|glove-100d|ef=512
+[08:56:15]   R@10=1.0000  QPS=852  P50=1.4ms
+[08:56:15] SKIP (cached): deepdata-http|glove-100d|ef=512
+[08:56:15] SKIP (cached): qdrant|glove-100d|ef=512
+[08:56:15] SKIP (cached): weaviate|glove-100d|ef=512
+[08:56:15] SKIP (cached): milvus|glove-100d|ef=512
+[08:56:15] SKIP (cached): chromadb|glove-100d|ef=512
+[08:56:15] RUN: deepdata-grpc|code-562|ef=16
+[08:56:22]   R@10=1.0000  QPS=6102  P50=0.3ms
+[08:56:22] RUN: deepdata-http|code-562|ef=16
+[08:56:30]   R@10=1.0000  QPS=410  P50=11.5ms
+[08:56:30] RUN: qdrant|code-562|ef=16
+[08:56:35]   R@10=1.0000  QPS=939  P50=1.1ms
+[08:56:35] RUN: weaviate|code-562|ef=16
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:196: DeprecationWarning: Dep024: You are using the `vectorizer_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead.
+            
+  warnings.warn(
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:206: DeprecationWarning: Dep025: You are using the `vector_index_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead defining `vector_index_config` as a sub-argument.
+            
+  warnings.warn(
+[08:56:43]   R@10=1.0000  QPS=2457  P50=1.1ms
+[08:56:43] RUN: milvus|code-562|ef=16
+/home/omen/.local/lib/python3.14/site-packages/pymilvus/decorators.py:175: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+  if asyncio.iscoroutinefunction(func):
+/home/omen/.local/lib/python3.14/site-packages/pymilvus/decorators.py:430: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+  if asyncio.iscoroutinefunction(func):
+/home/omen/.local/lib/python3.14/site-packages/pymilvus/decorators.py:333: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+  if asyncio.iscoroutinefunction(func):
+/home/omen/.local/lib/python3.14/site-packages/pymilvus/decorators.py:88: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+  if asyncio.iscoroutinefunction(func):
+[08:56:53]   R@10=0.0000  QPS=1607  P50=0.7ms
+[08:56:53] RUN: chromadb|code-562|ef=16
+[08:56:59]   R@10=1.0000  QPS=979  P50=1.4ms
+[08:56:59] RUN: deepdata-grpc|code-562|ef=32
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4040979 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[08:57:06]   R@10=1.0000  QPS=5475  P50=0.3ms
+[08:57:06] RUN: deepdata-http|code-562|ef=32
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4042446 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[08:57:14]   R@10=1.0000  QPS=396  P50=11.2ms
+[08:57:14] RUN: qdrant|code-562|ef=32
+[08:57:20]   R@10=1.0000  QPS=887  P50=1.1ms
+[08:57:20] RUN: weaviate|code-562|ef=32
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:196: DeprecationWarning: Dep024: You are using the `vectorizer_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead.
+            
+  warnings.warn(
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:206: DeprecationWarning: Dep025: You are using the `vector_index_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead defining `vector_index_config` as a sub-argument.
+            
+  warnings.warn(
+[08:57:27]   R@10=0.9975  QPS=2295  P50=1.1ms
+[08:57:27] RUN: milvus|code-562|ef=32
+[08:57:37]   R@10=0.0000  QPS=1349  P50=0.9ms
+[08:57:37] RUN: chromadb|code-562|ef=32
+[08:57:43]   R@10=1.0000  QPS=894  P50=1.4ms
+[08:57:43] RUN: deepdata-grpc|code-562|ef=64
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4042707 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[08:57:50]   R@10=1.0000  QPS=4401  P50=0.3ms
+[08:57:50] RUN: deepdata-http|code-562|ef=64
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4044118 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[08:57:58]   R@10=1.0000  QPS=390  P50=11.2ms
+[08:57:58] RUN: qdrant|code-562|ef=64
+[08:58:03]   R@10=1.0000  QPS=926  P50=1.2ms
+[08:58:03] RUN: weaviate|code-562|ef=64
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:196: DeprecationWarning: Dep024: You are using the `vectorizer_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead.
+            
+  warnings.warn(
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:206: DeprecationWarning: Dep025: You are using the `vector_index_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead defining `vector_index_config` as a sub-argument.
+            
+  warnings.warn(
+[08:58:11]   R@10=1.0000  QPS=2258  P50=1.1ms
+[08:58:11] RUN: milvus|code-562|ef=64
+[08:58:20]   R@10=0.0000  QPS=1324  P50=0.8ms
+[08:58:20] RUN: chromadb|code-562|ef=64
+[08:58:26]   R@10=1.0000  QPS=904  P50=1.5ms
+[08:58:26] RUN: deepdata-grpc|code-562|ef=128
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4044352 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[08:58:33]   R@10=1.0000  QPS=3538  P50=0.3ms
+[08:58:33] RUN: deepdata-http|code-562|ef=128
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4045909 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[08:58:41]   R@10=1.0000  QPS=384  P50=11.1ms
+[08:58:41] RUN: qdrant|code-562|ef=128
+[08:58:46]   R@10=1.0000  QPS=932  P50=1.1ms
+[08:58:46] RUN: weaviate|code-562|ef=128
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:196: DeprecationWarning: Dep024: You are using the `vectorizer_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead.
+            
+  warnings.warn(
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:206: DeprecationWarning: Dep025: You are using the `vector_index_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead defining `vector_index_config` as a sub-argument.
+            
+  warnings.warn(
+[08:58:54]   R@10=1.0000  QPS=2089  P50=1.0ms
+[08:58:54] RUN: milvus|code-562|ef=128
+[08:59:03]   R@10=0.0000  QPS=1328  P50=0.8ms
+[08:59:03] RUN: chromadb|code-562|ef=128
+[08:59:09]   R@10=0.9975  QPS=898  P50=1.4ms
+[08:59:09] RUN: deepdata-grpc|code-562|ef=256
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4046117 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[08:59:16]   R@10=1.0000  QPS=2601  P50=0.4ms
+[08:59:16] RUN: deepdata-http|code-562|ef=256
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4047461 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[08:59:24]   R@10=1.0000  QPS=377  P50=11.7ms
+[08:59:24] RUN: qdrant|code-562|ef=256
+[08:59:29]   R@10=1.0000  QPS=917  P50=1.2ms
+[08:59:29] RUN: weaviate|code-562|ef=256
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:196: DeprecationWarning: Dep024: You are using the `vectorizer_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead.
+            
+  warnings.warn(
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:206: DeprecationWarning: Dep025: You are using the `vector_index_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead defining `vector_index_config` as a sub-argument.
+            
+  warnings.warn(
+[08:59:37]   R@10=1.0000  QPS=1948  P50=1.2ms
+[08:59:37] RUN: milvus|code-562|ef=256
+[08:59:47]   R@10=0.0000  QPS=1360  P50=0.8ms
+[08:59:47] RUN: chromadb|code-562|ef=256
+[08:59:52]   R@10=1.0000  QPS=883  P50=1.5ms
+[08:59:52] RUN: deepdata-grpc|code-562|ef=512
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4047647 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[08:59:59]   R@10=1.0000  QPS=1879  P50=0.6ms
+[08:59:59] RUN: deepdata-http|code-562|ef=512
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4049212 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[09:00:07]   R@10=1.0000  QPS=352  P50=11.6ms
+[09:00:07] RUN: qdrant|code-562|ef=512
+[09:00:13]   R@10=1.0000  QPS=920  P50=1.1ms
+[09:00:13] RUN: weaviate|code-562|ef=512
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:196: DeprecationWarning: Dep024: You are using the `vectorizer_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead.
+            
+  warnings.warn(
+/home/omen/.local/lib/python3.14/site-packages/weaviate/warnings.py:206: DeprecationWarning: Dep025: You are using the `vector_index_config` argument in `collection.config.create()`, which is deprecated.
+            Use the `vector_config` argument instead defining `vector_index_config` as a sub-argument.
+            
+  warnings.warn(
+[09:00:20]   R@10=1.0000  QPS=1692  P50=1.2ms
+[09:00:20] RUN: milvus|code-562|ef=512
+[09:00:30]   R@10=0.0000  QPS=1583  P50=0.8ms
+[09:00:30] RUN: chromadb|code-562|ef=512
+[09:00:36]   R@10=1.0000  QPS=842  P50=1.6ms
+[09:00:36] 
+=== FAILURE MODE TESTS ===
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4049421 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[09:00:51]   Failure mode [empty_collection_search]: PASS — status=200, docs=0
+[09:00:52]   Failure mode [k_greater_than_n]: PASS — asked k=1000, got 3 from 3 vectors
+[09:00:52]   Failure mode [zero_vector_query]: PASS — status=200
+[09:00:52]   Failure mode [duplicate_id_import]: PASS — status=200
+[09:00:52]   Failure mode [search_nonexistent_collection]: PASS — status=500
+[09:00:52]   Failure mode [grpc_empty_collection_search]: FAIL — <_InactiveRpcError of RPC that terminated with:
+	status = StatusCode.UNAVAILABLE
+	details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"
+	debug_error_string = "UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:50052: Failed to connect to remote host: connect: Connection refused (111)"}"
+>
+[09:00:53]   Failure mode [very_high_ef_search]: PASS — ef_search=10000, status=200
+[09:00:53] 
+Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[09:00:53] Checkpoint at /home/omen/Documents/Project/DeepData/benchmarks/results/mega/checkpoint.json
+[09:00:53] Total results: 109, failures: 0
+/usr/lib64/python3.14/subprocess.py:1138: ResourceWarning: subprocess 4050814 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=4, family=10, type=1, proto=6, laddr=('::1', 32902, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=5, family=10, type=1, proto=6, laddr=('::1', 32910, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=6, family=10, type=1, proto=6, laddr=('::1', 46194, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=7, family=10, type=1, proto=6, laddr=('::1', 46200, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=8, family=10, type=1, proto=6, laddr=('::1', 52964, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=9, family=10, type=1, proto=6, laddr=('::1', 52976, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=10, family=10, type=1, proto=6, laddr=('::1', 54746, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=11, family=10, type=1, proto=6, laddr=('::1', 54750, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=12, family=10, type=1, proto=6, laddr=('::1', 52806, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=13, family=10, type=1, proto=6, laddr=('::1', 52816, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=14, family=10, type=1, proto=6, laddr=('::1', 38920, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=15, family=10, type=1, proto=6, laddr=('::1', 38934, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=16, family=10, type=1, proto=6, laddr=('::1', 58740, 0, 0), raddr=('::1', 8010, 0, 0)>
+<sys>:0: ResourceWarning: unclosed <socket.socket fd=17, family=10, type=1, proto=6, laddr=('::1', 58746, 0, 0), raddr=('::1', 8010, 0, 0)>

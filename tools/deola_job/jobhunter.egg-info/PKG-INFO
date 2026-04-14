@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: jobhunter
+Version: 0.1.0
+Summary: AI-powered job hunting CLI: scrape, filter, tailor resumes, track applications
+Requires-Python: >=3.11
+Requires-Dist: python-jobspy>=1.1.75
+Requires-Dist: anthropic>=0.80.0
+Requires-Dist: typer>=0.12.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: pdfplumber>=0.11.0

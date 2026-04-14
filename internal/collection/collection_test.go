@@ -314,8 +314,8 @@ func TestCollection_SearchDense(t *testing.T) {
 	if id, ok := resp.Documents[0].Metadata["id"].(int); !ok || id != 1 {
 		t.Errorf("expected first result to be doc1, got id=%v", resp.Documents[0].Metadata["id"])
 	}
-	if len(resp.Documents[0].Vectors) == 0 {
-		t.Fatal("expected vectors to be included by default")
+	if resp.Documents[0].Vectors != nil {
+		t.Fatal("expected vectors to be omitted by default")
 	}
 }
 

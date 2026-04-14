@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/phenomenon0/vectordb/internal/logging"
 )
 
 // ===========================================================================================
@@ -176,7 +178,7 @@ func (vs *VectorStore) ImportCollection(export *CollectionExport) error {
 		if idx := vs.indexes["default"]; idx != nil {
 			if err := idx.Add(context.Background(), hid, rec.Vector); err != nil {
 				// Log warning but continue
-				fmt.Printf("warning: failed to add vector to index: %v\n", err)
+				logging.Default().Warn("failed to add vector to index during import", "error", err)
 			}
 		}
 
