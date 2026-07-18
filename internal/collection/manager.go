@@ -19,6 +19,11 @@ type CollectionManager struct {
 	collections map[string]*Collection
 	mu          sync.RWMutex
 
+	// durableReadOnly is immutable after a DurableStore is opened. The legacy
+	// V2 manager remains available for reads and snapshot preservation, but its
+	// mutation methods cannot bypass the canonical tenant journal.
+	durableReadOnly bool
+
 	// Storage path for persistence (future use)
 	storagePath string
 }
@@ -35,6 +40,13 @@ func NewCollectionManager(storagePath string) *CollectionManager {
 //
 // Returns an error if a collection with the same name already exists.
 func (cm *CollectionManager) CreateCollection(ctx context.Context, schema CollectionSchema) (*Collection, error) {
+	if cm.isDurableReadOnly() {
+		return nil, ErrCanonicalMutationRequired
+	}
+	return cm.createCollectionDirect(ctx, schema)
+}
+
+func (cm *CollectionManager) createCollectionDirect(ctx context.Context, schema CollectionSchema) (*Collection, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -50,6 +62,9 @@ func (cm *CollectionManager) CreateCollection(ctx context.Context, schema Collec
 	}
 
 	cm.collections[schema.Name] = coll
+	if cm.durableReadOnly {
+		coll.setDurableReadOnly()
+	}
 	return coll, nil
 }
 
@@ -72,6 +87,13 @@ func (cm *CollectionManager) GetCollection(name string) (*Collection, error) {
 //
 // Returns an error if the collection does not exist.
 func (cm *CollectionManager) DeleteCollection(ctx context.Context, name string) error {
+	if cm.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
+	return cm.deleteCollectionDirect(ctx, name)
+}
+
+func (cm *CollectionManager) deleteCollectionDirect(ctx context.Context, name string) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -81,7 +103,7 @@ func (cm *CollectionManager) DeleteCollection(ctx context.Context, name string) 
 	}
 
 	// Cleanup collection resources (indexes, documents)
-	coll.Close()
+	coll.closeDirect()
 
 	delete(cm.collections, name)
 	return nil
@@ -169,6 +191,9 @@ type CollectionInfo struct {
 // Convenience method that gets the collection and adds the document.
 // Takes *Document so that server-assigned IDs are visible to the caller.
 func (cm *CollectionManager) AddDocument(ctx context.Context, collectionName string, doc *Document) error {
+	if cm.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
 	coll, err := cm.GetCollection(collectionName)
 	if err != nil {
 		return err
@@ -179,6 +204,9 @@ func (cm *CollectionManager) AddDocument(ctx context.Context, collectionName str
 
 // BatchAddDocuments adds multiple documents to a collection.
 func (cm *CollectionManager) BatchAddDocuments(ctx context.Context, collectionName string, docs []Document) error {
+	if cm.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
 	coll, err := cm.GetCollection(collectionName)
 	if err != nil {
 		return err
@@ -189,6 +217,9 @@ func (cm *CollectionManager) BatchAddDocuments(ctx context.Context, collectionNa
 
 // BulkAddDense inserts raw dense vectors into a single field of a collection.
 func (cm *CollectionManager) BulkAddDense(ctx context.Context, collectionName, fieldName string, ids []uint64, vectors [][]float32) error {
+	if cm.isDurableReadOnly() {
+		return ErrUnsupportedDurableMutation
+	}
 	coll, err := cm.GetCollection(collectionName)
 	if err != nil {
 		return err
@@ -227,6 +258,9 @@ func (cm *CollectionManager) Discover(ctx context.Context, req DiscoverRequest) 
 
 // DeleteDocument deletes a document from a collection.
 func (cm *CollectionManager) DeleteDocument(ctx context.Context, collectionName string, docID uint64) error {
+	if cm.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
 	coll, err := cm.GetCollection(collectionName)
 	if err != nil {
 		return err
@@ -252,6 +286,9 @@ func (cm *CollectionManager) GetDocument(collectionName string, docID uint64) (*
 
 // UpdateCollectionMetadata updates the metadata for a collection.
 func (cm *CollectionManager) UpdateCollectionMetadata(name string, metadata map[string]interface{}) error {
+	if cm.isDurableReadOnly() {
+		return ErrUnsupportedDurableMutation
+	}
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -307,6 +344,9 @@ func (cm *CollectionManager) GetStats() ManagerStats {
 
 // RenameCollection renames a collection.
 func (cm *CollectionManager) RenameCollection(oldName, newName string) error {
+	if cm.isDurableReadOnly() {
+		return ErrUnsupportedDurableMutation
+	}
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -338,16 +378,35 @@ func (cm *CollectionManager) RenameCollection(oldName, newName string) error {
 //
 // WARNING: This is a destructive operation and cannot be undone.
 func (cm *CollectionManager) DropAllCollections(ctx context.Context) error {
+	if cm.isDurableReadOnly() {
+		return ErrUnsupportedDurableMutation
+	}
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
 	// Cleanup each collection's resources
 	for _, coll := range cm.collections {
-		coll.Close()
+		coll.closeDirect()
 	}
 
 	cm.collections = make(map[string]*Collection)
 	return nil
+}
+
+func (cm *CollectionManager) setDurableReadOnly() {
+	cm.mu.Lock()
+	cm.durableReadOnly = true
+	for _, coll := range cm.collections {
+		coll.setDurableReadOnly()
+	}
+	cm.mu.Unlock()
+}
+
+func (cm *CollectionManager) isDurableReadOnly() bool {
+	cm.mu.RLock()
+	readOnly := cm.durableReadOnly
+	cm.mu.RUnlock()
+	return readOnly
 }
 
 // ValidateCollection validates a collection schema without creating it.
@@ -592,7 +651,7 @@ func (cm *CollectionManager) replaceState(loaded *CollectionManager) {
 	cm.mu.Unlock()
 
 	for _, coll := range oldCollections {
-		coll.Close()
+		coll.closeDirect()
 	}
 }
 
@@ -600,6 +659,9 @@ func (cm *CollectionManager) replaceState(loaded *CollectionManager) {
 // no-op for compatibility; the unified store layer distinguishes a fresh store
 // from a disappeared initialized snapshot.
 func (cm *CollectionManager) Load(path string) error {
+	if cm.isDurableReadOnly() {
+		return ErrUnsupportedDurableMutation
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

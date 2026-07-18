@@ -22,6 +22,10 @@ type TenantManager struct {
 
 	// storagePath base for persistence (future: each tenant gets storagePath/tenantID/)
 	storagePath string
+
+	// durable is set once, before the manager is returned from OpenDurableStore.
+	// Canonical mutation methods delegate to it; reads keep their stable pointer.
+	durable *DurableStore
 }
 
 // NewTenantManager creates a new TenantManager.
@@ -59,6 +63,9 @@ func (tm *TenantManager) getOrCreateManager(tenantID string) *CollectionManager 
 	}
 
 	mgr = NewCollectionManager(tm.tenantStoragePath(tenantID))
+	if tm.durable != nil {
+		mgr.setDurableReadOnly()
+	}
 	tm.tenants[tenantID] = mgr
 	return mgr
 }
@@ -73,11 +80,18 @@ func (tm *TenantManager) getManager(tenantID string) *CollectionManager {
 // CreateCollection creates a new collection for a tenant.
 // Returns an error if a collection with the same name already exists for this tenant.
 func (tm *TenantManager) CreateCollection(ctx context.Context, tenantID string, schema CollectionSchema) (*Collection, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.createCollection(ctx, tenantID, schema)
+	}
+	return tm.createCollectionDirect(ctx, tenantID, schema)
+}
+
+func (tm *TenantManager) createCollectionDirect(ctx context.Context, tenantID string, schema CollectionSchema) (*Collection, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID cannot be empty")
 	}
 	mgr := tm.getOrCreateManager(tenantID)
-	return mgr.CreateCollection(ctx, schema)
+	return mgr.createCollectionDirect(ctx, schema)
 }
 
 // GetCollection retrieves a collection belonging to a specific tenant.
@@ -122,6 +136,13 @@ func (tm *TenantManager) ListCollectionInfos(tenantID string) []CollectionInfo {
 
 // DeleteCollection deletes a collection belonging to a specific tenant.
 func (tm *TenantManager) DeleteCollection(ctx context.Context, tenantID, collectionName string) error {
+	if store := tm.durableStore(); store != nil {
+		return store.deleteCollection(ctx, tenantID, collectionName)
+	}
+	return tm.deleteCollectionDirect(ctx, tenantID, collectionName)
+}
+
+func (tm *TenantManager) deleteCollectionDirect(ctx context.Context, tenantID, collectionName string) error {
 	if tenantID == "" {
 		return fmt.Errorf("tenant ID cannot be empty")
 	}
@@ -129,7 +150,7 @@ func (tm *TenantManager) DeleteCollection(ctx context.Context, tenantID, collect
 	if mgr == nil {
 		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
 	}
-	return mgr.DeleteCollection(ctx, collectionName)
+	return mgr.deleteCollectionDirect(ctx, collectionName)
 }
 
 // GetCollectionInfo returns schema information for a tenant's collection.
@@ -147,6 +168,9 @@ func (tm *TenantManager) GetCollectionInfo(tenantID, collectionName string) (*Co
 // AddDocument adds a document to a tenant's collection.
 // Takes *Document so that server-assigned IDs are visible to the caller.
 func (tm *TenantManager) AddDocument(ctx context.Context, tenantID, collectionName string, doc *Document) error {
+	if store := tm.durableStore(); store != nil {
+		return store.addDocument(ctx, tenantID, collectionName, doc)
+	}
 	if tenantID == "" {
 		return fmt.Errorf("tenant ID cannot be empty")
 	}
@@ -155,6 +179,23 @@ func (tm *TenantManager) AddDocument(ctx context.Context, tenantID, collectionNa
 		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
 	}
 	return mgr.AddDocument(ctx, collectionName, doc)
+}
+
+// BatchAddDocuments adds multiple documents to a tenant's collection. In a
+// DurableStore all IDs are assigned and the complete batch is journaled before
+// any index or document state is changed.
+func (tm *TenantManager) BatchAddDocuments(ctx context.Context, tenantID, collectionName string, docs []Document) error {
+	if store := tm.durableStore(); store != nil {
+		return store.batchAddDocuments(ctx, tenantID, collectionName, docs)
+	}
+	if tenantID == "" {
+		return fmt.Errorf("tenant ID cannot be empty")
+	}
+	mgr := tm.getManager(tenantID)
+	if mgr == nil {
+		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+	}
+	return mgr.BatchAddDocuments(ctx, collectionName, docs)
 }
 
 // SearchCollection performs a search on a tenant's collection.
@@ -171,6 +212,9 @@ func (tm *TenantManager) SearchCollection(ctx context.Context, tenantID string, 
 
 // DeleteDocument deletes a document from a tenant's collection.
 func (tm *TenantManager) DeleteDocument(ctx context.Context, tenantID, collectionName string, docID uint64) error {
+	if store := tm.durableStore(); store != nil {
+		return store.deleteDocument(ctx, tenantID, collectionName, docID)
+	}
 	if tenantID == "" {
 		return fmt.Errorf("tenant ID cannot be empty")
 	}
@@ -203,6 +247,9 @@ func (tm *TenantManager) TenantCount() int {
 
 // DropTenant removes all collections for a tenant.
 func (tm *TenantManager) DropTenant(ctx context.Context, tenantID string) error {
+	if tm.durableStore() != nil {
+		return ErrUnsupportedDurableMutation
+	}
 	if tenantID == "" {
 		return fmt.Errorf("tenant ID cannot be empty")
 	}
@@ -221,6 +268,46 @@ func (tm *TenantManager) DropTenant(ctx context.Context, tenantID string) error 
 
 	delete(tm.tenants, tenantID)
 	return nil
+}
+
+func (tm *TenantManager) durableStore() *DurableStore {
+	tm.mu.RLock()
+	store := tm.durable
+	tm.mu.RUnlock()
+	return store
+}
+
+func (tm *TenantManager) attachDurableStore(store *DurableStore) {
+	tm.mu.Lock()
+	tm.durable = store
+	for _, manager := range tm.tenants {
+		manager.setDurableReadOnly()
+	}
+	tm.mu.Unlock()
+}
+
+func (tm *TenantManager) addPreparedDocumentsDirect(ctx context.Context, tenantID, collectionName string, docs []Document, nextID uint64) error {
+	manager := tm.getManager(tenantID)
+	if manager == nil {
+		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+	}
+	coll, err := manager.GetCollection(collectionName)
+	if err != nil {
+		return err
+	}
+	return coll.addPreparedDocuments(ctx, docs, nextID)
+}
+
+func (tm *TenantManager) deleteDocumentDirect(ctx context.Context, tenantID, collectionName string, docID uint64) error {
+	manager := tm.getManager(tenantID)
+	if manager == nil {
+		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+	}
+	coll, err := manager.GetCollection(collectionName)
+	if err != nil {
+		return err
+	}
+	return coll.deleteDocumentDirect(ctx, docID)
 }
 
 // TenantStats contains statistics for a single tenant.
@@ -339,7 +426,7 @@ func (cm *CollectionManager) closeAll() {
 	cm.collections = make(map[string]*Collection)
 	cm.mu.Unlock()
 	for _, coll := range collections {
-		coll.Close()
+		coll.closeDirect()
 	}
 }
 
@@ -367,6 +454,9 @@ func (tm *TenantManager) closeAll() {
 // Load decodes every tenant before changing live state. Missing legacy files
 // remain a no-op; an existing explicit empty state clears prior tenants.
 func (tm *TenantManager) Load(path string) error {
+	if tm.durableStore() != nil {
+		return ErrUnsupportedDurableMutation
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

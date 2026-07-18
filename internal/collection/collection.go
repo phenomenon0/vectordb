@@ -2,6 +2,7 @@ package collection
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -37,6 +38,10 @@ type Collection struct {
 
 	// Default ef_search for HNSW (from env HNSW_EFSEARCH or 64)
 	defaultEfSearch int
+
+	// durableReadOnly prevents a Collection pointer obtained from a durable V2
+	// manager or tenant read API from bypassing the canonical tenant WAL.
+	durableReadOnly bool
 }
 
 // NewCollection creates a new multi-vector collection.
@@ -165,42 +170,22 @@ func (c *Collection) createSparseIndex(field VectorField) error {
 // The document must have vectors for all fields defined in the schema.
 // Takes *Document so that assigned IDs are visible to the caller.
 func (c *Collection) Add(ctx context.Context, doc *Document) error {
+	if c.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
+	if doc == nil {
+		return fmt.Errorf("document cannot be nil")
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Assign ID if not set
-	if doc.ID == 0 {
-		doc.ID = c.nextID
-		c.nextID++
+	normalized, nextID, err := c.prepareDocumentsLocked([]Document{*doc}, false)
+	if err != nil {
+		return err
 	}
-
-	// Validate document against schema
-	if err := doc.Validate(&c.schema); err != nil {
-		return fmt.Errorf("document validation failed: %w", err)
+	if err := c.addPreparedDocumentsLocked(ctx, normalized, nextID); err != nil {
+		return err
 	}
-
-	// Add to each index
-	for _, field := range c.schema.Fields {
-		vector, ok := doc.Vectors[field.Name]
-		if !ok {
-			return fmt.Errorf("missing vector for field: %s", field.Name)
-		}
-
-		if err := c.addToIndex(ctx, field, doc.ID, vector); err != nil {
-			return fmt.Errorf("failed to add to index %s: %w", field.Name, err)
-		}
-
-		// Store metadata in the index for filtered search
-		if doc.Metadata != nil && len(doc.Metadata) > 0 {
-			if err := c.setIndexMetadata(field, doc.ID, doc.Metadata); err != nil {
-				return fmt.Errorf("failed to set metadata for index %s: %w", field.Name, err)
-			}
-		}
-	}
-
-	// Store document
-	c.documents[doc.ID] = doc
-
+	doc.ID = normalized[0].ID
 	return nil
 }
 
@@ -540,10 +525,9 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 	for i := 0; i < n; i++ {
 		scores[i] = results[i].Score
 		if doc, ok := c.documents[results[i].DocID]; ok {
-			docs[i].ID = doc.ID
-			docs[i].Metadata = doc.Metadata
-			if includeVectors {
-				docs[i].Vectors = doc.Vectors
+			docs[i] = cloneDocumentPreservingTypes(*doc)
+			if !includeVectors {
+				docs[i].Vectors = nil
 			}
 		}
 	}
@@ -689,12 +673,9 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 	scores := make([]float32, len(fusedResults))
 	for i, r := range fusedResults {
 		if doc, ok := c.documents[r.DocID]; ok {
-			docs[i] = Document{
-				ID:       doc.ID,
-				Metadata: doc.Metadata,
-			}
-			if includeVectors {
-				docs[i].Vectors = doc.Vectors
+			docs[i] = cloneDocumentPreservingTypes(*doc)
+			if !includeVectors {
+				docs[i].Vectors = nil
 			}
 		}
 		scores[i] = r.Score
@@ -711,21 +692,156 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 // When the underlying index implements index.BatchAdder, vectors are inserted
 // in a single batch call (one lock cycle) instead of per-document.
 func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
+	if c.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Phase 1: Assign IDs and validate all documents up front.
+	normalized, nextID, err := c.prepareDocumentsLocked(docs, false)
+	if err != nil {
+		return err
+	}
+	if err := c.addPreparedDocumentsLocked(ctx, normalized, nextID); err != nil {
+		return err
+	}
 	for i := range docs {
-		if docs[i].ID == 0 {
-			docs[i].ID = c.nextID
-			c.nextID++
+		docs[i].ID = normalized[i].ID
+	}
+	return nil
+}
+
+// prepareCanonicalDocuments validates and deep-clones documents without
+// changing collection or caller-owned state. IDs are resolved before WAL
+// append, including explicit IDs, so replay cannot make a different choice.
+func (c *Collection) prepareCanonicalDocuments(docs []Document) ([]Document, uint64, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.prepareDocumentsLocked(docs, true)
+}
+
+func (c *Collection) prepareDocumentsLocked(docs []Document, canonicalJSON bool) ([]Document, uint64, error) {
+	if len(docs) == 0 {
+		return nil, c.nextID, fmt.Errorf("documents cannot be empty")
+	}
+	nextID := c.nextID
+	if nextID == 0 {
+		nextID = 1
+	}
+	reserved := make(map[uint64]struct{}, len(docs))
+	normalized := make([]Document, len(docs))
+	for i := range docs {
+		var clone Document
+		var err error
+		if canonicalJSON {
+			clone, err = cloneCanonicalDocument(docs[i])
+		} else {
+			clone = cloneDocumentPreservingTypes(docs[i])
 		}
-		if err := docs[i].Validate(&c.schema); err != nil {
-			return fmt.Errorf("document %d validation failed: %w", i, err)
+		if err != nil {
+			return nil, c.nextID, fmt.Errorf("document %d clone failed: %w", i, err)
+		}
+		if clone.ID == 0 {
+			clone.ID, nextID, err = nextCanonicalID(nextID, reserved, c.documents)
+			if err != nil {
+				return nil, c.nextID, fmt.Errorf("document %d ID assignment failed: %w", i, err)
+			}
+		} else {
+			if clone.ID == math.MaxUint64 {
+				return nil, c.nextID, fmt.Errorf("document %d ID cannot be maximum uint64", i)
+			}
+			if _, exists := reserved[clone.ID]; exists {
+				return nil, c.nextID, fmt.Errorf("document %d duplicates ID %d in batch", i, clone.ID)
+			}
+			if _, exists := c.documents[clone.ID]; exists {
+				return nil, c.nextID, fmt.Errorf("document %d ID %d already exists", i, clone.ID)
+			}
+			if clone.ID >= nextID {
+				nextID = clone.ID + 1
+			}
+		}
+		reserved[clone.ID] = struct{}{}
+		if err := clone.Validate(&c.schema); err != nil {
+			return nil, c.nextID, fmt.Errorf("document %d validation failed: %w", i, err)
+		}
+		if err := validatePersistedDocument(&clone, &c.schema); err != nil {
+			return nil, c.nextID, fmt.Errorf("document %d vector validation failed: %w", i, err)
+		}
+		normalized[i] = clone
+	}
+	return normalized, nextID, nil
+}
+
+func cloneDocumentPreservingTypes(doc Document) Document {
+	clone := Document{ID: doc.ID}
+	if doc.Vectors != nil {
+		clone.Vectors = make(map[string]interface{}, len(doc.Vectors))
+		for key, value := range doc.Vectors {
+			clone.Vectors[key] = cloneDocumentValue(value)
 		}
 	}
+	if doc.Metadata != nil {
+		clone.Metadata = make(map[string]interface{}, len(doc.Metadata))
+		for key, value := range doc.Metadata {
+			clone.Metadata[key] = cloneDocumentValue(value)
+		}
+	}
+	return clone
+}
 
-	// Phase 2: For each field, collect vectors and batch-insert if possible.
+func cloneDocumentValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case []float32:
+		return append([]float32(nil), typed...)
+	case []float64:
+		return append([]float64(nil), typed...)
+	case []uint32:
+		return append([]uint32(nil), typed...)
+	case []interface{}:
+		clone := make([]interface{}, len(typed))
+		for i := range typed {
+			clone[i] = cloneDocumentValue(typed[i])
+		}
+		return clone
+	case map[string]interface{}:
+		clone := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			clone[key] = cloneDocumentValue(item)
+		}
+		return clone
+	case *sparse.SparseVector:
+		if typed == nil {
+			return (*sparse.SparseVector)(nil)
+		}
+		return &sparse.SparseVector{
+			Indices: append([]uint32(nil), typed.Indices...),
+			Values:  append([]float32(nil), typed.Values...),
+			Dim:     typed.Dim,
+		}
+	default:
+		return typed
+	}
+}
+
+func cloneCanonicalDocument(doc Document) (Document, error) {
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return Document{}, err
+	}
+	var clone Document
+	if err := decodeCollectionJSON(data, &clone); err != nil {
+		return Document{}, err
+	}
+	return clone, nil
+}
+
+func (c *Collection) addPreparedDocuments(ctx context.Context, docs []Document, nextID uint64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.addPreparedDocumentsLocked(ctx, docs, nextID)
+}
+
+func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Document, nextID uint64) error {
+	// For each field, collect vectors and batch-insert if possible.
 	for _, field := range c.schema.Fields {
 		if field.Type == VectorTypeDense {
 			idx, ok := c.indexes[field.Name]
@@ -786,13 +902,16 @@ func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
 		}
 		c.documents[docs[i].ID] = &docs[i]
 	}
-
+	c.nextID = nextID
 	return nil
 }
 
 // BulkAddDense inserts raw dense vectors into a single field without full Document overhead.
 // IDs and vectors must be the same length. Minimal Document records are created (ID only).
 func (c *Collection) BulkAddDense(ctx context.Context, fieldName string, ids []uint64, vectors [][]float32) error {
+	if c.isDurableReadOnly() {
+		return ErrUnsupportedDurableMutation
+	}
 	if len(ids) != len(vectors) {
 		return fmt.Errorf("ids length %d != vectors length %d", len(ids), len(vectors))
 	}
@@ -873,13 +992,30 @@ func (c *Collection) GetDocument(docID uint64) (*Document, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	doc, ok := c.documents[docID]
-	return doc, ok
+	if !ok || doc == nil {
+		return nil, false
+	}
+	clone := cloneDocumentPreservingTypes(*doc)
+	return &clone, true
 }
 
 // Delete removes a document from the collection.
 func (c *Collection) Delete(ctx context.Context, docID uint64) error {
+	if c.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
+	return c.deleteDocumentDirect(ctx, docID)
+}
+
+func (c *Collection) deleteDocumentDirect(ctx context.Context, docID uint64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if docID == 0 {
+		return fmt.Errorf("document ID cannot be zero")
+	}
+	if _, exists := c.documents[docID]; !exists {
+		return fmt.Errorf("document %d not found", docID)
+	}
 
 	// Remove from all indexes
 	for fieldName := range c.indexes {
@@ -902,6 +1038,19 @@ func (c *Collection) Delete(ctx context.Context, docID uint64) error {
 	return nil
 }
 
+func (c *Collection) setDurableReadOnly() {
+	c.mu.Lock()
+	c.durableReadOnly = true
+	c.mu.Unlock()
+}
+
+func (c *Collection) isDurableReadOnly() bool {
+	c.mu.RLock()
+	readOnly := c.durableReadOnly
+	c.mu.RUnlock()
+	return readOnly
+}
+
 // Count returns the number of documents in the collection.
 func (c *Collection) Count() int {
 	c.mu.RLock()
@@ -911,11 +1060,20 @@ func (c *Collection) Count() int {
 
 // Schema returns the collection schema.
 func (c *Collection) Schema() CollectionSchema {
-	return c.schema
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	clone, err := cloneCanonicalSchema(c.schema)
+	if err != nil {
+		return c.schema
+	}
+	return clone
 }
 
 // UpdateMetadata updates the collection schema's metadata map.
 func (c *Collection) UpdateMetadata(metadata map[string]interface{}) {
+	if c.isDurableReadOnly() {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.schema.Metadata == nil {
@@ -928,6 +1086,8 @@ func (c *Collection) UpdateMetadata(metadata map[string]interface{}) {
 
 // Name returns the collection name.
 func (c *Collection) Name() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.schema.Name
 }
 
@@ -969,6 +1129,9 @@ func (c *Collection) ExportSparseIndexes() (map[string][]byte, error) {
 
 // ImportSparseIndexes restores sparse index data from field -> serialized bytes.
 func (c *Collection) ImportSparseIndexes(data map[string][]byte) error {
+	if c.isDurableReadOnly() {
+		return ErrUnsupportedDurableMutation
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -986,6 +1149,9 @@ func (c *Collection) ImportSparseIndexes(data map[string][]byte) error {
 
 // ImportIndexes restores dense index data from field -> serialized bytes.
 func (c *Collection) ImportIndexes(data map[string][]byte) error {
+	if c.isDurableReadOnly() {
+		return ErrUnsupportedDurableMutation
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1011,7 +1177,7 @@ func (c *Collection) ExportMetadata() map[uint64]map[string]interface{} {
 		if doc.Metadata != nil {
 			meta := make(map[string]interface{}, len(doc.Metadata))
 			for k, v := range doc.Metadata {
-				meta[k] = v
+				meta[k] = cloneDocumentValue(v)
 			}
 			result[id] = meta
 		}
@@ -1021,6 +1187,9 @@ func (c *Collection) ExportMetadata() map[uint64]map[string]interface{} {
 
 // ImportMetadata restores document metadata and creates minimal document records.
 func (c *Collection) ImportMetadata(data map[uint64]map[string]interface{}) {
+	if c.isDurableReadOnly() {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1034,6 +1203,9 @@ func (c *Collection) ImportMetadata(data map[uint64]map[string]interface{}) {
 
 // SetNextID sets the next document ID counter.
 func (c *Collection) SetNextID(id uint64) {
+	if c.isDurableReadOnly() {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.nextID = id
@@ -1052,13 +1224,19 @@ func (c *Collection) ExportDocuments() map[uint64]*Document {
 	defer c.mu.RUnlock()
 	docs := make(map[uint64]*Document, len(c.documents))
 	for id, doc := range c.documents {
-		docs[id] = doc
+		if doc != nil {
+			clone := cloneDocumentPreservingTypes(*doc)
+			docs[id] = &clone
+		}
 	}
 	return docs
 }
 
 // ImportDocuments restores document records.
 func (c *Collection) ImportDocuments(docs map[uint64]*Document) {
+	if c.isDurableReadOnly() {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for id, doc := range docs {
@@ -1404,6 +1582,13 @@ func sigmoid(x float64) float64 {
 // Close releases all resources held by the collection.
 // This should be called when deleting a collection.
 func (c *Collection) Close() {
+	if c.isDurableReadOnly() {
+		return
+	}
+	c.closeDirect()
+}
+
+func (c *Collection) closeDirect() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
