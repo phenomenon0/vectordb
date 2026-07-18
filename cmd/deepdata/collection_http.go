@@ -80,36 +80,81 @@ type CollectionHTTPServer struct {
 	manager       *vcollection.CollectionManager
 	tenantManager *vcollection.TenantManager // Multi-tenant collection manager
 	graphIndex    *graph.GraphIndex          // Optional GraphRAG index for graph-boosted search
+
+	persistenceMu       sync.Mutex
+	snapshotMetadata    vcollection.CollectionSnapshotMetadata
+	persistenceErr      error
+	collectionStorePath string
 }
 
 // NewCollectionHTTPServer creates a new HTTP server wrapper for CollectionManager
 func NewCollectionHTTPServer(storagePath string) *CollectionHTTPServer {
 	return &CollectionHTTPServer{
-		manager:       vcollection.NewCollectionManager(storagePath),
-		tenantManager: vcollection.NewTenantManager(storagePath),
+		manager:             vcollection.NewCollectionManager(storagePath),
+		tenantManager:       vcollection.NewTenantManager(storagePath),
+		collectionStorePath: storagePath,
 	}
 }
 
-// Save persists all collection and tenant state to disk.
+// Save persists V2 and V3 state as one checksummed generation.
 func (s *CollectionHTTPServer) Save(basePath string) error {
-	if err := s.manager.Save(basePath + ".manager"); err != nil {
-		return fmt.Errorf("save manager: %w", err)
+	s.persistenceMu.Lock()
+	defer s.persistenceMu.Unlock()
+	if basePath == "" {
+		return nil
 	}
-	if err := s.tenantManager.Save(basePath + ".tenants"); err != nil {
-		return fmt.Errorf("save tenant manager: %w", err)
+	metadata := s.snapshotMetadata
+	var zero [16]byte
+	if metadata.StoreID == zero {
+		var err error
+		metadata, err = vcollection.NewCollectionSnapshotMetadata()
+		if err != nil {
+			return err
+		}
 	}
+	if err := vcollection.SaveUnifiedCollectionSnapshot(basePath, s.manager, s.tenantManager, metadata); err != nil {
+		s.persistenceErr = err
+		return err
+	}
+	s.snapshotMetadata = metadata
+	s.persistenceErr = nil
+	s.collectionStorePath = basePath
 	return nil
 }
 
-// Load restores collection and tenant state from disk.
+// Load stages and validates the complete V2/V3 generation before swapping
+// either live manager. A fresh store is durably initialized before success.
 func (s *CollectionHTTPServer) Load(basePath string) error {
-	if err := s.manager.Load(basePath + ".manager"); err != nil {
-		return fmt.Errorf("load manager: %w", err)
+	s.persistenceMu.Lock()
+	defer s.persistenceMu.Unlock()
+	if basePath == "" {
+		return nil
 	}
-	if err := s.tenantManager.Load(basePath + ".tenants"); err != nil {
-		return fmt.Errorf("load tenant manager: %w", err)
+	manager, tenants, metadata, err := vcollection.OpenUnifiedCollectionSnapshot(basePath, s.collectionStorePath)
+	if err != nil {
+		s.persistenceErr = err
+		return err
 	}
+	s.manager = manager
+	s.tenantManager = tenants
+	s.snapshotMetadata = metadata
+	s.collectionStorePath = basePath
+	s.persistenceErr = nil
 	return nil
+}
+
+func (s *CollectionHTTPServer) setPersistenceError(err error) {
+	s.persistenceMu.Lock()
+	s.persistenceErr = err
+	s.persistenceMu.Unlock()
+}
+
+// PersistenceError returns the startup or checkpoint failure that makes the
+// collection subsystem unsafe to serve.
+func (s *CollectionHTTPServer) PersistenceError() error {
+	s.persistenceMu.Lock()
+	defer s.persistenceMu.Unlock()
+	return s.persistenceErr
 }
 
 // Manager returns the underlying CollectionManager (used by gRPC server).

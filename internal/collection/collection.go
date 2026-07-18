@@ -847,12 +847,18 @@ func (c *Collection) BulkAddDense(ctx context.Context, fieldName string, ids []u
 		}
 	}
 
-	// Create minimal document records
+	// Create or extend lightweight document records. Binary import is field-
+	// oriented, so importing a second field for the same IDs must not discard the
+	// vectors already attached to those documents.
 	for i, id := range ids {
-		c.documents[id] = &Document{
-			ID:      id,
-			Vectors: map[string]interface{}{fieldName: vectors[i]},
+		doc := c.documents[id]
+		if doc == nil {
+			doc = &Document{ID: id, Vectors: make(map[string]interface{})}
+			c.documents[id] = doc
+		} else if doc.Vectors == nil {
+			doc.Vectors = make(map[string]interface{})
 		}
+		doc.Vectors[fieldName] = vectors[i]
 		// Update nextID to stay ahead
 		if id >= c.nextID {
 			c.nextID = id + 1

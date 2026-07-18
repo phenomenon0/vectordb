@@ -6,11 +6,55 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 )
+
+func TestCollectionHTTPServerLoadIsAllOrNothing(t *testing.T) {
+	dir := t.TempDir()
+	live := NewCollectionHTTPServer(filepath.Join(dir, "live"))
+	ctx := context.Background()
+	if _, err := live.manager.CreateCollection(ctx, vcollection.CollectionSchema{
+		Name: "keep",
+		Fields: []vcollection.VectorField{{
+			Name: "embedding", Type: vcollection.VectorTypeDense, Dim: 4,
+			Index: vcollection.IndexConfig{Type: vcollection.IndexTypeFLAT},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := live.tenantManager.CreateCollection(ctx, "keep-tenant", vcollection.CollectionSchema{
+		Name: "docs",
+		Fields: []vcollection.VectorField{{
+			Name: "embedding", Type: vcollection.VectorTypeDense, Dim: 4,
+			Index: vcollection.IndexConfig{Type: vcollection.IndexTypeFLAT},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	basePath := filepath.Join(dir, "incoming")
+	seed := NewCollectionHTTPServer(basePath)
+	if err := seed.manager.Save(basePath + ".manager"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(basePath+".tenants", []byte(`{"tenants":{"valid":{"collections":{}},"broken":null}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := live.Load(basePath); err == nil {
+		t.Fatal("expected aggregate collection load to fail")
+	}
+	if !live.manager.HasCollection("keep") || live.manager.CollectionCount() != 1 {
+		t.Fatalf("failed aggregate load changed V2 manager: %v", live.manager.ListCollections())
+	}
+	if got := live.tenantManager.ListTenants(); len(got) != 1 || got[0] != "keep-tenant" {
+		t.Fatalf("failed aggregate load changed V3 tenants: %v", got)
+	}
+}
 
 type collectionSearchResponse struct {
 	Status             string                 `json:"status"`

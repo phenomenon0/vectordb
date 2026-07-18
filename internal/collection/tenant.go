@@ -225,9 +225,9 @@ func (tm *TenantManager) DropTenant(ctx context.Context, tenantID string) error 
 
 // TenantStats contains statistics for a single tenant.
 type TenantStats struct {
-	TenantID        string                   `json:"tenant_id"`
-	CollectionCount int                      `json:"collection_count"`
-	TotalDocuments  int                      `json:"total_documents"`
+	TenantID        string                     `json:"tenant_id"`
+	CollectionCount int                        `json:"collection_count"`
+	TotalDocuments  int                        `json:"total_documents"`
 	Collections     map[string]CollectionStats `json:"collections"`
 }
 
@@ -255,42 +255,117 @@ type persistedTenantState struct {
 	Tenants map[string]json.RawMessage `json:"tenants"`
 }
 
-// Save serializes all tenant collection managers to a JSON file.
-func (tm *TenantManager) Save(path string) error {
+func (tm *TenantManager) marshalState() ([]byte, error) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
-
-	if len(tm.tenants) == 0 {
-		return nil // Nothing to save
-	}
 
 	state := persistedTenantState{
 		Tenants: make(map[string]json.RawMessage, len(tm.tenants)),
 	}
 
 	for tenantID, mgr := range tm.tenants {
-		// Save each manager to a temporary path and read the bytes
-		tmpPath := path + "." + tenantID + ".tmp"
-		if err := mgr.Save(tmpPath); err != nil {
-			return fmt.Errorf("save tenant %s: %w", tenantID, err)
-		}
-		data, err := os.ReadFile(tmpPath)
+		data, err := mgr.marshalState()
 		if err != nil {
-			return fmt.Errorf("read tenant %s state: %w", tenantID, err)
+			return nil, fmt.Errorf("save tenant %s: %w", tenantID, err)
 		}
-		os.Remove(tmpPath)
 		state.Tenants[tenantID] = json.RawMessage(data)
 	}
 
 	data, err := json.Marshal(state)
 	if err != nil {
-		return fmt.Errorf("marshal tenant state: %w", err)
+		return nil, fmt.Errorf("marshal tenant state: %w", err)
 	}
-
-	return os.WriteFile(path, data, 0644)
+	return data, nil
 }
 
-// Load deserializes tenant collection managers from a JSON file.
+// Save always writes an explicit state, including the empty tenant set, using
+// an atomic durable replacement. Tenant identifiers never become filenames.
+func (tm *TenantManager) Save(path string) error {
+	data, err := tm.marshalState()
+	if err != nil {
+		return err
+	}
+	if err := writeCollectionFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("write tenant state: %w", err)
+	}
+	return nil
+}
+
+func decodeTenantManagerState(data []byte, storagePath string) (*TenantManager, error) {
+	var state persistedTenantState
+	if err := decodeCollectionJSON(data, &state); err != nil {
+		return nil, fmt.Errorf("unmarshal tenant state: %w", err)
+	}
+	if state.Tenants == nil {
+		return nil, fmt.Errorf("unmarshal tenant state: tenants map is missing or null")
+	}
+
+	loaded := make(map[string]*CollectionManager, len(state.Tenants))
+	closeLoaded := func() {
+		for _, mgr := range loaded {
+			mgr.closeAll()
+		}
+	}
+	for tenantID, raw := range state.Tenants {
+		if tenantID == "" {
+			closeLoaded()
+			return nil, fmt.Errorf("tenant ID cannot be empty")
+		}
+		if len(raw) == 0 || string(raw) == "null" {
+			closeLoaded()
+			return nil, fmt.Errorf("tenant %s has null state", tenantID)
+		}
+		tenantPath := ""
+		if storagePath != "" {
+			tenantPath = storagePath + "/" + tenantID
+		}
+		mgr, err := decodeCollectionManagerState(raw, tenantPath)
+		if err != nil {
+			closeLoaded()
+			return nil, fmt.Errorf("load tenant %s: %w", tenantID, err)
+		}
+		loaded[tenantID] = mgr
+	}
+
+	return &TenantManager{
+		tenants:     loaded,
+		storagePath: storagePath,
+	}, nil
+}
+
+func (cm *CollectionManager) closeAll() {
+	cm.mu.Lock()
+	collections := cm.collections
+	cm.collections = make(map[string]*Collection)
+	cm.mu.Unlock()
+	for _, coll := range collections {
+		coll.Close()
+	}
+}
+
+func (tm *TenantManager) replaceState(loaded *TenantManager) {
+	tm.mu.Lock()
+	oldTenants := tm.tenants
+	tm.tenants = loaded.tenants
+	tm.mu.Unlock()
+
+	for _, mgr := range oldTenants {
+		mgr.closeAll()
+	}
+}
+
+func (tm *TenantManager) closeAll() {
+	tm.mu.Lock()
+	tenants := tm.tenants
+	tm.tenants = make(map[string]*CollectionManager)
+	tm.mu.Unlock()
+	for _, mgr := range tenants {
+		mgr.closeAll()
+	}
+}
+
+// Load decodes every tenant before changing live state. Missing legacy files
+// remain a no-op; an existing explicit empty state clears prior tenants.
 func (tm *TenantManager) Load(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -300,28 +375,10 @@ func (tm *TenantManager) Load(path string) error {
 		return fmt.Errorf("read tenant state file: %w", err)
 	}
 
-	var state persistedTenantState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("unmarshal tenant state: %w", err)
+	loaded, err := decodeTenantManagerState(data, tm.storagePath)
+	if err != nil {
+		return err
 	}
-
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-
-	for tenantID, raw := range state.Tenants {
-		// Write tenant data to temp file and use manager Load
-		tmpPath := path + "." + tenantID + ".tmp"
-		if err := os.WriteFile(tmpPath, []byte(raw), 0644); err != nil {
-			return fmt.Errorf("write tenant %s temp: %w", tenantID, err)
-		}
-		mgr := NewCollectionManager(tm.tenantStoragePath(tenantID))
-		if err := mgr.Load(tmpPath); err != nil {
-			os.Remove(tmpPath)
-			return fmt.Errorf("load tenant %s: %w", tenantID, err)
-		}
-		os.Remove(tmpPath)
-		tm.tenants[tenantID] = mgr
-	}
-
+	tm.replaceState(loaded)
 	return nil
 }

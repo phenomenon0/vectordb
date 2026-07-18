@@ -1944,9 +1944,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 	// NEW Multi-Vector Collection API (v2) - supports hybrid search with dense + sparse vectors
 	// Initialize collection HTTP server for multi-vector support
-	collectionHTTP := NewCollectionHTTPServer(indexPath + ".collections")
-	if err := collectionHTTP.Load(indexPath + ".collections"); err != nil {
-		logging.Default().Warn("failed to load collection state", "error", err)
+	collectionBasePath := ""
+	if indexPath != "" {
+		collectionBasePath = indexPath + ".collections"
+	}
+	collectionHTTP := NewCollectionHTTPServer(collectionBasePath)
+	if collectionBasePath != "" {
+		if err := collectionHTTP.Load(collectionBasePath); err != nil {
+			collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
+		}
 	}
 	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
 

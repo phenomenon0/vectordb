@@ -369,8 +369,7 @@ type persistedManagerState struct {
 	Collections map[string]*persistedCollection `json:"collections"`
 }
 
-// Save serializes all collections to a JSON file.
-func (cm *CollectionManager) Save(path string) error {
+func (cm *CollectionManager) marshalState() ([]byte, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
@@ -379,86 +378,40 @@ func (cm *CollectionManager) Save(path string) error {
 	}
 
 	for name, coll := range cm.collections {
-		indexes, err := coll.ExportIndexes()
+		persisted, err := coll.capturePersistedState()
 		if err != nil {
-			return fmt.Errorf("export collection %s: %w", name, err)
+			return nil, fmt.Errorf("export collection %s: %w", name, err)
 		}
-
-		rawIndexes := make(map[string]json.RawMessage, len(indexes))
-		for field, data := range indexes {
-			rawIndexes[field] = json.RawMessage(data)
-		}
-
-		// Export sparse indexes
-		sparseIndexes, err := coll.ExportSparseIndexes()
-		if err != nil {
-			return fmt.Errorf("export sparse indexes for %s: %w", name, err)
-		}
-		var rawSparseIndexes map[string]json.RawMessage
-		if len(sparseIndexes) > 0 {
-			rawSparseIndexes = make(map[string]json.RawMessage, len(sparseIndexes))
-			for field, data := range sparseIndexes {
-				rawSparseIndexes[field] = json.RawMessage(data)
-			}
-		}
-
-		docs := coll.ExportDocuments()
-		docMap := make(map[string]*Document, len(docs))
-		for id, doc := range docs {
-			docMap[fmt.Sprintf("%d", id)] = doc
-		}
-
-		state.Collections[name] = &persistedCollection{
-			Schema:        coll.Schema(),
-			Indexes:       rawIndexes,
-			SparseIndexes: rawSparseIndexes,
-			NextID:        coll.GetNextID(),
-			Docs:          docMap,
-		}
+		state.Collections[name] = persisted
 	}
 
 	data, err := json.Marshal(state)
 	if err != nil {
-		return fmt.Errorf("marshal state: %w", err)
+		return nil, fmt.Errorf("marshal state: %w", err)
 	}
-
-	// Atomic write: write to temp file, fsync, then rename.
-	// Prevents corrupt snapshots on crash mid-write.
-	tmpPath := path + ".tmp"
-	f, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("sync temp file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	return os.Rename(tmpPath, path)
+	return data, nil
 }
 
-// Load deserializes collections from a JSON file.
-func (cm *CollectionManager) Load(path string) error {
-	data, err := os.ReadFile(path)
+// Save serializes all collections using a same-directory, fsynced atomic
+// replacement. The in-memory codec is also used by the unified V2/V3 snapshot.
+func (cm *CollectionManager) Save(path string) error {
+	data, err := cm.marshalState()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No saved state, nothing to load
-		}
-		return fmt.Errorf("read state file: %w", err)
+		return err
 	}
+	if err := writeCollectionFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("write state: %w", err)
+	}
+	return nil
+}
 
+func decodeCollectionManagerState(data []byte, storagePath string) (*CollectionManager, error) {
 	var state persistedManagerState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("unmarshal state: %w", err)
+	if err := decodeCollectionJSON(data, &state); err != nil {
+		return nil, fmt.Errorf("unmarshal state: %w", err)
+	}
+	if state.Collections == nil {
+		return nil, fmt.Errorf("unmarshal state: collections map is missing or null")
 	}
 
 	loadedCollections := make(map[string]*Collection, len(state.Collections))
@@ -469,13 +422,42 @@ func (cm *CollectionManager) Load(path string) error {
 	}
 
 	for name, pc := range state.Collections {
+		if pc == nil {
+			closeLoaded()
+			return nil, fmt.Errorf("collection %s has null state", name)
+		}
+		if pc.Schema.Name != name {
+			closeLoaded()
+			return nil, fmt.Errorf("collection key %q does not match schema name %q", name, pc.Schema.Name)
+		}
 		coll, err := NewCollection(pc.Schema)
 		if err != nil {
 			closeLoaded()
-			return fmt.Errorf("recreate collection %s: %w", name, err)
+			return nil, fmt.Errorf("recreate collection %s: %w", name, err)
 		}
 
-		// Restore indexes
+		// Require an exact persisted index set. Missing fields would otherwise
+		// silently produce an empty index while the document map looks populated.
+		denseFields := make(map[string]struct{})
+		sparseFields := make(map[string]struct{})
+		for _, field := range pc.Schema.Fields {
+			if field.Type == VectorTypeDense {
+				denseFields[field.Name] = struct{}{}
+			} else if field.Type == VectorTypeSparse {
+				sparseFields[field.Name] = struct{}{}
+			}
+		}
+		if err := validatePersistedIndexSet(name, "dense", denseFields, pc.Indexes); err != nil {
+			coll.Close()
+			closeLoaded()
+			return nil, err
+		}
+		if err := validatePersistedIndexSet(name, "sparse", sparseFields, pc.SparseIndexes); err != nil {
+			coll.Close()
+			closeLoaded()
+			return nil, err
+		}
+
 		indexes := make(map[string][]byte, len(pc.Indexes))
 		for field, raw := range pc.Indexes {
 			indexes[field] = []byte(raw)
@@ -483,7 +465,7 @@ func (cm *CollectionManager) Load(path string) error {
 		if err := coll.ImportIndexes(indexes); err != nil {
 			coll.Close()
 			closeLoaded()
-			return fmt.Errorf("import indexes for %s: %w", name, err)
+			return nil, fmt.Errorf("import indexes for %s: %w", name, err)
 		}
 
 		// Restore sparse indexes
@@ -495,11 +477,12 @@ func (cm *CollectionManager) Load(path string) error {
 			if err := coll.ImportSparseIndexes(sparseIndexes); err != nil {
 				coll.Close()
 				closeLoaded()
-				return fmt.Errorf("import sparse indexes for %s: %w", name, err)
+				return nil, fmt.Errorf("import sparse indexes for %s: %w", name, err)
 			}
 		}
 
 		// Restore documents
+		maxDocumentID := uint64(0)
 		if pc.Docs != nil {
 			docs := make(map[uint64]*Document, len(pc.Docs))
 			for idStr, doc := range pc.Docs {
@@ -507,26 +490,187 @@ func (cm *CollectionManager) Load(path string) error {
 				if err != nil {
 					coll.Close()
 					closeLoaded()
-					return fmt.Errorf("invalid document ID %q in collection %s: %w", idStr, name, err)
+					return nil, fmt.Errorf("invalid document ID %q in collection %s: %w", idStr, name, err)
+				}
+				if doc == nil {
+					coll.Close()
+					closeLoaded()
+					return nil, fmt.Errorf("invalid document %q in collection %s", idStr, name)
+				}
+				if doc.ID != 0 && doc.ID != id {
+					coll.Close()
+					closeLoaded()
+					return nil, fmt.Errorf("document key %d does not match embedded ID %d in collection %s", id, doc.ID, name)
 				}
 				doc.ID = id
+				if err := validatePersistedDocument(doc, &pc.Schema); err != nil {
+					coll.Close()
+					closeLoaded()
+					return nil, fmt.Errorf("invalid document %d in collection %s: %w", id, name, err)
+				}
 				docs[id] = doc
+				if id > maxDocumentID {
+					maxDocumentID = id
+				}
 			}
 			coll.ImportDocuments(docs)
 		}
 
-		coll.SetNextID(pc.NextID)
+		nextID := pc.NextID
+		if nextID == 0 {
+			nextID = 1
+		}
+		if nextID <= maxDocumentID {
+			nextID = maxDocumentID + 1
+		}
+		coll.SetNextID(nextID)
 		loadedCollections[name] = coll
 	}
 
+	return &CollectionManager{
+		collections: loadedCollections,
+		storagePath: storagePath,
+	}, nil
+}
+
+// validatePersistedDocument accepts field-partial records produced by the
+// supported BulkAddDense API while still rejecting unknown or malformed vector
+// fields. Index snapshots remain authoritative for fields not present in the
+// lightweight document record.
+func validatePersistedDocument(doc *Document, schema *CollectionSchema) error {
+	for fieldName, vector := range doc.Vectors {
+		field := schema.GetField(fieldName)
+		if field == nil {
+			return fmt.Errorf("unknown vector field %s", fieldName)
+		}
+		switch field.Type {
+		case VectorTypeDense:
+			dense, err := coerceDenseVector(vector)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", fieldName, err)
+			}
+			if len(dense) != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, len(dense), field.Dim)
+			}
+		case VectorTypeSparse:
+			sparseVector, err := coerceSparseVector(vector)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", fieldName, err)
+			}
+			if sparseVector.Dim != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, sparseVector.Dim, field.Dim)
+			}
+		default:
+			return fmt.Errorf("unsupported vector type %s for field %s", field.Type, fieldName)
+		}
+	}
+	return nil
+}
+
+func validatePersistedIndexSet(collectionName, kind string, expected map[string]struct{}, actual map[string]json.RawMessage) error {
+	if len(expected) != len(actual) {
+		return fmt.Errorf("collection %s has incomplete %s index set: got %d fields, want %d", collectionName, kind, len(actual), len(expected))
+	}
+	for name := range expected {
+		raw, ok := actual[name]
+		if !ok || len(raw) == 0 || string(raw) == "null" {
+			return fmt.Errorf("collection %s is missing %s index %s", collectionName, kind, name)
+		}
+	}
+	for name := range actual {
+		if _, ok := expected[name]; !ok {
+			return fmt.Errorf("collection %s has unexpected %s index %s", collectionName, kind, name)
+		}
+	}
+	return nil
+}
+
+func (cm *CollectionManager) replaceState(loaded *CollectionManager) {
 	cm.mu.Lock()
 	oldCollections := cm.collections
-	cm.collections = loadedCollections
+	cm.collections = loaded.collections
 	cm.mu.Unlock()
 
 	for _, coll := range oldCollections {
 		coll.Close()
 	}
+}
 
+// Load deserializes collections transactionally. Missing legacy files remain a
+// no-op for compatibility; the unified store layer distinguishes a fresh store
+// from a disappeared initialized snapshot.
+func (cm *CollectionManager) Load(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read state file: %w", err)
+	}
+
+	loaded, err := decodeCollectionManagerState(data, cm.storagePath)
+	if err != nil {
+		return err
+	}
+	cm.replaceState(loaded)
 	return nil
+}
+
+func (c *Collection) capturePersistedState() (*persistedCollection, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	rawIndexes := make(map[string]json.RawMessage, len(c.indexes))
+	for field, idx := range c.indexes {
+		data, err := idx.Export()
+		if err != nil {
+			return nil, fmt.Errorf("export index %s: %w", field, err)
+		}
+		rawIndexes[field] = append(json.RawMessage(nil), data...)
+	}
+
+	var rawSparseIndexes map[string]json.RawMessage
+	if len(c.sparse) > 0 {
+		rawSparseIndexes = make(map[string]json.RawMessage, len(c.sparse))
+		for field, idx := range c.sparse {
+			data, err := idx.Export()
+			if err != nil {
+				return nil, fmt.Errorf("export sparse index %s: %w", field, err)
+			}
+			rawSparseIndexes[field] = append(json.RawMessage(nil), data...)
+		}
+	}
+
+	schemaData, err := json.Marshal(c.schema)
+	if err != nil {
+		return nil, fmt.Errorf("marshal schema: %w", err)
+	}
+	var schema CollectionSchema
+	if err := json.Unmarshal(schemaData, &schema); err != nil {
+		return nil, fmt.Errorf("clone schema: %w", err)
+	}
+
+	docMap := make(map[string]*Document, len(c.documents))
+	for id, doc := range c.documents {
+		if doc == nil {
+			return nil, fmt.Errorf("document %d is nil", id)
+		}
+		docData, err := json.Marshal(doc)
+		if err != nil {
+			return nil, fmt.Errorf("marshal document %d: %w", id, err)
+		}
+		var clone Document
+		if err := json.Unmarshal(docData, &clone); err != nil {
+			return nil, fmt.Errorf("clone document %d: %w", id, err)
+		}
+		docMap[strconv.FormatUint(id, 10)] = &clone
+	}
+
+	return &persistedCollection{
+		Schema:        schema,
+		Indexes:       rawIndexes,
+		SparseIndexes: rawSparseIndexes,
+		NextID:        c.nextID,
+		Docs:          docMap,
+	}, nil
 }

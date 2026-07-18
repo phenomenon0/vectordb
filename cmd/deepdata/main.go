@@ -3272,6 +3272,10 @@ func main() {
 
 	// HTTP API with graceful shutdown
 	handler, collectionHTTP := newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
+	if err := collectionHTTP.PersistenceError(); err != nil {
+		logger.Error("refusing to start with unreadable collection persistence state", "path", indexPath+".collections", "error", err)
+		os.Exit(1)
+	}
 	addr := fmt.Sprintf(":%d", envInt("PORT", 8080))
 
 	// Wrap handler with h2c (HTTP/2 cleartext) for connection multiplexing

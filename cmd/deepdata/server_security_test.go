@@ -141,6 +141,53 @@ func TestReadyzFailsClosedAfterWALFault(t *testing.T) {
 	}
 }
 
+func TestCollectionPersistenceCorruptionIsRetainedForStartupRefusal(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, basePath string)
+	}{
+		{
+			name: "manager",
+			setup: func(t *testing.T, basePath string) {
+				t.Helper()
+				if err := os.WriteFile(basePath+".manager", []byte(`{"collections":{"broken":null}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "tenants",
+			setup: func(t *testing.T, basePath string) {
+				t.Helper()
+				seed := NewCollectionHTTPServer(basePath)
+				if err := seed.manager.Save(basePath + ".manager"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(basePath+".tenants", []byte(`{"tenants":{"broken":null}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			indexPath := filepath.Join(dir, "index.gob")
+			basePath := indexPath + ".collections"
+			test.setup(t, basePath)
+
+			store := NewVectorStore(100, 3)
+			emb := NewHashEmbedder(3)
+			_, collections := newHTTPHandler(store, emb, &SimpleReranker{Embedder: emb}, indexPath)
+			if err := collections.PersistenceError(); err == nil {
+				t.Fatal("expected corrupt collection persistence to block production startup")
+			}
+			if _, err := os.Stat(basePath + ".snapshot"); !os.IsNotExist(err) {
+				t.Fatalf("failed load replaced corrupt state: %v", err)
+			}
+		})
+	}
+}
+
 func TestOnlineSnapshotImportDisabledInRC(t *testing.T) {
 	dir := t.TempDir()
 	indexPath := filepath.Join(dir, "index.gob")
