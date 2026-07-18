@@ -1,6 +1,6 @@
 # Mega Benchmark: Wide-Sweep All-VDB Results
 
-**Report generated:** 2026-07-17 22:12  |  **CPU:** AMD Ryzen 7 7700X 8-Core Processor
+**Report generated:** 2026-07-17 22:27  |  **CPU:** AMD Ryzen 7 7700X 8-Core Processor
 **Systems:** DeepData, Qdrant, Weaviate, Milvus, ChromaDB
 **Additional DeepData baseline:** HTTP search at full precision; the canonical gRPC row enables float16 quantization, so this is not a transport-only comparison.
 **Coverage:** 108/108 matrix cells  |  **Requested queries:** up to 100 per dataset
@@ -8,6 +8,23 @@
 
 **Provenance:** resumed legacy checkpoint; 90 retained rows predate per-cell timestamps.
 **Manifest created:** 2026-07-17T21:39:41-0500  |  **Python:** 3.14.2
+---
+
+## Executive Summary
+
+- **Matrix status:** 108/108 intended cells complete; 0 missing, 0 failed, and 0 pending reruns.
+- **Scope:** 6 benchmark targets across 3 datasets and 6 `ef_search` settings.
+- **Failure-mode validation:** 7/7 DeepData probes passed.
+- **Milvus repair:** source vector IDs are preserved, data is flushed before HNSW creation, indexed rows are verified before loading, and effective `ef` values are recorded.
+- **Harness hardening:** checkpoints are atomic and deduplicated; reruns are scoped and preserve last-good rows; manifests validate datasets, dependencies, and intended cells; concurrent runs are locked.
+
+## What Is Left
+
+- **Required:** nothing remains for the current benchmark repair; the intended matrix and recorded failure-mode suite are complete.
+- **Optional provenance upgrade:** run a fresh 108-cell sweep to replace the 90 retained legacy rows with uniformly timestamped measurements.
+- **Optional apples-to-apples transport test:** rerun DeepData gRPC and HTTP with identical quantization; the current gRPC float16 and HTTP full-precision rows are not transport-only comparisons.
+- **Optional statistical tightening:** reuse one Milvus index per dataset for the full `ef_search` sweep and add repeated trials with variance or confidence intervals.
+
 ---
 
 ## sift-100k

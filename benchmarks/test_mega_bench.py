@@ -144,6 +144,31 @@ class CheckpointTests(unittest.TestCase):
 
         self.assertIn("**Coverage:** 2/2 matrix cells", report)
 
+    def test_report_summarizes_completed_work_and_remaining_followups(self):
+        result = sample_result("milvus", dataset="tiny", ef_search=16)
+        key = mega_bench.result_key(result)
+        cp = {
+            "results": [result],
+            "completed": [key],
+            "failures": [],
+            "failure_modes": [{"test": "empty", "passed": True, "detail": "ok"}],
+            "run_manifest": {
+                "intended_cells": [key],
+                "matrix": {
+                    "vdbs": ["milvus"],
+                    "datasets": ["tiny"],
+                    "ef_search": [16],
+                },
+            },
+        }
+
+        report = mega_bench.generate_report(cp)
+
+        self.assertIn("## Executive Summary", report)
+        self.assertIn("1/1 intended cells complete", report)
+        self.assertIn("## What Is Left", report)
+        self.assertIn("nothing remains for the current benchmark repair", report)
+
     def test_existing_checkpoint_requires_resume_or_fresh(self):
         with tempfile.TemporaryDirectory() as tmp:
             results_dir = Path(tmp)

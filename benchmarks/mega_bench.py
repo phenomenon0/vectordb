@@ -1178,6 +1178,8 @@ def generate_report(cp: dict) -> str:
     pending_reruns = set(cp.get("pending_reruns", []))
     covered_cells = len((result_keys & intended_keys) - pending_reruns)
     legacy_rows = sum(1 for result in results if "measured_at" not in result)
+    missing_cells = max(expected_cells - covered_cells, 0)
+    passed_failure_modes = sum(1 for result in fm_results if result["passed"])
 
     cpu = "Unknown"
     try:
@@ -1207,6 +1209,55 @@ def generate_report(cp: dict) -> str:
         lines.insert(8, f"**Provenance:** resumed legacy checkpoint; {legacy_rows} retained rows predate per-cell timestamps.")
     if pending_reruns:
         lines.insert(8, f"**Status:** partial — {len(pending_reruns)} scheduled reruns are not complete; displayed values may be superseded.")
+
+    lines.extend([
+        "## Executive Summary",
+        "",
+        (
+            f"- **Matrix status:** {covered_cells}/{expected_cells} intended cells complete; "
+            f"{missing_cells} missing, {len(failures)} failed, and "
+            f"{len(pending_reruns)} pending reruns."
+        ),
+        (
+            f"- **Scope:** {len(vdbs)} benchmark targets across {len(datasets)} datasets "
+            f"and {len(ef_values)} `ef_search` settings."
+        ),
+        (
+            f"- **Failure-mode validation:** {passed_failure_modes}/{len(fm_results)} "
+            "DeepData probes passed."
+            if fm_results else
+            "- **Failure-mode validation:** not run for this checkpoint."
+        ),
+        "- **Milvus repair:** source vector IDs are preserved, data is flushed before HNSW creation, indexed rows are verified before loading, and effective `ef` values are recorded.",
+        "- **Harness hardening:** checkpoints are atomic and deduplicated; reruns are scoped and preserve last-good rows; manifests validate datasets, dependencies, and intended cells; concurrent runs are locked.",
+        "",
+        "## What Is Left",
+        "",
+    ])
+
+    if missing_cells or failures or pending_reruns:
+        lines.append(
+            f"- **Required:** resolve {missing_cells} missing cells, {len(failures)} failures, "
+            f"and {len(pending_reruns)} pending reruns."
+        )
+    else:
+        lines.append(
+            "- **Required:** nothing remains for the current benchmark repair; the intended "
+            "matrix and recorded failure-mode suite are complete."
+        )
+
+    if legacy_rows:
+        lines.append(
+            f"- **Optional provenance upgrade:** run a fresh {expected_cells}-cell sweep to replace the "
+            f"{legacy_rows} retained legacy rows with uniformly timestamped measurements."
+        )
+    lines.extend([
+        "- **Optional apples-to-apples transport test:** rerun DeepData gRPC and HTTP with identical quantization; the current gRPC float16 and HTTP full-precision rows are not transport-only comparisons.",
+        "- **Optional statistical tightening:** reuse one Milvus index per dataset for the full `ef_search` sweep and add repeated trials with variance or confidence intervals.",
+        "",
+        "---",
+        "",
+    ])
 
     # Group by dataset
 
