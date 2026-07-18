@@ -166,7 +166,8 @@ class CheckpointTests(unittest.TestCase):
 
         self.assertIn("## Executive Summary", report)
         self.assertIn("1/1 intended cells complete", report)
-        self.assertIn("## What Is Left", report)
+        self.assertIn("## What Is Left for This Benchmark Repair", report)
+        self.assertIn("DeepData Pre-Release Status", report)
         self.assertIn("nothing remains for the current benchmark repair", report)
 
     def test_existing_checkpoint_requires_resume_or_fresh(self):

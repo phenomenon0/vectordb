@@ -1213,6 +1213,8 @@ def generate_report(cp: dict) -> str:
     lines.extend([
         "## Executive Summary",
         "",
+        "> This report covers the benchmark repair only. For overall product readiness, see [DeepData Pre-Release Status](../../../docs/PRE_RELEASE_STATUS.md).",
+        "",
         (
             f"- **Matrix status:** {covered_cells}/{expected_cells} intended cells complete; "
             f"{missing_cells} missing, {len(failures)} failed, and "
@@ -1231,7 +1233,7 @@ def generate_report(cp: dict) -> str:
         "- **Milvus repair:** source vector IDs are preserved, data is flushed before HNSW creation, indexed rows are verified before loading, and effective `ef` values are recorded.",
         "- **Harness hardening:** checkpoints are atomic and deduplicated; reruns are scoped and preserve last-good rows; manifests validate datasets, dependencies, and intended cells; concurrent runs are locked.",
         "",
-        "## What Is Left",
+        "## What Is Left for This Benchmark Repair",
         "",
     ])
 

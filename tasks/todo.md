@@ -1,5 +1,7 @@
 # Mega Benchmark: Wide-Sweep All-VDB Autonomous Run
 
+> This checklist covers the completed benchmark subtask. Overall product readiness is tracked in [`docs/PRE_RELEASE_STATUS.md`](../docs/PRE_RELEASE_STATUS.md).
+
 ## Plan
 - [x] Build self-contained Python script `benchmarks/mega_bench.py`
 - [x] Use gRPC for the canonical DeepData search path; retain HTTP as a separately configured diagnostic baseline
