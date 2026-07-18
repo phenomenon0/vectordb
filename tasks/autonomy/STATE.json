@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generation": 1,
+  "generation": 2,
   "workflow": "deepdata-single-node-production-hardening",
   "status": "active",
   "execution_preapproved": true,
@@ -14,16 +14,16 @@
     "external_publication": "requires-explicit-authority"
   },
   "started_at": "2026-07-17T22:51:42-05:00",
-  "updated_at": "2026-07-17T23:28:51-05:00",
-  "current_phase": "phase-0",
-  "current_step": "commit-resume-protocol-and-capture-baseline",
-  "last_verified_commit": "75ddf79",
+  "updated_at": "2026-07-17T23:34:36-05:00",
+  "current_phase": "phase-1",
+  "current_step": "add-failing-snapshot-fidelity-and-recovery-tests",
+  "last_verified_commit": "a5720b8",
   "last_validation": {
-    "command": "python -m unittest -q benchmarks/test_mega_bench.py",
+    "command": "GOCACHE=.deepdata-run/go-build-cache GOMODCACHE=/tmp/deepdata-go-mod CGO_ENABLED=1 go test -short -count=1 -timeout 600s ./...",
     "working_directory": ".",
-    "result": "passed: 8 tests"
+    "result": "passed"
   },
-  "next_action": "Validate and commit Phase 0 planning files, then capture the reproducible baseline.",
+  "next_action": "Commit the Phase 0 runner and baseline, then add failing storage characterization tests.",
   "offline_queue": [
     "verify remote CI on the future candidate SHA",
     "run network-backed vulnerability and image database checks",
@@ -34,6 +34,9 @@
   "completed": [
     "overall-pre-release-audit",
     "persistent-goal-created",
-    "global-workflow-skill-upgraded"
+    "global-workflow-skill-upgraded",
+    "phase-0-plan-and-resume-protocol",
+    "phase-0-baseline",
+    "phase-0-local-check-runner"
   ]
 }

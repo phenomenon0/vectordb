@@ -46,9 +46,9 @@ waiting for those actions.
 - [x] Audit overall pre-release status and record prioritized blockers.
 - [x] Create a persistent production-hardening goal.
 - [x] Upgrade the global workflow skill with truthful outage and safe-edit behavior.
-- [ ] Commit the project-local resume protocol, state ledger, and this master plan.
-- [ ] Capture the clean baseline: HEAD, branch, tool versions, disk, ports, and fast tests.
-- [ ] Add a deterministic local check runner with logs, timeouts, and resumable receipts.
+- [x] Commit the project-local resume protocol, state ledger, and this master plan.
+- [x] Capture the clean baseline: HEAD, branch, tool versions, disk, ports, and fast tests.
+- [x] Add a deterministic local check runner with logs, timeouts, and resumable receipts.
 
 Exit gate: another agent can read the protocol/state, verify the last checkpoint, and name
 the next exact action without relying on chat history.
