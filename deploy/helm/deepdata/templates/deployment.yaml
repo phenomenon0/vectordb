@@ -19,6 +19,8 @@ spec:
         app.kubernetes.io/name: deepdata
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -35,25 +37,28 @@ spec:
         - name: deepdata
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
             - name: http
               containerPort: {{ .Values.config.port }}
               protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.config.grpcPort }}
+              protocol: TCP
           env:
             - name: PORT
               value: {{ .Values.config.port | quote }}
+            - name: GRPC_PORT
+              value: {{ .Values.config.grpcPort | quote }}
             - name: VECTORDB_BASE_DIR
               value: /data
+            - name: VECTORDB_DATA_DIR
+              value: local
             - name: VECTORDB_MODE
               value: {{ .Values.config.mode | quote }}
             - name: LOG_FORMAT
               value: {{ .Values.config.logFormat | quote }}
-            - name: USE_HASH_EMBEDDER
-              value: {{ .Values.config.useHashEmbedder | quote }}
-            - name: VECTOR_CAPACITY
-              value: {{ .Values.config.vectorCapacity | quote }}
-            - name: HYDRATION_COUNT
-              value: {{ .Values.config.hydrationCount | quote }}
             - name: API_RPS
               value: {{ .Values.config.apiRps | quote }}
             {{- if .Values.auth.apiToken }}
@@ -99,13 +104,17 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            {{- if .Values.persistence.enabled }}
             - name: data
               mountPath: /data
-            {{- end }}
+            - name: tmp
+              mountPath: /tmp
       volumes:
-        {{- if .Values.persistence.enabled }}
         - name: data
+          {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-deepdata-data
-        {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}

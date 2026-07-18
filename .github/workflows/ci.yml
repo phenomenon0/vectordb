@@ -69,6 +69,20 @@ jobs:
           path: cmd/deepdata/web-ui/dist/
           retention-days: 1
 
+  test-deployment-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+      - name: Lint and verify Docker/Compose/Helm contracts
+        run: bash tests/deployment_manifests_test.sh
+      - name: Build production container
+        run: docker build --tag deepdata-contract:test .
+      - name: Verify non-root identity and fresh-volume access
+        run: bash tests/container_contract_test.sh deepdata-contract:test
+
   test-ui:
     needs: build-ui
     runs-on: ubuntu-latest

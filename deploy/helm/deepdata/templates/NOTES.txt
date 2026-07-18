@@ -2,7 +2,9 @@ DeepData vector database has been deployed.
 
 1. Get the application URL:
 {{- if eq .Values.service.type "ClusterIP" }}
-  kubectl port-forward svc/{{ .Release.Name }}-deepdata {{ .Values.service.port }}:{{ .Values.service.port }}
+  kubectl port-forward svc/{{ .Release.Name }}-deepdata \
+    {{ .Values.service.port }}:{{ .Values.service.port }} \
+    {{ .Values.service.grpcPort }}:{{ .Values.service.grpcPort }}
 {{- else if eq .Values.service.type "NodePort" }}
   export NODE_PORT=$(kubectl get svc {{ .Release.Name }}-deepdata -o jsonpath='{.spec.ports[0].nodePort}')
   export NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
@@ -12,15 +14,10 @@ DeepData vector database has been deployed.
   echo http://$SERVICE_IP:{{ .Values.service.port }}
 {{- end }}
 
-2. Check health:
-  curl http://localhost:{{ .Values.service.port }}/health
+2. Check readiness:
+  curl --fail http://localhost:{{ .Values.service.port }}/readyz
 
-3. Insert a vector:
-  curl -X POST http://localhost:{{ .Values.service.port }}/insert \
-    -H 'Content-Type: application/json' \
-    -d '{"text": "hello world", "collection": "default"}'
+The gRPC API listens on port {{ .Values.service.grpcPort }}.
 
-4. Query vectors:
-  curl -X POST http://localhost:{{ .Values.service.port }}/query \
-    -H 'Content-Type: application/json' \
-    -d '{"text": "hello", "collection": "default", "top_k": 5}'
+3. Use the tenant-aware V3 HTTP API or gRPC API for data operations. Clients
+   must supply vectors; server-managed embedding routes are not part of the RC.

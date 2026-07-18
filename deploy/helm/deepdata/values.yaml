@@ -10,15 +10,14 @@ image:
 service:
   type: ClusterIP
   port: 8080
+  grpcPort: 50051
 
 # Environment-based configuration
 config:
   port: 8080
+  grpcPort: 50051
   mode: local
   logFormat: json
-  useHashEmbedder: "1"
-  vectorCapacity: "1000"
-  hydrationCount: "0"
   apiRps: "100"
   # HNSW tuning
   # hnswM: "16"
@@ -35,6 +34,25 @@ telemetry:
   enabled: false
   endpoint: ""
   serviceName: deepdata
+
+# The numeric identity matches the official image. fsGroup lets kubelet make a
+# fresh supported PVC writable without starting DeepData as root. Custom images
+# must either retain UID/GID 10001 or override all three IDs together.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 # Persistence for WAL + index files
 persistence:
@@ -57,13 +75,13 @@ affinity: {}
 # Liveness and readiness probes
 probes:
   liveness:
-    path: /healthz
+    path: /livez
     initialDelaySeconds: 5
     periodSeconds: 15
     timeoutSeconds: 3
     failureThreshold: 3
   readiness:
-    path: /health
+    path: /readyz
     initialDelaySeconds: 10
     periodSeconds: 10
     timeoutSeconds: 3

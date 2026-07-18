@@ -1,6 +1,8 @@
 # Build artifacts
 bin/
 deepdata
+/deepdata-server
+/cli
 *.exe
 
 # Data files (never bake into image)
@@ -12,6 +14,14 @@ data/
 # Development
 .git
 .github
+.agents
+.claude
+.codex
+.deepdata-run
+.gnhf
+.mypy_cache
+.ruff_cache
+node_modules/
 .vscode
 .idea
 *.swp
@@ -32,6 +42,12 @@ docs/
 # Desktop app
 desktop/
 
+# Packages and harnesses not used by the server image
+client/
+sdk/
+tools/
+vdb-test-suite/
+
 # Scripts
 scripts/
 
@@ -42,3 +58,6 @@ tasks/
 .env
 .env.*
 imgui.ini
+baseline_bench.txt
+phase1a_bench.txt
+results.json
