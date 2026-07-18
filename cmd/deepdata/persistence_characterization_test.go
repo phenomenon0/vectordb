@@ -246,6 +246,50 @@ func TestIndexTypeAndArtifactIntegrityRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCompactPreservesNamedIndexTypesAndIsolation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compact-named.snapshot")
+	store := NewVectorStore(10, 3)
+	if err := store.CreateCollection(CollectionConfig{Name: "flat-coll", IndexType: "flat", Dimension: 3}); err != nil {
+		t.Fatalf("create flat collection: %v", err)
+	}
+	for _, fixture := range []struct {
+		id, collection string
+		vector         []float32
+	}{
+		{"default-id", "default", []float32{1, 0, 0}},
+		{"flat-live", "flat-coll", []float32{0, 1, 0}},
+		{"flat-deleted", "flat-coll", []float32{0, 0, 1}},
+	} {
+		if _, err := store.Add(fixture.vector, fixture.id, fixture.id, nil, fixture.collection, "tenant-a"); err != nil {
+			t.Fatalf("add %s: %v", fixture.id, err)
+		}
+	}
+	if err := store.Delete("flat-deleted"); err != nil {
+		t.Fatalf("delete named vector: %v", err)
+	}
+	if err := store.Compact(path); err != nil {
+		t.Fatalf("compact named indexes: %v", err)
+	}
+
+	loaded, ok, err := loadOrInitStore(path, 10, 3)
+	if err != nil || !ok {
+		t.Fatalf("reload compacted named indexes: loaded=%t err=%v", ok, err)
+	}
+	if loaded.Count != 2 {
+		t.Fatalf("compacted count=%d, want 2", loaded.Count)
+	}
+	if idx := loaded.indexes["flat-coll"]; idx == nil || idx.Name() != "FLAT" {
+		t.Fatalf("named index type changed during compaction: %v", idx)
+	}
+	results := loaded.SearchANNWithParams([]float32{0, 1, 0}, 10, "flat-coll", 0)
+	if len(results) != 1 || loaded.GetID(results[0]) != "flat-live" {
+		t.Fatalf("named index isolation after compaction: results=%v", results)
+	}
+	if _, exists := loaded.TenantID[hashID("flat-deleted")]; exists {
+		t.Fatal("compaction retained deleted tenant ownership")
+	}
+}
+
 func TestTryLoadPayloadRejectsStructurallyInvalidCurrentSnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "invalid.snapshot")
 	payload := &storage.Payload{

@@ -1356,7 +1356,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		deleted := len(store.Deleted)
 		active := total - deleted
 		lastSaved := store.lastSaved
-		walReplayErr := store.walReplayError
+		walFault := store.walFault
 		_, embedderIsONNX := embedder.(*OnnxEmbedder)
 		_, embedderIsOpenAI := embedder.(*OpenAIEmbedder)
 		_, embedderIsTracked := embedder.(*TrackedEmbedder)
@@ -1394,7 +1394,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Build response with mode info
-		healthy := walReplayErr == nil
+		healthy := walFault == nil
 		response := map[string]any{
 			"ok":              healthy,
 			"total":           total,
@@ -1415,8 +1415,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"collections": collections,
 		}
 
-		if walReplayErr != nil {
-			response["wal_replay_error"] = walReplayErr.Error()
+		if walFault != nil {
+			response["wal_error"] = walFault.Error()
 		}
 
 		// Add mode information if available
@@ -1477,7 +1477,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			s := storeState{
 				ready:      store.Count >= 0 && store.Dim > 0,
 				indexCount: len(store.indexes),
-				walErr:     store.walReplayError,
+				walErr:     store.walFault,
 			}
 			store.RUnlock()
 			stateCh <- s
@@ -1504,7 +1504,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				issues = append(issues, "no index available")
 			}
 			if state.walErr != nil {
-				logging.Default().Error("readyz: WAL replay error", "error", state.walErr)
+				logging.Default().Error("readyz: WAL fault", "error", state.walErr)
 				issues = append(issues, "wal replay failed")
 			}
 		}
@@ -1609,7 +1609,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		http.ServeFile(w, r, path)
 	})))
 
-	// Import snapshot (overwrites current index) - Two-phase commit with validation
+	// Online snapshot import is deliberately unavailable in the single-node RC.
 	mux.HandleFunc("/import", withMetrics("import", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1624,164 +1624,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
 			return
 		}
-
-		// Add request size limit (max 1GB for snapshot)
-		r.Body = http.MaxBytesReader(w, r.Body, limitSnapshotBody)
-
-		// Phase 1: Validate imported snapshot
-		tmp, err := os.CreateTemp("", "vectordb-import-*.gob")
-		if err != nil {
-			logging.Default().LogError(r.Context(), "import_create_temp", err)
-			http.Error(w, "import failed: server error", http.StatusInternalServerError)
-			return
-		}
-		defer os.Remove(tmp.Name())
-
-		if _, err := io.Copy(tmp, r.Body); err != nil {
-			logging.Default().LogError(r.Context(), "import_read_snapshot", err)
-			http.Error(w, "import failed: unable to read snapshot", http.StatusInternalServerError)
-			return
-		}
-		if err := tmp.Close(); err != nil {
-			logging.Default().LogError(r.Context(), "import_close_temp", err)
-			http.Error(w, "import failed: server error", http.StatusInternalServerError)
-			return
-		}
-
-		// Load and validate the new snapshot
-		newStore, loaded, err := loadOrInitStore(tmp.Name(), store.Count+1, store.Dim)
-		if err != nil {
-			logging.Default().LogError(r.Context(), "import_validate_snapshot", err)
-			http.Error(w, "import failed: unable to load snapshot", http.StatusBadRequest)
-			return
-		}
-		if !loaded {
-			http.Error(w, "import failed: unable to load snapshot", http.StatusBadRequest)
-			return
-		}
-
-		// Validate dimensions match
-		if newStore.Dim != store.Dim {
-			http.Error(w, fmt.Sprintf("dimension mismatch: current=%d, import=%d", store.Dim, newStore.Dim), http.StatusBadRequest)
-			return
-		}
-
-		// Validate checksum
-		if !newStore.validateChecksum() {
-			http.Error(w, "checksum validation failed", http.StatusBadRequest)
-			return
-		}
-
-		// Phase 2: Atomically replace store
-		// Create backup before replacement
-		backupPath := indexPath + ".backup"
-		store.RLock()
-		if err := store.Save(backupPath); err != nil {
-			store.RUnlock()
-			logging.Default().LogError(r.Context(), "import_backup", err, "backup_path", backupPath)
-			http.Error(w, "import failed: unable to create backup", http.StatusInternalServerError)
-			return
-		}
-		store.RUnlock()
-
-		// Replace store atomically - swap data fields individually to avoid copying mutex
-		store.Lock()
-		// Save old state for potential rollback (data fields only, not mutex)
-		oldData := store.Data
-		oldDim := store.Dim
-		oldCount := store.Count
-		oldDocs := store.Docs
-		oldIDs := store.IDs
-		oldSeqs := store.Seqs
-		oldNext := store.next
-		oldNextSeq := store.nextSeq
-		oldIndexes := store.indexes
-		oldIdToIx := store.idToIx
-		oldMeta := store.Meta
-		oldDeleted := store.Deleted
-		oldColl := store.Coll
-		oldNumMeta := store.NumMeta
-		oldTimeMeta := store.TimeMeta
-		oldNumIndex := store.numIndex
-		oldTimeIndex := store.timeIndex
-		oldLexTF := store.lexTF
-		oldDocLen := store.docLen
-		oldDF := store.df
-		oldSumDocL := store.sumDocL
-		oldTenantID := store.TenantID
-		oldMetaIndex := store.metaIndex
-
-		// Copy data from newStore (preserving store's mutex and config fields)
-		store.Data = newStore.Data
-		store.Dim = newStore.Dim
-		store.Count = newStore.Count
-		store.Docs = newStore.Docs
-		store.IDs = newStore.IDs
-		store.Seqs = newStore.Seqs
-		store.next = newStore.next
-		store.nextSeq = newStore.nextSeq
-		store.indexes = newStore.indexes
-		store.idToIx = newStore.idToIx
-		store.Meta = newStore.Meta
-		store.Deleted = newStore.Deleted
-		store.Coll = newStore.Coll
-		store.NumMeta = newStore.NumMeta
-		store.TimeMeta = newStore.TimeMeta
-		store.numIndex = newStore.numIndex
-		store.timeIndex = newStore.timeIndex
-		store.lexTF = newStore.lexTF
-		store.docLen = newStore.docLen
-		store.df = newStore.df
-		store.sumDocL = newStore.sumDocL
-		store.TenantID = newStore.TenantID
-		store.metaIndex = newStore.metaIndex
-		// Note: walPath, apiToken, rl, acl, quotas, etc. are preserved from old store
-		store.Unlock()
-
-		// Save new store
-		if err := store.Save(indexPath); err != nil {
-			// Rollback on failure - restore old data fields
-			store.Lock()
-			store.Data = oldData
-			store.Dim = oldDim
-			store.Count = oldCount
-			store.Docs = oldDocs
-			store.IDs = oldIDs
-			store.Seqs = oldSeqs
-			store.next = oldNext
-			store.nextSeq = oldNextSeq
-			store.indexes = oldIndexes
-			store.idToIx = oldIdToIx
-			store.Meta = oldMeta
-			store.Deleted = oldDeleted
-			store.Coll = oldColl
-			store.NumMeta = oldNumMeta
-			store.TimeMeta = oldTimeMeta
-			store.numIndex = oldNumIndex
-			store.timeIndex = oldTimeIndex
-			store.lexTF = oldLexTF
-			store.docLen = oldDocLen
-			store.df = oldDF
-			store.sumDocL = oldSumDocL
-			store.TenantID = oldTenantID
-			store.metaIndex = oldMetaIndex
-			store.Unlock()
-			logging.Default().LogError(r.Context(), "import_save", err)
-			http.Error(w, "import failed, rolled back", http.StatusInternalServerError)
-			os.Remove(backupPath)
-			return
-		}
-
-		// Success - remove backup
-		os.Remove(backupPath)
-
-		if err := encodeResponse(w, r, map[string]any{
-			"ok":      true,
-			"count":   store.Count,
-			"deleted": len(store.Deleted),
-		}); err != nil {
-			logging.Default().LogError(r.Context(), "encode_response", err)
-		}
+		// Online import cannot safely cross the live WAL/checkpoint generation
+		// boundary yet. The single-node RC therefore supports restore only while
+		// the server is stopped; leaving this endpoint active could mix an old WAL
+		// with imported state after a crash.
+		http.Error(w, "online snapshot import is disabled; use the offline restore procedure", http.StatusNotImplemented)
+		return
 	})))
 
 	// ==================================================================================
@@ -3498,31 +3346,22 @@ func hashQueryCursor(query string, topK int, pageSize int, limit int, meta map[s
 	return fmt.Sprintf("%x", sum.Sum64())
 }
 
-// Compact rebuilds the index and purges tombstones, then saves a snapshot.
+// Compact purges tombstoned row storage while preserving the per-collection
+// indexes (Delete already removes their entries), then saves a snapshot.
 func (vs *VectorStore) Compact(path string) error {
 	if err := func() error {
 		vs.Lock()
 		defer vs.Unlock()
-
-		cfg := loadHNSWConfig()
-		newIdx, err := index.NewHNSWIndex(vs.Dim, map[string]interface{}{
-			"m":         cfg.M,
-			"ml":        cfg.Ml,
-			"ef_search": cfg.EfSearch,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create new index: %w", err)
-		}
 
 		newIDToIx := make(map[uint64]int)
 		newData := make([]float32, 0, len(vs.Data))
 		newDocs := make([]string, 0, len(vs.Docs))
 		newIDs := make([]string, 0, len(vs.IDs))
 		newSeqs := make([]uint64, 0, len(vs.Seqs))
+		newTenantID := make(map[uint64]string, len(vs.TenantID))
 		for i, id := range vs.IDs {
 			hid := hashID(id)
 			if vs.Deleted[hid] {
-				delete(vs.TenantID, hid)
 				continue
 			}
 			if i >= len(vs.Seqs) {
@@ -3534,10 +3373,8 @@ func (vs *VectorStore) Compact(path string) error {
 			newDocs = append(newDocs, vs.Docs[i])
 			newIDs = append(newIDs, id)
 			newSeqs = append(newSeqs, vs.Seqs[i])
-			if err := newIdx.Add(context.Background(), hid, vec); err != nil {
-				return fmt.Errorf("failed to add vector to new index: %w", err)
-			}
 			newIDToIx[hid] = base
+			newTenantID[hid] = vs.TenantID[hid]
 		}
 		vs.Data = newData
 		vs.Docs = newDocs
@@ -3545,7 +3382,7 @@ func (vs *VectorStore) Compact(path string) error {
 		vs.Seqs = newSeqs
 		vs.Count = len(newDocs)
 		vs.idToIx = newIDToIx
-		vs.indexes["default"] = newIdx
+		vs.TenantID = newTenantID
 		vs.Deleted = make(map[uint64]bool) // Clear tombstones
 		return nil
 	}(); err != nil {

@@ -45,3 +45,31 @@
   persisted type nor an artifact checksum, so content corruption and IVF/FLAT-to-HNSW drift passed.
 - Rule: canonical checksums cover full logical state; derived artifacts carry typed descriptors,
   independent digests, dimensions, and semantic count checks before they are accepted.
+
+## Recovery Logs Outlive Recovery
+
+- Correction: replay once deleted the WAL immediately, before the recovered state had been
+  synchronously written and directory-synced into a snapshot.
+- Rule: validate every recovery segment before mutation, replay by a persisted monotonic LSN,
+  commit a checkpoint containing that high-water mark, and only then durably remove logs.
+
+## Indeterminate I/O Poisons the Writer
+
+- Correction: an entry could reach the file and then report a close or directory-sync error;
+  the next request reused its LSN and made the log unrecoverable.
+- Rule: after any write/sync/close outcome that may have reached storage, reject further writes
+  and fail readiness until restart validates the artifact; never reuse an uncertain sequence.
+
+## Snapshot Commits Need Their Own Serialization
+
+- Correction: two saves used the same temporary path and an older capture could rename after a
+  newer capture, silently replacing the latest durable snapshot.
+- Rule: use unique same-directory temporary files and serialize the full capture-to-rename
+  commit boundary; test the exact stale-rename interleaving.
+
+## Narrow the RC Before Shipping Unsafe Recovery
+
+- Correction: online import swapped live state while retaining the previous WAL generation, so
+  a crash could replay old database mutations into the imported snapshot.
+- Rule: if an administrative feature cannot cross the durability boundary transactionally,
+  disable it explicitly in the RC and document an offline procedure instead of exposing it.

@@ -7,9 +7,13 @@ import (
 	"time"
 )
 
-// CurrentFormatVersion identifies snapshots whose complete Payload fields and
-// checksum were written by the production-safe codec path.
-const CurrentFormatVersion = 3
+const (
+	// CanonicalFormatVersion is the first snapshot format whose checksum covers
+	// the complete logical query state and whose index descriptors are strict.
+	CanonicalFormatVersion = 3
+	// CurrentFormatVersion adds the durable WAL checkpoint high-water mark.
+	CurrentFormatVersion = 4
+)
 
 // Payload is the serializable snapshot of a VectorStore.
 // This struct is shared by all storage formats for consistency.
@@ -28,6 +32,7 @@ type Payload struct {
 	TenantID       map[uint64]string
 	Next           int64
 	NextSeq        uint64 // Monotonic high-water mark for pagination sequence allocation
+	WALHighWater   uint64 // Highest write-ahead-log sequence included in this snapshot
 	Count          int
 	HNSW           []byte            // Legacy serialized HNSW graph (deprecated)
 	Indexes        map[string][]byte // Index abstraction - collection -> serialized index

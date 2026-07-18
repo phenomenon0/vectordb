@@ -70,6 +70,37 @@ func TestStoreAddSearchMetaAndDelete(t *testing.T) {
 	}
 }
 
+func TestDuplicateAddPreservesExistingIndexEntry(t *testing.T) {
+	store := NewVectorStore(10, 3)
+	if _, err := store.Add([]float32{1, 0, 0}, "original", "same-id", map[string]string{"version": "one"}, "default", "tenant-a"); err != nil {
+		t.Fatalf("seed document: %v", err)
+	}
+	if _, err := store.Add([]float32{0, 1, 0}, "duplicate", "same-id", map[string]string{"version": "two"}, "default", "tenant-a"); err == nil {
+		t.Fatal("duplicate Add unexpectedly succeeded")
+	}
+	if store.Count != 1 || store.GetDoc(0) != "original" || store.Meta[hashID("same-id")]["version"] != "one" {
+		t.Fatalf("duplicate Add changed logical state: count=%d doc=%q meta=%v", store.Count, store.GetDoc(0), store.Meta[hashID("same-id")])
+	}
+	results := store.SearchANN([]float32{1, 0, 0}, 1)
+	if len(results) != 1 || store.GetID(results[0]) != "same-id" {
+		t.Fatalf("duplicate Add removed existing index entry: results=%v", results)
+	}
+}
+
+func TestAutoIDSkipsExistingExplicitID(t *testing.T) {
+	store := NewVectorStore(10, 3)
+	if _, err := store.Add([]float32{1, 0, 0}, "explicit", "doc-0", nil, "default", "default"); err != nil {
+		t.Fatalf("add explicit auto-shaped ID: %v", err)
+	}
+	id, err := store.Add([]float32{0, 1, 0}, "automatic", "", nil, "default", "default")
+	if err != nil {
+		t.Fatalf("add automatic ID: %v", err)
+	}
+	if id != "doc-1" || store.Count != 2 || store.GetDoc(0) != "explicit" || store.GetDoc(1) != "automatic" {
+		t.Fatalf("auto-ID collision handling failed: id=%q count=%d docs=%v", id, store.Count, store.Docs)
+	}
+}
+
 func TestMatchesMetaHelpers(t *testing.T) {
 	meta := map[string]string{"tag": "a", "env": "prod"}
 	if !matchesMeta(meta, map[string]string{"tag": "a"}) {
@@ -172,7 +203,9 @@ func TestWALReplay(t *testing.T) {
 
 	vs2 := NewVectorStore(10, 3)
 	vs2.walPath = wal
-	replayWAL(vs2)
+	if err := replayWAL(vs2); err != nil {
+		t.Fatalf("replay WAL: %v", err)
+	}
 
 	if vs2.Count != 2 {
 		t.Fatalf("expected 2 entries after replay, got %d", vs2.Count)
@@ -180,8 +213,8 @@ func TestWALReplay(t *testing.T) {
 	if !vs2.Deleted[hashID("id2")] {
 		t.Fatalf("expected id2 to be tombstoned after replay")
 	}
-	if _, err := os.Stat(wal); !os.IsNotExist(err) {
-		t.Fatalf("expected wal to be removed after replay, got err=%v", err)
+	if _, err := os.Stat(wal); err != nil {
+		t.Fatalf("expected replay to retain WAL until checkpoint, got err=%v", err)
 	}
 }
 
@@ -209,8 +242,19 @@ func TestWALAutoSnapshot(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	vs.bgWg.Wait()
 	if _, err := os.Stat(wal); err == nil {
 		t.Fatalf("wal should be removed after snapshot")
+	}
+	if _, err := os.Stat(wal + ".frozen"); !os.IsNotExist(err) {
+		t.Fatalf("frozen WAL should be removed after verified snapshot: %v", err)
+	}
+	reloaded, loaded, err := loadOrInitStore(snapshot, 10, 3)
+	if err != nil || !loaded {
+		t.Fatalf("load automatic snapshot: loaded=%v err=%v", loaded, err)
+	}
+	if reloaded.Count != 1 || reloaded.GetID(0) != "id1" || reloaded.appliedWALSeq != 1 {
+		t.Fatalf("automatic snapshot state mismatch: count=%d id=%q high_water=%d", reloaded.Count, reloaded.GetID(0), reloaded.appliedWALSeq)
 	}
 }
 
@@ -1214,9 +1258,6 @@ func TestReplayWALReturnsErrorOnFailures(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected replayWAL to return an error when entries fail, got nil")
 	}
-	if !strings.Contains(err.Error(), "errors") {
-		t.Fatalf("expected error message to mention errors, got: %v", err)
-	}
 
 	// WAL must be preserved for manual inspection when replay has errors
 	if _, err := os.Stat(walPath); err != nil {
@@ -1224,9 +1265,9 @@ func TestReplayWALReturnsErrorOnFailures(t *testing.T) {
 	}
 }
 
-// TestReplayWALDeletesWALOnSuccess verifies that replayWAL deletes the WAL
-// file when all entries replay successfully.
-func TestReplayWALDeletesWALOnSuccess(t *testing.T) {
+// TestReplayWALRetainsWALUntilCheckpoint verifies that replay alone never
+// deletes the only durable copy of recovered mutations.
+func TestReplayWALRetainsWALUntilCheckpoint(t *testing.T) {
 	dir := t.TempDir()
 	walPath := filepath.Join(dir, "index.gob.wal")
 
@@ -1247,9 +1288,10 @@ func TestReplayWALDeletesWALOnSuccess(t *testing.T) {
 		t.Fatalf("expected replayWAL to succeed, got: %v", err)
 	}
 
-	// WAL should be deleted on successful replay
-	if _, err := os.Stat(walPath); !os.IsNotExist(err) {
-		t.Fatalf("expected WAL to be deleted after successful replay, got err=%v", err)
+	// The production startup path checkpoints before cleanup; replayWAL itself
+	// must retain the artifact.
+	if _, err := os.Stat(walPath); err != nil {
+		t.Fatalf("expected WAL to remain after replay, got err=%v", err)
 	}
 
 	// The doc should have been replayed
@@ -1258,9 +1300,8 @@ func TestReplayWALDeletesWALOnSuccess(t *testing.T) {
 	}
 }
 
-// TestConcurrentSnapshotDedup verifies that only one background snapshot runs
-// at a time — the snapshotRunning atomic guard prevents concurrent goroutines
-// from racing on the same .tmp file path.
+// TestConcurrentSnapshotDedup verifies that only one background snapshot is
+// scheduled at a time; Save itself separately serializes every commit.
 func TestConcurrentSnapshotDedup(t *testing.T) {
 	dir := t.TempDir()
 	walPath := filepath.Join(dir, "index.gob.wal")
@@ -1271,16 +1312,23 @@ func TestConcurrentSnapshotDedup(t *testing.T) {
 
 	// Insert many docs rapidly to trigger multiple snapshot attempts
 	var wg sync.WaitGroup
+	errCh := make(chan error, 20)
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			id := fmt.Sprintf("id-%d", i)
 			vec := []float32{float32(i), 0, 0}
-			vs.Add(vec, fmt.Sprintf("doc-%d", i), id, nil, "", "")
+			if _, err := vs.Add(vec, fmt.Sprintf("doc-%d", i), id, nil, "", ""); err != nil {
+				errCh <- err
+			}
 		}(i)
 	}
 	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent add: %v", err)
+	}
 
 	// Wait for any in-flight background snapshots to finish
 	vs.bgWg.Wait()
@@ -1290,11 +1338,23 @@ func TestConcurrentSnapshotDedup(t *testing.T) {
 		t.Fatal("snapshotRunning should be false after all background snapshots complete")
 	}
 
-	// No crash, no corrupt snapshot — the dedup guard prevented .tmp file races
+	// No crash or corrupt snapshot: background scheduling was deduplicated.
 	snapPath := strings.TrimSuffix(walPath, ".wal")
-	if _, err := os.Stat(snapPath); err != nil {
-		// Snapshot may or may not exist depending on timing, but should not have crashed
-		t.Logf("snapshot file does not exist (normal if timing prevented Save): %v", err)
+	recovered, loaded, err := loadOrInitStore(snapPath, 20, 3)
+	if err != nil || !loaded {
+		t.Fatalf("recover concurrent checkpoint state: loaded=%v err=%v", loaded, err)
+	}
+	if recovered.Count != 20 {
+		t.Fatalf("concurrent checkpoint lost writes: count=%d, want 20", recovered.Count)
+	}
+	seen := make(map[string]bool, recovered.Count)
+	for _, id := range recovered.IDs {
+		seen[id] = true
+	}
+	for i := 0; i < 20; i++ {
+		if !seen[fmt.Sprintf("id-%d", i)] {
+			t.Fatalf("concurrent checkpoint lost id-%d", i)
+		}
 	}
 }
 
@@ -1342,9 +1402,7 @@ func TestWALRotationPreservesNewEntries(t *testing.T) {
 		t.Fatalf("expected frozen WAL to be deleted after successful snapshot, got err=%v", err)
 	}
 
-	// Load the snapshot and replay the new WAL to verify no data was lost
-	vs2 := NewVectorStore(10, 3)
-	vs2.walPath = walPath
+	// Load the snapshot and recover the new WAL to verify no data was lost.
 	payload, _, loadErr := tryLoadPayload(snapPath)
 	if loadErr != nil {
 		t.Fatalf("load snapshot: %v", loadErr)
@@ -1357,15 +1415,16 @@ func TestWALRotationPreservesNewEntries(t *testing.T) {
 		t.Fatalf("expected snapshot to have at least 2 entries, got %d", payload.Count)
 	}
 
-	// Replay the new WAL — it should contain the third entry
-	err := replayWAL(vs2)
+	vs2, loaded, err := loadOrInitStore(snapPath, 10, 3)
 	if err != nil {
-		t.Fatalf("replay of post-rotation WAL failed: %v", err)
+		t.Fatalf("recover post-rotation WAL: %v", err)
+	}
+	if !loaded {
+		t.Fatal("expected snapshot/WAL recovery to report loaded state")
 	}
 
-	// All 3 entries should be accessible (either from snapshot or WAL replay)
-	if vs.Count != 3 {
-		t.Fatalf("expected 3 total entries in original store, got %d", vs.Count)
+	if vs2.Count != 3 {
+		t.Fatalf("expected 3 entries after snapshot/WAL recovery, got %d", vs2.Count)
 	}
 }
 
@@ -1502,9 +1561,6 @@ func TestFullLifecyclePersistence(t *testing.T) {
 	if err := vs.Save(path); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	// Delete WAL after Save — mirrors the production shutdown path where
-	// all writers are drained before Save+WAL cleanup.
-	os.Remove(vs.walPath)
 
 	vs2, loaded, err := loadOrInitStore(path, 100, 3)
 	if err != nil {

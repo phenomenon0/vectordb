@@ -74,6 +74,7 @@ func (s *CowrieFormat) Save(w io.Writer, p *Payload) error {
 	obj.Set("vector_type", cowrie.Int64(int64(p.VectorType)))
 	obj.Set("next", cowrie.Int64(p.Next))
 	obj.Set("next_seq", cowrie.Uint64(p.NextSeq))
+	obj.Set("wal_high_water", cowrie.Uint64(p.WALHighWater))
 	obj.Set("count", cowrie.Int64(int64(p.Count)))
 	obj.Set("sum_doc_l", cowrie.Int64(int64(p.SumDocL)))
 	obj.Set("checksum", cowrie.String(p.Checksum))
@@ -180,6 +181,9 @@ func (s *CowrieFormat) Load(r io.Reader) (*Payload, error) {
 	}
 	if v := obj.Get("next_seq"); v != nil {
 		p.NextSeq = cowrieutil.SafeUint64(v)
+	}
+	if v := obj.Get("wal_high_water"); v != nil {
+		p.WALHighWater = cowrieutil.SafeUint64(v)
 	}
 	if v := obj.Get("count"); v != nil {
 		p.Count = int(cowrieutil.SafeInt64(v))
