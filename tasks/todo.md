@@ -63,8 +63,8 @@ the next exact action without relying on chat history.
 - [x] Compute integrity data from the state being written and cover meaningful content.
 - [x] Make unreadable/corrupt/incompatible snapshots fail closed or enter an explicit
       quarantine/recovery mode; never start empty and overwrite the source.
-- [ ] Replay a valid WAL when snapshot recovery permits it, without duplicate mutation.
-- [ ] Add round-trip, truncation, bit-flip, stale-checksum, migration, and subprocess tests.
+- [x] Replay a valid WAL when snapshot recovery permits it, without duplicate mutation.
+- [x] Add round-trip, truncation, bit-flip, stale-checksum, migration, and subprocess tests.
 
 Exit gate: normal restart preserves every advertised semantic field/index, and fault
 injection cannot silently replace recoverable state with an empty database.

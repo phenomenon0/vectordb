@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generation": 3,
+  "generation": 4,
   "workflow": "deepdata-single-node-production-hardening",
   "status": "active",
   "execution_preapproved": true,
@@ -14,16 +14,16 @@
     "external_publication": "requires-explicit-authority"
   },
   "started_at": "2026-07-17T22:51:42-05:00",
-  "updated_at": "2026-07-18T00:08:21-05:00",
-  "current_phase": "phase-1",
-  "current_step": "repair-wal-only-startup-and-post-replay-checkpoint-ordering",
-  "last_verified_commit": "6b1f2a34bbc4e629e132912d6dfa973f6f7e06db",
+  "updated_at": "2026-07-18T01:04:48-05:00",
+  "current_phase": "phase-2",
+  "current_step": "implement-shared-collection-durability-boundary",
+  "last_verified_commit": "4fff232be1a2c95d299b2998a2ecb6263157affe",
   "last_validation": {
-    "command": "GOCACHE=.deepdata-run/go-build-cache GOMODCACHE=/tmp/deepdata-go-mod CGO_ENABLED=1 go test -short -count=1 -timeout 600s ./...",
+    "command": "scripts/hardening_check.sh go-short --force",
     "working_directory": ".",
     "result": "passed"
   },
-  "next_action": "Add WAL-only startup, unknown-operation, and replay-checkpoint tests; retain recovery logs until a synced snapshot contains their mutations.",
+  "next_action": "Implement a collection-specific durable snapshot and strict journal shared by HTTP V2, HTTP V3, and gRPC mutations; make corrupt startup fail closed.",
   "offline_queue": [
     "verify remote CI on the future candidate SHA",
     "run network-backed vulnerability and image database checks",
@@ -43,6 +43,11 @@
     "snapshot-fail-closed-startup",
     "canonical-state-and-index-integrity",
     "compaction-sequence-durability",
-    "ci-go-and-playwright-gates"
+    "ci-go-and-playwright-gates",
+    "wal-lsn-and-checkpoint-recovery",
+    "wal-only-and-sigkill-recovery",
+    "snapshot-commit-serialization",
+    "online-import-disabled-for-rc",
+    "phase-1-exit-gate"
   ]
 }
