@@ -101,7 +101,10 @@ func TestPersistenceSnapshotReload(t *testing.T) {
 		t.Fatalf("save failed: %v", err)
 	}
 
-	vs2, loaded := loadOrInitStore(path, 10, 3)
+	vs2, loaded, err := loadOrInitStore(path, 10, 3)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
 	if !loaded {
 		t.Fatalf("expected to load snapshot (got new store)")
 	}
@@ -1058,7 +1061,10 @@ func TestPersistenceRangeIndexRebuild(t *testing.T) {
 	}
 
 	// Reload from disk
-	vs2, loaded := loadOrInitStore(path, 10, 3)
+	vs2, loaded, err := loadOrInitStore(path, 10, 3)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
 	if !loaded {
 		t.Fatal("expected to load snapshot")
 	}
@@ -1120,7 +1126,10 @@ func TestPersistenceTimeIndexRebuild(t *testing.T) {
 		t.Fatalf("save failed: %v", err)
 	}
 
-	vs2, loaded := loadOrInitStore(path, 10, 3)
+	vs2, loaded, err := loadOrInitStore(path, 10, 3)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
 	if !loaded {
 		t.Fatal("expected to load snapshot")
 	}
@@ -1336,7 +1345,10 @@ func TestWALRotationPreservesNewEntries(t *testing.T) {
 	// Load the snapshot and replay the new WAL to verify no data was lost
 	vs2 := NewVectorStore(10, 3)
 	vs2.walPath = walPath
-	payload, _ := tryLoadPayload(snapPath)
+	payload, _, loadErr := tryLoadPayload(snapPath)
+	if loadErr != nil {
+		t.Fatalf("load snapshot: %v", loadErr)
+	}
 	if payload == nil {
 		t.Fatal("failed to load snapshot")
 	}
@@ -1395,7 +1407,10 @@ func TestFrozenWALRecoveryOnStartup(t *testing.T) {
 	f2.Close()
 
 	// Reload — loadOrInitStore should replay both the frozen WAL and the regular WAL
-	vs2, loaded := loadOrInitStore(snapPath, 10, 3)
+	vs2, loaded, err := loadOrInitStore(snapPath, 10, 3)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
 	if !loaded {
 		t.Fatal("expected snapshot to be loaded")
 	}
@@ -1491,7 +1506,10 @@ func TestFullLifecyclePersistence(t *testing.T) {
 	// all writers are drained before Save+WAL cleanup.
 	os.Remove(vs.walPath)
 
-	vs2, loaded := loadOrInitStore(path, 100, 3)
+	vs2, loaded, err := loadOrInitStore(path, 100, 3)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
 	if !loaded {
 		t.Fatal("expected to load snapshot")
 	}
@@ -1502,8 +1520,8 @@ func TestFullLifecyclePersistence(t *testing.T) {
 	if vs2.Count != preSaveCount {
 		t.Errorf("count: got %d, want %d", vs2.Count, preSaveCount)
 	}
-	if vs2.Count - len(vs2.Deleted) != preSaveActive {
-		t.Errorf("active count: got %d, want %d", vs2.Count - len(vs2.Deleted), preSaveActive)
+	if vs2.Count-len(vs2.Deleted) != preSaveActive {
+		t.Errorf("active count: got %d, want %d", vs2.Count-len(vs2.Deleted), preSaveActive)
 	}
 	if !vs2.Deleted[hashID("db-2")] != !preSaveDeleted {
 		t.Error("deleted flag for db-2 not preserved")

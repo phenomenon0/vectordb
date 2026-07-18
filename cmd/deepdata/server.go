@@ -31,7 +31,6 @@ import (
 	"github.com/phenomenon0/vectordb/internal/obsidian"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
-
 )
 
 // ===========================================================================================
@@ -1650,7 +1649,12 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Load and validate the new snapshot
-		newStore, loaded := loadOrInitStore(tmp.Name(), store.Count+1, store.Dim)
+		newStore, loaded, err := loadOrInitStore(tmp.Name(), store.Count+1, store.Dim)
+		if err != nil {
+			logging.Default().LogError(r.Context(), "import_validate_snapshot", err)
+			http.Error(w, "import failed: unable to load snapshot", http.StatusBadRequest)
+			return
+		}
 		if !loaded {
 			http.Error(w, "import failed: unable to load snapshot", http.StatusBadRequest)
 			return
@@ -1690,6 +1694,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		oldIDs := store.IDs
 		oldSeqs := store.Seqs
 		oldNext := store.next
+		oldNextSeq := store.nextSeq
 		oldIndexes := store.indexes
 		oldIdToIx := store.idToIx
 		oldMeta := store.Meta
@@ -1714,6 +1719,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		store.IDs = newStore.IDs
 		store.Seqs = newStore.Seqs
 		store.next = newStore.next
+		store.nextSeq = newStore.nextSeq
 		store.indexes = newStore.indexes
 		store.idToIx = newStore.idToIx
 		store.Meta = newStore.Meta
@@ -1743,6 +1749,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			store.IDs = oldIDs
 			store.Seqs = oldSeqs
 			store.next = oldNext
+			store.nextSeq = oldNextSeq
 			store.indexes = oldIndexes
 			store.idToIx = oldIdToIx
 			store.Meta = oldMeta
@@ -3493,46 +3500,60 @@ func hashQueryCursor(query string, topK int, pageSize int, limit int, meta map[s
 
 // Compact rebuilds the index and purges tombstones, then saves a snapshot.
 func (vs *VectorStore) Compact(path string) error {
-	vs.Lock()
-	defer vs.Unlock()
+	if err := func() error {
+		vs.Lock()
+		defer vs.Unlock()
 
-	cfg := loadHNSWConfig()
-	newIdx, err := index.NewHNSWIndex(vs.Dim, map[string]interface{}{
-		"m":         cfg.M,
-		"ml":        cfg.Ml,
-		"ef_search": cfg.EfSearch,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create new index: %w", err)
-	}
+		cfg := loadHNSWConfig()
+		newIdx, err := index.NewHNSWIndex(vs.Dim, map[string]interface{}{
+			"m":         cfg.M,
+			"ml":        cfg.Ml,
+			"ef_search": cfg.EfSearch,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create new index: %w", err)
+		}
 
-	vs.idToIx = make(map[uint64]int)
-	newData := make([]float32, 0, len(vs.Data))
-	newDocs := make([]string, 0, len(vs.Docs))
-	newIDs := make([]string, 0, len(vs.IDs))
-	for i, id := range vs.IDs {
-		hid := hashID(id)
-		if vs.Deleted[hid] {
-			continue
+		newIDToIx := make(map[uint64]int)
+		newData := make([]float32, 0, len(vs.Data))
+		newDocs := make([]string, 0, len(vs.Docs))
+		newIDs := make([]string, 0, len(vs.IDs))
+		newSeqs := make([]uint64, 0, len(vs.Seqs))
+		for i, id := range vs.IDs {
+			hid := hashID(id)
+			if vs.Deleted[hid] {
+				delete(vs.TenantID, hid)
+				continue
+			}
+			if i >= len(vs.Seqs) {
+				return fmt.Errorf("missing sequence for vector %q", id)
+			}
+			vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
+			base := len(newDocs)
+			newData = append(newData, vec...)
+			newDocs = append(newDocs, vs.Docs[i])
+			newIDs = append(newIDs, id)
+			newSeqs = append(newSeqs, vs.Seqs[i])
+			if err := newIdx.Add(context.Background(), hid, vec); err != nil {
+				return fmt.Errorf("failed to add vector to new index: %w", err)
+			}
+			newIDToIx[hid] = base
 		}
-		vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
-		base := len(newDocs)
-		newData = append(newData, vec...)
-		newDocs = append(newDocs, vs.Docs[i])
-		newIDs = append(newIDs, id)
-		if err := newIdx.Add(context.Background(), hid, vec); err != nil {
-			return fmt.Errorf("failed to add vector to new index: %w", err)
-		}
-		vs.idToIx[hid] = base
-	}
-	vs.Data = newData
-	vs.Docs = newDocs
-	vs.IDs = newIDs
-	vs.Count = len(newDocs)
-	vs.indexes["default"] = newIdx
-	vs.Deleted = make(map[uint64]bool) // Clear tombstones
-	if err := vs.Save(path); err != nil {
+		vs.Data = newData
+		vs.Docs = newDocs
+		vs.IDs = newIDs
+		vs.Seqs = newSeqs
+		vs.Count = len(newDocs)
+		vs.idToIx = newIDToIx
+		vs.indexes["default"] = newIdx
+		vs.Deleted = make(map[uint64]bool) // Clear tombstones
+		return nil
+	}(); err != nil {
 		return err
 	}
-	return nil
+
+	// Save acquires its own read lock; calling it after the compaction critical
+	// section avoids recursive RWMutex acquisition and permits normal writes to
+	// proceed while the durable snapshot is encoded.
+	return vs.Save(path)
 }

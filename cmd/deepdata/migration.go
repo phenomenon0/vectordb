@@ -155,7 +155,8 @@ func (vs *VectorStore) ImportCollection(export *CollectionExport) error {
 		vs.Data = append(vs.Data, rec.Vector...)
 		vs.Docs = append(vs.Docs, rec.Doc)
 		vs.IDs = append(vs.IDs, id)
-		vs.Seqs = append(vs.Seqs, uint64(vs.next))
+		vs.Seqs = append(vs.Seqs, vs.nextSeq)
+		vs.nextSeq++
 		vs.next++
 
 		idx := vs.Count
