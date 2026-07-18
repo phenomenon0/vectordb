@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "generation": 1,
+  "workflow": "deepdata-single-node-production-hardening",
+  "status": "active",
+  "execution_preapproved": true,
+  "scope": {
+    "release_target": "headless-single-node-server-rc",
+    "distributed_ha": "experimental-out-of-scope",
+    "desktop_installers": "out-of-scope",
+    "transport_tls": "external-proxy-or-ingress",
+    "encryption_at_rest": "encrypted-disk-or-pvc",
+    "feedback_extraction": "experimental-disabled-by-default",
+    "external_publication": "requires-explicit-authority"
+  },
+  "started_at": "2026-07-17T22:51:42-05:00",
+  "updated_at": "2026-07-17T23:28:51-05:00",
+  "current_phase": "phase-0",
+  "current_step": "commit-resume-protocol-and-capture-baseline",
+  "last_verified_commit": "75ddf79",
+  "last_validation": {
+    "command": "python -m unittest -q benchmarks/test_mega_bench.py",
+    "working_directory": ".",
+    "result": "passed: 8 tests"
+  },
+  "next_action": "Validate and commit Phase 0 planning files, then capture the reproducible baseline.",
+  "offline_queue": [
+    "verify remote CI on the future candidate SHA",
+    "run network-backed vulnerability and image database checks",
+    "prepare but do not execute external publication"
+  ],
+  "deferred": [],
+  "blocked": [],
+  "completed": [
+    "overall-pre-release-audit",
+    "persistent-goal-created",
+    "global-workflow-skill-upgraded"
+  ]
+}
