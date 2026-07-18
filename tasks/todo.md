@@ -17,23 +17,40 @@ dependency of the single-node release.
 
 ## Frozen RC Scope
 
-The first RC is a headless single-node server with HTTP and gRPC, JWT/static-token
-authentication, tenant isolation, read/write/admin authorization, Docker, Helm, and the
-Python SDK.
+The first RC is a Linux-only persistent, headless, single-node vector server. It has one
+canonical tenant-aware HTTP API (V3), a gRPC API with the same tenant and operation model,
+JWT/static-token authentication, tenant isolation, read/write/admin authorization, Docker,
+Helm, and one deliberately small Python client contract.
 
-The RC explicitly excludes distributed/HA, desktop installers, built-in TLS/mTLS,
-built-in encryption-at-rest, and compliance-grade audit logging. Deployments must terminate
-TLS at a trusted proxy/ingress and use encrypted disks/PVCs. Feedback/extraction APIs remain
-disabled by default behind an experimental flag. Structured security logs remain supported.
-These choices turn unwired claims into explicit deployment requirements instead of shipping
-untested security theater.
+The supported collection mutations are create collection, delete collection, insert one,
+batch insert, and delete document. Supported retrieval is collection get/list plus dense,
+sparse/BM25, and hybrid search. Dense indexes are HNSW and Flat; sparse fields use the
+inverted index. Callers provide vectors. Server-managed embedding providers, runtime
+embedder hot-swapping, bulk-specialized mutation paths, rename, metadata mutation, and
+drop-all are outside the RC.
+
+The older root mutation API and V2 collection mutation surface are not production RC paths.
+They will be disabled by default rather than receiving separate durability and authorization
+implementations. Existing code may remain for explicit migration/experimental tooling, but
+it cannot be silently reachable or advertised as supported. Existing V2/root data requires
+an explicit, tested migration decision; it must never be discarded or mistaken for an empty
+canonical tenant store.
+
+The RC also excludes Windows/macOS persistent runtime support, distributed/HA,
+replication/follower restore/snapshot streaming, desktop installers, the web UI as a release
+gate, GraphRAG, recommendation/discovery, extraction, feedback loops, DiskANN, IVF,
+PQ/binary quantization, CUDA, built-in TLS/mTLS, built-in encryption-at-rest, and
+compliance-grade audit logging. Unsupported advanced API handlers are unregistered, not
+merely undocumented. Deployments terminate TLS at a trusted proxy/ingress and use encrypted
+disks/PVCs. Structured security logs remain supported.
 
 Production hardening is complete only when:
 
-- Every advertised HTTP and gRPC mutation is crash-durable and restart-correct.
+- Every advertised V3 HTTP and tenant-aware gRPC mutation is crash-durable and
+  restart-correct through the same mutation engine.
 - Corrupt or incompatible state fails closed without overwriting recoverable data.
 - Tenant, collection, and read/write/admin authorization is enforced consistently.
-- Required CI, SDK, UI, container, Helm, upgrade, security, and soak gates pass.
+- Required CI, minimal SDK, container, Helm, upgrade, security, and soak gates pass.
 - Shipped artifacts share one version, commit, feature set, and support statement.
 - The exact-SHA evidence report contains no unresolved P0/P1 finding.
 
@@ -69,17 +86,20 @@ the next exact action without relying on chat history.
 Exit gate: normal restart preserves every advertised semantic field/index, and fault
 injection cannot silently replace recoverable state with an empty database.
 
-## Phase 2 — Crash Durability for V2, V3, and gRPC
+## Phase 2 — One Canonical Crash-Durable Mutation Engine
 
-- [ ] Inventory every collection mutation and route it through one durability boundary.
+- [ ] Disable the legacy root and V2 collection mutation surfaces in normal RC startup.
+- [ ] Make V3 the canonical tenant-aware collection contract and make gRPC mirror it.
+- [ ] Inventory the five supported mutations and route them through one durability boundary.
 - [ ] Specify sequence numbers, WAL records, fsync acknowledgement, replay idempotency,
       checkpoint ordering, rotation, and partial-record handling.
-- [ ] Implement the collection WAL/checkpoint path without per-protocol bypasses.
+- [ ] Implement the collection WAL/checkpoint path without HTTP/gRPC bypasses.
 - [ ] Ensure acknowledged writes survive SIGKILL/power-loss simulation.
 - [ ] Ensure unacknowledged/partial writes are either absent or replayed exactly once.
 - [ ] Persist collection/index lifecycle operations, not only document mutations.
-- [ ] Add subprocess crash matrices for HTTP V2, HTTP V3, and gRPC.
+- [ ] Add subprocess crash matrices for HTTP V3 and tenant-aware gRPC.
 - [ ] Add upgrade/replay tests from the last published compatible format.
+- [ ] Fail non-Linux persistent startup explicitly; cross-compilation is not a support claim.
 
 Exit gate: all advertised protocols pass the same crash/replay invariants across repeated
 kill points, checkpoint rotation, and restart.
@@ -88,8 +108,8 @@ kill points, checkpoint rotation, and restart.
 
 - [ ] Define one operation policy matrix for read, write, collection-admin, and server-admin.
 - [ ] Centralize policy evaluation for tenant and collection scope.
-- [ ] Apply it to every V2/V3 HTTP route and every gRPC method.
-- [ ] Guard feedback and extraction endpoints; prevent unauthenticated mutation/API spend.
+- [ ] Apply it to every supported V3 HTTP route and every gRPC method.
+- [ ] Prove unsupported legacy/advanced handlers are unreachable in normal RC startup.
 - [ ] Remove bearer tokens from URL query parameters.
 - [ ] Make static-token behavior and administrative capabilities explicit and testable.
 - [ ] Add table-driven allow/deny tests for cross-tenant, cross-collection, read-only,
@@ -101,7 +121,8 @@ exposed routes and protocols.
 ## Phase 4 — Runtime Security and Operational Safety
 
 - [ ] Enforce the frozen scope in configuration, startup warnings, support docs, and examples.
-- [ ] Disable feedback/extraction by default and guard them when explicitly enabled.
+- [ ] Unregister GraphRAG, recommendation/discovery, feedback, extraction, and server-managed
+      embedding/configuration handlers from the RC runtime.
 - [ ] Emit useful structured security events without secrets or compliance-grade claims.
 - [ ] Ensure secrets and bearer tokens never enter logs, URLs, panic output, or metrics.
 - [ ] Make health/liveness/readiness probes work with authentication enabled.
@@ -116,7 +137,9 @@ through the production startup path rather than library-only tests.
 - [ ] Keep ordinary Go CI short; move 10M/50M/100M tests to a deliberate scale job.
 - [x] Make Playwright launch the binary produced by its CI job.
 - [x] Fix the 16 strict SDK mypy errors from the SDK's own project directory.
-- [ ] Add Python unit, strict typing, package-build, install, and live-server integration CI.
+- [ ] Reduce the Python SDK to the canonical tenant-aware contract, then add unit, strict
+      typing, package-build, install, and live-server integration CI.
+- [ ] Keep the web UI build healthy without making it an RC durability/evidence gate.
 - [ ] Add crash/restart smoke, Docker, Helm, and VDB correctness jobs at suitable cadence.
 - [ ] Remove artifact uploads that silently ignore missing outputs.
 - [ ] Split or budget the long race scenario so timeout headroom is credible.
@@ -127,7 +150,7 @@ green on the exact candidate SHA when network execution becomes available.
 ## Phase 6 — Docker, Compose, and Helm Parity
 
 - [ ] Expose and smoke-test both HTTP and gRPC where both are advertised.
-- [ ] Pin image versions/digests and make feature differences from CGO explicit.
+- [ ] Pin image versions/digests and enforce the Linux-only support statement.
 - [ ] Fix authenticated probes to use the public readiness/liveness contract.
 - [ ] Provide a valid existing-Secret/managed-Secret path for Helm authentication.
 - [ ] Add security contexts, capability drops, termination grace, persistent volumes,
@@ -140,8 +163,8 @@ same smoke contract as the standalone binary.
 
 ## Phase 7 — Release Identity, Documentation, and Reproducibility
 
-- [ ] Establish one version source and propagate it to server, UI, Python, Helm,
-      telemetry, artifacts, and docs.
+- [ ] Establish one version source and propagate it to server, Python, Helm, artifacts,
+      and docs; UI/desktop metadata is non-gating.
 - [ ] Resolve the Python distribution name collision or prepare the exact ownership action.
 - [ ] Add the license once the legal copyright holder/choice is confirmed.
 - [ ] Correct repository/module/package URLs and namespace future DeepData tags.
@@ -158,13 +181,13 @@ documentation identify the same version and commit.
 
 - [ ] Freeze the candidate SHA and regenerate dependency/tool manifests.
 - [ ] Run Go vet, short unit, race, fuzz/property targets, and focused persistence tests.
-- [ ] Run Python unit/type/build/install/live integration and UI Playwright.
-- [ ] Run legacy/V2/V3/gRPC restart and crash matrices.
+- [ ] Run Python unit/type/build/install/live integration; keep UI checks informational.
+- [ ] Run V3/gRPC restart and crash matrices plus explicit unsupported-surface checks.
 - [ ] Run Docker/Compose/Helm install, auth, probe, persistence, shutdown, and upgrade smoke.
 - [ ] Run VDB correctness, mixed-load soak, restart-under-load, memory-drift, and chaos.
 - [ ] Run dependency, secret, static, image, and SBOM checks with findings triaged.
 - [ ] Refresh benchmark provenance where needed without hiding old or incomparable rows.
-- [ ] Build and smoke every promised headless-server artifact.
+- [ ] Build and smoke every promised Linux headless-server artifact.
 - [ ] Generate a signed-by-hash evidence report tied to the exact Git tree.
 
 Exit gate: the evidence report is reproducible, all required gates pass, and no result came
@@ -181,7 +204,7 @@ from a different commit or stale generated asset.
 ## Parallelism and Critical Path
 
 - Critical path: Phase 1 → Phase 2 → Phase 8 crash evidence.
-- Authorization may proceed after the Phase 2 mutation boundary is stable.
+- Authorization may proceed after the canonical V3/gRPC mutation boundary is stable.
 - CI/Python and deployment packaging may run in parallel with durability work when their
   file scopes do not overlap.
 - Documentation follows behavior; claims are not finalized ahead of implementation.

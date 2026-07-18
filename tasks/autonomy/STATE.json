@@ -1,29 +1,37 @@
 {
   "schema_version": 1,
-  "generation": 4,
+  "generation": 5,
   "workflow": "deepdata-single-node-production-hardening",
   "status": "active",
   "execution_preapproved": true,
   "scope": {
     "release_target": "headless-single-node-server-rc",
+    "persistent_runtime": "linux-only",
+    "canonical_api": "tenant-aware-http-v3-and-mirrored-grpc",
+    "supported_mutations": "create-delete-collection-insert-batch-delete-document",
+    "supported_indexes": "hnsw-flat-inverted-sparse-bm25-hybrid",
+    "vectors": "caller-supplied",
+    "legacy_root_v2_writes": "disabled-out-of-scope",
+    "advanced_retrieval_and_llm_apis": "disabled-out-of-scope",
+    "web_ui": "non-gating",
     "distributed_ha": "experimental-out-of-scope",
     "desktop_installers": "out-of-scope",
     "transport_tls": "external-proxy-or-ingress",
     "encryption_at_rest": "encrypted-disk-or-pvc",
-    "feedback_extraction": "experimental-disabled-by-default",
+    "feedback_extraction": "disabled-out-of-scope",
     "external_publication": "requires-explicit-authority"
   },
   "started_at": "2026-07-17T22:51:42-05:00",
-  "updated_at": "2026-07-18T01:04:48-05:00",
+  "updated_at": "2026-07-18T07:16:35-05:00",
   "current_phase": "phase-2",
-  "current_step": "implement-shared-collection-durability-boundary",
-  "last_verified_commit": "4fff232be1a2c95d299b2998a2ecb6263157affe",
+  "current_step": "enforce-canonical-v3-grpc-surface-and-integrate-journal",
+  "last_verified_commit": "f33171a",
   "last_validation": {
-    "command": "scripts/hardening_check.sh go-short --force",
+    "command": "go test -race -count=1 -run TestCollectionJournal ./internal/collection",
     "working_directory": ".",
     "result": "passed"
   },
-  "next_action": "Implement a collection-specific durable snapshot and strict journal shared by HTTP V2, HTTP V3, and gRPC mutations; make corrupt startup fail closed.",
+  "next_action": "Disable unsupported mutation/advanced surfaces, make V3 and gRPC share the five-operation tenant-aware contract, then integrate the strict journal behind that single boundary.",
   "offline_queue": [
     "verify remote CI on the future candidate SHA",
     "run network-backed vulnerability and image database checks",
@@ -48,6 +56,8 @@
     "wal-only-and-sigkill-recovery",
     "snapshot-commit-serialization",
     "online-import-disabled-for-rc",
-    "phase-1-exit-gate"
+    "phase-1-exit-gate",
+    "strict-collection-mutation-journal",
+    "rc-scope-reduced-to-canonical-linux-tenant-api"
   ]
 }
