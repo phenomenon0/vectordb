@@ -38,6 +38,19 @@ from ._utils import (
 )
 
 
+def _require_response_object(data: object) -> dict[str, Any]:
+    """Validate that an untyped JSON response is an object with string keys."""
+    if not isinstance(data, dict):
+        raise DeepDataError("expected a JSON object response")
+
+    result: dict[str, Any] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            raise DeepDataError("expected JSON object response keys to be strings")
+        result[key] = value
+    return result
+
+
 class DeepDataClient:
     """Synchronous HTTP client for DeepData vector database.
 
@@ -318,15 +331,21 @@ class DeepDataClient:
                     normalized.append(f)
             payload["fields"] = normalized
 
-        return self._request("POST", "/v2/collections", json=payload)
+        return _require_response_object(
+            self._request("POST", "/v2/collections", json=payload)
+        )
 
     def get_collection(self, name: str) -> dict[str, Any]:
         """Get collection info (v2 endpoint)."""
-        return self._request("GET", f"/v2/collections/{name}")
+        return _require_response_object(
+            self._request("GET", f"/v2/collections/{name}")
+        )
 
     def delete_collection(self, name: str) -> dict[str, Any]:
         """Delete a collection (v2 endpoint)."""
-        return self._request("DELETE", f"/v2/collections/{name}")
+        return _require_response_object(
+            self._request("DELETE", f"/v2/collections/{name}")
+        )
 
     def collection_stats(self, name: str) -> CollectionStatsResponse:
         """Get collection statistics (v2 endpoint)."""
@@ -402,8 +421,13 @@ class TenantClient:
         self._client = client
         self._tenant_id = tenant_id
 
-    def _request(self, method: str, path: str, *, json: Any = None) -> Any:
-        return self._client._request(method, f"/v3/tenants/{self._tenant_id}{path}", json=json)
+    def _request(self, method: str, path: str, *, json: Any = None) -> dict[str, Any]:
+        data = self._client._request(
+            method,
+            f"/v3/tenants/{self._tenant_id}{path}",
+            json=json,
+        )
+        return _require_response_object(data)
 
     def create_collection(
         self,

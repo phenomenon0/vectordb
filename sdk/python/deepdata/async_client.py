@@ -35,6 +35,19 @@ from ._utils import (
 )
 
 
+def _require_response_object(data: object) -> dict[str, Any]:
+    """Validate that an untyped JSON response is an object with string keys."""
+    if not isinstance(data, dict):
+        raise DeepDataError("expected a JSON object response")
+
+    result: dict[str, Any] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            raise DeepDataError("expected JSON object response keys to be strings")
+        result[key] = value
+    return result
+
+
 class AsyncDeepDataClient:
     """Async HTTP client for DeepData vector database.
 
@@ -272,15 +285,21 @@ class AsyncDeepDataClient:
                     normalized.append(f)
             payload["fields"] = normalized
 
-        return await self._request("POST", "/v2/collections", json=payload)
+        return _require_response_object(
+            await self._request("POST", "/v2/collections", json=payload)
+        )
 
     async def get_collection(self, name: str) -> dict[str, Any]:
         """Get collection info."""
-        return await self._request("GET", f"/v2/collections/{name}")
+        return _require_response_object(
+            await self._request("GET", f"/v2/collections/{name}")
+        )
 
     async def delete_collection(self, name: str) -> dict[str, Any]:
         """Delete a collection."""
-        return await self._request("DELETE", f"/v2/collections/{name}")
+        return _require_response_object(
+            await self._request("DELETE", f"/v2/collections/{name}")
+        )
 
     async def collection_stats(self, name: str) -> CollectionStatsResponse:
         """Get collection statistics."""
@@ -336,8 +355,19 @@ class AsyncTenantClient:
         self._client = client
         self._tenant_id = tenant_id
 
-    async def _request(self, method: str, path: str, *, json: Any = None) -> Any:
-        return await self._client._request(method, f"/v3/tenants/{self._tenant_id}{path}", json=json)
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+    ) -> dict[str, Any]:
+        data = await self._client._request(
+            method,
+            f"/v3/tenants/{self._tenant_id}{path}",
+            json=json,
+        )
+        return _require_response_object(data)
 
     async def create_collection(
         self,

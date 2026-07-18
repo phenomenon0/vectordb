@@ -23,6 +23,7 @@ from deepdata import (
 from deepdata.errors import (
     APIError,
     AuthenticationError,
+    DeepDataError,
     NotFoundError,
     RateLimitError,
     ServerError,
@@ -286,6 +287,15 @@ class TestCollections:
             ])
             assert result["status"] == "success"
 
+    def test_create_collection_rejects_non_object_response(self) -> None:
+        with respx.mock:
+            respx.post(f"{BASE}/v2/collections").mock(
+                return_value=httpx.Response(201, json=[])
+            )
+            client = _client()
+            with pytest.raises(DeepDataError, match="expected a JSON object response"):
+                client.create_collection("papers")
+
     def test_delete_collection(self) -> None:
         with respx.mock:
             respx.delete(f"{BASE}/v2/collections/papers").mock(
@@ -420,6 +430,15 @@ class TestTenantClient:
             result = tenant.insert("papers", vectors={"embedding": [0.1, 0.2]}, metadata={"topic": "ml"})
             assert result["id"] == 7
             assert route.called
+
+    def test_insert_rejects_non_object_response(self) -> None:
+        with respx.mock:
+            respx.post(f"{BASE}/v3/tenants/tenant-123/collections/papers/docs").mock(
+                return_value=httpx.Response(200, json=[])
+            )
+            tenant = _client().tenant("tenant-123")
+            with pytest.raises(DeepDataError, match="expected a JSON object response"):
+                tenant.insert("papers", vectors={"embedding": [0.1, 0.2]})
 
     def test_search_uses_collection_search_route(self) -> None:
         with respx.mock:

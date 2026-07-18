@@ -12,7 +12,7 @@ from deepdata import (
     SearchResult,
     HealthResponse,
 )
-from deepdata.errors import AuthenticationError
+from deepdata.errors import AuthenticationError, DeepDataError
 
 BASE = "http://testserver:8080"
 
@@ -105,6 +105,15 @@ class TestAsyncCollections:
                 result = await client.create_collection("papers")
                 assert result["status"] == "success"
 
+    async def test_create_collection_rejects_non_object_response(self) -> None:
+        with respx.mock:
+            respx.post(f"{BASE}/v2/collections").mock(
+                return_value=httpx.Response(201, json=[])
+            )
+            async with AsyncDeepDataClient(BASE, retry=None) as client:
+                with pytest.raises(DeepDataError, match="expected a JSON object response"):
+                    await client.create_collection("papers")
+
     async def test_delete_collection(self) -> None:
         with respx.mock:
             respx.delete(f"{BASE}/v2/collections/papers").mock(
@@ -126,6 +135,16 @@ class TestAsyncTenantClient:
                 result = await tenant.insert("papers", vectors={"embedding": [0.1, 0.2]})
                 assert result["id"] == 11
                 assert route.called
+
+    async def test_insert_rejects_non_object_response(self) -> None:
+        with respx.mock:
+            respx.post(f"{BASE}/v3/tenants/tenant-123/collections/papers/docs").mock(
+                return_value=httpx.Response(200, json=[])
+            )
+            async with AsyncDeepDataClient(BASE, retry=None) as client:
+                tenant = client.tenant("tenant-123")
+                with pytest.raises(DeepDataError, match="expected a JSON object response"):
+                    await tenant.insert("papers", vectors={"embedding": [0.1, 0.2]})
 
     async def test_search_uses_collection_search_route(self) -> None:
         with respx.mock:
