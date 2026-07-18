@@ -22,8 +22,9 @@ jobs:
         run: go vet ./...
         env:
           CGO_ENABLED: '0'
-      - name: Run Go tests
-        run: go test ./... -timeout 300s -count=1
+      - name: Run Go tests (short suite)
+        # 10M/50M/100M tests additionally require DEEPDATA_RUN_SCALE_TESTS=1.
+        run: go test -short -timeout 300s -count=1 ./...
         env:
           CGO_ENABLED: '0'
 
@@ -36,6 +37,15 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
       - name: Run Go tests with race detector
         run: go test -race -short -timeout 300s -count=1 ./...
+        env:
+          CGO_ENABLED: '1'
+      - name: Run SIMD C reference correctness when AVX2 is available
+        run: |
+          if grep -qw avx2 /proc/cpuinfo; then
+            go test -tags=cref -timeout 60s -count=1 ./internal/index/simd -run '^TestCRef_Correctness$'
+          else
+            echo 'AVX2 unavailable; C reference execution skipped'
+          fi
         env:
           CGO_ENABLED: '1'
 
@@ -86,7 +96,7 @@ jobs:
         working-directory: tests/ui
         run: npx playwright test
         env:
-          DEEPDATA_BIN: ./deepdata-test
+          DEEPDATA_BIN: ${{ github.workspace }}/tests/ui/deepdata-test
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4

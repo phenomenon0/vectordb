@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
 	"runtime"
 	"sync"
 	"testing"
@@ -31,7 +32,22 @@ const (
 	DefaultEF     = 100
 	DefaultM      = 16
 	DefaultEfCons = 200
+
+	// scaleTestEnv is deliberately not set by ordinary PR CI. The scale tests
+	// below allocate enough memory and disk to overwhelm a hosted CI runner, so
+	// they require an explicit opt-in even when go test is run without -short.
+	scaleTestEnv = "DEEPDATA_RUN_SCALE_TESTS"
 )
+
+func requireScaleTests(t *testing.T) {
+	t.Helper()
+	if os.Getenv(scaleTestEnv) != "1" {
+		t.Skipf("set %s=1 to run large scale tests", scaleTestEnv)
+	}
+	if testing.Short() {
+		t.Skip("skipping large scale test in short mode")
+	}
+}
 
 // BenchmarkConfig holds configuration for benchmark runs
 type BenchmarkConfig struct {
@@ -352,9 +368,7 @@ func BenchmarkThroughput_Search_100K(b *testing.B) {
 // =============================================================================
 
 func TestScale10M(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping 10M scale test in short mode")
-	}
+	requireScaleTests(t)
 
 	cfg := BenchmarkConfig{
 		NumVectors:     Scale10M,
@@ -449,9 +463,7 @@ const (
 )
 
 func TestScale50M(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping 50M scale test in short mode")
-	}
+	requireScaleTests(t)
 
 	// Check available memory - this test is memory-intensive
 	var m runtime.MemStats
@@ -571,9 +583,7 @@ func TestScale50M(t *testing.T) {
 // =============================================================================
 
 func TestScale100M(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping 100M scale test in short mode")
-	}
+	requireScaleTests(t)
 
 	cfg := BenchmarkConfig{
 		NumVectors:     Scale100M,
@@ -708,9 +718,7 @@ func TestScale100M(t *testing.T) {
 // =============================================================================
 
 func TestScaleLargeWithQuantization(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping large scale quantization test in short mode")
-	}
+	requireScaleTests(t)
 
 	// This test validates memory efficiency using product quantization compression
 	// Can run 10M vectors in ~4GB instead of ~15GB

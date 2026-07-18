@@ -1,4 +1,4 @@
-//go:build amd64
+//go:build amd64 && cgo && cref
 
 // Package cref provides C reference implementations of SIMD distance functions
 // for benchmarking against the hand-written Go assembly in the simd package.
