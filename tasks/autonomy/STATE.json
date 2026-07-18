@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generation": 2,
+  "generation": 3,
   "workflow": "deepdata-single-node-production-hardening",
   "status": "active",
   "execution_preapproved": true,
@@ -14,16 +14,16 @@
     "external_publication": "requires-explicit-authority"
   },
   "started_at": "2026-07-17T22:51:42-05:00",
-  "updated_at": "2026-07-17T23:34:36-05:00",
+  "updated_at": "2026-07-18T00:08:21-05:00",
   "current_phase": "phase-1",
-  "current_step": "add-failing-snapshot-fidelity-and-recovery-tests",
-  "last_verified_commit": "a5720b8",
+  "current_step": "repair-wal-only-startup-and-post-replay-checkpoint-ordering",
+  "last_verified_commit": "6b1f2a34bbc4e629e132912d6dfa973f6f7e06db",
   "last_validation": {
     "command": "GOCACHE=.deepdata-run/go-build-cache GOMODCACHE=/tmp/deepdata-go-mod CGO_ENABLED=1 go test -short -count=1 -timeout 600s ./...",
     "working_directory": ".",
     "result": "passed"
   },
-  "next_action": "Commit the Phase 0 runner and baseline, then add failing storage characterization tests.",
+  "next_action": "Add WAL-only startup, unknown-operation, and replay-checkpoint tests; retain recovery logs until a synced snapshot contains their mutations.",
   "offline_queue": [
     "verify remote CI on the future candidate SHA",
     "run network-backed vulnerability and image database checks",
@@ -37,6 +37,12 @@
     "global-workflow-skill-upgraded",
     "phase-0-plan-and-resume-protocol",
     "phase-0-baseline",
-    "phase-0-local-check-runner"
+    "phase-0-local-check-runner",
+    "python-sdk-strict-typing",
+    "snapshot-codec-field-fidelity",
+    "snapshot-fail-closed-startup",
+    "canonical-state-and-index-integrity",
+    "compaction-sequence-durability",
+    "ci-go-and-playwright-gates"
   ]
 }

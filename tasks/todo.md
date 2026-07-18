@@ -55,13 +55,13 @@ the next exact action without relying on chat history.
 
 ## Phase 1 — Snapshot Fidelity and Fail-Closed Recovery
 
-- [ ] Add failing tests proving the default storage codec loses tenant/index semantics.
-- [ ] Define and version the persisted snapshot envelope and index descriptors.
-- [ ] Round-trip tenant ownership, named indexes, index types/configuration, vectors,
+- [x] Add failing tests proving the default storage codec loses tenant/index semantics.
+- [x] Define and version the persisted snapshot envelope and index descriptors.
+- [x] Round-trip tenant ownership, named indexes, index types/configuration, vectors,
       documents, metadata, IDs, and all required recovery fields through the default codec.
-- [ ] Preserve backward reads or provide an explicit, tested migration path.
-- [ ] Compute integrity data from the state being written and cover meaningful content.
-- [ ] Make unreadable/corrupt/incompatible snapshots fail closed or enter an explicit
+- [x] Preserve backward reads or provide an explicit, tested migration path.
+- [x] Compute integrity data from the state being written and cover meaningful content.
+- [x] Make unreadable/corrupt/incompatible snapshots fail closed or enter an explicit
       quarantine/recovery mode; never start empty and overwrite the source.
 - [ ] Replay a valid WAL when snapshot recovery permits it, without duplicate mutation.
 - [ ] Add round-trip, truncation, bit-flip, stale-checksum, migration, and subprocess tests.
@@ -112,10 +112,10 @@ through the production startup path rather than library-only tests.
 
 ## Phase 5 — CI, UI, and Python SDK Gates
 
-- [ ] Fix the CGO-disabled SIMD test/build-constraint failure.
+- [x] Fix the CGO-disabled SIMD test/build-constraint failure.
 - [ ] Keep ordinary Go CI short; move 10M/50M/100M tests to a deliberate scale job.
-- [ ] Make Playwright launch the binary produced by its CI job.
-- [ ] Fix the 16 strict SDK mypy errors from the SDK's own project directory.
+- [x] Make Playwright launch the binary produced by its CI job.
+- [x] Fix the 16 strict SDK mypy errors from the SDK's own project directory.
 - [ ] Add Python unit, strict typing, package-build, install, and live-server integration CI.
 - [ ] Add crash/restart smoke, Docker, Helm, and VDB correctness jobs at suitable cadence.
 - [ ] Remove artifact uploads that silently ignore missing outputs.
