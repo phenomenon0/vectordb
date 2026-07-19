@@ -1,25 +1,73 @@
-# Multi-Vector Collection API (v2)
+# Canonical collection API (release candidate)
 
-This document describes the new v2 API for multi-vector collections, which supports hybrid search with dense and sparse vectors.
+This document describes the supported collection contract for the DeepData
+release candidate. The production surface is deliberately small:
 
-## Overview
+- persistent, single-node operation on Linux only;
+- tenant-aware V3 HTTP plus the equivalent unary gRPC service;
+- caller-supplied dense and sparse vectors;
+- HNSW or Flat for dense fields and Inverted/BM25 for sparse fields;
+- one-field search or two-field hybrid search; and
+- five mutations: create/delete collection, insert, atomic batch insert, and
+  delete document.
 
-The v2 API enables:
-- **Multi-vector collections**: Store multiple vector types (dense + sparse) per document
-- **Hybrid search**: Combine dense semantic search with sparse keyword search
-- **Flexible schema**: Define multiple vector fields with different index types per collection
-- **RRF fusion**: Reciprocal Rank Fusion for combining search results
+Historical V2/root routes and advanced source packages are not part of this
+contract.
 
-## API Endpoints
+## Runtime and authentication
 
-All v2 endpoints are prefixed with `/v2/`.
+The server owns one data directory and holds a lifetime filesystem lock. A
+second writer is rejected. Persistent startup on Windows and macOS is rejected
+because their filesystem semantics are not release-qualified.
 
-### Collection Management
+For production, configure either a static bearer token or JWT verification and
+require authentication:
 
-#### Create Collection
+```bash
+export API_TOKEN='replace-with-a-long-random-token'
+export REQUIRE_AUTH=1
+./deepdata serve
+```
+
+Send the credential on HTTP requests as:
 
 ```http
-POST /v2/collections
+Authorization: Bearer replace-with-a-long-random-token
+```
+
+A static token is an administrative credential. JWTs can carry a `tenant_id`,
+`read`, `write`, or `admin` permissions, and an optional collection allowlist.
+See [the security guide](../../docs/security.md) for the permission mapping and
+network boundary.
+
+## HTTP routes
+
+All canonical data routes are below `/v3/tenants/{tenant_id}`.
+
+| Method | Path | Required permission | Operation |
+|---|---|---|---|
+| `GET` | `/v3/tenants/{tenant_id}` | `admin` | Tenant counters |
+| `GET` | `/v3/tenants/{tenant_id}/collections` | `admin` | List collections |
+| `POST` | `/v3/tenants/{tenant_id}/collections` | `admin` | Create collection |
+| `GET` | `/v3/tenants/{tenant_id}/collections/{name}` | `read` | Get collection |
+| `DELETE` | `/v3/tenants/{tenant_id}/collections/{name}` | `admin` | Delete collection |
+| `POST` | `/v3/tenants/{tenant_id}/collections/{name}/docs` | `write` | Insert document |
+| `POST` | `/v3/tenants/{tenant_id}/collections/{name}/docs/batch` | `write` | Atomic batch insert |
+| `DELETE` | `/v3/tenants/{tenant_id}/collections/{name}/docs` | `write` | Delete document |
+| `POST` | `/v3/tenants/{tenant_id}/collections/{name}/search` | `read` | Search |
+
+Tenant and collection path identifiers must contain 1–64 ASCII letters,
+digits, hyphens, or underscores. JSON request bodies are strict; unknown fields
+are rejected.
+
+The unauthenticated operational routes are `GET /livez`, `GET /healthz`,
+`GET /readyz`, and `GET /metrics`. Restrict them at the network boundary.
+
+### Create a collection
+
+```http
+POST /v3/tenants/acme/collections
+Authorization: Bearer TOKEN
 Content-Type: application/json
 
 {
@@ -27,527 +75,176 @@ Content-Type: application/json
   "fields": [
     {
       "name": "embedding",
-      "type": 0,
-      "dim": 384,
+      "type": "dense",
+      "dim": 3,
       "index": {
-        "type": 0,
-        "params": {
-          "m": 16,
-          "ef_construction": 200
-        }
+        "type": "hnsw",
+        "params": {"m": 16, "ef_construction": 200}
       }
     },
     {
       "name": "keywords",
-      "type": 1,
+      "type": "sparse",
       "dim": 10000,
       "index": {
-        "type": 4,
-        "params": {
-          "k1": 1.2,
-          "b": 0.75
-        }
+        "type": "inverted",
+        "params": {"k1": 1.2, "b": 0.75}
       }
     }
   ],
-  "description": "Product catalog with semantic + keyword search"
+  "description": "Dense and sparse product retrieval"
 }
 ```
 
-**Vector Types:**
-- `0`: Dense (embeddings)
-- `1`: Sparse (BM25, SPLADE)
-- `2`: Binary (future)
+Supported field/index combinations are:
 
-**Index Types:**
-- `0`: HNSW (graph-based, best for dense vectors)
-- `1`: IVF (clustering-based)
-- `2`: FLAT (brute-force exact search)
-- `3`: DiskANN (disk-backed hybrid)
-- `4`: Inverted (best for sparse vectors)
+| Vector field | Index | Notes |
+|---|---|---|
+| Dense | `hnsw` | Approximate cosine search |
+| Dense | `flat` | Exact cosine by default; `metric` may be `cosine` or `euclidean` |
+| Sparse | `inverted` | Sparse/BM25-style scoring; optional `k1` and `b` |
 
-**Response:**
-```json
-{
-  "status": "success",
-  "message": "collection \"products\" created"
-}
-```
+IVF, DiskANN, binary vectors, quantization, and CUDA are rejected by the
+canonical persistence boundary.
 
-#### List Collections
+### Insert one document
 
 ```http
-GET /v2/collections
+POST /v3/tenants/acme/collections/products/docs
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{
+  "id": 1001,
+  "vectors": {
+    "embedding": [0.1, 0.2, 0.3],
+    "keywords": {
+      "indices": [4, 19],
+      "values": [0.8, 0.4],
+      "dim": 10000
+    }
+  },
+  "metadata": {"category": "audio"}
+}
 ```
 
-**Response:**
-```json
+An explicitly supplied ID must be a positive `uint64`. Omit `id` to have the
+server assign one. V3 has no upsert or metadata-update mutation.
+
+### Insert a batch
+
+```http
+POST /v3/tenants/acme/collections/products/docs/batch
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
 {
-  "status": "success",
-  "count": 2,
-  "collections": [
+  "documents": [
     {
-      "name": "products",
-      "fields": [...],
-      "description": "Product catalog",
-      "metadata": {},
-      "doc_count": 1500
+      "id": 1002,
+      "vectors": {"embedding": [0.2, 0.1, 0.4]},
+      "metadata": {"category": "audio"}
+    },
+    {
+      "id": 1003,
+      "vectors": {"embedding": [0.8, 0.1, 0.1]}
     }
   ]
 }
 ```
 
-#### Get Collection Info
+A batch contains at most 10,000 documents and is all-or-nothing. There is no
+partial-success or continue-on-error mode.
+
+### Delete a document
 
 ```http
-GET /v2/collections/{name}
+DELETE /v3/tenants/acme/collections/products/docs
+Authorization: Bearer TOKEN
+Content-Type: application/json
+
+{"doc_id": 1003}
 ```
 
-**Response:**
-```json
-{
-  "status": "success",
-  "collection": {
-    "name": "products",
-    "fields": [
-      {
-        "name": "embedding",
-        "type": 0,
-        "dim": 384,
-        "index": {
-          "type": 0,
-          "params": {"m": 16, "ef_construction": 200}
-        }
-      },
-      {
-        "name": "keywords",
-        "type": 1,
-        "dim": 10000,
-        "index": {
-          "type": 4,
-          "params": {"k1": 1.2, "b": 0.75}
-        }
-      }
-    ],
-    "description": "Product catalog",
-    "doc_count": 1500
-  }
-}
-```
+### Search
 
-#### Get Collection Statistics
+Dense search supplies the query vector for the named field:
 
 ```http
-GET /v2/collections/{name}/stats
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "name": "products",
-  "doc_count": 1500,
-  "manager_stats": {
-    "collection_count": 3,
-    "total_documents": 4200,
-    "collections": {
-      "products": {
-        "name": "products",
-        "doc_count": 1500,
-        "field_count": 2
-      }
-    }
-  }
-}
-```
-
-#### Delete Collection
-
-```http
-DELETE /v2/collections/{name}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "message": "collection \"products\" deleted"
-}
-```
-
-### Document Operations
-
-#### Insert Document
-
-```http
-POST /v2/insert
+POST /v3/tenants/acme/collections/products/search
+Authorization: Bearer TOKEN
 Content-Type: application/json
 
 {
-  "collection": "products",
-  "doc": "High-quality wireless headphones with noise cancellation",
-  "vectors": {
-    "embedding": [0.1, 0.2, 0.3, ...],  // Dense vector (384 dims)
-    "keywords": {
-      "indices": [42, 157, 389, 1024, 2056],
-      "values": [2.5, 1.8, 3.2, 1.0, 2.1],
-      "dim": 10000
-    }
-  },
-  "metadata": {
-    "category": "electronics",
-    "price": "299.99",
-    "brand": "AudioTech"
-  }
+  "queries": {"embedding": [0.1, 0.2, 0.3]},
+  "top_k": 10,
+  "ef_search": 128,
+  "filters": {"category": {"$eq": "audio"}},
+  "include_vectors": false
 }
 ```
 
-**Response:**
+Two-field hybrid search requires explicit fusion parameters:
+
 ```json
 {
-  "status": "success",
-  "id": 42,
-  "message": "document added"
-}
-```
-
-#### Batch Insert (SOTA - 10-50x throughput)
-
-Insert multiple documents in a single HTTP request for maximum throughput.
-
-```http
-POST /v2/insert/batch
-Content-Type: application/json
-
-{
-  "collection": "products",
-  "docs": [
-    {
-      "vectors": {
-        "embedding": [0.1, 0.2, 0.3, ...],
-        "keywords": {"indices": [42, 157], "values": [2.5, 1.8], "dim": 10000}
-      },
-      "metadata": {"category": "electronics", "price": "299.99"}
-    },
-    {
-      "vectors": {
-        "embedding": [0.4, 0.5, 0.6, ...]
-      },
-      "metadata": {"category": "audio", "price": "149.99"}
-    }
-  ],
-  "continue_on_error": true
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "ids": [42, 43],
-  "inserted": 2,
-  "failed": 0,
-  "errors": {}
-}
-```
-
-**Parameters:**
-- `collection` (required): Collection name
-- `docs` (required): Array of documents (max 10,000 per request)
-- `continue_on_error` (optional): Continue inserting remaining docs if some fail (default: false)
-
-**Error Response (partial failure):**
-```json
-{
-  "status": "success",
-  "ids": [42],
-  "inserted": 1,
-  "failed": 1,
-  "errors": {"1": "invalid sparse vector format for field keywords"}
-}
-```
-
-#### Search (Dense-only)
-
-```http
-POST /v2/search
-Content-Type: application/json
-
-{
-  "collection": "products",
   "queries": {
-    "embedding": [0.15, 0.22, 0.31, ...]
-  },
-  "top_k": 10
-}
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "documents": [
-    {
-      "id": 42,
-      "vectors": {...},
-      "metadata": {
-        "category": "electronics",
-        "price": "299.99"
-      }
-    }
-  ],
-  "scores": [0.95, 0.89, 0.87, ...],
-  "candidates_examined": 120
-}
-```
-
-#### Hybrid Search (Dense + Sparse with RRF)
-
-```http
-POST /v2/search
-Content-Type: application/json
-
-{
-  "collection": "products",
-  "queries": {
-    "embedding": [0.15, 0.22, 0.31, ...],  // Semantic query
-    "keywords": {                           // Keyword query
-      "indices": [42, 157],
-      "values": [1.0, 0.8],
-      "dim": 10000
-    }
+    "embedding": [0.1, 0.2, 0.3],
+    "keywords": {"indices": [4, 19], "values": [0.8, 0.4], "dim": 10000}
   },
   "top_k": 10,
   "hybrid_params": {
-    "strategy": "rrf",
-    "weights": {
-      "dense": 0.7,
-      "sparse": 0.3
-    },
-    "rrf_constant": 60.0
+    "strategy": "weighted",
+    "weights": {"embedding": 0.8, "keywords": 0.2}
   }
 }
 ```
 
-**Fusion Strategies:**
-- `"rrf"`: Reciprocal Rank Fusion (default, parameter-free)
-- `"weighted"`: Weighted sum of scores
-- `"linear"`: Linear combination
+Search accepts at most two query fields and `top_k` must be between 1 and
+1,000. Supported fusion strategies are `rrf`, `weighted`, and `linear`.
 
-**Response:**
-```json
-{
-  "status": "success",
-  "documents": [...],
-  "scores": [0.98, 0.93, 0.89, ...],
-  "candidates_examined": 240
-}
-```
+## gRPC mirror
 
-#### Delete Document
+The canonical protobuf is
+[`api/proto/deepdata/v3/deepdata.proto`](../../api/proto/deepdata/v3/deepdata.proto).
+`deepdata.v3.DeepData` exposes exactly nine unary RPCs:
 
-```http
-POST /v2/delete
-Content-Type: application/json
+1. `GetTenantInfo`
+2. `ListCollections`
+3. `GetCollection`
+4. `CreateCollection`
+5. `DeleteCollection`
+6. `Insert`
+7. `BatchInsert`
+8. `Search`
+9. `DeleteDoc`
 
-{
-  "collection": "products",
-  "doc_id": 42
-}
-```
+Pass the same bearer credential in gRPC `authorization` metadata. The gRPC
+methods use the same tenant manager, authorization decisions, validation, and
+durable mutation journal as HTTP. There are no streaming RPCs in the RC.
 
-**Response:**
-```json
-{
-  "status": "success",
-  "message": "document 42 deleted from collection products"
-}
-```
+## Durability behavior
 
-## Usage Examples
+Each accepted mutation is validated, appended and synchronized to the journal,
+and then applied before success is returned. Startup replays complete journal
+records after the latest checksummed snapshot. A terminal EOF-short frame in
+the active journal is treated as an unacknowledged torn append: recovery
+truncates to the last fully verified frame, synchronizes that repair, and
+reparses before accepting traffic. Frozen or otherwise malformed/corrupt
+records still fail closed. A journal/apply fault latches
+the store unhealthy: canonical HTTP mutations and reads fail closed and
+`/readyz` returns `503` until an operator restarts after addressing the cause.
 
-### Python Example
+Graceful shutdown checkpoints the store after handlers drain. Crash recovery
+does not depend on graceful shutdown.
 
-```python
-import requests
-import numpy as np
+## Explicitly outside the RC
 
-API_URL = "http://localhost:8080"
-
-# 1. Create collection
-schema = {
-    "name": "articles",
-    "fields": [
-        {
-            "name": "embedding",
-            "type": 0,  # Dense
-            "dim": 768,
-            "index": {
-                "type": 0,  # HNSW
-                "params": {"m": 16, "ef_construction": 200}
-            }
-        },
-        {
-            "name": "keywords",
-            "type": 1,  # Sparse
-            "dim": 50000,
-            "index": {
-                "type": 4,  # Inverted
-                "params": {"k1": 1.2, "b": 0.75}
-            }
-        }
-    ],
-    "description": "News articles with hybrid search"
-}
-
-resp = requests.post(f"{API_URL}/v2/collections", json=schema)
-print(f"Collection created: {resp.json()}")
-
-# 2. Insert document with dense + sparse vectors
-doc = {
-    "collection": "articles",
-    "doc": "AI breakthrough in natural language processing",
-    "vectors": {
-        "embedding": np.random.randn(768).tolist(),  # Dense embedding
-        "keywords": {
-            "indices": [42, 157, 389, 1024],
-            "values": [2.5, 1.8, 3.2, 1.0],
-            "dim": 50000
-        }
-    },
-    "metadata": {
-        "category": "technology",
-        "published": "2025-12-10"
-    }
-}
-
-resp = requests.post(f"{API_URL}/v2/insert", json=doc)
-print(f"Document added: {resp.json()}")
-
-# 3. Hybrid search
-search_req = {
-    "collection": "articles",
-    "queries": {
-        "embedding": np.random.randn(768).tolist(),  # Semantic query
-        "keywords": {
-            "indices": [42, 157],
-            "values": [1.0, 0.8],
-            "dim": 50000
-        }
-    },
-    "top_k": 5,
-    "hybrid_params": {
-        "strategy": "rrf",
-        "weights": {"dense": 0.7, "sparse": 0.3},
-        "rrf_constant": 60.0
-    }
-}
-
-resp = requests.post(f"{API_URL}/v2/search", json=search_req)
-results = resp.json()
-print(f"Found {len(results['documents'])} results")
-for doc, score in zip(results['documents'], results['scores']):
-    print(f"  Score {score:.3f}: {doc['metadata']}")
-```
-
-### cURL Examples
-
-**Create collection:**
-```bash
-curl -X POST http://localhost:8080/v2/collections \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "products",
-    "fields": [
-      {
-        "name": "embedding",
-        "type": 0,
-        "dim": 384,
-        "index": {"type": 0, "params": {"m": 16}}
-      }
-    ]
-  }'
-```
-
-**Insert document:**
-```bash
-curl -X POST http://localhost:8080/v2/insert \
-  -H "Content-Type: application/json" \
-  -d '{
-    "collection": "products",
-    "doc": "Wireless headphones",
-    "vectors": {
-      "embedding": [0.1, 0.2, 0.3, ...]
-    }
-  }'
-```
-
-**Search:**
-```bash
-curl -X POST http://localhost:8080/v2/search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "collection": "products",
-    "queries": {
-      "embedding": [0.15, 0.22, ...]
-    },
-    "top_k": 5
-  }'
-```
-
-## Migration from v1 to v2
-
-**Key Differences:**
-
-| Feature | v1 (Legacy) | v2 (Multi-Vector) |
-|---------|-------------|-------------------|
-| Endpoint prefix | `/admin/collection/` | `/v2/collections` |
-| Collection schema | Single index type | Multiple vector fields |
-| Vectors per document | One | Multiple (dense + sparse) |
-| Hybrid search | Not supported | Full support with RRF |
-| Index types | HNSW, IVF, FLAT | + Inverted for sparse |
-
-**Migration Steps:**
-
-1. Create new v2 collection with multi-vector schema
-2. Export documents from v1 collection
-3. Re-encode documents with sparse vectors (e.g., BM25, SPLADE)
-4. Insert into v2 collection with both dense and sparse vectors
-5. Test hybrid search performance
-6. Switch application to use v2 endpoints
-7. Delete old v1 collection
-
-## Performance Considerations
-
-- **Dense-only search**: Similar performance to v1 (HNSW index)
-- **Sparse-only search**: Fast with inverted index (BM25 scoring)
-- **Hybrid search**: ~2x candidates examined, but much better relevance
-- **Memory usage**: +5-10% per collection due to multiple indexes
-- **Cowrie encoding**: 48% smaller for dense, 94% smaller for sparse vectors
-
-## Best Practices
-
-1. **Use hybrid search for production RAG**: Combines semantic understanding with exact keyword matching
-2. **Tune fusion weights**: Start with `dense: 0.7, sparse: 0.3`, adjust based on evaluation
-3. **Index configuration**:
-   - Dense: `m=16, ef_construction=200` for good recall/speed balance
-   - Sparse: `k1=1.2, b=0.75` (standard BM25 parameters)
-4. **Sparse vector generation**: Use BM25 tokenization or SPLADE model
-5. **Field naming**: Use descriptive names like "embedding", "keywords", "title_sparse"
-
-## Troubleshooting
-
-**"collection already exists"**: Use GET /v2/collections to list existing collections
-
-**"dimension mismatch"**: Verify vector dimensions match schema definition
-
-**"invalid sparse vector format"**: Ensure sparse vectors have `indices`, `values`, and `dim` fields
-
-**"hybrid search requires 2 fields"**: Current implementation requires exactly 1 dense + 1 sparse field
-
-## References
-
-- [RRF Paper](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)
-- [BM25 Algorithm](https://en.wikipedia.org/wiki/Okapi_BM25)
-- [HNSW Paper](https://arxiv.org/abs/1603.09320)
-- [Cowrie Format](../storage/README.md)
+- V2 and root writes, rename, metadata mutation, upsert, bulk-specialized
+  imports, document fetch/scan, and destructive “drop all” operations;
+- server-managed embeddings or provider hot-swapping;
+- GraphRAG, extraction, recommendation, discovery, and feedback APIs;
+- replication, clustering, follower restore, and snapshot streaming;
+- IVF, DiskANN, binary/PQ quantization, and CUDA; and
+- the web UI, desktop wrapper, and legacy broad SDK methods as supported
+  production surfaces.

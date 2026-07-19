@@ -6,6 +6,21 @@ import (
 	"strings"
 )
 
+// IsValidCanonicalIdentifier reports whether a tenant/collection identifier is
+// safe as one unescaped canonical URL path segment and stable across clients.
+func IsValidCanonicalIdentifier(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for _, char := range value {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '_' || char == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // VectorType defines the type of vector stored in a field.
 type VectorType int
 
@@ -331,6 +346,15 @@ func (d *Document) SetMetadata(key string, value interface{}) {
 	d.Metadata[key] = value
 }
 
+const (
+	// CanonicalMaxSearchFields bounds the deliberately small RC hybrid surface.
+	CanonicalMaxSearchFields = 2
+	// CanonicalMaxSearchTopK bounds result allocation and response size.
+	CanonicalMaxSearchTopK = 1000
+	// CanonicalMaxBatchDocuments bounds one atomic journaled batch.
+	CanonicalMaxBatchDocuments = 10_000
+)
+
 // SearchRequest represents a multi-vector search request.
 type SearchRequest struct {
 	// Collection to search
@@ -396,13 +420,13 @@ type SearchResponse struct {
 
 // RecommendRequest represents a recommendation request using positive/negative examples.
 type RecommendRequest struct {
-	CollectionName string   `json:"collection"`
-	FieldName      string   `json:"field"`
-	PositiveIDs    []uint64 `json:"positive_ids"`
-	NegativeIDs    []uint64 `json:"negative_ids"`
-	NegativeWeight float32  `json:"negative_weight"`
-	TopK           int      `json:"top_k"`
-	EfSearch       int      `json:"ef_search"`
+	CollectionName string                 `json:"collection"`
+	FieldName      string                 `json:"field"`
+	PositiveIDs    []uint64               `json:"positive_ids"`
+	NegativeIDs    []uint64               `json:"negative_ids"`
+	NegativeWeight float32                `json:"negative_weight"`
+	TopK           int                    `json:"top_k"`
+	EfSearch       int                    `json:"ef_search"`
 	Filters        map[string]interface{} `json:"filters,omitempty"`
 }
 
@@ -414,12 +438,12 @@ type ContextPair struct {
 
 // DiscoverRequest represents a context-based discovery search request.
 type DiscoverRequest struct {
-	CollectionName string        `json:"collection"`
-	FieldName      string        `json:"field"`
-	TargetID       uint64        `json:"target_id"`
-	TargetVector   []float32     `json:"target_vector"`
-	Context        []ContextPair `json:"context"`
-	TopK           int           `json:"top_k"`
-	EfSearch       int           `json:"ef_search"`
+	CollectionName string                 `json:"collection"`
+	FieldName      string                 `json:"field"`
+	TargetID       uint64                 `json:"target_id"`
+	TargetVector   []float32              `json:"target_vector"`
+	Context        []ContextPair          `json:"context"`
+	TopK           int                    `json:"top_k"`
+	EfSearch       int                    `json:"ef_search"`
 	Filters        map[string]interface{} `json:"filters,omitempty"`
 }

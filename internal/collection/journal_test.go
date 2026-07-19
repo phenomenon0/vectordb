@@ -133,8 +133,6 @@ func TestCollectionJournalParserRejectsMalformedFrames(t *testing.T) {
 	otherStoreID := collectionJournalTestStoreID
 	otherStoreID[0] ^= 0xff
 
-	partialHeader := append([]byte(nil), valid[:17]...)
-	partialBody := append([]byte(nil), valid[:len(valid)-1]...)
 	badChecksum := append([]byte(nil), valid...)
 	badChecksum[len(badChecksum)-1] ^= 0xff
 	unknownVersion := append([]byte(nil), valid...)
@@ -156,13 +154,11 @@ func TestCollectionJournalParserRejectsMalformedFrames(t *testing.T) {
 		data    []byte
 		wantErr string
 	}{
-		{name: "partial header", data: partialHeader, wantErr: "partial frame header"},
-		{name: "partial body", data: partialBody, wantErr: "partial frame body"},
 		{name: "checksum", data: badChecksum, wantErr: "checksum mismatch"},
 		{name: "version", data: unknownVersion, wantErr: "unknown version"},
 		{name: "store UUID", data: wrongStore, wantErr: "store UUID mismatch"},
 		{name: "oversized", data: oversized, wantErr: "maximum"},
-		{name: "trailing junk", data: trailingJunk, wantErr: "trailing junk"},
+		{name: "trailing junk", data: trailingJunk, wantErr: "does not match the expected frame prefix"},
 		{name: "magic", data: badMagic, wantErr: "invalid magic"},
 		{name: "header size", data: badHeaderSize, wantErr: "unsupported header size"},
 		{name: "zero LSN", data: zeroLSN, wantErr: "zero LSN"},
@@ -178,6 +174,178 @@ func TestCollectionJournalParserRejectsMalformedFrames(t *testing.T) {
 			}
 			if j != nil || records != nil {
 				t.Fatalf("malformed journal leaked partial result: journal=%v records=%v", j, records)
+			}
+		})
+	}
+}
+
+func TestCollectionJournalRepairsCurrentTerminalPartialTailExactlyOnce(t *testing.T) {
+	first := mustCollectionJournalFrame(t, collectionJournalTestStoreID, 1, "first")
+	second := mustCollectionJournalFrame(t, collectionJournalTestStoreID, 2, "second-payload")
+
+	for cut := 1; cut < len(second); cut++ {
+		t.Run(fmt.Sprintf("cut-%03d", cut), func(t *testing.T) {
+			current, frozen := collectionJournalTestPaths(t)
+			writeCollectionJournalFramesForTest(t, current, first, second[:cut])
+
+			journal, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			if err != nil {
+				t.Fatalf("open with terminal partial tail: %v", err)
+			}
+			if len(replay) != 1 || replay[0].LSN != 1 || string(replay[0].Payload) != "first" {
+				t.Fatalf("replay after repair = %#v", replay)
+			}
+			info, err := os.Stat(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Size() != int64(len(first)) {
+				t.Fatalf("repaired journal size = %d, want %d", info.Size(), len(first))
+			}
+
+			appended, err := journal.append([]byte("second-payload"))
+			if err != nil {
+				t.Fatalf("append after repair: %v", err)
+			}
+			if appended.LSN != 2 {
+				t.Fatalf("append LSN after repair = %d, want 2", appended.LSN)
+			}
+
+			_, reopened, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			if err != nil {
+				t.Fatalf("second reopen: %v", err)
+			}
+			if len(reopened) != 2 || reopened[0].LSN != 1 || reopened[1].LSN != 2 {
+				t.Fatalf("replay after append/reopen = %#v", reopened)
+			}
+			if string(reopened[0].Payload) != "first" || string(reopened[1].Payload) != "second-payload" {
+				t.Fatalf("replayed payloads = %q, %q", reopened[0].Payload, reopened[1].Payload)
+			}
+		})
+	}
+}
+
+func TestCollectionJournalRepairsPartialFirstFrameToEmpty(t *testing.T) {
+	current, frozen := collectionJournalTestPaths(t)
+	first := mustCollectionJournalFrame(t, collectionJournalTestStoreID, 1, "first")
+	writeCollectionJournalFramesForTest(t, current, first[:17])
+
+	journal, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	if err != nil {
+		t.Fatalf("open partial first frame: %v", err)
+	}
+	if len(replay) != 0 {
+		t.Fatalf("partial first frame replayed records: %#v", replay)
+	}
+	info, err := os.Stat(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("repaired first-frame journal size = %d, want 0", info.Size())
+	}
+	record, err := journal.append([]byte("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.LSN != 1 {
+		t.Fatalf("first append after repair LSN = %d, want 1", record.LSN)
+	}
+}
+
+func TestCollectionJournalPartialTailRepairRemainsFailClosed(t *testing.T) {
+	first := mustCollectionJournalFrame(t, collectionJournalTestStoreID, 1, "first")
+	second := mustCollectionJournalFrame(t, collectionJournalTestStoreID, 2, "second")
+	third := mustCollectionJournalFrame(t, collectionJournalTestStoreID, 3, "third")
+	wrongPrefix := append([]byte(nil), second[:17]...)
+	wrongPrefix[0] ^= 0xff
+
+	tests := []struct {
+		name    string
+		current []byte
+		frozen  []byte
+		wantErr string
+	}{
+		{
+			name:    "frozen partial header",
+			frozen:  first[:17],
+			wantErr: "partial frame header",
+		},
+		{
+			name:    "frozen partial body",
+			frozen:  first[:len(first)-1],
+			wantErr: "partial frame body",
+		},
+		{
+			name:    "current non-prefix junk",
+			current: append(append([]byte(nil), first...), wrongPrefix...),
+			wantErr: "does not match the expected frame prefix",
+		},
+		{
+			name:    "current partial LSN gap",
+			current: append(append([]byte(nil), first...), third[:len(third)-1]...),
+			wantErr: "expected frame prefix for LSN 2",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			current, frozen := collectionJournalTestPaths(t)
+			if tc.current != nil {
+				writeCollectionJournalFramesForTest(t, current, tc.current)
+			}
+			if tc.frozen != nil {
+				writeCollectionJournalFramesForTest(t, frozen, tc.frozen)
+			}
+			journal, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("unsafe partial tail open: journal=%v replay=%v err=%v, want %q", journal, replay, err, tc.wantErr)
+			}
+			if journal != nil || replay != nil {
+				t.Fatalf("unsafe partial tail returned usable state: journal=%v replay=%v", journal, replay)
+			}
+		})
+	}
+}
+
+func TestCollectionJournalPartialTailRepairFailuresFailClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		inject func(*collectionJournal)
+	}{
+		{
+			name: "truncate",
+			inject: func(j *collectionJournal) {
+				j.ops.truncateFile = func(*os.File, int64) error { return errors.New("injected truncate failure") }
+			},
+		},
+		{
+			name: "file sync",
+			inject: func(j *collectionJournal) {
+				j.ops.syncFile = func(*os.File) error { return errors.New("injected file sync failure") }
+			},
+		},
+		{
+			name: "parent sync",
+			inject: func(j *collectionJournal) {
+				j.ops.syncDir = func(string) error { return errors.New("injected parent sync failure") }
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			current, frozen := collectionJournalTestPaths(t)
+			first := mustCollectionJournalFrame(t, collectionJournalTestStoreID, 1, "first")
+			second := mustCollectionJournalFrame(t, collectionJournalTestStoreID, 2, "second")
+			writeCollectionJournalFramesForTest(t, current, first, second[:len(second)-1])
+			journal, err := newCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.inject(journal)
+			if replay, err := journal.readAfter(0); err == nil || !strings.Contains(err.Error(), "injected") {
+				t.Fatalf("repair failure did not fail closed: replay=%v err=%v", replay, err)
 			}
 		})
 	}

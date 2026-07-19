@@ -44,7 +44,7 @@ func initBuf(level Level, format string) (*Logger, *bytes.Buffer) {
 	// Stash the write end so we can close it later.
 	// We'll return the logger and use a wrapper.
 	logger.slog.Info("__init__") // force a write so pipe goroutine starts
-	_ = w // keep reference
+	_ = w                        // keep reference
 
 	// Return a wrapper that closes w and waits a beat for the pipe to drain.
 	// Actually, let's simplify: return w reference via a closure the caller uses.
@@ -233,7 +233,7 @@ func TestLogErrorIncludesRequestID(t *testing.T) {
 	testErr := errors.New("db timeout")
 
 	// Context with a request ID should emit request_id in the log
-	ctx := context.WithValue(context.Background(), RequestIDKey, "abc123def456")
+	ctx := context.WithValue(context.Background(), RequestIDKey, "abc123def456") // gitleaks:allow -- synthetic request ID
 	logger.LogError(ctx, "query", testErr, "collection", "docs")
 	output := readAndClean(path)
 

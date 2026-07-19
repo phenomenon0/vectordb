@@ -1,6 +1,7 @@
 package collection
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -39,6 +40,26 @@ type collectionJournalRecord struct {
 	Payload []byte
 }
 
+// collectionJournalPartialTailError describes an EOF-short final frame. The
+// validated prefix is retained only so the open path can decide whether the
+// current artifact is safe to truncate. Callers must not treat records as
+// replayable until repair has completed and the artifact has been reparsed.
+type collectionJournalPartialTailError struct {
+	path        string
+	offset      int64
+	fileSize    int64
+	header      []byte
+	records     []collectionJournalRecord
+	partialBody bool
+}
+
+func (e *collectionJournalPartialTailError) Error() string {
+	if e.partialBody {
+		return fmt.Sprintf("collection journal %q has a partial frame body at offset %d", e.path, e.offset)
+	}
+	return fmt.Sprintf("collection journal %q has a partial frame header at offset %d", e.path, e.offset)
+}
+
 // collectionJournal serializes append, rotation, and cleanup for one store.
 // Callers must use openCollectionJournal so existing artifacts are validated
 // before the writer can be used.
@@ -59,6 +80,7 @@ type collectionJournal struct {
 type collectionJournalFileOps struct {
 	openFile      func(string, int, os.FileMode) (*os.File, error)
 	writeFile     func(*os.File, []byte) (int, error)
+	truncateFile  func(*os.File, int64) error
 	chmodFile     func(*os.File, os.FileMode) error
 	syncFile      func(*os.File) error
 	closeFile     func(*os.File) error
@@ -73,6 +95,9 @@ func defaultCollectionJournalFileOps() collectionJournalFileOps {
 		openFile: os.OpenFile,
 		writeFile: func(f *os.File, p []byte) (int, error) {
 			return f.Write(p)
+		},
+		truncateFile: func(f *os.File, size int64) error {
+			return f.Truncate(size)
 		},
 		chmodFile: func(f *os.File, mode os.FileMode) error {
 			return f.Chmod(mode)
@@ -233,7 +258,45 @@ func (j *collectionJournal) readAfter(appliedLSN uint64) ([]collectionJournalRec
 	for _, path := range []string{j.frozenPath, j.currentPath} {
 		records, exists, err := readCollectionJournalFile(path, j.storeID, j.maxPayload)
 		if err != nil {
-			return nil, err
+			var partial *collectionJournalPartialTailError
+			if path != j.currentPath || !errors.As(err, &partial) {
+				return nil, err
+			}
+
+			// Validate the complete prefix, including its global LSN position,
+			// before changing the artifact. This keeps LSN corruption fail-closed.
+			trialReplay := append([]collectionJournalRecord(nil), replay...)
+			trialLastArtifactLSN := lastArtifactLSN
+			if err := appendValidatedCollectionJournalRecords(
+				path,
+				partial.records,
+				appliedLSN,
+				&trialReplay,
+				&trialLastArtifactLSN,
+			); err != nil {
+				return nil, err
+			}
+			expectedLSN, err := expectedCollectionJournalTailLSN(
+				appliedLSN,
+				lastArtifactLSN,
+				partial.records,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if err := validateCollectionJournalPartialTail(partial, j.storeID, expectedLSN, j.maxPayload); err != nil {
+				return nil, fmt.Errorf("refuse collection journal partial-tail repair: %w", err)
+			}
+			if err := j.repairCurrentPartialTail(partial); err != nil {
+				return nil, err
+			}
+
+			// Never trust the in-memory prefix after changing durable state. Parse
+			// the repaired artifact from byte zero before returning a writer.
+			records, exists, err = readCollectionJournalFile(path, j.storeID, j.maxPayload)
+			if err != nil {
+				return nil, fmt.Errorf("reparse repaired current collection journal: %w", err)
+			}
 		}
 		if !exists {
 			continue
@@ -242,39 +305,14 @@ func (j *collectionJournal) readAfter(appliedLSN uint64) ([]collectionJournalRec
 			currentExists = true
 			currentRecords = records
 		}
-		for i, record := range records {
-			if i > 0 {
-				previous := records[i-1].LSN
-				switch {
-				case record.LSN <= previous:
-					return nil, fmt.Errorf("collection journal LSN %d in %q duplicates or regresses from %d", record.LSN, path, previous)
-				case previous == math.MaxUint64 || record.LSN != previous+1:
-					return nil, fmt.Errorf("collection journal LSN gap in %q: got %d after %d", path, record.LSN, previous)
-				}
-			}
-			if record.LSN > lastArtifactLSN {
-				lastArtifactLSN = record.LSN
-			}
-			if record.LSN <= appliedLSN {
-				if len(replay) > 0 {
-					return nil, fmt.Errorf("collection journal LSN %d in %q duplicates or regresses behind replay after checkpoint %d", record.LSN, path, appliedLSN)
-				}
-				continue
-			}
-			if len(replay) == 0 {
-				if appliedLSN == math.MaxUint64 || record.LSN != appliedLSN+1 {
-					return nil, fmt.Errorf("collection journal LSN gap after checkpoint %d: first replay record is %d", appliedLSN, record.LSN)
-				}
-			} else {
-				previous := replay[len(replay)-1].LSN
-				if record.LSN <= previous {
-					return nil, fmt.Errorf("collection journal LSN %d in %q duplicates or regresses from %d", record.LSN, path, previous)
-				}
-				if previous == math.MaxUint64 || record.LSN != previous+1 {
-					return nil, fmt.Errorf("collection journal LSN gap during replay: got %d after %d", record.LSN, previous)
-				}
-			}
-			replay = append(replay, record)
+		if err := appendValidatedCollectionJournalRecords(
+			path,
+			records,
+			appliedLSN,
+			&replay,
+			&lastArtifactLSN,
+		); err != nil {
+			return nil, err
 		}
 	}
 
@@ -293,6 +331,154 @@ func (j *collectionJournal) readAfter(appliedLSN uint64) ([]collectionJournalRec
 		}
 	}
 	return replay, nil
+}
+
+func appendValidatedCollectionJournalRecords(
+	path string,
+	records []collectionJournalRecord,
+	appliedLSN uint64,
+	replay *[]collectionJournalRecord,
+	lastArtifactLSN *uint64,
+) error {
+	for i, record := range records {
+		if i > 0 {
+			previous := records[i-1].LSN
+			switch {
+			case record.LSN <= previous:
+				return fmt.Errorf("collection journal LSN %d in %q duplicates or regresses from %d", record.LSN, path, previous)
+			case previous == math.MaxUint64 || record.LSN != previous+1:
+				return fmt.Errorf("collection journal LSN gap in %q: got %d after %d", path, record.LSN, previous)
+			}
+		}
+		if record.LSN > *lastArtifactLSN {
+			*lastArtifactLSN = record.LSN
+		}
+		if record.LSN <= appliedLSN {
+			if len(*replay) > 0 {
+				return fmt.Errorf("collection journal LSN %d in %q duplicates or regresses behind replay after checkpoint %d", record.LSN, path, appliedLSN)
+			}
+			continue
+		}
+		if len(*replay) == 0 {
+			if appliedLSN == math.MaxUint64 || record.LSN != appliedLSN+1 {
+				return fmt.Errorf("collection journal LSN gap after checkpoint %d: first replay record is %d", appliedLSN, record.LSN)
+			}
+		} else {
+			previous := (*replay)[len(*replay)-1].LSN
+			if record.LSN <= previous {
+				return fmt.Errorf("collection journal LSN %d in %q duplicates or regresses from %d", record.LSN, path, previous)
+			}
+			if previous == math.MaxUint64 || record.LSN != previous+1 {
+				return fmt.Errorf("collection journal LSN gap during replay: got %d after %d", record.LSN, previous)
+			}
+		}
+		*replay = append(*replay, record)
+	}
+	return nil
+}
+
+func expectedCollectionJournalTailLSN(
+	appliedLSN uint64,
+	previousArtifactLSN uint64,
+	currentRecords []collectionJournalRecord,
+) (uint64, error) {
+	lastLSN := appliedLSN
+	if previousArtifactLSN > lastLSN {
+		lastLSN = previousArtifactLSN
+	}
+	if len(currentRecords) > 0 {
+		lastLSN = currentRecords[len(currentRecords)-1].LSN
+	}
+	if lastLSN == math.MaxUint64 {
+		return 0, errors.New("collection journal LSN exhausted before partial tail")
+	}
+	return lastLSN + 1, nil
+}
+
+func validateCollectionJournalPartialTail(
+	tail *collectionJournalPartialTailError,
+	storeID [16]byte,
+	expectedLSN uint64,
+	maxPayload uint32,
+) error {
+	if tail == nil || len(tail.header) == 0 {
+		return errors.New("partial journal tail has no header prefix")
+	}
+	if tail.offset < 0 || tail.fileSize <= tail.offset {
+		return errors.New("partial journal tail has invalid file bounds")
+	}
+	if tail.partialBody && len(tail.header) != int(collectionJournalHeaderSize) {
+		return errors.New("partial journal body is missing its complete header")
+	}
+	if !tail.partialBody && len(tail.header) >= int(collectionJournalHeaderSize) {
+		return errors.New("partial journal header is not EOF-short")
+	}
+
+	fixed := make([]byte, collectionJournalPayloadLenOffset)
+	copy(fixed[:len(collectionJournalMagic)], collectionJournalMagic[:])
+	binary.BigEndian.PutUint16(fixed[collectionJournalVersionOffset:], collectionJournalVersion)
+	binary.BigEndian.PutUint16(fixed[collectionJournalHeaderSizeOffset:], collectionJournalHeaderSize)
+	copy(fixed[collectionJournalStoreIDOffset:collectionJournalLSNOffset], storeID[:])
+	binary.BigEndian.PutUint64(fixed[collectionJournalLSNOffset:], expectedLSN)
+	fixedPrefixLen := len(tail.header)
+	if fixedPrefixLen > len(fixed) {
+		fixedPrefixLen = len(fixed)
+	}
+	if !bytes.Equal(tail.header[:fixedPrefixLen], fixed[:fixedPrefixLen]) {
+		return fmt.Errorf("partial journal header does not match the expected frame prefix for LSN %d", expectedLSN)
+	}
+
+	if len(tail.header) > collectionJournalPayloadLenOffset {
+		available := len(tail.header) - collectionJournalPayloadLenOffset
+		if available > 4 {
+			available = 4
+		}
+		var payloadLengthPrefix [4]byte
+		copy(payloadLengthPrefix[:available], tail.header[collectionJournalPayloadLenOffset:collectionJournalPayloadLenOffset+available])
+		if minimumPayloadLength := binary.BigEndian.Uint32(payloadLengthPrefix[:]); minimumPayloadLength > maxPayload {
+			return fmt.Errorf("partial journal header cannot encode a payload within maximum %d", maxPayload)
+		}
+	}
+	return nil
+}
+
+func (j *collectionJournal) repairCurrentPartialTail(tail *collectionJournalPartialTailError) error {
+	if tail == nil || tail.path != j.currentPath {
+		return errors.New("refusing to repair a non-current collection journal tail")
+	}
+	f, err := j.ops.openFile(j.currentPath, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("open current collection journal for partial-tail repair: %w", err)
+	}
+	info, statErr := f.Stat()
+	if statErr == nil {
+		switch {
+		case !info.Mode().IsRegular():
+			statErr = errors.New("current collection journal is not a regular file")
+		case info.Mode().Perm() != 0o600:
+			statErr = fmt.Errorf("current collection journal has permissions %04o; expected 0600", info.Mode().Perm())
+		case info.Size() != tail.fileSize:
+			statErr = fmt.Errorf("current collection journal changed size from %d to %d before partial-tail repair", tail.fileSize, info.Size())
+		}
+	}
+	if statErr != nil {
+		return errors.Join(fmt.Errorf("validate current collection journal before partial-tail repair: %w", statErr), j.ops.closeFile(f))
+	}
+
+	truncateErr := j.ops.truncateFile(f, tail.offset)
+	var syncErr error
+	if truncateErr == nil {
+		syncErr = j.ops.syncFile(f)
+	}
+	closeErr := j.ops.closeFile(f)
+	var dirErr error
+	if truncateErr == nil {
+		dirErr = j.ops.syncDir(filepath.Dir(j.currentPath))
+	}
+	if repairErr := errors.Join(truncateErr, syncErr, closeErr, dirErr); repairErr != nil {
+		return fmt.Errorf("repair current collection journal partial tail: %w", repairErr)
+	}
+	return nil
 }
 
 func (j *collectionJournal) repairInterruptedRotation() error {
@@ -493,7 +679,17 @@ func readCollectionJournalFile(path string, storeID [16]byte, maxPayload uint32)
 	for offset < fileSize {
 		remaining := fileSize - offset
 		if remaining < int64(collectionJournalHeaderSize) {
-			return nil, true, fmt.Errorf("collection journal %q has trailing junk or a partial frame header at offset %d (%d bytes)", path, offset, remaining)
+			headerPrefix := make([]byte, int(remaining))
+			if _, err := io.ReadFull(f, headerPrefix); err != nil {
+				return nil, true, fmt.Errorf("read collection journal %q partial frame header at offset %d: %w", path, offset, err)
+			}
+			return records, true, &collectionJournalPartialTailError{
+				path:     path,
+				offset:   offset,
+				fileSize: fileSize,
+				header:   headerPrefix,
+				records:  records,
+			}
 		}
 
 		header := make([]byte, int(collectionJournalHeaderSize))
@@ -525,7 +721,14 @@ func readCollectionJournalFile(path string, storeID [16]byte, maxPayload uint32)
 			return nil, true, fmt.Errorf("collection journal %q payload at offset %d is %d bytes; maximum is %d", path, offset, payloadLen, maxPayload)
 		}
 		if int64(payloadLen) > remaining-int64(collectionJournalHeaderSize) {
-			return nil, true, fmt.Errorf("collection journal %q has a partial frame body at offset %d: need %d bytes, have %d", path, offset, payloadLen, remaining-int64(collectionJournalHeaderSize))
+			return records, true, &collectionJournalPartialTailError{
+				path:        path,
+				offset:      offset,
+				fileSize:    fileSize,
+				header:      header,
+				records:     records,
+				partialBody: true,
+			}
 		}
 
 		payload := make([]byte, int(payloadLen))

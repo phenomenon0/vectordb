@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func durableTestSchema(name string) CollectionSchema {
@@ -34,19 +35,34 @@ func durableTestDocument(value float32) Document {
 	}
 }
 
+func durableTestCollectionInfo(t *testing.T, store *DurableStore, tenantID, collectionName string) *CollectionInfo {
+	t.Helper()
+	info, err := store.Tenants().GetCollectionInfo(tenantID, collectionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+func durableTestStoredDocument(t *testing.T, store *DurableStore, tenantID, collectionName string, documentID uint64) (*Document, bool) {
+	t.Helper()
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if err := store.stateErrorLocked(); err != nil {
+		t.Fatal(err)
+	}
+	coll, err := store.tenants.getCollectionDirect(tenantID, collectionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return coll.GetDocument(documentID)
+}
+
 func abandonDurableStoreForTest(t *testing.T, store *DurableStore) {
 	t.Helper()
-	store.mu.Lock()
-	if !store.closed {
-		store.closed = true
-		store.manager.closeAll()
-		store.tenants.closeAll()
-		if err := store.lock.release(); err != nil {
-			store.mu.Unlock()
-			t.Fatalf("release store lock: %v", err)
-		}
+	if err := store.Abort(); err != nil {
+		t.Fatalf("abort durable store: %v", err)
 	}
-	store.mu.Unlock()
 }
 
 func TestDurableStoreSubprocessLockExclusion(t *testing.T) {
@@ -157,23 +173,173 @@ func TestDurableStoreReplayAndRecoveredCheckpoint(t *testing.T) {
 	if got := reopened.Metadata().AppliedLSN; got != wantLSN {
 		t.Fatalf("recovered LSN = %d, want %d", got, wantLSN)
 	}
-	coll, err := reopened.Tenants().GetCollection("tenant-a", "docs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := coll.Count(); got != 2 {
+	info := durableTestCollectionInfo(t, reopened, "tenant-a", "docs")
+	if got := info.DocCount; got != 2 {
 		t.Fatalf("recovered document count = %d, want 2", got)
 	}
-	if _, ok := coll.GetDocument(2); ok {
+	if _, ok := durableTestStoredDocument(t, reopened, "tenant-a", "docs", 2); ok {
 		t.Fatal("deleted document reappeared after replay")
 	}
-	if _, err := reopened.Tenants().GetCollection("tenant-a", "temporary"); err == nil {
+	if _, err := reopened.Tenants().GetCollectionInfo("tenant-a", "temporary"); err == nil {
 		t.Fatal("deleted collection reappeared after replay")
 	}
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("recovery did not clean covered journal %s: %v", path, err)
 		}
+	}
+}
+
+func TestDurableStoreRepairsPartialMutationTailThroughRecoveryCheckpointExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Tenants().CreateCollection(ctx, "tenant", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	first := durableTestDocument(1)
+	first.ID = 1
+	if err := store.Tenants().AddDocument(ctx, "tenant", "docs", &first); err != nil {
+		t.Fatal(err)
+	}
+	metadata := store.Metadata()
+	if metadata.AppliedLSN != 2 {
+		t.Fatalf("applied LSN = %d, want 2", metadata.AppliedLSN)
+	}
+
+	second := durableTestDocument(2)
+	second.ID = 2
+	payload, err := encodeDurableMutation(canonicalMutation{
+		typeName:       mutationInsertDocument,
+		tenantID:       "tenant",
+		collectionName: "docs",
+		documents:      []Document{second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := encodeCollectionJournalFrame(metadata.StoreID, metadata.AppliedLSN+1, payload, collectionJournalMaxPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partialLength := int(collectionJournalHeaderSize) + len(payload)/2
+	if partialLength >= len(frame) {
+		t.Fatalf("partial fixture length %d is not below frame length %d", partialLength, len(frame))
+	}
+	abandonDurableStoreForTest(t, store)
+
+	journal, err := os.OpenFile(base+".journal", os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Write(frame[:partialLength]); err != nil {
+		_ = journal.Close()
+		t.Fatal(err)
+	}
+	if err := journal.Sync(); err != nil {
+		_ = journal.Close()
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("reopen with valid-prefix partial tail: %v", err)
+	}
+	if got := reopened.Metadata().AppliedLSN; got != 2 {
+		t.Fatalf("recovered LSN = %d, want 2", got)
+	}
+	if got := durableTestCollectionInfo(t, reopened, "tenant", "docs").DocCount; got != 1 {
+		t.Fatalf("recovered document count = %d, want 1", got)
+	}
+	if _, ok := durableTestStoredDocument(t, reopened, "tenant", "docs", 1); !ok {
+		t.Fatal("complete acknowledged document was lost")
+	}
+	if _, ok := durableTestStoredDocument(t, reopened, "tenant", "docs", 2); ok {
+		t.Fatal("partial unacknowledged document was applied")
+	}
+	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("recovery checkpoint retained journal %s: %v", path, err)
+		}
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedAgain, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("second reopen after partial-tail checkpoint: %v", err)
+	}
+	defer reopenedAgain.Close()
+	if got := durableTestCollectionInfo(t, reopenedAgain, "tenant", "docs").DocCount; got != 1 {
+		t.Fatalf("document count after second reopen = %d, want 1", got)
+	}
+}
+
+func TestDurableStoreRestartRecoversFrozenAndCurrentAfterCheckpointFailureExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Tenants().CreateCollection(ctx, "tenant", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	originalSync := collectionSnapshotFileSync
+	collectionSnapshotFileSync = func(*os.File) error { return errors.New("injected snapshot sync failure") }
+	checkpointErr := store.Checkpoint()
+	collectionSnapshotFileSync = originalSync
+	if checkpointErr == nil || !strings.Contains(checkpointErr.Error(), "injected snapshot sync failure") {
+		t.Fatalf("checkpoint error = %v", checkpointErr)
+	}
+	if _, err := os.Stat(base + ".journal.frozen"); err != nil {
+		t.Fatalf("failed checkpoint did not retain frozen journal: %v", err)
+	}
+
+	doc := durableTestDocument(1)
+	doc.ID = 1
+	if err := store.Tenants().AddDocument(ctx, "tenant", "docs", &doc); err != nil {
+		t.Fatalf("append current journal after failed checkpoint: %v", err)
+	}
+	if _, err := os.Stat(base + ".journal"); err != nil {
+		t.Fatalf("current journal missing after post-rotation mutation: %v", err)
+	}
+	abandonDurableStoreForTest(t, store)
+
+	reopened, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("restart with frozen and current journals: %v", err)
+	}
+	if got := reopened.Metadata().AppliedLSN; got != 2 {
+		t.Fatalf("recovered LSN = %d, want 2", got)
+	}
+	if got := durableTestCollectionInfo(t, reopened, "tenant", "docs").DocCount; got != 1 {
+		t.Fatalf("recovered document count = %d, want 1", got)
+	}
+	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("restart recovery retained covered journal %s: %v", path, err)
+		}
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedAgain, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("second reopen after frozen/current recovery: %v", err)
+	}
+	defer reopenedAgain.Close()
+	if got := durableTestCollectionInfo(t, reopenedAgain, "tenant", "docs").DocCount; got != 1 {
+		t.Fatalf("document count after second reopen = %d, want 1", got)
 	}
 }
 
@@ -211,9 +377,9 @@ func TestDurableStoreReplaysSupportedHNSWAndSparseState(t *testing.T) {
 		t.Fatalf("reopen HNSW+sparse store: %v", err)
 	}
 	defer reopened.Close()
-	coll, err := reopened.Tenants().GetCollection("t", "hybrid")
-	if err != nil || coll.Count() != 1 {
-		t.Fatalf("hybrid collection after replay: count=%d err=%v", coll.Count(), err)
+	info := durableTestCollectionInfo(t, reopened, "t", "hybrid")
+	if info.DocCount != 1 {
+		t.Fatalf("hybrid collection after replay: count=%d", info.DocCount)
 	}
 	response, err := reopened.Tenants().SearchCollection(ctx, "t", SearchRequest{
 		CollectionName: "hybrid",
@@ -254,7 +420,7 @@ func TestDurableStorePreservesV2AndV3SnapshotState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	managerPtr, tenantPtr := store.Manager(), store.Tenants()
+	managerPtr, tenantPtr := store.manager, store.Tenants()
 	if err := managerPtr.AddDocument(ctx, "legacy-v2", &Document{}); !errors.Is(err, ErrCanonicalMutationRequired) {
 		t.Fatalf("V2 write error = %v, want canonical-only rejection", err)
 	}
@@ -271,7 +437,7 @@ func TestDurableStorePreservesV2AndV3SnapshotState(t *testing.T) {
 	if err := store.Checkpoint(); err != nil {
 		t.Fatal(err)
 	}
-	if store.Manager() != managerPtr || store.Tenants() != tenantPtr {
+	if store.manager != managerPtr || store.Tenants() != tenantPtr {
 		t.Fatal("checkpoint replaced manager pointers")
 	}
 	if err := store.Close(); err != nil {
@@ -283,20 +449,24 @@ func TestDurableStorePreservesV2AndV3SnapshotState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if got := reopened.Manager().CollectionCount(); got != 1 {
-		t.Fatalf("V2 collection count = %d, want 1", got)
+	legacyCount, err := reopened.LegacyCollectionCount()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := reopened.Tenants().GetCollection("existing", "existing-v3"); err != nil {
+	if legacyCount != 1 {
+		t.Fatalf("V2 collection count = %d, want 1", legacyCount)
+	}
+	if _, err := reopened.Tenants().GetCollectionInfo("existing", "existing-v3"); err != nil {
 		t.Fatalf("existing V3 state lost: %v", err)
 	}
-	if _, err := reopened.Tenants().GetCollection("new", "docs"); err != nil {
+	if _, err := reopened.Tenants().GetCollectionInfo("new", "docs"); err != nil {
 		t.Fatalf("new V3 state lost: %v", err)
 	}
 }
 
 func TestDurableStoreRejectsMalformedMutationBeforeReplay(t *testing.T) {
 	cases := map[string]string{
-		"unknown version": `{"version":2,"type":"delete_collection","payload":{"tenant_id":"t","collection_name":"c"}}`,
+		"unknown version": `{"version":3,"type":"delete_collection","payload":{"tenant_id":"t","collection_name":"c"}}`,
 		"unknown type":    `{"version":1,"type":"future","payload":{}}`,
 		"unknown field":   `{"version":1,"type":"delete_collection","payload":{"tenant_id":"t","collection_name":"c","extra":true}}`,
 		"trailing JSON":   `{"version":1,"type":"delete_collection","payload":{"tenant_id":"t","collection_name":"c"}} true`,
@@ -318,6 +488,101 @@ func TestDurableStoreRejectsMalformedMutationBeforeReplay(t *testing.T) {
 				t.Fatal("malformed mutation unexpectedly opened")
 			}
 		})
+	}
+}
+
+func TestDurableMutationEncoderUsesCurrentVersion(t *testing.T) {
+	payload, err := encodeDurableMutation(canonicalMutation{
+		typeName:       mutationDeleteCollection,
+		tenantID:       "tenant",
+		collectionName: "docs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope durableMutationEnvelope
+	if err := decodeCollectionJSON(payload, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Version != durableCollectionMutationVersion || envelope.Version == durableCollectionMutationVersionV1 {
+		t.Fatalf("encoded mutation version = %d, want current v%d distinct from v1", envelope.Version, durableCollectionMutationVersion)
+	}
+}
+
+func TestDurableStoreReplaysLegacyV1BatchAboveCurrentAdmissionLimit(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both the path-like name and unknown Flat parameter were accepted by v1,
+	// before the canonical v2 URL/index admission contract was narrowed.
+	schema := durableTestSchema("legacy/name")
+	schema.Fields[0].Index.Params = map[string]interface{}{"gpu": true}
+	if _, err := store.Tenants().CreateCollection(context.Background(), "tenant", schema); err == nil {
+		t.Fatal("current live admission unexpectedly accepted the legacy v1 schema")
+	}
+	createPayload, err := encodeDurableMutationVersion(canonicalMutation{
+		typeName:       mutationCreateCollection,
+		tenantID:       "tenant",
+		collectionName: schema.Name,
+		schema:         schema,
+	}, durableCollectionMutationVersionV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.journal.append(createPayload); err != nil {
+		t.Fatal(err)
+	}
+
+	documents := make([]Document, CanonicalMaxBatchDocuments+1)
+	for i := range documents {
+		documents[i] = durableTestDocument(float32(i + 1))
+		documents[i].ID = uint64(i + 1)
+	}
+	batchPayload, err := encodeDurableMutationVersion(canonicalMutation{
+		typeName:       mutationBatchInsert,
+		tenantID:       "tenant",
+		collectionName: schema.Name,
+		documents:      documents,
+	}, durableCollectionMutationVersionV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batchPayload) >= int(collectionJournalMaxPayload) {
+		t.Fatalf("legacy compatibility fixture is %d bytes; must fit one v1 frame", len(batchPayload))
+	}
+	if _, err := store.journal.append(batchPayload); err != nil {
+		t.Fatal(err)
+	}
+	abandonDurableStoreForTest(t, store)
+
+	reopened, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("reopen legacy v1 journal: %v", err)
+	}
+	info := durableTestCollectionInfo(t, reopened, "tenant", schema.Name)
+	if got := info.DocCount; got != len(documents) {
+		t.Fatalf("legacy v1 replay count = %d, want %d", got, len(documents))
+	}
+	if reopened.Metadata().AppliedLSN != 2 {
+		t.Fatalf("legacy v1 applied LSN = %d, want 2", reopened.Metadata().AppliedLSN)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Recovery checkpoints the legacy records. A second open proves they were
+	// applied once, not retained and replayed on top of the checkpoint.
+	reopenedAgain, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("second reopen after legacy checkpoint: %v", err)
+	}
+	defer reopenedAgain.Close()
+	info = durableTestCollectionInfo(t, reopenedAgain, "tenant", schema.Name)
+	if got := info.DocCount; got != len(documents) {
+		t.Fatalf("legacy v1 count after checkpoint/reopen = %d, want %d", got, len(documents))
 	}
 }
 
@@ -383,11 +648,7 @@ func TestDurableStoreCanonicalIDsValidationAndDefensiveClone(t *testing.T) {
 	}
 	inputVector[0] = 999
 	auto.Metadata["nested"].(map[string]interface{})["key"] = "mutated"
-	retrieved, err := tenants.GetCollection("t", "docs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, ok := retrieved.GetDocument(41)
+	stored, ok := durableTestStoredDocument(t, store, "t", "docs", 41)
 	if !ok {
 		t.Fatal("stored document missing")
 	}
@@ -412,6 +673,43 @@ func TestDurableStoreRejectsOutOfScopeIndexAndOversizePayloadWithoutFault(t *tes
 	if _, err := store.Tenants().CreateCollection(ctx, "t", ivf); err == nil || !strings.Contains(err.Error(), "only HNSW or Flat") {
 		t.Fatalf("IVF create error = %v", err)
 	}
+	invalidName := durableTestSchema("contains/slash")
+	if _, err := store.Tenants().CreateCollection(ctx, "t", invalidName); err == nil || !strings.Contains(err.Error(), "collection name") {
+		t.Fatalf("invalid collection name error = %v", err)
+	}
+	for _, tc := range []struct {
+		name      string
+		indexType IndexType
+		params    map[string]interface{}
+	}{
+		{
+			name:      "flat-pq",
+			indexType: IndexTypeFLAT,
+			params: map[string]interface{}{
+				"quantization": map[string]interface{}{"type": "pq"},
+			},
+		},
+		{
+			name:      "hnsw-float16",
+			indexType: IndexTypeHNSW,
+			params: map[string]interface{}{
+				"quantization": map[string]interface{}{"type": "float16"},
+			},
+		},
+		{
+			name:      "flat-gpu",
+			indexType: IndexTypeFLAT,
+			params:    map[string]interface{}{"gpu": true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := durableTestSchema(tc.name)
+			schema.Fields[0].Index = IndexConfig{Type: tc.indexType, Params: tc.params}
+			if _, err := store.Tenants().CreateCollection(ctx, "t", schema); err == nil || !strings.Contains(err.Error(), "outside the canonical release contract") {
+				t.Fatalf("out-of-scope params create error = %v", err)
+			}
+		})
+	}
 	if _, err := store.Tenants().CreateCollection(ctx, "t", durableTestSchema("docs")); err != nil {
 		t.Fatal(err)
 	}
@@ -426,6 +724,37 @@ func TestDurableStoreRejectsOutOfScopeIndexAndOversizePayloadWithoutFault(t *tes
 	small := durableTestDocument(2)
 	if err := store.Tenants().AddDocument(ctx, "t", "docs", &small); err != nil {
 		t.Fatalf("store unusable after oversize rejection: %v", err)
+	}
+}
+
+func TestDurableStoreRejectsRawCollectionHandlesAndChecksLists(t *testing.T) {
+	store, err := OpenDurableStore(filepath.Join(t.TempDir(), "collections"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	tenants := store.Tenants()
+	handle, err := tenants.CreateCollection(context.Background(), "tenant", durableTestSchema("docs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handle != nil {
+		t.Fatal("durable create returned a raw collection handle")
+	}
+	if handle, err := tenants.GetCollection("tenant", "docs"); handle != nil || !errors.Is(err, ErrDurableCollectionHandle) {
+		t.Fatalf("durable raw get = (%v, %v), want nil/raw-handle error", handle, err)
+	}
+	names, err := tenants.ListCollectionsChecked("tenant")
+	if err != nil || len(names) != 1 || names[0] != "docs" {
+		t.Fatalf("checked collection names = %v, err=%v", names, err)
+	}
+	tenantIDs, err := tenants.ListTenantsChecked()
+	if err != nil || len(tenantIDs) != 1 || tenantIDs[0] != "tenant" {
+		t.Fatalf("checked tenants = %v, err=%v", tenantIDs, err)
+	}
+	count, err := tenants.TenantCountChecked()
+	if err != nil || count != 1 {
+		t.Fatalf("checked tenant count = %d, err=%v", count, err)
 	}
 }
 
@@ -448,6 +777,32 @@ func TestDurableStoreApplyFailureLatchesFaultAndReplays(t *testing.T) {
 	if _, err := store.Tenants().CreateCollection(ctx, "t", durableTestSchema("blocked")); !errors.Is(err, ErrDurableStoreFaulted) {
 		t.Fatalf("post-fault mutation error = %v", err)
 	}
+	if _, err := store.Tenants().GetCollection("t", "docs"); !errors.Is(err, ErrDurableStoreFaulted) {
+		t.Fatalf("post-fault get error = %v", err)
+	}
+	if _, err := store.Tenants().GetCollectionInfo("t", "docs"); !errors.Is(err, ErrDurableStoreFaulted) {
+		t.Fatalf("post-fault info error = %v", err)
+	}
+	if _, err := store.Tenants().ListCollectionInfosChecked("t"); !errors.Is(err, ErrDurableStoreFaulted) {
+		t.Fatalf("post-fault list error = %v", err)
+	}
+	if _, err := store.Tenants().ListCollectionsChecked("t"); !errors.Is(err, ErrDurableStoreFaulted) {
+		t.Fatalf("post-fault name list error = %v", err)
+	}
+	if _, err := store.Tenants().ListTenantsChecked(); !errors.Is(err, ErrDurableStoreFaulted) {
+		t.Fatalf("post-fault tenant list error = %v", err)
+	}
+	if _, err := store.Tenants().TenantCountChecked(); !errors.Is(err, ErrDurableStoreFaulted) {
+		t.Fatalf("post-fault tenant count error = %v", err)
+	}
+	if _, err := store.Tenants().GetTenantStats("t"); !errors.Is(err, ErrDurableStoreFaulted) {
+		t.Fatalf("post-fault stats error = %v", err)
+	}
+	if _, err := store.Tenants().SearchCollection(ctx, "t", SearchRequest{
+		CollectionName: "docs", Queries: map[string]interface{}{"embedding": []float32{1, 0, 0, 0}}, TopK: 1,
+	}); !errors.Is(err, ErrDurableStoreFaulted) {
+		t.Fatalf("post-fault search error = %v", err)
+	}
 	if err := store.Close(); !errors.Is(err, ErrDurableStoreFaulted) {
 		t.Fatalf("faulted close error = %v", err)
 	}
@@ -457,12 +812,114 @@ func TestDurableStoreApplyFailureLatchesFaultAndReplays(t *testing.T) {
 		t.Fatalf("replay faulted append: %v", err)
 	}
 	defer reopened.Close()
-	coll, err := reopened.Tenants().GetCollection("t", "docs")
+	info := durableTestCollectionInfo(t, reopened, "t", "docs")
+	if info.DocCount != 1 {
+		t.Fatalf("replayed count = %d, want 1", info.DocCount)
+	}
+}
+
+func TestDurableStoreCommittedApplyIgnoresRequestCancellation(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if coll.Count() != 1 {
-		t.Fatalf("replayed count = %d, want 1", coll.Count())
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := store.Tenants().CreateCollection(ctx, "t", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	applyDirect := store.apply
+	store.apply = func(applyCtx context.Context, mutation canonicalMutation) error {
+		// Model a disconnect after the journal append has completed but before
+		// the in-memory mutation begins.
+		cancel()
+		if err := applyCtx.Err(); err != nil {
+			return fmt.Errorf("committed apply inherited request cancellation: %w", err)
+		}
+		return applyDirect(applyCtx, mutation)
+	}
+	doc := durableTestDocument(1)
+	if err := store.Tenants().AddDocument(ctx, "t", "docs", &doc); err != nil {
+		t.Fatalf("committed insert failed after request cancellation: %v", err)
+	}
+	store.apply = applyDirect
+	if err := store.Err(); err != nil {
+		t.Fatalf("request cancellation faulted store: %v", err)
+	}
+	if doc.ID != 1 {
+		t.Fatalf("assigned ID = %d, want 1", doc.ID)
+	}
+	abandonDurableStoreForTest(t, store)
+
+	reopened, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("reopen after canceled committed request: %v", err)
+	}
+	defer reopened.Close()
+	info := durableTestCollectionInfo(t, reopened, "t", "docs")
+	if got := info.DocCount; got != 1 {
+		t.Fatalf("replayed document count = %d, want 1", got)
+	}
+}
+
+func TestDurableStoreReadBarrierSpansAppendAndApply(t *testing.T) {
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Tenants().CreateCollection(ctx, "t", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	applyDirect := store.apply
+	applyEntered := make(chan struct{})
+	releaseApply := make(chan struct{})
+	store.apply = func(ctx context.Context, mutation canonicalMutation) error {
+		close(applyEntered)
+		<-releaseApply
+		return applyDirect(ctx, mutation)
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		doc := durableTestDocument(1)
+		writeDone <- store.Tenants().AddDocument(ctx, "t", "docs", &doc)
+	}()
+	<-applyEntered
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := store.Tenants().SearchCollection(ctx, "t", SearchRequest{
+			CollectionName: "docs",
+			Queries:        map[string]interface{}{"embedding": []float32{1, 0, 0, 0}},
+			TopK:           1,
+		})
+		readDone <- err
+	}()
+	readReturnedEarly := false
+	var earlyReadErr error
+	select {
+	case earlyReadErr = <-readDone:
+		readReturnedEarly = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseApply)
+	writeErr := <-writeDone
+	if readReturnedEarly {
+		if writeErr != nil {
+			t.Fatalf("write failed (%v) and read crossed append/apply boundary: %v", writeErr, earlyReadErr)
+		}
+		t.Fatalf("read crossed append/apply boundary: %v", earlyReadErr)
+	}
+	readErr := <-readDone
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if readErr != nil {
+		t.Fatal(readErr)
 	}
 }
 
@@ -509,11 +966,8 @@ func TestDurableStoreCheckpointSerializesWithMutations(t *testing.T) {
 	for err := range errCh {
 		t.Fatalf("concurrent operation failed: %v", err)
 	}
-	coll, err := store.Tenants().GetCollection("t", "docs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := coll.Count(); got != writers*perWriter {
+	info := durableTestCollectionInfo(t, store, "t", "docs")
+	if got := info.DocCount; got != writers*perWriter {
 		t.Fatalf("document count = %d, want %d", got, writers*perWriter)
 	}
 	if err := store.Checkpoint(); err != nil {
@@ -533,8 +987,8 @@ func TestDurableStoreCheckpointSerializesWithMutations(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	coll, _ = reopened.Tenants().GetCollection("t", "docs")
-	if got := coll.Count(); got != writers*perWriter {
+	info = durableTestCollectionInfo(t, reopened, "t", "docs")
+	if got := info.DocCount; got != writers*perWriter {
 		t.Fatalf("reopened document count = %d, want %d", got, writers*perWriter)
 	}
 }
@@ -584,9 +1038,9 @@ func TestDurableStoreCheckpointRecoversFrozenAndCurrentJournals(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	coll, err := reopened.Tenants().GetCollection("t", "docs")
-	if err != nil || coll.Count() != 1 {
-		t.Fatalf("checkpoint retry state: count=%d err=%v", coll.Count(), err)
+	info := durableTestCollectionInfo(t, reopened, "t", "docs")
+	if info.DocCount != 1 {
+		t.Fatalf("checkpoint retry state: count=%d", info.DocCount)
 	}
 }
 

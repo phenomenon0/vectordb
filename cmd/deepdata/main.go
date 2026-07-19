@@ -37,7 +37,7 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	deepdatav1 "github.com/phenomenon0/vectordb/api/gen/deepdata/v1"
+	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -82,6 +82,7 @@ type VectorStore struct {
 	appliedWALSeq      uint64         // Highest WAL sequence represented in logical state
 	apiToken           string
 	rl                 *rateLimiter
+	authFailureRL      *authFailureLimiter // shared HTTP/gRPC failed-auth budget keyed by peer IP
 	checksum           string
 	lastSaved          time.Time
 	lastSnapshotWALSeq uint64 // WAL high-water in the last successfully renamed snapshot
@@ -91,12 +92,13 @@ type VectorStore struct {
 	df      map[string]int
 	sumDocL int
 	// Multi-tenancy support
-	TenantID    map[uint64]string     // vector hash -> tenant ID
-	acl         *security.ACL         // access control lists
-	quotas      *security.TenantQuota // storage quotas per tenant
-	tenantRL    *tenantRateLimiter    // per-tenant rate limiting
-	jwtMgr      *security.JWTManager  // JWT token manager
-	requireAuth bool                  // Require JWT authentication
+	TenantID          map[uint64]string     // vector hash -> tenant ID
+	acl               *security.ACL         // access control lists
+	quotas            *security.TenantQuota // storage quotas per tenant
+	tenantRL          *tenantRateLimiter    // per-tenant rate limiting
+	canonicalTenantRL *rateLimiter          // shared V3 HTTP/gRPC limiter keyed by authenticated tenant
+	jwtMgr            *security.JWTManager  // JWT token manager
+	requireAuth       bool                  // Require JWT authentication
 	// Storage format (gob, cowrie, cowrie-zstd)
 	storageFormat storage.Format
 	// Metadata bitmap index for fast pre-filtering
@@ -2764,6 +2766,21 @@ func walArtifactPaths(snapshotPath string) ([]string, error) {
 	return paths, nil
 }
 
+func existingLegacyRootArtifacts(indexPath string) ([]string, error) {
+	if indexPath == "" {
+		return nil, nil
+	}
+	paths := make([]string, 0, 3)
+	for _, path := range []string{indexPath, indexPath + ".wal.frozen", indexPath + ".wal"} {
+		if _, err := os.Lstat(path); err == nil {
+			paths = append(paths, path)
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect legacy root artifact %q: %w", path, err)
+		}
+	}
+	return paths, nil
+}
+
 // checkpointWALRecovery validates every recovery artifact before applying any
 // record, then commits the recovered state before removing either log.
 func checkpointWALRecovery(vs *VectorStore, snapshotPath string) (bool, error) {
@@ -3174,6 +3191,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The production server exposes only the caller-supplied-vector V3/gRPC
+	// collection engine. Historical handlers remain in source for offline
+	// migration tests, but no runtime environment switch may re-enable them in
+	// the RC binary.
+	const canonicalOnly = true
+	if canonicalOnly {
+		if err := validateCanonicalAuthEnvironment(); err != nil {
+			logger.Error("canonical authentication configuration rejected", "error", err)
+			os.Exit(1)
+		}
+		configuredMode := strings.ToLower(strings.TrimSpace(os.Getenv("VECTORDB_MODE")))
+		if configuredMode == "" {
+			if err := os.Setenv("VECTORDB_MODE", string(ModeLocal)); err != nil {
+				logger.Error("failed to select canonical local data path", "error", err)
+				os.Exit(1)
+			}
+		} else if configuredMode != string(ModeLocal) {
+			logger.Error("canonical RC accepts caller-supplied vectors and supports only the local persistence path", "VECTORDB_MODE", configuredMode)
+			os.Exit(1)
+		}
+	}
+
 	// ==========================================================================
 	// Mode System Initialization (LOCAL or PRO)
 	// ==========================================================================
@@ -3191,14 +3230,17 @@ func main() {
 	}
 	logger.Info("data directory ready", "path", dataDir)
 
-	// Initialize cost tracker (only for PRO mode)
-	costTracker, err := NewCostTracker(modeConfig.Mode)
-	if err != nil {
-		logger.Warn("failed to initialize cost tracker", "error", err)
-	}
-	if costTracker != nil {
-		defer costTracker.Close()
-		logger.Info("cost tracking enabled", "db", GetCostDBPath(modeConfig.Mode))
+	// Cost tracking belongs to the unsupported provider-backed legacy runtime.
+	var costTracker *CostTracker
+	if !canonicalOnly {
+		costTracker, err = NewCostTracker(modeConfig.Mode)
+		if err != nil {
+			logger.Warn("failed to initialize cost tracker", "error", err)
+		}
+		if costTracker != nil {
+			defer costTracker.Close()
+			logger.Info("cost tracking enabled", "db", GetCostDBPath(modeConfig.Mode))
+		}
 	}
 
 	// Use mode-specific index path
@@ -3225,9 +3267,14 @@ func main() {
 		}()
 	}
 
-	// Initialize embedder based on mode (LOCAL: ONNX, PRO: OpenAI)
+	// Canonical requests carry vectors, so the RC never initializes an external
+	// or model-backed embedder. A tiny in-process placeholder keeps historical
+	// handler construction isolated behind the canonical route allowlist.
 	var embedder Embedder
-	if os.Getenv("USE_HASH_EMBEDDER") == "1" {
+	if canonicalOnly {
+		embedder = NewHashEmbedder(1)
+		logger.Info("server-managed embedding disabled; canonical clients must provide vectors")
+	} else if os.Getenv("USE_HASH_EMBEDDER") == "1" {
 		logger.Info("using hash embedder (low-memory mode)")
 		embedder = NewHashEmbedder(modeConfig.Dimension)
 	} else {
@@ -3242,8 +3289,10 @@ func main() {
 		}
 	}
 
-	// Print mode banner (after embedder init so it reflects actual config)
-	PrintModeBanner(modeConfig)
+	if !canonicalOnly {
+		// Print mode banner only for the provider-backed legacy runtime.
+		PrintModeBanner(modeConfig)
+	}
 
 	// Make initial capacity configurable for low-memory deployments
 	initialCapacity := 1000 // Reduced from 100000 for low-memory deployment
@@ -3252,31 +3301,87 @@ func main() {
 			initialCapacity = v
 		}
 	}
-	// Wrap in SwappableEmbedder so we can hot-swap at runtime via API
+	// Swapping endpoints are absent from the canonical route surface.
 	swappableEmbedder := NewSwappableEmbedder(embedder)
-	store, loaded, err := loadOrInitStore(indexPath, initialCapacity, swappableEmbedder.Dim())
-	if err != nil {
-		logger.Error("refusing to start with unreadable persistence state", "path", indexPath, "error", err)
-		os.Exit(1)
+	var store *VectorStore
+	loaded := false
+	if canonicalOnly {
+		legacyArtifacts, inspectErr := existingLegacyRootArtifacts(indexPath)
+		if inspectErr != nil {
+			logger.Error("failed to inspect unsupported legacy persistence", "error", inspectErr)
+			os.Exit(1)
+		}
+		if len(legacyArtifacts) > 0 {
+			logger.Error("legacy root persistence requires an explicit offline migration before canonical RC startup", "artifacts", legacyArtifacts)
+			os.Exit(1)
+		}
+		store = NewVectorStore(0, 1)
+	} else {
+		store, loaded, err = loadOrInitStore(indexPath, initialCapacity, swappableEmbedder.Dim())
+		if err != nil {
+			logger.Error("refusing to start with unreadable persistence state", "path", indexPath, "error", err)
+			os.Exit(1)
+		}
 	}
 	store.walMaxBytes = envInt64("WAL_MAX_BYTES", 5*1024*1024)
 	store.walMaxOps = envInt("WAL_MAX_OPS", 1000)
 
-	if !loaded {
+	if !loaded && !canonicalOnly {
 		logger.Info("fresh index initialized", "capacity", initialCapacity, "dimension", swappableEmbedder.Dim())
 	}
-	logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
+	if !canonicalOnly {
+		logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
+	}
 
-	reranker := initReranker(swappableEmbedder)
-	warmupModels(swappableEmbedder, reranker)
+	var reranker Reranker
+	if !canonicalOnly {
+		reranker = initReranker(swappableEmbedder)
+		warmupModels(swappableEmbedder, reranker)
+	}
 
 	// HTTP API with graceful shutdown
-	handler, collectionHTTP := newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
+	var handler http.Handler
+	var collectionHTTP *CollectionHTTPServer
+	if canonicalOnly {
+		handler, collectionHTTP = newCanonicalHTTPHandler(store, swappableEmbedder, reranker, indexPath)
+	} else {
+		handler, collectionHTTP = newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
+	}
 	if err := collectionHTTP.PersistenceError(); err != nil {
 		logger.Error("refusing to start with unreadable collection persistence state", "path", indexPath+".collections", "error", err)
 		os.Exit(1)
 	}
-	addr := fmt.Sprintf(":%d", envInt("PORT", 8080))
+	if canonicalOnly {
+		legacyCollectionCount, inspectErr := collectionHTTP.LegacyCollectionCount()
+		if inspectErr != nil {
+			logger.Error("failed to inspect unified collection state", "error", inspectErr)
+			if abortErr := collectionHTTP.Abort(); abortErr != nil {
+				logger.Error("failed to release collection store after inspection failure", "error", abortErr)
+			}
+			os.Exit(1)
+		}
+		if legacyCollectionCount != 0 {
+			logger.Error("refusing canonical startup with legacy V2 collections; migrate them into tenant-aware V3 collections first",
+				"path", indexPath+".collections", "legacy_collections", legacyCollectionCount)
+			if abortErr := collectionHTTP.Abort(); abortErr != nil {
+				logger.Error("failed to release collection store after migration refusal", "error", abortErr)
+			}
+			os.Exit(1)
+		}
+	}
+	addr, grpcAddr := canonicalListenerAddresses(
+		envInt("PORT", 8080),
+		envInt("GRPC_PORT", 50051),
+		os.Getenv("DEEPDATA_INSECURE_DEV_MODE") == "1",
+	)
+	httpListener, grpcListener, err := bindAPIListeners(addr, grpcAddr)
+	if err != nil {
+		logger.Error("refusing to start without the complete API listener set", "error", err)
+		if closeErr := collectionHTTP.Abort(); closeErr != nil {
+			logger.Error("failed to release collection store after listener failure", "error", closeErr)
+		}
+		os.Exit(1)
+	}
 
 	// Wrap handler with h2c (HTTP/2 cleartext) for connection multiplexing
 	// without TLS. HTTP/1.1 clients continue to work transparently.
@@ -3302,73 +3407,94 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	go func() {
-		logger.Info("http api listening", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("http server error", "error", err)
-		}
-	}()
-
 	// gRPC server (GRPC_PORT=0 to disable, default 50051)
 	var grpcSrv *grpc.Server
-	grpcPort := envInt("GRPC_PORT", 50051)
-	if grpcPort > 0 {
-		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpcPort))
-		if err != nil {
-			logger.Error("failed to listen for gRPC", "error", err)
-		} else {
-			grpcSrv = grpc.NewServer(
-				grpc.MaxRecvMsgSize(64*1024*1024),
-				grpc.MaxSendMsgSize(64*1024*1024),
-				grpc.UnaryInterceptor(grpcAuthInterceptor(store.jwtMgr, store.apiToken, store.requireAuth, logger)),
-			)
-			deepdatav1.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
-				manager: collectionHTTP.Manager(),
-			})
-			go func() {
-				logger.Info("grpc api listening", "addr", lis.Addr())
-				if err := grpcSrv.Serve(lis); err != nil {
-					logger.Error("grpc server error", "error", err)
+	if grpcListener != nil {
+		grpcSrv = grpc.NewServer(
+			grpc.MaxRecvMsgSize(canonicalGRPCMaxReceiveBytes),
+			grpc.MaxSendMsgSize(64*1024*1024),
+			grpc.UnaryInterceptor(grpcAuthInterceptorWithRateLimiters(
+				store.jwtMgr,
+				store.apiToken,
+				store.requireAuth,
+				logger,
+				store.canonicalTenantRL,
+				store.authFailureRL,
+			)),
+		)
+		deepdatav3.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
+			tenants: collectionHTTP.TenantManager(),
+			persistenceHealth: func() error {
+				if !collectionHTTP.IsDurable() {
+					return errors.New("durable collection persistence is not initialized")
 				}
-			}()
-		}
+				return collectionHTTP.PersistenceError()
+			},
+		})
 	}
 
-	// Background compaction
+	type apiServeFailure struct {
+		surface string
+		err     error
+	}
+	serverErrCh := make(chan apiServeFailure, 2)
+	logger.Info("http api listening", "addr", httpListener.Addr())
+	go func() {
+		if err := srv.Serve(httpListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrCh <- apiServeFailure{surface: "http", err: err}
+		}
+	}()
+	if grpcSrv != nil {
+		logger.Info("grpc api listening", "addr", grpcListener.Addr())
+		go func() {
+			if err := grpcSrv.Serve(grpcListener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				serverErrCh <- apiServeFailure{surface: "grpc", err: err}
+			}
+		}()
+	}
+
+	// Background compaction belongs to the legacy VectorStore. Canonical mode
+	// must not evaluate or depend on its interval configuration.
 	compactDone := make(chan struct{})
 	compactStop := make(chan struct{})
-	go func() {
-		defer close(compactDone)
-		interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
-		tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-compactStop:
-				return
-			case <-t.C:
-				store.RLock()
-				total := store.Count
-				deleted := len(store.Deleted)
-				store.RUnlock()
-				if total == 0 {
-					continue
-				}
-				if float64(deleted)/float64(total) >= tombstoneThreshold {
-					logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
-					if err := store.Compact(indexPath); err != nil {
-						logger.Error("compact error", "error", err)
+	if canonicalOnly {
+		close(compactDone)
+	} else {
+		go func() {
+			defer close(compactDone)
+			interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
+			tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0
+			t := time.NewTicker(interval)
+			defer t.Stop()
+			for {
+				select {
+				case <-compactStop:
+					return
+				case <-t.C:
+					store.RLock()
+					total := store.Count
+					deleted := len(store.Deleted)
+					store.RUnlock()
+					if total == 0 {
+						continue
+					}
+					if float64(deleted)/float64(total) >= tombstoneThreshold {
+						logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
+						if err := store.Compact(indexPath); err != nil {
+							logger.Error("compact error", "error", err)
+						}
 					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Background Obsidian vault sync
 	var obsidianSyncCancel context.CancelFunc
 	obsidianDone := make(chan struct{})
-	{
+	if canonicalOnly {
+		close(obsidianDone)
+	} else {
 		cfg := obsidian.LoadOrDetectConfig(dataDir)
 		obsidian.ApplyEnvOverrides(&cfg)
 
@@ -3438,10 +3564,17 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	// Wait for shutdown signal
+	// Wait for a shutdown signal or any unexpected listener/server failure.
 	logging.Default().Info("server running, press Ctrl+C to stop")
-	sig := <-sigCh
-	logging.Default().Info("received signal, initiating graceful shutdown", "signal", sig)
+	serveFailed := false
+	select {
+	case sig := <-sigCh:
+		logging.Default().Info("received signal, initiating graceful shutdown", "signal", sig)
+	case failure := <-serverErrCh:
+		serveFailed = true
+		logging.Default().Error("API server failed; initiating coordinated shutdown", "surface", failure.surface, "error", failure.err)
+	}
+	signal.Stop(sigCh)
 
 	// Stop background compaction
 	close(compactStop)
@@ -3454,7 +3587,7 @@ func main() {
 	// Graceful shutdown sequence. A forced or timed-out drain retains WAL
 	// artifacts even if a final snapshot succeeds; only a proven clean drain may
 	// discard the recovery source.
-	cleanDrain := true
+	cleanDrain := !serveFailed
 	allHandlersDrained := true
 	if grpcSrv != nil {
 		logging.Default().Info("shutting down gRPC server")
@@ -3507,28 +3640,36 @@ func main() {
 	logger.Info("waiting for obsidian sync to finish...")
 	<-obsidianDone
 	if allHandlersDrained {
-		logger.Info("waiting for in-flight WAL snapshots to finish...")
-		store.bgWg.Wait()
+		if !canonicalOnly {
+			logger.Info("waiting for in-flight legacy WAL snapshots to finish...")
+			store.bgWg.Wait()
 
-		logging.Default().Info("saving final snapshot")
-		if err := store.Save(indexPath); err != nil {
-			logger.Error("failed to save final snapshot", "error", err)
-		} else {
-			logger.Info("final snapshot saved successfully")
-			store.RLock()
-			walFault := store.walFault
-			store.RUnlock()
-			if cleanDrain && walFault == nil && store.walPath != "" {
-				for _, walPath := range []string{store.walPath + ".frozen", store.walPath} {
-					if err := removeWALArtifact(walPath); err != nil {
-						logger.Error("failed to remove checkpointed WAL artifact", "path", walPath, "error", err)
+			logging.Default().Info("saving final legacy snapshot")
+			if err := store.Save(indexPath); err != nil {
+				logger.Error("failed to save final legacy snapshot", "error", err)
+			} else {
+				logger.Info("final legacy snapshot saved successfully")
+				store.RLock()
+				walFault := store.walFault
+				store.RUnlock()
+				if cleanDrain && walFault == nil && store.walPath != "" {
+					for _, walPath := range []string{store.walPath + ".frozen", store.walPath} {
+						if err := removeWALArtifact(walPath); err != nil {
+							logger.Error("failed to remove checkpointed WAL artifact", "path", walPath, "error", err)
+						}
 					}
+				} else if store.walPath != "" {
+					logger.Warn("retaining legacy WAL artifacts after non-clean shutdown or WAL fault", "clean_drain", cleanDrain, "wal_fault", walFault)
 				}
-			} else if store.walPath != "" {
-				logger.Warn("retaining WAL artifacts after non-clean shutdown or WAL fault", "clean_drain", cleanDrain, "wal_fault", walFault)
 			}
 		}
-		if err := collectionHTTP.Save(indexPath + ".collections"); err != nil {
+		if canonicalOnly {
+			if err := collectionHTTP.Close(); err != nil {
+				logger.Error("failed to checkpoint and close canonical collection state", "error", err)
+			} else {
+				logger.Info("canonical collection state checkpointed and closed successfully")
+			}
+		} else if err := collectionHTTP.Save(indexPath + ".collections"); err != nil {
 			logger.Error("failed to save collection state", "error", err)
 		} else {
 			logger.Info("collection state saved successfully")
@@ -3538,6 +3679,47 @@ func main() {
 	}
 
 	logger.Info("shutdown complete")
+	if serveFailed {
+		logger.Error("exiting non-zero after API server failure")
+		os.Exit(1)
+	}
+}
+
+// bindAPIListeners proves the complete configured API surface is available
+// before either protocol begins serving. If the second bind fails, the first
+// listener is closed so a replacement process can start immediately.
+func bindAPIListeners(httpAddr, grpcAddr string) (net.Listener, net.Listener, error) {
+	httpListener, err := net.Listen("tcp", httpAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bind HTTP listener %q: %w", httpAddr, err)
+	}
+	if grpcAddr == "" {
+		return httpListener, nil, nil
+	}
+	grpcListener, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		return nil, nil, errors.Join(
+			fmt.Errorf("bind gRPC listener %q: %w", grpcAddr, err),
+			httpListener.Close(),
+		)
+	}
+	return httpListener, grpcListener, nil
+}
+
+// canonicalListenerAddresses keeps the explicit credentialless development
+// escape hatch loopback-only. Authenticated deployments retain wildcard binds
+// so containers and orchestrators can publish the configured ports.
+func canonicalListenerAddresses(httpPort, grpcPort int, insecureDevelopment bool) (string, string) {
+	host := ""
+	if insecureDevelopment {
+		host = "127.0.0.1"
+	}
+	httpAddr := net.JoinHostPort(host, strconv.Itoa(httpPort))
+	grpcAddr := ""
+	if grpcPort > 0 {
+		grpcAddr = net.JoinHostPort(host, strconv.Itoa(grpcPort))
+	}
+	return httpAddr, grpcAddr
 }
 
 func envInt(key string, def int) int {
@@ -3638,12 +3820,17 @@ func validateEnvConfig(logger *logging.Logger) []string {
 
 	// Integer config vars
 	checkPosInt("PORT")
+	checkNonNegInt("GRPC_PORT")
 	checkNonNegInt("VECTOR_CAPACITY")
 	checkPosInt64("WAL_MAX_BYTES")
 	checkPosInt("WAL_MAX_OPS")
 	checkPosInt("HNSW_M")
 	checkPosFloat("HNSW_ML")
 	checkPosInt("HNSW_EFSEARCH")
+	checkPosInt("API_RPS")
+	checkPosInt("MAX_RATE_LIMIT_KEYS")
+	checkPosInt("AUTH_FAILURE_RPS")
+	checkPosInt("AUTH_FAILURE_BURST")
 	checkPosInt("TENANT_RPS")
 	checkPosInt("TENANT_BURST")
 	checkPosInt("MAX_TENANTS")
@@ -3673,11 +3860,62 @@ func fileSize(path string) int64 {
 	return info.Size()
 }
 
+func validateCanonicalAuthEnvironment() error {
+	apiToken := os.Getenv("API_TOKEN")
+	jwtSecret := os.Getenv("JWT_SECRET")
+	hasStaticToken := apiToken != ""
+	hasJWTSecret := jwtSecret != ""
+	if hasStaticToken && hasJWTSecret {
+		return errors.New("configure exactly one of API_TOKEN or JWT_SECRET; combined credential modes are unsupported")
+	}
+	if hasStaticToken {
+		if err := validateCanonicalCredential("API_TOKEN", apiToken); err != nil {
+			return err
+		}
+	}
+	if hasJWTSecret {
+		if err := validateCanonicalCredential("JWT_SECRET", jwtSecret); err != nil {
+			return err
+		}
+	}
+	if !hasStaticToken && !hasJWTSecret && os.Getenv("DEEPDATA_INSECURE_DEV_MODE") != "1" {
+		return errors.New("API_TOKEN or JWT_SECRET is required; set DEEPDATA_INSECURE_DEV_MODE=1 only for isolated development")
+	}
+	return nil
+}
+
+const canonicalCredentialMinBytes = 32
+
+func validateCanonicalCredential(name, value string) error {
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%s must not contain leading or trailing whitespace", name)
+	}
+	if len([]byte(value)) < canonicalCredentialMinBytes {
+		return fmt.Errorf("%s must be at least %d bytes", name, canonicalCredentialMinBytes)
+	}
+	return nil
+}
+
 // grpcAuthInterceptor returns a gRPC unary interceptor that mirrors the HTTP
 // guard middleware: JWT validation, legacy API-token checking, and requireAuth
 // enforcement. On success it injects a *security.TenantContext into the
 // context so downstream handlers can inspect tenant identity and permissions.
 func grpcAuthInterceptor(jwtMgr *security.JWTManager, apiToken string, requireAuth bool, logger *logging.Logger) grpc.UnaryServerInterceptor {
+	return grpcAuthInterceptorWithRateLimiters(jwtMgr, apiToken, requireAuth, logger, nil, nil)
+}
+
+func grpcAuthInterceptorWithTenantLimiter(jwtMgr *security.JWTManager, apiToken string, requireAuth bool, logger *logging.Logger, tenantLimiter *rateLimiter) grpc.UnaryServerInterceptor {
+	return grpcAuthInterceptorWithRateLimiters(jwtMgr, apiToken, requireAuth, logger, tenantLimiter, nil)
+}
+
+func grpcAuthInterceptorWithRateLimiters(
+	jwtMgr *security.JWTManager,
+	apiToken string,
+	requireAuth bool,
+	logger *logging.Logger,
+	tenantLimiter *rateLimiter,
+	authFailureLimiter *authFailureLimiter,
+) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		// Panic recovery — same as before, prevents crashes from taking down the process
 		defer func() {
@@ -3694,12 +3932,25 @@ func grpcAuthInterceptor(jwtMgr *security.JWTManager, apiToken string, requireAu
 				token = strings.TrimPrefix(vals[0], "Bearer ")
 			}
 		}
+		authPeerKey := grpcAuthPeerKey(ctx)
+		authAttempt, allowed := authFailureLimiter.begin(authPeerKey)
+		if !allowed {
+			return nil, status.Error(codes.ResourceExhausted, "authentication rate limited")
+		}
+		finishAuthAttempt := func(failed bool) {
+			if authAttempt != nil {
+				authAttempt.finish(failed)
+				authAttempt = nil
+			}
+		}
+		defer func() { finishAuthAttempt(false) }()
 
 		var tenantCtx *security.TenantContext
 
 		if jwtMgr != nil {
 			if token == "" {
 				if requireAuth {
+					finishAuthAttempt(true)
 					return nil, status.Error(codes.Unauthenticated, "missing authentication token")
 				}
 				tenantCtx = &security.TenantContext{
@@ -3712,26 +3963,45 @@ func grpcAuthInterceptor(jwtMgr *security.JWTManager, apiToken string, requireAu
 				tenantCtx, valErr = jwtMgr.ValidateTenantToken(token)
 				if valErr != nil {
 					logging.Default().Error("gRPC JWT validation failed", "error", valErr)
+					finishAuthAttempt(true)
 					return nil, status.Error(codes.Unauthenticated, "invalid token")
 				}
 			}
 		} else {
 			authenticated := false
 			if apiToken != "" {
-				if token == apiToken {
+				if security.SecureCompare(token, apiToken) {
 					authenticated = true
 				} else if token != "" {
+					finishAuthAttempt(true)
 					return nil, status.Error(codes.Unauthenticated, "unauthorized")
 				}
 			}
 			if requireAuth && !authenticated {
+				finishAuthAttempt(true)
 				return nil, status.Error(codes.Unauthenticated, "unauthorized")
 			}
+			serverAdmin := authenticated || (jwtMgr == nil && apiToken == "")
 			tenantCtx = &security.TenantContext{
 				TenantID:    "default",
 				Permissions: map[string]bool{"read": true, "write": true},
 				Collections: make(map[string]bool),
-				IsAdmin:     jwtMgr == nil && apiToken == "",
+				// A configured static server token is intentionally full control;
+				// JWT claims provide scoped tenant/collection roles.
+				IsAdmin:       serverAdmin,
+				IsServerAdmin: serverAdmin,
+			}
+		}
+		finishAuthAttempt(false)
+
+		if tenantLimiter != nil {
+			targetTenant := ""
+			if request, ok := req.(interface{ GetTenantId() string }); ok {
+				targetTenant = request.GetTenantId()
+			}
+			tenantKey := canonicalRateLimitTenant(tenantCtx, targetTenant)
+			if !tenantLimiter.allow(tenantKey) {
+				return nil, status.Error(codes.ResourceExhausted, "tenant rate limited")
 			}
 		}
 

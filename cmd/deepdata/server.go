@@ -26,9 +26,11 @@ import (
 	"time"
 
 	"github.com/Neumenon/cowrie/go/codec"
+	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/index"
 	"github.com/phenomenon0/vectordb/internal/logging"
 	"github.com/phenomenon0/vectordb/internal/obsidian"
+	"github.com/phenomenon0/vectordb/internal/releaseinfo"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
 )
@@ -133,9 +135,20 @@ func decodeRequest(r *http.Request, v any) error {
 	return requestCodec.Decode(r.Body, v)
 }
 
-// newHTTPHandler builds the HTTP mux for insert/query/delete/health/metrics.
+// newHTTPHandler retains the broad historical surface for focused compatibility
+// tests and explicit migration tooling. Production serve uses
+// newCanonicalHTTPHandler instead.
 func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
+	return newHTTPHandlerWithSurface(store, embedder, reranker, indexPath, false)
+}
+
+func newCanonicalHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
+	return newHTTPHandlerWithSurface(store, embedder, reranker, indexPath, true)
+}
+
+func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string, canonicalOnly bool) (http.Handler, *CollectionHTTPServer) {
 	mux := http.NewServeMux()
+	var collectionHTTP *CollectionHTTPServer
 	configDir := "."
 	if indexPath != "" {
 		configDir = filepath.Dir(indexPath)
@@ -144,6 +157,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		rps := envInt("API_RPS", 100)
 		store.rl = newRateLimiter(rps, rps, envInt("MAX_RATE_LIMIT_KEYS", 100_000), time.Minute)
 	}
+	if store.authFailureRL == nil {
+		store.authFailureRL = newAuthFailureLimiter(
+			envInt("AUTH_FAILURE_RPS", 1),
+			envInt("AUTH_FAILURE_BURST", 5),
+			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
+			time.Second,
+		)
+	}
+	if canonicalOnly && store.canonicalTenantRL == nil {
+		store.canonicalTenantRL = newRateLimiter(
+			envInt("TENANT_RPS", 100),
+			envInt("TENANT_BURST", 100),
+			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
+			time.Second,
+		)
+	}
 	trustProxy := os.Getenv("TRUST_PROXY") == "1"
 
 	// SECURITY FIX: Proper JWT validation guard
@@ -151,9 +180,19 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	guard := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			token := r.Header.Get("Authorization")
-			if token == "" {
-				token = r.URL.Query().Get("token")
+			authPeerKey := httpAuthPeerKey(r, trustProxy)
+			authAttempt, allowed := store.authFailureRL.begin(authPeerKey)
+			if !allowed {
+				http.Error(w, "authentication rate limited", http.StatusTooManyRequests)
+				return
 			}
+			finishAuthAttempt := func(failed bool) {
+				if authAttempt != nil {
+					authAttempt.finish(failed)
+					authAttempt = nil
+				}
+			}
+			defer func() { finishAuthAttempt(false) }()
 
 			authenticated := false
 			var tenantCtx *security.TenantContext
@@ -163,6 +202,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				if token == "" {
 					// No token provided, but JWT is configured
 					if store.requireAuth {
+						finishAuthAttempt(true)
 						http.Error(w, "unauthorized: missing authentication token", http.StatusUnauthorized)
 						return
 					}
@@ -180,6 +220,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 					tenantCtx, err = store.jwtMgr.ValidateTenantToken(jwtToken)
 					if err != nil {
 						logging.Default().Warn("JWT validation failed", "error", err, "path", r.URL.Path)
+						finishAuthAttempt(true)
 						http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
 						return
 					}
@@ -189,21 +230,25 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				// No JWT manager configured - fallback to legacy API token auth
 				// Simple API token authentication (legacy)
 				if store.apiToken != "" {
-					if token == "Bearer "+store.apiToken || token == store.apiToken {
+					candidate := strings.TrimPrefix(token, "Bearer ")
+					if security.SecureCompare(candidate, store.apiToken) {
 						authenticated = true
 					} else if token != "" {
+						finishAuthAttempt(true)
 						http.Error(w, "unauthorized", http.StatusUnauthorized)
 						return
 					}
 				}
 
 				if store.requireAuth && !authenticated {
+					finishAuthAttempt(true)
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
 				}
 
 				requestedTenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
 				if requestedTenantID != "" && !isValidTenantID(requestedTenantID) {
+					finishAuthAttempt(false)
 					http.Error(w, "invalid X-Tenant-ID header", http.StatusBadRequest)
 					return
 				}
@@ -214,14 +259,19 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 				// Use default tenant context for non-JWT mode
 				if tenantCtx == nil {
+					serverAdmin := authenticated || (store.jwtMgr == nil && store.apiToken == "" && requestedTenantID == "")
 					tenantCtx = &security.TenantContext{
 						TenantID:    tenantID,
 						Permissions: map[string]bool{"read": true, "write": true},
 						Collections: make(map[string]bool),
-						IsAdmin:     store.jwtMgr == nil && store.apiToken == "" && requestedTenantID == "",
+						// A configured static server token is an explicit full-control
+						// credential. JWTs remain the path for scoped tenant roles.
+						IsAdmin:       serverAdmin,
+						IsServerAdmin: serverAdmin,
 					}
 				}
 			}
+			finishAuthAttempt(false)
 
 			// Global rate limiting (per-IP or per-token)
 			if store.rl != nil {
@@ -251,6 +301,14 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				}
 				if !store.rl.allow(key) {
 					http.Error(w, "rate limited", http.StatusTooManyRequests)
+					return
+				}
+			}
+
+			if canonicalOnly && store.canonicalTenantRL != nil {
+				tenantKey := canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
+				if !store.canonicalTenantRL.allow(tenantKey) {
+					http.Error(w, "tenant rate limited", http.StatusTooManyRequests)
 					return
 				}
 			}
@@ -1431,7 +1489,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 	// Kubernetes-style health probes
 	// /healthz - Liveness probe: Is the process alive and not deadlocked?
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	livenessHandler := func(w http.ResponseWriter, r *http.Request) {
 		// Liveness check: verify we can acquire locks (not deadlocked).
 		// Use a context-aware pattern to avoid leaking goroutines when the
 		// timeout fires while the lock is still held (e.g., during a snapshot).
@@ -1456,10 +1514,57 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write([]byte("deadlock detected"))
 		}
-	})
+	}
+	mux.HandleFunc("/healthz", livenessHandler)
+	mux.HandleFunc("/livez", livenessHandler)
 
 	// /readyz - Readiness probe: Is the service ready to accept traffic?
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if canonicalOnly {
+			issues := []string{}
+			type canonicalHealth struct {
+				durable bool
+				err     error
+			}
+			health := make(chan canonicalHealth, 1)
+			go func() {
+				if collectionHTTP == nil {
+					health <- canonicalHealth{}
+					return
+				}
+				durable := collectionHTTP.IsDurable()
+				var err error
+				if durable {
+					err = collectionHTTP.PersistenceError()
+				}
+				health <- canonicalHealth{durable: durable, err: err}
+			}()
+			select {
+			case state := <-health:
+				if !state.durable {
+					issues = append(issues, "durable collection store not initialized")
+				} else if state.err != nil {
+					logging.Default().Error("readyz: durable collection fault", "error", state.err)
+					issues = append(issues, "durable collection store faulted")
+				}
+			case <-time.After(5 * time.Second):
+				issues = append(issues, "durable collection health check timed out")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if len(issues) == 0 {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ready":   true,
+					"checks":  []string{"collection_snapshot", "mutation_journal", "lifetime_lock"},
+					"version": releaseinfo.Version(),
+				})
+			} else {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]any{"ready": false, "issues": issues})
+			}
+			return
+		}
+
 		// Use a timeout to prevent readiness probes from hanging indefinitely
 		// when the write lock is held during long snapshot operations.
 		type storeState struct {
@@ -1521,7 +1626,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ready":   true,
 				"checks":  []string{"store", "index", "embedder_initialized"},
-				"version": "1.0.0",
+				"version": releaseinfo.Version(),
 			})
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -1636,13 +1741,15 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// ADMIN API ENDPOINTS - ACL & Quota Management
 	// ==================================================================================
 
-	// Admin middleware - requires admin permission
+	// Global administration middleware. A tenant-admin JWT remains constrained
+	// to its tenant and optional collection scope; only the configured static
+	// server credential may reach legacy global administration tooling.
 	adminGuard := func(next http.HandlerFunc) http.HandlerFunc {
 		return guard(func(w http.ResponseWriter, r *http.Request) {
 			// Read tenant context from request context (set by guard middleware)
 			tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
-			if !ok || !tenantCtx.IsAdmin {
-				http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
+			if !ok || !tenantCtx.IsServerAdmin {
+				http.Error(w, "forbidden: server admin permission required", http.StatusForbidden)
 				return
 			}
 			next(w, r)
@@ -1948,13 +2055,26 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	if indexPath != "" {
 		collectionBasePath = indexPath + ".collections"
 	}
-	collectionHTTP := NewCollectionHTTPServer(collectionBasePath)
+	collectionHTTP = NewCollectionHTTPServer(collectionBasePath)
 	if collectionBasePath != "" {
-		if err := collectionHTTP.Load(collectionBasePath); err != nil {
+		var err error
+		if canonicalOnly {
+			err = collectionHTTP.LoadDurableWithLimits(collectionBasePath, vcollection.StoreLimits{
+				MaxTenants:     envInt("MAX_TENANTS", 100_000),
+				MaxCollections: envInt("MAX_COLLECTIONS", 10_000),
+			})
+		} else {
+			err = collectionHTTP.Load(collectionBasePath)
+		}
+		if err != nil {
 			collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
 		}
 	}
-	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
+	if canonicalOnly {
+		collectionHTTP.RegisterCanonicalHandlers(mux, guard)
+	} else {
+		collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
+	}
 
 	// ==========================================================================
 	// FEEDBACK API ENDPOINTS (v2)
@@ -1962,14 +2082,18 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Enables relevance feedback collection and boost-based re-ranking
 	// Endpoints: /v2/feedback, /v2/feedback/batch, /v2/feedback/stats,
 	//            /v2/feedback/boosts, /v2/feedback/implicit, /v2/interaction
-	RegisterFeedbackHandlers(mux)
+	if !canonicalOnly {
+		RegisterFeedbackHandlers(mux)
+	}
 
 	// ==========================================================================
 	// KNOWLEDGE GRAPH EXTRACTION API ENDPOINTS (v2)
 	// ==========================================================================
 	// LLM-based entity/relationship extraction from text
 	// Endpoints: /v2/extract, /v2/extract/batch, /v2/extract/temporal, /v2/extract/status
-	RegisterExtractionHandlers(mux)
+	if !canonicalOnly {
+		RegisterExtractionHandlers(mux)
+	}
 
 	// ==========================================================================
 	// MODE & COST TRACKING API ENDPOINTS
@@ -3235,7 +3359,50 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		})
 	}
 
-	return requestIDMiddleware(recoveryMiddleware(requestTimeoutMiddleware(corsMiddleware(otelMiddleware(mux))))), collectionHTTP
+	var routed http.Handler = corsMiddleware(otelMiddleware(mux))
+	if canonicalOnly {
+		// Keep the allowlist outside CORS so OPTIONS cannot make an unsupported
+		// legacy/provider route appear reachable.
+		routed = canonicalRCSurface(routed)
+	}
+	return requestIDMiddleware(recoveryMiddleware(requestTimeoutMiddleware(routed))), collectionHTTP
+}
+
+func canonicalTenantIDFromPath(path string) string {
+	const prefix = "/v3/tenants/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	tenantID := strings.TrimPrefix(path, prefix)
+	if slash := strings.IndexByte(tenantID, '/'); slash >= 0 {
+		tenantID = tenantID[:slash]
+	}
+	return tenantID
+}
+
+func canonicalRateLimitTenant(tenantCtx *security.TenantContext, targetTenant string) string {
+	if tenantCtx == nil {
+		return "default"
+	}
+	tenantKey := tenantCtx.TenantID
+	if tenantCtx.IsServerAdmin && isValidTenantID(targetTenant) {
+		tenantKey = targetTenant
+	}
+	if tenantKey == "" {
+		return "default"
+	}
+	return tenantKey
+}
+
+func canonicalRCSurface(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/v3/tenants/") || path == "/healthz" || path == "/readyz" || path == "/livez" || path == "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
 }
 
 func ageMillis(path string, fallback time.Time) int64 {

@@ -78,10 +78,12 @@ func (tm *TenantManager) getManager(tenantID string) *CollectionManager {
 }
 
 // CreateCollection creates a new collection for a tenant.
-// Returns an error if a collection with the same name already exists for this tenant.
+// Returns an error if a collection with the same name already exists for this
+// tenant. Durable stores return a nil Collection on success so the caller cannot
+// retain a raw handle outside the store read/health barrier.
 func (tm *TenantManager) CreateCollection(ctx context.Context, tenantID string, schema CollectionSchema) (*Collection, error) {
 	if store := tm.durableStore(); store != nil {
-		return store.createCollection(ctx, tenantID, schema)
+		return nil, store.createCollection(ctx, tenantID, schema)
 	}
 	return tm.createCollectionDirect(ctx, tenantID, schema)
 }
@@ -94,9 +96,18 @@ func (tm *TenantManager) createCollectionDirect(ctx context.Context, tenantID st
 	return mgr.createCollectionDirect(ctx, schema)
 }
 
-// GetCollection retrieves a collection belonging to a specific tenant.
-// Returns an error if the tenant has no such collection — this prevents cross-tenant access.
+// GetCollection retrieves a collection belonging to a specific tenant in the
+// legacy in-memory API. Durable stores reject raw handles because later method
+// calls would escape the store health/read barrier; use the checked value reads
+// (GetCollectionInfo, SearchCollection, and ListCollectionInfosChecked) instead.
 func (tm *TenantManager) GetCollection(tenantID, collectionName string) (*Collection, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.getCollection(tenantID, collectionName)
+	}
+	return tm.getCollectionDirect(tenantID, collectionName)
+}
+
+func (tm *TenantManager) getCollectionDirect(tenantID, collectionName string) (*Collection, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID cannot be empty")
 	}
@@ -107,9 +118,23 @@ func (tm *TenantManager) GetCollection(tenantID, collectionName string) (*Collec
 	return mgr.GetCollection(collectionName)
 }
 
-// ListCollections returns the names of all collections belonging to a tenant.
-// Returns an empty slice if the tenant has no collections.
+// ListCollections is the compatibility no-error form. Canonical callers must
+// use ListCollectionsChecked so a fault cannot be mistaken for an empty list.
 func (tm *TenantManager) ListCollections(tenantID string) []string {
+	names, _ := tm.ListCollectionsChecked(tenantID)
+	return names
+}
+
+// ListCollectionsChecked returns sorted collection names under the durable
+// store read/health barrier when persistence is attached.
+func (tm *TenantManager) ListCollectionsChecked(tenantID string) ([]string, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.listCollections(tenantID)
+	}
+	return tm.listCollectionsDirect(tenantID), nil
+}
+
+func (tm *TenantManager) listCollectionsDirect(tenantID string) []string {
 	if tenantID == "" {
 		return nil
 	}
@@ -124,6 +149,20 @@ func (tm *TenantManager) ListCollections(tenantID string) []string {
 
 // ListCollectionInfos returns detailed info for all collections belonging to a tenant.
 func (tm *TenantManager) ListCollectionInfos(tenantID string) []CollectionInfo {
+	infos, _ := tm.ListCollectionInfosChecked(tenantID)
+	return infos
+}
+
+// ListCollectionInfosChecked is the fail-closed canonical read used by server
+// surfaces. The historical no-error method remains for compatibility only.
+func (tm *TenantManager) ListCollectionInfosChecked(tenantID string) ([]CollectionInfo, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.listCollectionInfos(tenantID)
+	}
+	return tm.listCollectionInfosDirect(tenantID), nil
+}
+
+func (tm *TenantManager) listCollectionInfosDirect(tenantID string) []CollectionInfo {
 	if tenantID == "" {
 		return nil
 	}
@@ -155,6 +194,13 @@ func (tm *TenantManager) deleteCollectionDirect(ctx context.Context, tenantID, c
 
 // GetCollectionInfo returns schema information for a tenant's collection.
 func (tm *TenantManager) GetCollectionInfo(tenantID, collectionName string) (*CollectionInfo, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.getCollectionInfo(tenantID, collectionName)
+	}
+	return tm.getCollectionInfoDirect(tenantID, collectionName)
+}
+
+func (tm *TenantManager) getCollectionInfoDirect(tenantID, collectionName string) (*CollectionInfo, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID cannot be empty")
 	}
@@ -200,6 +246,13 @@ func (tm *TenantManager) BatchAddDocuments(ctx context.Context, tenantID, collec
 
 // SearchCollection performs a search on a tenant's collection.
 func (tm *TenantManager) SearchCollection(ctx context.Context, tenantID string, req SearchRequest) (*SearchResponse, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.searchCollection(ctx, tenantID, req)
+	}
+	return tm.searchCollectionDirect(ctx, tenantID, req)
+}
+
+func (tm *TenantManager) searchCollectionDirect(ctx context.Context, tenantID string, req SearchRequest) (*SearchResponse, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID cannot be empty")
 	}
@@ -225,8 +278,23 @@ func (tm *TenantManager) DeleteDocument(ctx context.Context, tenantID, collectio
 	return mgr.DeleteDocument(ctx, collectionName, docID)
 }
 
-// ListTenants returns a sorted list of all tenant IDs that have collections.
+// ListTenants is the compatibility no-error form. Canonical callers must use
+// ListTenantsChecked so a fault cannot be mistaken for an empty tenant set.
 func (tm *TenantManager) ListTenants() []string {
+	ids, _ := tm.ListTenantsChecked()
+	return ids
+}
+
+// ListTenantsChecked returns tenant IDs under the durable store read/health
+// barrier when persistence is attached.
+func (tm *TenantManager) ListTenantsChecked() ([]string, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.listTenants()
+	}
+	return tm.listTenantsDirect(), nil
+}
+
+func (tm *TenantManager) listTenantsDirect() []string {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
@@ -238,11 +306,63 @@ func (tm *TenantManager) ListTenants() []string {
 	return ids
 }
 
-// TenantCount returns the number of tenants.
+// TenantCount is the compatibility no-error form. Canonical callers must use
+// TenantCountChecked so a fault cannot be mistaken for an empty store.
 func (tm *TenantManager) TenantCount() int {
+	count, _ := tm.TenantCountChecked()
+	return count
+}
+
+// TenantCountChecked returns the tenant count under the durable store
+// read/health barrier when persistence is attached.
+func (tm *TenantManager) TenantCountChecked() (int, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.tenantCount()
+	}
+	return tm.tenantCountDirect(), nil
+}
+
+func (tm *TenantManager) tenantCountDirect() int {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 	return len(tm.tenants)
+}
+
+// resourceCounts returns active tenants and total collections. Empty tenant
+// managers can remain after deleting their final collection, but do not consume
+// a tenant admission slot.
+func (tm *TenantManager) resourceCounts() (activeTenants, collections int) {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	for _, manager := range tm.tenants {
+		count := manager.CollectionCount()
+		collections += count
+		if count > 0 {
+			activeTenants++
+		}
+	}
+	return activeTenants, collections
+}
+
+// pruneEmptyManager is used only behind DurableStore's global mutation lock,
+// so no canonical create can retain the manager pointer while it is removed.
+func (tm *TenantManager) pruneEmptyManager(tenantID string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	manager := tm.tenants[tenantID]
+	if manager != nil && manager.CollectionCount() == 0 {
+		delete(tm.tenants, tenantID)
+	}
+}
+
+func (tm *TenantManager) pruneEmptyManagers() {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	for tenantID, manager := range tm.tenants {
+		if manager.CollectionCount() == 0 {
+			delete(tm.tenants, tenantID)
+		}
+	}
 }
 
 // DropTenant removes all collections for a tenant.
@@ -320,6 +440,13 @@ type TenantStats struct {
 
 // GetTenantStats returns statistics for a specific tenant.
 func (tm *TenantManager) GetTenantStats(tenantID string) (*TenantStats, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.getTenantStats(tenantID)
+	}
+	return tm.getTenantStatsDirect(tenantID)
+}
+
+func (tm *TenantManager) getTenantStatsDirect(tenantID string) (*TenantStats, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID cannot be empty")
 	}

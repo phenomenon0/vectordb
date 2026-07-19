@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
 const (
-	durableCollectionMutationVersion = uint16(1)
+	durableCollectionMutationVersionV1 = uint16(1)
+	durableCollectionMutationVersion   = uint16(2)
 
 	mutationCreateCollection = "create_collection"
 	mutationDeleteCollection = "delete_collection"
@@ -23,6 +25,7 @@ const (
 var (
 	ErrDurableStoreClosed         = errors.New("durable collection store is closed")
 	ErrDurableStoreFaulted        = errors.New("durable collection store is faulted")
+	ErrDurableCollectionHandle    = errors.New("raw collection handles are unavailable for durable stores")
 	ErrCanonicalMutationRequired  = errors.New("persistent collections must be mutated through TenantManager")
 	ErrUnsupportedDurableMutation = errors.New("mutation is outside the release-candidate durable contract")
 )
@@ -62,6 +65,7 @@ type durableDeleteDocument struct {
 }
 
 type canonicalMutation struct {
+	version        uint16
 	typeName       string
 	tenantID       string
 	collectionName string
@@ -75,14 +79,19 @@ type canonicalMutation struct {
 // tenant-aware collection API. Its mutex deliberately spans WAL append, apply,
 // snapshot capture, journal rotation, and coverage-checked cleanup.
 type DurableStore struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	basePath string
-	manager  *CollectionManager
-	tenants  *TenantManager
-	metadata CollectionSnapshotMetadata
-	journal  *collectionJournal
-	lock     *collectionStoreLock
+	limits   StoreLimits
+	// Resource counters are derived once after snapshot/WAL recovery and then
+	// mutated only under mu alongside the corresponding journaled operation.
+	activeTenants   int
+	collectionCount int
+	manager         *CollectionManager
+	tenants         *TenantManager
+	metadata        CollectionSnapshotMetadata
+	journal         *collectionJournal
+	lock            *collectionStoreLock
 
 	fault  error
 	closed bool
@@ -96,6 +105,20 @@ type DurableStore struct {
 // Persistent startup is intentionally rejected by the build-tagged lock stub
 // on non-Linux platforms for this release candidate.
 func OpenDurableStore(basePath, storagePath string) (*DurableStore, error) {
+	return openDurableStore(basePath, storagePath, StoreLimits{})
+}
+
+// OpenDurableStoreWithLimits opens a durable store with immutable admission
+// limits for new collection creates. Existing acknowledged state is always
+// replayed, even when it is already above a newly configured limit.
+func OpenDurableStoreWithLimits(basePath, storagePath string, limits StoreLimits) (*DurableStore, error) {
+	if err := limits.validateRequired(); err != nil {
+		return nil, err
+	}
+	return openDurableStore(basePath, storagePath, limits)
+}
+
+func openDurableStore(basePath, storagePath string, limits StoreLimits) (*DurableStore, error) {
 	if basePath == "" {
 		return nil, errors.New("durable collection store base path cannot be empty")
 	}
@@ -137,6 +160,7 @@ func OpenDurableStore(basePath, storagePath string) (*DurableStore, error) {
 
 	store := &DurableStore{
 		basePath: basePath,
+		limits:   limits,
 		manager:  manager,
 		tenants:  tenants,
 		metadata: metadata,
@@ -153,6 +177,11 @@ func OpenDurableStore(basePath, storagePath string) (*DurableStore, error) {
 		}
 		store.metadata.AppliedLSN = records[i].LSN
 	}
+	// Older snapshots could retain tenant managers after their final collection
+	// was deleted. They carry no tenant data and must not grow the tenant map or
+	// consume persistence on every subsequent checkpoint.
+	store.tenants.pruneEmptyManagers()
+	store.activeTenants, store.collectionCount = store.tenants.resourceCounts()
 	if len(records) > 0 {
 		if err := store.commitSnapshotAndCleanupLocked(true); err != nil {
 			return fail(manager, tenants, fmt.Errorf("checkpoint replayed collection mutations: %w", err))
@@ -164,18 +193,28 @@ func OpenDurableStore(basePath, storagePath string) (*DurableStore, error) {
 	return store, nil
 }
 
-func (s *DurableStore) Manager() *CollectionManager { return s.manager }
-func (s *DurableStore) Tenants() *TenantManager     { return s.tenants }
+func (s *DurableStore) Tenants() *TenantManager { return s.tenants }
+
+// LegacyCollectionCount is a checked startup/migration inspection. Canonical
+// request paths never receive the underlying V2 CollectionManager.
+func (s *DurableStore) LegacyCollectionCount() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return 0, err
+	}
+	return s.manager.CollectionCount(), nil
+}
 
 func (s *DurableStore) Metadata() CollectionSnapshotMetadata {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.metadata
 }
 
 func (s *DurableStore) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.stateErrorLocked()
 }
 
@@ -196,20 +235,119 @@ func (s *DurableStore) latchFaultLocked(err error) error {
 	return fmt.Errorf("%w: %v", ErrDurableStoreFaulted, s.fault)
 }
 
-func (s *DurableStore) createCollection(ctx context.Context, tenantID string, schema CollectionSchema) (*Collection, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// Canonical reads hold a shared store barrier for their full operation. A
+// mutation/checkpoint has the exclusive side, so a read cannot pass a health
+// check and then observe an append/apply fault or a partially applied batch.
+func (s *DurableStore) getCollection(_, _ string) (*Collection, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := s.stateErrorLocked(); err != nil {
 		return nil, err
 	}
+	return nil, ErrDurableCollectionHandle
+}
+
+func (s *DurableStore) getCollectionInfo(tenantID, collectionName string) (*CollectionInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return nil, err
+	}
+	return s.tenants.getCollectionInfoDirect(tenantID, collectionName)
+}
+
+func (s *DurableStore) listCollectionInfos(tenantID string) ([]CollectionInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return nil, err
+	}
+	return s.tenants.listCollectionInfosDirect(tenantID), nil
+}
+
+func (s *DurableStore) listCollections(tenantID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return nil, err
+	}
+	return s.tenants.listCollectionsDirect(tenantID), nil
+}
+
+func (s *DurableStore) listTenants() ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return nil, err
+	}
+	return s.tenants.listTenantsDirect(), nil
+}
+
+func (s *DurableStore) tenantCount() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return 0, err
+	}
+	return s.tenants.tenantCountDirect(), nil
+}
+
+func (s *DurableStore) searchCollection(ctx context.Context, tenantID string, req SearchRequest) (*SearchResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return nil, err
+	}
+	return s.tenants.searchCollectionDirect(ctx, tenantID, req)
+}
+
+func (s *DurableStore) getTenantStats(tenantID string) (*TenantStats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return nil, err
+	}
+	return s.tenants.getTenantStatsDirect(tenantID)
+}
+
+func (s *DurableStore) createCollection(ctx context.Context, tenantID string, schema CollectionSchema) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return err
+	}
 	mutation := canonicalMutation{typeName: mutationCreateCollection, tenantID: tenantID, collectionName: schema.Name, schema: schema}
 	if err := s.prepareCreateMutation(&mutation); err != nil {
-		return nil, err
+		return err
+	}
+	if err := validateCanonicalSchemaResourceBounds(&mutation.schema); err != nil {
+		return err
+	}
+	newTenant, err := s.checkCreateLimitsLocked(mutation.tenantID)
+	if err != nil {
+		return err
 	}
 	if err := s.appendApplyLocked(ctx, mutation); err != nil {
-		return nil, err
+		return err
 	}
-	return s.tenants.GetCollection(tenantID, mutation.collectionName)
+	s.collectionCount++
+	if newTenant {
+		s.activeTenants++
+	}
+	return nil
+}
+
+func (s *DurableStore) checkCreateLimitsLocked(tenantID string) (bool, error) {
+	if s.limits.MaxCollections > 0 && s.collectionCount >= s.limits.MaxCollections {
+		return false, fmt.Errorf("%w: maximum is %d", ErrCollectionLimitExceeded, s.limits.MaxCollections)
+	}
+
+	manager := s.tenants.getManager(tenantID)
+	tenantActive := manager != nil && manager.CollectionCount() > 0
+	if !tenantActive && s.limits.MaxTenants > 0 && s.activeTenants >= s.limits.MaxTenants {
+		return false, fmt.Errorf("%w: maximum is %d", ErrTenantLimitExceeded, s.limits.MaxTenants)
+	}
+	return !tenantActive, nil
 }
 
 func (s *DurableStore) addDocument(ctx context.Context, tenantID, collectionName string, doc *Document) error {
@@ -261,7 +399,16 @@ func (s *DurableStore) deleteCollection(ctx context.Context, tenantID, collectio
 	if err := s.prepareCollectionTarget(mutation); err != nil {
 		return err
 	}
-	return s.appendApplyLocked(ctx, mutation)
+	manager := s.tenants.getManager(tenantID)
+	lastCollection := manager != nil && manager.CollectionCount() == 1
+	if err := s.appendApplyLocked(ctx, mutation); err != nil {
+		return err
+	}
+	s.collectionCount--
+	if lastCollection {
+		s.activeTenants--
+	}
+	return nil
 }
 
 func (s *DurableStore) deleteDocument(ctx context.Context, tenantID, collectionName string, documentID uint64) error {
@@ -282,6 +429,13 @@ func (s *DurableStore) appendApplyLocked(ctx context.Context, mutation canonical
 	if err != nil {
 		return err
 	}
+	// A request canceled while it was waiting for the store mutex has not
+	// crossed the commit point and must not be appended. Once append begins,
+	// however, cancellation can no longer be allowed to split durable and
+	// in-memory state.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	record, err := s.journal.append(payload)
 	if err != nil {
 		if journalFault := s.journal.writeFault(); journalFault != nil {
@@ -289,7 +443,13 @@ func (s *DurableStore) appendApplyLocked(ctx context.Context, mutation canonical
 		}
 		return err
 	}
-	if err := s.apply(ctx, mutation); err != nil {
+	// Once append returns, the mutation is durably committed regardless of the
+	// request lifetime. Applying with the caller's cancelable context would let a
+	// disconnected client strand an acknowledged journal record between append
+	// and in-memory state, faulting the entire store until restart. Preserve any
+	// context values while detaching cancellation for this mandatory apply step.
+	applyCtx := context.WithoutCancel(ctx)
+	if err := s.apply(applyCtx, mutation); err != nil {
 		return s.latchFaultLocked(fmt.Errorf("apply LSN %d after durable append: %w", record.LSN, err))
 	}
 	s.metadata.AppliedLSN = record.LSN
@@ -297,6 +457,17 @@ func (s *DurableStore) appendApplyLocked(ctx context.Context, mutation canonical
 }
 
 func (s *DurableStore) prepareCreateMutation(m *canonicalMutation) error {
+	return s.prepareCreateMutationWithValidator(m, validateCanonicalSchema)
+}
+
+func (s *DurableStore) prepareCreateMutationV1(m *canonicalMutation) error {
+	return s.prepareCreateMutationWithValidator(m, validateDurableSchemaV1)
+}
+
+func (s *DurableStore) prepareCreateMutationWithValidator(
+	m *canonicalMutation,
+	validate func(*CollectionSchema) error,
+) error {
 	if m.tenantID == "" {
 		return errors.New("tenant ID cannot be empty")
 	}
@@ -304,7 +475,7 @@ func (s *DurableStore) prepareCreateMutation(m *canonicalMutation) error {
 	if err != nil {
 		return err
 	}
-	if err := validateCanonicalSchema(&clone); err != nil {
+	if err := validate(&clone); err != nil {
 		return err
 	}
 	if m.collectionName != "" && m.collectionName != clone.Name {
@@ -318,7 +489,10 @@ func (s *DurableStore) prepareCreateMutation(m *canonicalMutation) error {
 	return nil
 }
 
-func validateCanonicalSchema(schema *CollectionSchema) error {
+// validateDurableSchemaV1 freezes the admission rules used by mutation version
+// 1. New canonical URL/index restrictions belong to v2 and must not make an
+// already-acknowledged v1 create record unreplayable after an upgrade.
+func validateDurableSchemaV1(schema *CollectionSchema) error {
 	if err := schema.Validate(); err != nil {
 		return fmt.Errorf("invalid schema: %w", err)
 	}
@@ -335,6 +509,134 @@ func validateCanonicalSchema(schema *CollectionSchema) error {
 		default:
 			return fmt.Errorf("field %s uses unsupported vector type %s", field.Name, field.Type)
 		}
+	}
+	return nil
+}
+
+func validateCanonicalSchema(schema *CollectionSchema) error {
+	if err := schema.Validate(); err != nil {
+		return fmt.Errorf("invalid schema: %w", err)
+	}
+	if !IsValidCanonicalIdentifier(schema.Name) {
+		return errors.New("collection name must be 1-64 alphanumeric/hyphen/underscore characters")
+	}
+	for _, field := range schema.Fields {
+		switch field.Type {
+		case VectorTypeDense:
+			if field.Index.Type != IndexTypeHNSW && field.Index.Type != IndexTypeFLAT {
+				return fmt.Errorf("field %s uses index %s; canonical release supports only HNSW or Flat dense indexes", field.Name, field.Index.Type)
+			}
+		case VectorTypeSparse:
+			if field.Index.Type != IndexTypeInverted {
+				return fmt.Errorf("field %s uses index %s; sparse fields require Inverted", field.Name, field.Index.Type)
+			}
+		default:
+			return fmt.Errorf("field %s uses unsupported vector type %s", field.Name, field.Type)
+		}
+		if err := validateCanonicalIndexParams(field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCanonicalIndexParams(field VectorField) error {
+	allowed := map[string]bool{}
+	switch field.Index.Type {
+	case IndexTypeHNSW:
+		allowed = map[string]bool{
+			"m": true, "ml": true, "ef_search": true,
+			"ef_construction": true, "prenormalize": true,
+		}
+	case IndexTypeFLAT:
+		allowed = map[string]bool{"metric": true}
+	case IndexTypeInverted:
+		allowed = map[string]bool{"k1": true, "b": true}
+	}
+
+	keys := make([]string, 0, len(field.Index.Params))
+	for key := range field.Index.Params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if !allowed[key] {
+			return fmt.Errorf(
+				"field %s index parameter %q is outside the canonical release contract",
+				field.Name,
+				key,
+			)
+		}
+	}
+
+	switch field.Index.Type {
+	case IndexTypeHNSW:
+		if err := validateCanonicalIntegerParam(field, "m", 2, 100); err != nil {
+			return err
+		}
+		if err := validateCanonicalIntegerParam(field, "ef_search", 1, 1_000_000); err != nil {
+			return err
+		}
+		if err := validateCanonicalIntegerParam(field, "ef_construction", 1, 1_000_000); err != nil {
+			return err
+		}
+		if value, ok, err := canonicalNumericParam(field, "ml"); err != nil {
+			return err
+		} else if ok && (value <= 0 || value > 10) {
+			return fmt.Errorf("field %s index parameter %q must be in (0, 10]", field.Name, "ml")
+		}
+		if value, ok := field.Index.Params["prenormalize"]; ok {
+			if _, valid := value.(bool); !valid {
+				return fmt.Errorf("field %s index parameter %q must be a boolean", field.Name, "prenormalize")
+			}
+		}
+	case IndexTypeFLAT:
+		if value, ok := field.Index.Params["metric"]; ok {
+			metric, valid := value.(string)
+			if !valid || (metric != "cosine" && metric != "euclidean") {
+				return fmt.Errorf("field %s index parameter %q must be cosine or euclidean", field.Name, "metric")
+			}
+		}
+	case IndexTypeInverted:
+		if value, ok, err := canonicalNumericParam(field, "k1"); err != nil {
+			return err
+		} else if ok && (value <= 0 || value > 100) {
+			return fmt.Errorf("field %s index parameter %q must be in (0, 100]", field.Name, "k1")
+		}
+		if value, ok, err := canonicalNumericParam(field, "b"); err != nil {
+			return err
+		} else if ok && (value < 0 || value > 1) {
+			return fmt.Errorf("field %s index parameter %q must be in [0, 1]", field.Name, "b")
+		}
+	}
+	return nil
+}
+
+func canonicalNumericParam(field VectorField, key string) (float64, bool, error) {
+	value, ok := field.Index.Params[key]
+	if !ok {
+		return 0, false, nil
+	}
+	number, valid := value.(float64)
+	if !valid || math.IsNaN(number) || math.IsInf(number, 0) {
+		return 0, false, fmt.Errorf("field %s index parameter %q must be a finite number", field.Name, key)
+	}
+	return number, true, nil
+}
+
+func validateCanonicalIntegerParam(field VectorField, key string, minimum, maximum int) error {
+	value, ok, err := canonicalNumericParam(field, key)
+	if err != nil || !ok {
+		return err
+	}
+	if value != math.Trunc(value) || value < float64(minimum) || value > float64(maximum) {
+		return fmt.Errorf(
+			"field %s index parameter %q must be an integer in [%d, %d]",
+			field.Name,
+			key,
+			minimum,
+			maximum,
+		)
 	}
 	return nil
 }
@@ -358,19 +660,30 @@ func (s *DurableStore) prepareCollectionTarget(m canonicalMutation) error {
 	if m.collectionName == "" {
 		return errors.New("collection name cannot be empty")
 	}
-	_, err := s.tenants.GetCollection(m.tenantID, m.collectionName)
+	_, err := s.tenants.getCollectionDirect(m.tenantID, m.collectionName)
 	return err
 }
 
 func (s *DurableStore) prepareDocumentsMutation(typeName, tenantID, collectionName string, docs []Document) (canonicalMutation, error) {
+	return s.prepareDocumentsMutationWithAdmission(typeName, tenantID, collectionName, docs, true)
+}
+
+func (s *DurableStore) prepareDocumentsMutationWithAdmission(
+	typeName, tenantID, collectionName string,
+	docs []Document,
+	enforceCurrentAdmission bool,
+) (canonicalMutation, error) {
 	mutation := canonicalMutation{typeName: typeName, tenantID: tenantID, collectionName: collectionName}
 	if len(docs) == 0 {
 		return mutation, errors.New("documents cannot be empty")
 	}
+	if enforceCurrentAdmission && len(docs) > CanonicalMaxBatchDocuments {
+		return mutation, fmt.Errorf("document batch exceeds maximum of %d", CanonicalMaxBatchDocuments)
+	}
 	if err := s.prepareCollectionTarget(mutation); err != nil {
 		return mutation, err
 	}
-	coll, _ := s.tenants.GetCollection(tenantID, collectionName)
+	coll, _ := s.tenants.getCollectionDirect(tenantID, collectionName)
 	normalized, nextID, err := coll.prepareCanonicalDocuments(docs)
 	if err != nil {
 		return mutation, err
@@ -387,7 +700,7 @@ func (s *DurableStore) prepareDeleteDocument(m canonicalMutation) error {
 	if err := s.prepareCollectionTarget(m); err != nil {
 		return err
 	}
-	coll, _ := s.tenants.GetCollection(m.tenantID, m.collectionName)
+	coll, _ := s.tenants.getCollectionDirect(m.tenantID, m.collectionName)
 	if _, ok := coll.GetDocument(m.documentID); !ok {
 		return fmt.Errorf("document %d not found in collection %s", m.documentID, m.collectionName)
 	}
@@ -397,14 +710,24 @@ func (s *DurableStore) prepareDeleteDocument(m canonicalMutation) error {
 func (s *DurableStore) prepareReplayMutation(m *canonicalMutation) error {
 	switch m.typeName {
 	case mutationCreateCollection:
+		if m.version == durableCollectionMutationVersionV1 {
+			return s.prepareCreateMutationV1(m)
+		}
 		return s.prepareCreateMutation(m)
 	case mutationDeleteCollection:
 		return s.prepareCollectionTarget(*m)
 	case mutationInsertDocument, mutationBatchInsert:
-		prepared, err := s.prepareDocumentsMutation(m.typeName, m.tenantID, m.collectionName, m.documents)
+		prepared, err := s.prepareDocumentsMutationWithAdmission(
+			m.typeName,
+			m.tenantID,
+			m.collectionName,
+			m.documents,
+			m.version != durableCollectionMutationVersionV1,
+		)
 		if err != nil {
 			return err
 		}
+		prepared.version = m.version
 		*m = prepared
 		return nil
 	case mutationDeleteDocument:
@@ -420,7 +743,11 @@ func (s *DurableStore) applyMutationDirect(ctx context.Context, m canonicalMutat
 		_, err := s.tenants.createCollectionDirect(ctx, m.tenantID, m.schema)
 		return err
 	case mutationDeleteCollection:
-		return s.tenants.deleteCollectionDirect(ctx, m.tenantID, m.collectionName)
+		if err := s.tenants.deleteCollectionDirect(ctx, m.tenantID, m.collectionName); err != nil {
+			return err
+		}
+		s.tenants.pruneEmptyManager(m.tenantID)
+		return nil
 	case mutationInsertDocument, mutationBatchInsert:
 		return s.tenants.addPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID)
 	case mutationDeleteDocument:
@@ -502,7 +829,30 @@ func (s *DurableStore) Close() error {
 	return errors.Join(checkpointErr, s.lock.release())
 }
 
+// Abort closes in-memory resources and releases the lifetime lock without
+// creating a checkpoint or deleting journal evidence. It is reserved for
+// startup refusal before any request can be served, and for crash-recovery
+// tests. Normal graceful shutdown must use Close.
+func (s *DurableStore) Abort() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	s.manager.closeAll()
+	s.tenants.closeAll()
+	return s.lock.release()
+}
+
 func encodeDurableMutation(m canonicalMutation) ([]byte, error) {
+	return encodeDurableMutationVersion(m, durableCollectionMutationVersion)
+}
+
+func encodeDurableMutationVersion(m canonicalMutation, version uint16) ([]byte, error) {
+	if version != durableCollectionMutationVersionV1 && version != durableCollectionMutationVersion {
+		return nil, fmt.Errorf("unsupported durable mutation version %d", version)
+	}
 	var payload any
 	switch m.typeName {
 	case mutationCreateCollection:
@@ -525,7 +875,7 @@ func encodeDurableMutation(m canonicalMutation) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal durable mutation payload: %w", err)
 	}
-	return json.Marshal(durableMutationEnvelope{Version: durableCollectionMutationVersion, Type: m.typeName, Payload: payloadBytes})
+	return json.Marshal(durableMutationEnvelope{Version: version, Type: m.typeName, Payload: payloadBytes})
 }
 
 func decodeDurableMutation(data []byte) (canonicalMutation, error) {
@@ -533,13 +883,13 @@ func decodeDurableMutation(data []byte) (canonicalMutation, error) {
 	if err := decodeCollectionJSON(data, &envelope); err != nil {
 		return canonicalMutation{}, err
 	}
-	if envelope.Version != durableCollectionMutationVersion {
+	if envelope.Version != durableCollectionMutationVersionV1 && envelope.Version != durableCollectionMutationVersion {
 		return canonicalMutation{}, fmt.Errorf("unsupported durable mutation version %d", envelope.Version)
 	}
 	if len(envelope.Payload) == 0 || string(envelope.Payload) == "null" {
 		return canonicalMutation{}, errors.New("durable mutation payload is missing or null")
 	}
-	m := canonicalMutation{typeName: envelope.Type}
+	m := canonicalMutation{version: envelope.Version, typeName: envelope.Type}
 	switch envelope.Type {
 	case mutationCreateCollection:
 		var payload durableCreateCollection
@@ -547,7 +897,11 @@ func decodeDurableMutation(data []byte) (canonicalMutation, error) {
 			return m, err
 		}
 		m.tenantID, m.collectionName, m.schema = payload.TenantID, payload.Schema.Name, payload.Schema
-		if err := validateCanonicalSchema(&m.schema); err != nil {
+		validate := validateCanonicalSchema
+		if envelope.Version == durableCollectionMutationVersionV1 {
+			validate = validateDurableSchemaV1
+		}
+		if err := validate(&m.schema); err != nil {
 			return m, err
 		}
 	case mutationDeleteCollection:

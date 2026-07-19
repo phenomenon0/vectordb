@@ -395,6 +395,20 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 	if req.CollectionName != c.schema.Name {
 		return nil, fmt.Errorf("collection mismatch: expected %s, got %s", c.schema.Name, req.CollectionName)
 	}
+	if len(req.Queries) == 0 {
+		return nil, fmt.Errorf("at least one query field is required")
+	}
+	if len(req.Queries) > CanonicalMaxSearchFields {
+		return nil, fmt.Errorf("at most %d query fields are supported", CanonicalMaxSearchFields)
+	}
+	if req.TopK <= 0 || req.TopK > CanonicalMaxSearchTopK {
+		return nil, fmt.Errorf("top_k must be in [1, %d]", CanonicalMaxSearchTopK)
+	}
+	if req.HybridParams != nil {
+		if err := validateHybridSearchParams(req.Queries, req.HybridParams); err != nil {
+			return nil, err
+		}
+	}
 
 	// Parse metadata filters if provided
 	var metadataFilter filter.Filter
@@ -409,6 +423,9 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 	includeVectors := false
 	if req.IncludeVectors != nil {
 		includeVectors = *req.IncludeVectors
+	}
+	if err := validateCanonicalSearchResponseBudget(c.schema, req.TopK, includeVectors); err != nil {
+		return nil, err
 	}
 
 	// Resolve ef_search: request override > server default
@@ -516,6 +533,9 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 	default:
 		return nil, fmt.Errorf("unsupported vector type: %d", field.Type)
 	}
+	if err := c.validateSearchResultsBudget(results, includeVectors); err != nil {
+		return nil, err
+	}
 
 	// Retrieve documents in a single tight loop for cache-friendly access.
 	// Pre-allocate both slices at once to reduce allocator pressure.
@@ -525,10 +545,7 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 	for i := 0; i < n; i++ {
 		scores[i] = results[i].Score
 		if doc, ok := c.documents[results[i].DocID]; ok {
-			docs[i] = cloneDocumentPreservingTypes(*doc)
-			if !includeVectors {
-				docs[i].Vectors = nil
-			}
+			docs[i] = cloneDocumentForSearch(*doc, includeVectors)
 		}
 	}
 
@@ -650,10 +667,14 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 		}
 
 		if weights := req.HybridParams.Weights; weights != nil {
-			if dw, ok := weights["dense"]; ok {
+			if dw, ok := weights[denseField]; ok {
+				fusionParams.DenseWeight = dw
+			} else if dw, ok := weights["dense"]; ok {
 				fusionParams.DenseWeight = dw
 			}
-			if sw, ok := weights["sparse"]; ok {
+			if sw, ok := weights[sparseField]; ok {
+				fusionParams.SparseWeight = sw
+			} else if sw, ok := weights["sparse"]; ok {
 				fusionParams.SparseWeight = sw
 			}
 		}
@@ -667,16 +688,16 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 	if err != nil {
 		return nil, fmt.Errorf("fusion failed: %w", err)
 	}
+	if err := c.validateSearchResultsBudget(fusedResults, includeVectors); err != nil {
+		return nil, err
+	}
 
 	// Retrieve documents (lightweight copy: skip vectors unless requested)
 	docs := make([]Document, len(fusedResults))
 	scores := make([]float32, len(fusedResults))
 	for i, r := range fusedResults {
 		if doc, ok := c.documents[r.DocID]; ok {
-			docs[i] = cloneDocumentPreservingTypes(*doc)
-			if !includeVectors {
-				docs[i].Vectors = nil
-			}
+			docs[i] = cloneDocumentForSearch(*doc, includeVectors)
 		}
 		scores[i] = r.Score
 	}
@@ -686,6 +707,31 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 		Scores:             scores,
 		CandidatesExamined: len(denseResults) + len(sparseResults),
 	}, nil
+}
+
+func validateHybridSearchParams(queries map[string]interface{}, params *HybridSearchParams) error {
+	switch params.Strategy {
+	case "rrf", "weighted", "linear":
+	default:
+		return fmt.Errorf("invalid hybrid strategy %q", params.Strategy)
+	}
+	if math.IsNaN(float64(params.RRFConstant)) || math.IsInf(float64(params.RRFConstant), 0) || params.RRFConstant < 0 {
+		return fmt.Errorf("hybrid rrf_constant must be finite and non-negative")
+	}
+	var weightSum float32
+	for field, weight := range params.Weights {
+		if _, ok := queries[field]; !ok && field != "dense" && field != "sparse" {
+			return fmt.Errorf("hybrid weight references unknown query field %q", field)
+		}
+		if math.IsNaN(float64(weight)) || math.IsInf(float64(weight), 0) || weight < 0 {
+			return fmt.Errorf("hybrid weight for %q must be finite and non-negative", field)
+		}
+		weightSum += weight
+	}
+	if len(params.Weights) > 0 && weightSum <= 0 {
+		return fmt.Errorf("hybrid weights must contain a positive value")
+	}
+	return nil
 }
 
 // BatchAdd adds multiple documents to the collection.
@@ -786,6 +832,47 @@ func cloneDocumentPreservingTypes(doc Document) Document {
 		}
 	}
 	return clone
+}
+
+func cloneDocumentForSearch(doc Document, includeVectors bool) Document {
+	if includeVectors {
+		return cloneDocumentPreservingTypes(doc)
+	}
+	clone := Document{ID: doc.ID}
+	if doc.Metadata != nil {
+		clone.Metadata = make(map[string]interface{}, len(doc.Metadata))
+		for key, value := range doc.Metadata {
+			clone.Metadata[key] = cloneDocumentValue(value)
+		}
+	}
+	return clone
+}
+
+func (c *Collection) validateSearchResultsBudget(results []hybrid.SearchResult, includeVectors bool) error {
+	perDocument, err := canonicalSearchResponseBytesPerDocument(c.schema, includeVectors)
+	if err != nil {
+		return err
+	}
+	var estimated int64
+	for _, result := range results {
+		resultBytes := perDocument
+		if doc := c.documents[result.DocID]; doc != nil && doc.Metadata != nil {
+			metadata, err := json.Marshal(doc.Metadata)
+			if err != nil {
+				return fmt.Errorf("encode document %d metadata for response budget: %w", result.DocID, err)
+			}
+			resultBytes += int64(len(metadata))
+		}
+		if resultBytes > int64(CanonicalMaxSearchResponseBytes)-estimated {
+			return fmt.Errorf(
+				"%w: estimated response exceeds %d bytes",
+				ErrSearchResponseBudgetExceeded,
+				CanonicalMaxSearchResponseBytes,
+			)
+		}
+		estimated += resultBytes
+	}
+	return nil
 }
 
 func cloneDocumentValue(value interface{}) interface{} {

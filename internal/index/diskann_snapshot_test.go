@@ -3,7 +3,6 @@ package index
 import (
 	"context"
 	"math/rand"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,7 +16,7 @@ func TestSnapshotBasicCreateRestore(t *testing.T) {
 	config := map[string]interface{}{
 		"memory_limit": 50,
 		"max_degree":   16,
-		"index_path":   "/tmp/test_snapshot_basic.idx",
+		"index_path":   filepath.Join(t.TempDir(), "test_snapshot_basic.idx"),
 		"metric":       "cosine",
 	}
 
@@ -26,11 +25,7 @@ func TestSnapshotBasicCreateRestore(t *testing.T) {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 	diskANN := idx.(*DiskANNIndex)
-	defer func() {
-		diskANN.Close()
-		os.Remove(diskANN.indexPath)
-		os.RemoveAll(filepath.Join(filepath.Dir(diskANN.indexPath), "snapshots"))
-	}()
+	defer diskANN.Close()
 
 	// Add vectors
 	vectors := make(map[uint64][]float32)
@@ -100,6 +95,23 @@ func TestSnapshotBasicCreateRestore(t *testing.T) {
 		t.Errorf("Expected %d vectors after restore, got %d", numVectors, statsAfterRestore.Count)
 	}
 
+	// Verify the snapshot restored the exact stored value independently of the
+	// approximate graph traversal below. DiskANN can legitimately miss the
+	// query vector on a small graph, so a search-distance threshold is not a
+	// deterministic persistence assertion.
+	restored, err := diskANN.getVector(0)
+	if err != nil {
+		t.Fatalf("Failed to read restored vector: %v", err)
+	}
+	if len(restored) != len(vectors[0]) {
+		t.Fatalf("Expected restored vector dimension %d, got %d", len(vectors[0]), len(restored))
+	}
+	for i := range restored {
+		if restored[i] != vectors[0][i] {
+			t.Fatalf("Restored vector differs at dimension %d: want %f, got %f", i, vectors[0][i], restored[i])
+		}
+	}
+
 	// Verify search still works after restore
 	query := vectors[0]
 	results, err := idx.Search(context.Background(), query, 5, nil)
@@ -109,11 +121,6 @@ func TestSnapshotBasicCreateRestore(t *testing.T) {
 
 	if len(results) == 0 {
 		t.Error("Expected search results after restore")
-	}
-
-	// First result should have low distance (approximate search)
-	if results[0].Distance > 0.1 {
-		t.Errorf("Expected first result to have low distance, got %f", results[0].Distance)
 	}
 
 	t.Logf("✓ Snapshot create and restore successful")
@@ -127,7 +134,7 @@ func TestSnapshotWithQuantization(t *testing.T) {
 	config := map[string]interface{}{
 		"memory_limit": 10,
 		"max_degree":   16,
-		"index_path":   "/tmp/test_snapshot_quant.idx",
+		"index_path":   filepath.Join(t.TempDir(), "test_snapshot_quant.idx"),
 		"metric":       "cosine",
 		"quantization": map[string]interface{}{
 			"type": "float16",
@@ -139,11 +146,7 @@ func TestSnapshotWithQuantization(t *testing.T) {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 	diskANN := idx.(*DiskANNIndex)
-	defer func() {
-		diskANN.Close()
-		os.Remove(diskANN.indexPath)
-		os.RemoveAll(filepath.Join(filepath.Dir(diskANN.indexPath), "snapshots"))
-	}()
+	defer diskANN.Close()
 
 	// Add vectors
 	for i := 0; i < numVectors; i++ {
@@ -191,7 +194,7 @@ func TestSnapshotListAndDelete(t *testing.T) {
 	config := map[string]interface{}{
 		"memory_limit": 10,
 		"max_degree":   16,
-		"index_path":   "/tmp/test_snapshot_list.idx",
+		"index_path":   filepath.Join(t.TempDir(), "test_snapshot_list.idx"),
 		"metric":       "cosine",
 	}
 
@@ -200,11 +203,7 @@ func TestSnapshotListAndDelete(t *testing.T) {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 	diskANN := idx.(*DiskANNIndex)
-	defer func() {
-		diskANN.Close()
-		os.Remove(diskANN.indexPath)
-		os.RemoveAll(filepath.Join(filepath.Dir(diskANN.indexPath), "snapshots"))
-	}()
+	defer diskANN.Close()
 
 	// Add some vectors
 	for i := 0; i < 20; i++ {
@@ -270,7 +269,7 @@ func TestSnapshotAutoCleanup(t *testing.T) {
 	config := map[string]interface{}{
 		"memory_limit": 10,
 		"max_degree":   16,
-		"index_path":   "/tmp/test_snapshot_cleanup.idx",
+		"index_path":   filepath.Join(t.TempDir(), "test_snapshot_cleanup.idx"),
 		"metric":       "cosine",
 	}
 
@@ -279,11 +278,7 @@ func TestSnapshotAutoCleanup(t *testing.T) {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 	diskANN := idx.(*DiskANNIndex)
-	defer func() {
-		diskANN.Close()
-		os.Remove(diskANN.indexPath)
-		os.RemoveAll(filepath.Join(filepath.Dir(diskANN.indexPath), "snapshots"))
-	}()
+	defer diskANN.Close()
 
 	// Add vectors
 	for i := 0; i < 20; i++ {
@@ -337,7 +332,7 @@ func TestSnapshotSize(t *testing.T) {
 	config := map[string]interface{}{
 		"memory_limit": 20,
 		"max_degree":   16,
-		"index_path":   "/tmp/test_snapshot_size.idx",
+		"index_path":   filepath.Join(t.TempDir(), "test_snapshot_size.idx"),
 		"metric":       "cosine",
 	}
 
@@ -346,11 +341,7 @@ func TestSnapshotSize(t *testing.T) {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 	diskANN := idx.(*DiskANNIndex)
-	defer func() {
-		diskANN.Close()
-		os.Remove(diskANN.indexPath)
-		os.RemoveAll(filepath.Join(filepath.Dir(diskANN.indexPath), "snapshots"))
-	}()
+	defer diskANN.Close()
 
 	// Add vectors
 	for i := 0; i < numVectors; i++ {
@@ -403,7 +394,7 @@ func TestSnapshotRestoreAccuracy(t *testing.T) {
 	config := map[string]interface{}{
 		"memory_limit": 10,
 		"max_degree":   16,
-		"index_path":   "/tmp/test_snapshot_accuracy.idx",
+		"index_path":   filepath.Join(t.TempDir(), "test_snapshot_accuracy.idx"),
 		"metric":       "cosine",
 	}
 
@@ -412,11 +403,7 @@ func TestSnapshotRestoreAccuracy(t *testing.T) {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 	diskANN := idx.(*DiskANNIndex)
-	defer func() {
-		diskANN.Close()
-		os.Remove(diskANN.indexPath)
-		os.RemoveAll(filepath.Join(filepath.Dir(diskANN.indexPath), "snapshots"))
-	}()
+	defer diskANN.Close()
 
 	// Add vectors and store originals
 	originalVectors := make(map[uint64][]float32)
@@ -488,7 +475,7 @@ func TestSnapshotConcurrentAccess(t *testing.T) {
 	config := map[string]interface{}{
 		"memory_limit": 10,
 		"max_degree":   16,
-		"index_path":   "/tmp/test_snapshot_concurrent.idx",
+		"index_path":   filepath.Join(t.TempDir(), "test_snapshot_concurrent.idx"),
 		"metric":       "cosine",
 	}
 
@@ -497,11 +484,7 @@ func TestSnapshotConcurrentAccess(t *testing.T) {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 	diskANN := idx.(*DiskANNIndex)
-	defer func() {
-		diskANN.Close()
-		os.Remove(diskANN.indexPath)
-		os.RemoveAll(filepath.Join(filepath.Dir(diskANN.indexPath), "snapshots"))
-	}()
+	defer diskANN.Close()
 
 	// Add vectors
 	for i := 0; i < 50; i++ {

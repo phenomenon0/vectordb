@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/phenomenon0/vectordb/internal/security"
 )
 
 type failingEmbedder struct {
@@ -228,21 +231,25 @@ func TestOnlineSnapshotImportDisabledInRC(t *testing.T) {
 	}
 }
 
-func TestVaultEndpointsRequireAdmin(t *testing.T) {
+func TestVaultEndpointsRequireServerAdmin(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	store.requireAuth = true
-	store.apiToken = "secret-token"
+	store.jwtMgr = security.NewJWTManager("tenant-admin-secret-for-tests", "deepdata")
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
 	handler, _ := newHTTPHandler(store, emb, reranker, filepath.Join(t.TempDir(), "index.gob"))
+	token, err := store.jwtMgr.GenerateTenantToken("acme", []string{"admin"}, nil, time.Hour)
+	if err != nil {
+		t.Fatalf("generate tenant-admin token: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/vault/browse", nil)
-	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for non-admin vault access, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 403 for tenant-admin vault access, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

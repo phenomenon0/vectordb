@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +15,76 @@ import (
 
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 )
+
+func testFileSHA256(t *testing.T, path string) [sha256.Size]byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha256.Sum256(data)
+}
+
+func TestCollectionHTTPServerLoadDurableRefusesRawLegacyV2WithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "index.gob.collections")
+	manager := vcollection.NewCollectionManager(basePath)
+	if _, err := manager.CreateCollection(context.Background(), vcollection.CollectionSchema{
+		Name: "legacy",
+		Fields: []vcollection.VectorField{{
+			Name: "embedding", Type: vcollection.VectorTypeDense, Dim: 2,
+			Index: vcollection.IndexConfig{Type: vcollection.IndexTypeFLAT},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(basePath + ".manager"); err != nil {
+		t.Fatal(err)
+	}
+	tenants := vcollection.NewTenantManager(basePath)
+	if _, err := tenants.CreateCollection(context.Background(), "tenant", vcollection.CollectionSchema{
+		Name: "docs",
+		Fields: []vcollection.VectorField{{
+			Name: "embedding", Type: vcollection.VectorTypeDense, Dim: 2,
+			Index: vcollection.IndexConfig{Type: vcollection.IndexTypeFLAT},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tenants.Save(basePath + ".tenants"); err != nil {
+		t.Fatal(err)
+	}
+
+	rawPaths := []string{basePath + ".manager", basePath + ".tenants"}
+	before := make(map[string][sha256.Size]byte, len(rawPaths))
+	for _, path := range rawPaths {
+		before[path] = testFileSHA256(t, path)
+	}
+
+	server := NewCollectionHTTPServer(basePath)
+	if err := server.LoadDurable(basePath); err == nil || !strings.Contains(err.Error(), "explicit offline migration") {
+		t.Fatalf("raw legacy durable load error = %v", err)
+	}
+	if server.durableStore != nil {
+		t.Fatal("raw legacy refusal opened a durable store")
+	}
+	for _, path := range rawPaths {
+		if got := testFileSHA256(t, path); got != before[path] {
+			t.Fatalf("raw legacy artifact changed during refusal: %s", path)
+		}
+	}
+	for _, path := range []string{
+		basePath + ".snapshot",
+		basePath + ".initialized",
+		basePath + ".lock",
+		basePath + ".journal",
+		basePath + ".journal.frozen",
+	} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("raw legacy refusal created %s: %v", path, err)
+		}
+	}
+}
 
 func TestCollectionHTTPServerLoadIsAllOrNothing(t *testing.T) {
 	dir := t.TempDir()
