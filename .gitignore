@@ -26,3 +26,6 @@ __pycache__/
 
 # Local autonomous workflow runtime (sanitized checkpoints live under tasks/)
 .deepdata-run/
+
+# Python SDK build artifacts
+/sdk/python/dist/

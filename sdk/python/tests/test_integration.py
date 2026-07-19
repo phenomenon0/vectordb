@@ -1,94 +1,165 @@
-"""Integration tests against a live DeepData server.
+"""Live contract tests for the authenticated canonical V3 client.
 
-Skipped unless DEEPDATA_URL is set in the environment.
-
-    DEEPDATA_URL=http://localhost:8080 pytest tests/test_integration.py -v
+The seed phase leaves one collection on disk. CI restarts the server against
+the same data directory before running the verify phase, proving that the
+Python surface observes the durable canonical state rather than a mock.
 """
 
 from __future__ import annotations
 
 import os
-import uuid
 
 import pytest
 
-from deepdata import DeepDataClient, AsyncDeepDataClient
+from deepdata import AsyncDeepDataClient, DeepDataClient
 
 
 DEEPDATA_URL = os.environ.get("DEEPDATA_URL")
+DEEPDATA_API_TOKEN = os.environ.get("DEEPDATA_API_TOKEN")
+INTEGRATION_REQUIRED = os.environ.get("DEEPDATA_INTEGRATION_REQUIRED") == "1"
+RUN_ID = os.environ.get("DEEPDATA_INTEGRATION_ID", "local")
+TENANT = f"sdk-{RUN_ID}"
+RESTART_COLLECTION = f"restart-{RUN_ID}"
+ASYNC_COLLECTION = f"async-{RUN_ID}"
+FIELD = {
+    "name": "embedding",
+    "type": "dense",
+    "dim": 3,
+    "index": {"type": "flat"},
+}
+
+if INTEGRATION_REQUIRED and (not DEEPDATA_URL or not DEEPDATA_API_TOKEN):
+    raise RuntimeError(
+        "required live SDK contract needs DEEPDATA_URL and DEEPDATA_API_TOKEN"
+    )
+
 pytestmark = pytest.mark.skipif(
-    DEEPDATA_URL is None,
-    reason="DEEPDATA_URL not set — skipping integration tests",
+    not DEEPDATA_URL or not DEEPDATA_API_TOKEN,
+    reason="live canonical server credentials are not configured",
 )
 
 
-@pytest.fixture
-def live_client() -> DeepDataClient:
+def _sync_client() -> DeepDataClient:
     assert DEEPDATA_URL is not None
-    return DeepDataClient(DEEPDATA_URL, timeout=30.0)
+    assert DEEPDATA_API_TOKEN is not None
+    return DeepDataClient(
+        DEEPDATA_URL,
+        api_token=DEEPDATA_API_TOKEN,
+        timeout=30.0,
+        retry=None,
+    )
 
 
-@pytest.fixture
-def async_live_client() -> AsyncDeepDataClient:
+def _async_client() -> AsyncDeepDataClient:
     assert DEEPDATA_URL is not None
-    return AsyncDeepDataClient(DEEPDATA_URL, timeout=30.0)
+    assert DEEPDATA_API_TOKEN is not None
+    return AsyncDeepDataClient(
+        DEEPDATA_URL,
+        api_token=DEEPDATA_API_TOKEN,
+        timeout=30.0,
+        retry=None,
+    )
 
 
-class TestLiveHealth:
-    def test_health(self, live_client: DeepDataClient) -> None:
-        health = live_client.health()
-        assert health.ok is True
-        assert health.total >= 0
-
-
-class TestLiveInsertSearchDelete:
-    def test_roundtrip(self, live_client: DeepDataClient) -> None:
-        doc_id = f"sdk-test-{uuid.uuid4().hex[:8]}"
-
-        # Insert
-        result = live_client.insert(
-            "The Python SDK integration test document",
-            id=doc_id,
-            meta={"source": "sdk-test"},
+@pytest.mark.integration_seed
+def test_sync_canonical_lifecycle_seeds_restart_fixture() -> None:
+    with _sync_client() as client:
+        tenant = client.tenant(TENANT)
+        created = tenant.create_collection(
+            RESTART_COLLECTION,
+            [FIELD],
+            metadata={"contract": "python-live"},
+            description="restart persistence fixture",
         )
-        assert result.id == doc_id
+        assert created.tenant_id == TENANT
 
-        # Search
-        results = live_client.search(
-            "Python SDK test",
-            top_k=5,
-            include_meta=True,
+        inserted = tenant.insert(
+            RESTART_COLLECTION,
+            id=101,
+            vectors={"embedding": [1.0, 0.0, 0.0]},
+            metadata={"source": "sync"},
         )
-        assert len(results.ids) > 0
+        batch = tenant.batch_insert(
+            RESTART_COLLECTION,
+            [
+                {
+                    "id": 102,
+                    "vectors": {"embedding": [0.0, 1.0, 0.0]},
+                    "metadata": {"source": "batch"},
+                },
+                {
+                    "id": 103,
+                    "vectors": {"embedding": [0.0, 0.0, 1.0]},
+                },
+            ],
+        )
+        assert inserted.id == 101
+        assert batch.ids == [102, 103]
+        assert batch.inserted == 2
 
-        # Delete
-        delete_result = live_client.delete(doc_id)
-        assert delete_result.deleted == doc_id
+        deleted = tenant.delete_document(RESTART_COLLECTION, 103)
+        assert deleted.tenant_id == TENANT
+        result = tenant.search(
+            RESTART_COLLECTION,
+            queries={"embedding": [1.0, 0.0, 0.0]},
+            top_k=10,
+            include_vectors=True,
+        )
+        assert {document.id for document in result.documents} == {101, 102}
+        assert all(document.vectors is not None for document in result.documents)
+
+        collection = tenant.get_collection(RESTART_COLLECTION)
+        listing = tenant.list_collections()
+        info = tenant.info()
+        assert collection.collection.name == RESTART_COLLECTION
+        assert [item.name for item in listing.collections] == [RESTART_COLLECTION]
+        assert info.collection_count == 1
+        assert info.total_documents == 2
 
 
-class TestLiveBatchInsert:
-    def test_batch(self, live_client: DeepDataClient) -> None:
-        ids = [f"sdk-batch-{uuid.uuid4().hex[:8]}" for _ in range(3)]
-        docs = [
-            {"doc": f"Batch doc {i}", "id": ids[i], "meta": {"batch": "true"}}
-            for i in range(3)
-        ]
-        result = live_client.batch_insert(docs)
-        assert len(result.ids) == 3
-
-        # Cleanup
-        for doc_id in ids:
-            live_client.delete(doc_id)
-
-
-class TestLiveCollections:
-    def test_list(self, live_client: DeepDataClient) -> None:
-        collections = live_client.list_collections()
-        assert collections.count >= 0
-
-
+@pytest.mark.integration_seed
 @pytest.mark.asyncio
-class TestAsyncLive:
-    async def test_health(self, async_live_client: AsyncDeepDataClient) -> None:
-        health = await async_live_client.health()
-        assert health.ok is True
+async def test_async_canonical_lifecycle_and_cleanup() -> None:
+    async with _async_client() as client:
+        tenant = client.tenant(TENANT)
+        await tenant.create_collection(ASYNC_COLLECTION, [FIELD])
+        inserted = await tenant.insert(
+            ASYNC_COLLECTION,
+            id=201,
+            vectors={"embedding": [0.0, 1.0, 0.0]},
+            metadata={"source": "async"},
+        )
+        result = await tenant.search(
+            ASYNC_COLLECTION,
+            queries={"embedding": [0.0, 1.0, 0.0]},
+            top_k=1,
+            include_vectors=False,
+        )
+        assert inserted.id == 201
+        assert [document.id for document in result.documents] == [201]
+        assert result.documents[0].vectors is None
+        await tenant.delete_document(ASYNC_COLLECTION, 201)
+        await tenant.delete_collection(ASYNC_COLLECTION)
+
+
+@pytest.mark.integration_verify
+def test_restart_persistence_and_cleanup() -> None:
+    with _sync_client() as client:
+        tenant = client.tenant(TENANT)
+        collection = tenant.get_collection(RESTART_COLLECTION)
+        assert collection.collection.doc_count == 2
+
+        result = tenant.search(
+            RESTART_COLLECTION,
+            queries={"embedding": [0.0, 1.0, 0.0]},
+            top_k=10,
+            include_vectors=False,
+        )
+        assert {document.id for document in result.documents} == {101, 102}
+        assert all(document.vectors is None for document in result.documents)
+
+        tenant.delete_document(RESTART_COLLECTION, 101)
+        tenant.delete_document(RESTART_COLLECTION, 102)
+        deleted = tenant.delete_collection(RESTART_COLLECTION)
+        assert deleted.tenant_id == TENANT
+        assert tenant.list_collections().count == 0

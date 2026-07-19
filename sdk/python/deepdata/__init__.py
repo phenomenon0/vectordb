@@ -1,45 +1,23 @@
-"""DeepData Python SDK — client for the DeepData vector database.
+"""Typed client for DeepData's canonical tenant-aware V3 API.
 
 Usage::
 
     from deepdata import DeepDataClient
 
-    client = DeepDataClient("http://localhost:8080")
-    result = client.insert("Hello world", meta={"source": "test"})
-    results = client.search("Hello", top_k=5)
-
-Async::
-
-    from deepdata import AsyncDeepDataClient
-
-    async with AsyncDeepDataClient("http://localhost:8080") as client:
-        results = await client.search("Hello", top_k=5)
+    with DeepDataClient(
+        "http://localhost:8080", api_token="sk-..."
+    ) as client:
+        tenant = client.tenant("org-123")
+        result = tenant.insert(
+            "docs", vectors={"embedding": [0.1, 0.2]}
+        )
+        results = tenant.search(
+            "docs", queries={"embedding": [0.1, 0.2]}, top_k=5
+        )
 """
 
-from .client import DeepDataClient, TenantClient
 from .async_client import AsyncDeepDataClient, AsyncTenantClient
-from .models import (
-    BatchDoc,
-    BatchInsertRequest,
-    BatchInsertResponse,
-    CollectionInfo,
-    CollectionListResponse,
-    CollectionSchema,
-    CollectionStatsResponse,
-    CompactResponse,
-    DeleteRequest,
-    DeleteResponse,
-    FieldSchema,
-    HealthResponse,
-    InsertRequest,
-    InsertResponse,
-    RangeFilter,
-    ScrollRequest,
-    ScrollResponse,
-    SearchRequest,
-    SearchResult,
-    SparseInsertRequest,
-)
+from .client import DeepDataClient, TenantClient
 from .errors import (
     APIError,
     AuthenticationError,
@@ -52,39 +30,58 @@ from .errors import (
     TimeoutError,
     ValidationError,
 )
+from .models import (
+    TenantBatchInsertRequest,
+    TenantBatchInsertResponse,
+    TenantCollectionInfo,
+    TenantCollectionListResponse,
+    TenantCollectionMutationResponse,
+    TenantCollectionSchema,
+    TenantCollectionStats,
+    TenantDeleteDocumentRequest,
+    TenantDeleteDocumentResponse,
+    TenantDocument,
+    TenantDocumentInput,
+    TenantGetCollectionResponse,
+    TenantHybridParams,
+    TenantIndexConfig,
+    TenantInfoResponse,
+    TenantInsertResponse,
+    TenantSearchRequest,
+    TenantSearchResponse,
+    TenantVectorField,
+)
 from ._utils import RetryConfig
 
-__version__ = "0.1.0"
+__version__ = "0.2.0rc1"
 
 __all__ = [
-    # Clients
+    # Clients and configuration
     "DeepDataClient",
     "AsyncDeepDataClient",
     "TenantClient",
     "AsyncTenantClient",
-    # Config
     "RetryConfig",
-    # Models
-    "BatchDoc",
-    "BatchInsertRequest",
-    "BatchInsertResponse",
-    "CollectionInfo",
-    "CollectionListResponse",
-    "CollectionSchema",
-    "CollectionStatsResponse",
-    "CompactResponse",
-    "DeleteRequest",
-    "DeleteResponse",
-    "FieldSchema",
-    "HealthResponse",
-    "InsertRequest",
-    "InsertResponse",
-    "RangeFilter",
-    "ScrollRequest",
-    "ScrollResponse",
-    "SearchRequest",
-    "SearchResult",
-    "SparseInsertRequest",
+    # Canonical V3 models
+    "TenantBatchInsertRequest",
+    "TenantBatchInsertResponse",
+    "TenantCollectionInfo",
+    "TenantCollectionListResponse",
+    "TenantCollectionMutationResponse",
+    "TenantCollectionSchema",
+    "TenantCollectionStats",
+    "TenantDeleteDocumentRequest",
+    "TenantDeleteDocumentResponse",
+    "TenantDocument",
+    "TenantDocumentInput",
+    "TenantGetCollectionResponse",
+    "TenantHybridParams",
+    "TenantIndexConfig",
+    "TenantInfoResponse",
+    "TenantInsertResponse",
+    "TenantSearchRequest",
+    "TenantSearchResponse",
+    "TenantVectorField",
     # Errors
     "APIError",
     "AuthenticationError",

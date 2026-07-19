@@ -1,7 +1,4 @@
-"""Synchronous DeepData client using httpx.
-
-Mirrors the Go client API (client/client.go) with Pythonic conventions.
-"""
+"""Synchronous client for DeepData's canonical tenant-aware V3 API."""
 
 from __future__ import annotations
 
@@ -10,22 +7,29 @@ from typing import Any
 
 import httpx
 
-from .errors import DeepDataError
+from .errors import APIError, DeepDataError
 from .models import (
-    BatchDoc,
-    BatchInsertResponse,
-    CollectionInfo,
-    CollectionListResponse,
-    CollectionSchema,
-    CollectionStatsResponse,
-    CompactResponse,
-    DeleteResponse,
-    FieldSchema,
-    HealthResponse,
-    InsertResponse,
-    ScrollResponse,
-    SearchResult,
-    SparseInsertRequest,
+    TenantBatchInsertRequest,
+    TenantBatchInsertResponse,
+    TenantCollectionListResponse,
+    TenantCollectionMutationResponse,
+    TenantCollectionSchema,
+    TenantDeleteDocumentRequest,
+    TenantDeleteDocumentResponse,
+    TenantDocumentInput,
+    TenantGetCollectionResponse,
+    TenantHybridParams,
+    TenantInfoResponse,
+    TenantInsertResponse,
+    TenantSearchRequest,
+    TenantSearchResponse,
+    TenantVectorField,
+)
+from ._tenant import (
+    collection_segment,
+    request_payload,
+    response_model,
+    tenant_base_path,
 )
 from ._utils import (
     DEFAULT_RETRY,
@@ -56,15 +60,22 @@ class DeepDataClient:
 
     Usage::
 
-        client = DeepDataClient("http://localhost:8080")
-        result = client.insert("Hello world", meta={"source": "test"})
-        results = client.search("Hello", top_k=5)
+        client = DeepDataClient("http://localhost:8080", api_token="sk-...")
+        tenant = client.tenant("org-123")
+        result = tenant.insert("docs", vectors={"embedding": [0.1, 0.2]})
         client.close()
 
     Or as a context manager::
 
-        with DeepDataClient("http://localhost:8080") as client:
-            results = client.search("Hello", top_k=5)
+        with DeepDataClient(
+            "http://localhost:8080", api_token="sk-..."
+        ) as client:
+            results = client.tenant("org-123").search(
+                "docs", queries={"embedding": [0.1, 0.2]}, top_k=5
+            )
+
+    All database operations are tenant scoped. Use :meth:`tenant` to obtain a
+    typed V3 client for a validated tenant identifier.
     """
 
     def __init__(
@@ -72,7 +83,6 @@ class DeepDataClient:
         url: str = "http://localhost:8080",
         *,
         api_token: str | None = None,
-        tenant_id: str | None = None,
         timeout: float = 15.0,
         retry: RetryConfig | None = DEFAULT_RETRY,
         headers: dict[str, str] | None = None,
@@ -81,7 +91,6 @@ class DeepDataClient:
         self._retry = retry
         self._headers = build_headers(
             token=api_token,
-            tenant_id=tenant_id,
             extra=headers,
         )
         self._http = httpx.Client(
@@ -108,37 +117,40 @@ class DeepDataClient:
         path: str,
         *,
         json: Any = None,
+        retryable: bool | None = None,
     ) -> Any:
-        """Execute an HTTP request with retry logic.
+        """Execute an HTTP request with retry logic for safe operations.
 
-        Mirrors doJSON in the Go client.
+        GET/HEAD/OPTIONS are retryable by default. Callers may explicitly mark a
+        read-only POST (canonical search) retryable, but mutations remain
+        single-attempt until the protocol provides idempotency keys.
         """
         last_exc: Exception | None = None
-        max_attempts = 1 + (self._retry.max_retries if self._retry else 0)
+        if retryable is None:
+            retryable = method.upper() in {"GET", "HEAD", "OPTIONS"}
+        retry_config = self._retry if retryable else None
+        max_attempts = 1 + (retry_config.max_retries if retry_config else 0)
 
         for attempt in range(max_attempts):
-            if attempt > 0 and self._retry:
-                delay = retry_delay(attempt - 1, self._retry)
+            if attempt > 0 and retry_config:
+                delay = retry_delay(attempt - 1, retry_config)
                 time.sleep(delay)
 
             try:
                 response = self._http.request(method, path, json=json)
-                data = handle_response(response)
-
-                # Retry on retryable API errors
-                from .errors import APIError
-                return data
+                return handle_response(response)
 
             except DeepDataError as exc:
                 last_exc = exc
-                from .errors import APIError
-                if isinstance(exc, APIError) and should_retry(exc.status_code, attempt, self._retry):
+                if isinstance(exc, APIError) and should_retry(
+                    exc.status_code, attempt, retry_config
+                ):
                     continue
                 raise
 
             except httpx.HTTPError as exc:
                 last_exc = exc
-                if attempt < max_attempts - 1 and self._retry:
+                if attempt < max_attempts - 1 and retry_config:
                     continue
                 handle_request_error(exc)
 
@@ -147,262 +159,8 @@ class DeepDataClient:
                 raise last_exc
             handle_request_error(last_exc)
 
-    # ── Core Operations (Tier 1) ────────────────────────────────────────
-
-    def insert(
-        self,
-        doc: str,
-        *,
-        id: str | None = None,
-        meta: dict[str, str] | None = None,
-        upsert: bool = False,
-        collection: str | None = None,
-    ) -> InsertResponse:
-        """Insert a document. Returns the assigned ID.
-
-        Mirrors Go Client.Insert().
-        """
-        payload: dict[str, Any] = {"doc": doc}
-        if id is not None:
-            payload["id"] = id
-        if meta is not None:
-            payload["meta"] = meta
-        if upsert:
-            payload["upsert"] = True
-        if collection is not None:
-            payload["collection"] = collection
-
-        data = self._request("POST", "/insert", json=payload)
-        return InsertResponse.model_validate(data)
-
-    def batch_insert(
-        self,
-        docs: list[dict[str, Any] | BatchDoc],
-        *,
-        upsert: bool = False,
-    ) -> BatchInsertResponse:
-        """Insert multiple documents in one request.
-
-        Mirrors Go Client.BatchInsert().
-
-        Each doc can be a dict with keys: doc, id, meta, collection
-        or a BatchDoc instance.
-        """
-        normalized: list[dict[str, Any]] = []
-        for d in docs:
-            if isinstance(d, BatchDoc):
-                normalized.append(d.model_dump(exclude_none=True))
-            else:
-                normalized.append(d)
-
-        payload: dict[str, Any] = {"docs": normalized}
-        if upsert:
-            payload["upsert"] = True
-
-        data = self._request("POST", "/batch_insert", json=payload)
-        return BatchInsertResponse.model_validate(data)
-
-    def search(
-        self,
-        query: str,
-        *,
-        top_k: int = 10,
-        mode: str | None = None,
-        collection: str | None = None,
-        meta: dict[str, str] | None = None,
-        meta_any: list[dict[str, str]] | None = None,
-        meta_not: dict[str, str] | None = None,
-        meta_ranges: list[dict[str, Any]] | None = None,
-        include_meta: bool = False,
-        hybrid_alpha: float | None = None,
-        score_mode: str | None = None,
-        ef_search: int | None = None,
-        offset: int | None = None,
-        limit: int | None = None,
-        page_token: str | None = None,
-        page_size: int | None = None,
-    ) -> SearchResult:
-        """Search for similar documents.
-
-        Mirrors Go Client.Query().
-        """
-        payload: dict[str, Any] = {"query": query, "top_k": top_k}
-        if mode is not None:
-            payload["mode"] = mode
-        if collection is not None:
-            payload["collection"] = collection
-        if meta is not None:
-            payload["meta"] = meta
-        if meta_any is not None:
-            payload["meta_any"] = meta_any
-        if meta_not is not None:
-            payload["meta_not"] = meta_not
-        if meta_ranges is not None:
-            payload["meta_ranges"] = meta_ranges
-        if include_meta:
-            payload["include_meta"] = True
-        if hybrid_alpha is not None:
-            payload["hybrid_alpha"] = hybrid_alpha
-        if score_mode is not None:
-            payload["score_mode"] = score_mode
-        if ef_search is not None:
-            payload["ef_search"] = ef_search
-        if offset is not None:
-            payload["offset"] = offset
-        if limit is not None:
-            payload["limit"] = limit
-        if page_token is not None:
-            payload["page_token"] = page_token
-        if page_size is not None:
-            payload["page_size"] = page_size
-
-        data = self._request("POST", "/query", json=payload)
-        return SearchResult.model_validate(data)
-
-    def delete(self, id: str) -> DeleteResponse:
-        """Delete a document by ID.
-
-        Mirrors Go Client.Delete().
-        """
-        data = self._request("POST", "/delete", json={"id": id})
-        return DeleteResponse.model_validate(data)
-
-    def health(self) -> HealthResponse:
-        """Check server health.
-
-        Mirrors Go Client.Health().
-        """
-        data = self._request("GET", "/health")
-        return HealthResponse.model_validate(data)
-
-    def scroll(
-        self,
-        *,
-        collection: str | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> ScrollResponse:
-        """Paginated iteration over all documents.
-
-        Mirrors Go Client.Scroll().
-        """
-        payload: dict[str, Any] = {}
-        if collection is not None:
-            payload["collection"] = collection
-        if limit is not None:
-            payload["limit"] = limit
-        if offset is not None:
-            payload["offset"] = offset
-
-        data = self._request("POST", "/scroll", json=payload)
-        return ScrollResponse.model_validate(data)
-
-    # ── Collection Management ───────────────────────────────────────────
-
-    def list_collections(self) -> CollectionListResponse:
-        """List all collections (v1 admin endpoint).
-
-        Mirrors Go Client.ListCollections().
-        """
-        data = self._request("GET", "/admin/collection/list")
-        return CollectionListResponse.model_validate(data)
-
-    def create_collection(
-        self,
-        name: str,
-        fields: list[dict[str, Any] | FieldSchema] | None = None,
-    ) -> dict[str, Any]:
-        """Create a new collection (v2 endpoint).
-
-        Args:
-            name: Collection name (1-64 alphanumeric, underscores, hyphens).
-            fields: Optional list of field schemas.
-
-        Returns:
-            Server response dict with status and message.
-        """
-        payload: dict[str, Any] = {"name": name}
-        if fields is not None:
-            normalized: list[dict[str, Any]] = []
-            for f in fields:
-                if isinstance(f, FieldSchema):
-                    normalized.append(f.model_dump(exclude_none=True))
-                else:
-                    normalized.append(f)
-            payload["fields"] = normalized
-
-        return _require_response_object(
-            self._request("POST", "/v2/collections", json=payload)
-        )
-
-    def get_collection(self, name: str) -> dict[str, Any]:
-        """Get collection info (v2 endpoint)."""
-        return _require_response_object(
-            self._request("GET", f"/v2/collections/{name}")
-        )
-
-    def delete_collection(self, name: str) -> dict[str, Any]:
-        """Delete a collection (v2 endpoint)."""
-        return _require_response_object(
-            self._request("DELETE", f"/v2/collections/{name}")
-        )
-
-    def collection_stats(self, name: str) -> CollectionStatsResponse:
-        """Get collection statistics (v2 endpoint)."""
-        data = self._request("GET", f"/v2/collections/{name}/stats")
-        return CollectionStatsResponse.model_validate(data)
-
-    # ── Admin ───────────────────────────────────────────────────────────
-
-    def compact(self) -> CompactResponse:
-        """Trigger index compaction.
-
-        Mirrors Go Client.Compact().
-        """
-        data = self._request("POST", "/compact")
-        return CompactResponse.model_validate(data)
-
-    # ── Sparse Vectors ──────────────────────────────────────────────────
-
-    def insert_sparse(
-        self,
-        doc: str,
-        *,
-        indices: list[int],
-        values: list[float],
-        id: str | None = None,
-        dimension: int | None = None,
-        meta: dict[str, str] | None = None,
-        upsert: bool = False,
-        collection: str | None = None,
-    ) -> InsertResponse:
-        """Insert a document with a sparse vector.
-
-        Uses the /insert/sparse endpoint.
-        """
-        payload: dict[str, Any] = {
-            "doc": doc,
-            "indices": indices,
-            "values": values,
-        }
-        if id is not None:
-            payload["id"] = id
-        if dimension is not None:
-            payload["dimension"] = dimension
-        if meta is not None:
-            payload["meta"] = meta
-        if upsert:
-            payload["upsert"] = True
-        if collection is not None:
-            payload["collection"] = collection
-
-        data = self._request("POST", "/insert/sparse", json=payload)
-        return InsertResponse.model_validate(data)
-
-    # ── Tenant Operations (v3) ──────────────────────────────────────────
-
     def tenant(self, tenant_id: str) -> TenantClient:
-        """Get a tenant-scoped client for multi-tenant operations (v3 API)."""
+        """Get a typed client for one tenant on the canonical V3 API."""
         return TenantClient(self, tenant_id)
 
 
@@ -420,42 +178,114 @@ class TenantClient:
     def __init__(self, client: DeepDataClient, tenant_id: str) -> None:
         self._client = client
         self._tenant_id = tenant_id
+        self._base_path = tenant_base_path(tenant_id)
 
     def _request(self, method: str, path: str, *, json: Any = None) -> dict[str, Any]:
         data = self._client._request(
             method,
-            f"/v3/tenants/{self._tenant_id}{path}",
+            f"{self._base_path}{path}",
             json=json,
+            retryable=method.upper() == "GET",
         )
         return _require_response_object(data)
 
     def create_collection(
         self,
         name: str,
-        fields: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        """Create a collection within this tenant."""
-        payload: dict[str, Any] = {"name": name}
-        if fields is not None:
-            payload["fields"] = fields
-        return self._request("POST", "/collections", json=payload)
+        fields: list[dict[str, Any] | TenantVectorField],
+        *,
+        metadata: dict[str, Any] | None = None,
+        description: str | None = None,
+    ) -> TenantCollectionMutationResponse:
+        """Create a canonical collection within this tenant."""
+        # Validate path usability at creation time as this name will become a
+        # URL segment for every subsequent collection operation.
+        collection_segment(name)
+        normalized_fields = [
+            field
+            if isinstance(field, TenantVectorField)
+            else TenantVectorField.model_validate(field)
+            for field in fields
+        ]
+        schema = TenantCollectionSchema(
+            name=name,
+            fields=normalized_fields,
+            metadata=metadata,
+            description=description,
+        )
+        data = self._request("POST", "/collections", json=request_payload(schema))
+        return response_model(TenantCollectionMutationResponse, data)
 
-    def delete_collection(self, name: str) -> dict[str, Any]:
+    def list_collections(self) -> TenantCollectionListResponse:
+        """List canonical collections belonging to this tenant."""
+        data = self._request("GET", "/collections")
+        return response_model(TenantCollectionListResponse, data)
+
+    def get_collection(self, name: str) -> TenantGetCollectionResponse:
+        """Get one canonical tenant collection."""
+        segment = collection_segment(name)
+        data = self._request("GET", f"/collections/{segment}")
+        return response_model(TenantGetCollectionResponse, data)
+
+    def delete_collection(self, name: str) -> TenantCollectionMutationResponse:
         """Delete a collection within this tenant."""
-        return self._request("DELETE", f"/collections/{name}")
+        segment = collection_segment(name)
+        data = self._request("DELETE", f"/collections/{segment}")
+        return response_model(TenantCollectionMutationResponse, data)
 
     def insert(
         self,
         collection: str,
         *,
+        id: int | None = None,
         vectors: dict[str, Any],
         metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> TenantInsertResponse:
         """Insert a document into a tenant collection."""
-        payload: dict[str, Any] = {"vectors": vectors}
-        if metadata is not None:
-            payload["metadata"] = metadata
-        return self._request("POST", f"/collections/{collection}/docs", json=payload)
+        segment = collection_segment(collection)
+        document = TenantDocumentInput(id=id, vectors=vectors, metadata=metadata)
+        data = self._request(
+            "POST",
+            f"/collections/{segment}/docs",
+            json=request_payload(document),
+        )
+        return response_model(TenantInsertResponse, data)
+
+    def batch_insert(
+        self,
+        collection: str,
+        documents: list[dict[str, Any] | TenantDocumentInput],
+    ) -> TenantBatchInsertResponse:
+        """Insert a batch atomically; the server never reports partial success."""
+        segment = collection_segment(collection)
+        normalized = [
+            document
+            if isinstance(document, TenantDocumentInput)
+            else TenantDocumentInput.model_validate(document)
+            for document in documents
+        ]
+        request = TenantBatchInsertRequest(documents=normalized)
+        data = self._request(
+            "POST",
+            f"/collections/{segment}/docs/batch",
+            json=request_payload(request),
+        )
+        return response_model(TenantBatchInsertResponse, data)
+
+    def delete_document(
+        self,
+        collection: str,
+        doc_id: int,
+    ) -> TenantDeleteDocumentResponse:
+        """Delete one document from a canonical tenant collection."""
+        segment = collection_segment(collection)
+        request = TenantDeleteDocumentRequest(doc_id=doc_id)
+        data = self._request(
+            "DELETE",
+            f"/collections/{segment}/docs",
+            json=request_payload(request),
+        )
+        return response_model(TenantDeleteDocumentResponse, data)
 
     def search(
         self,
@@ -464,13 +294,35 @@ class TenantClient:
         queries: dict[str, Any],
         top_k: int = 10,
         ef_search: int | None = None,
-    ) -> dict[str, Any]:
+        filters: dict[str, Any] | None = None,
+        hybrid_params: dict[str, Any] | TenantHybridParams | None = None,
+        include_vectors: bool | None = None,
+    ) -> TenantSearchResponse:
         """Search within a tenant collection."""
-        payload: dict[str, Any] = {"queries": queries, "top_k": top_k}
-        if ef_search is not None:
-            payload["ef_search"] = ef_search
-        return self._request("POST", f"/collections/{collection}/search", json=payload)
+        segment = collection_segment(collection)
+        normalized_hybrid = (
+            hybrid_params
+            if isinstance(hybrid_params, TenantHybridParams) or hybrid_params is None
+            else TenantHybridParams.model_validate(hybrid_params)
+        )
+        request = TenantSearchRequest(
+            queries=queries,
+            top_k=top_k,
+            ef_search=ef_search,
+            filters=filters,
+            hybrid_params=normalized_hybrid,
+            include_vectors=include_vectors,
+        )
+        data = self._client._request(
+            "POST",
+            f"{self._base_path}/collections/{segment}/search",
+            json=request_payload(request),
+            retryable=True,
+        )
+        data = _require_response_object(data)
+        return response_model(TenantSearchResponse, data)
 
-    def info(self) -> dict[str, Any]:
+    def info(self) -> TenantInfoResponse:
         """Get tenant info."""
-        return self._request("GET", "")
+        data = self._request("GET", "")
+        return response_model(TenantInfoResponse, data)
