@@ -4,7 +4,10 @@ replicaCount: 1
 
 image:
   repository: deepdata
-  tag: latest
+  tag: 0.2.0-rc.1
+  # Required for an RC deployment. Use the published manifest digest, including
+  # the sha256: prefix; mutable tag-only deployment is intentionally rejected.
+  digest: ""
   pullPolicy: IfNotPresent
 
 service:
@@ -18,16 +21,25 @@ config:
   grpcPort: 50051
   mode: local
   logFormat: json
-  apiRps: "100"
+  tenantRps: "100"
+  tenantBurst: "100"
+  authFailureRps: "1"
+  authFailureBurst: "5"
+  maxRateLimitKeys: "100000"
   # HNSW tuning
   # hnswM: "16"
   # hnswEfSearch: "200"
 
-# Authentication (leave empty to disable)
+# Authentication is mandatory and comes only from an existing Kubernetes
+# Secret. Supplying secret material through Helm values would retain it in the
+# Helm release record, so the RC chart deliberately does not support that path.
 auth:
-  apiToken: ""
-  jwtSecret: ""
-  requireAuth: false
+  existingSecret: deepdata-auth
+  existingSecretType: apiToken
+  existingSecretKey: api-token
+  # Increment this value when rotating data in the same Secret to trigger a
+  # Deployment rollout. Changing the Secret name or key already triggers one.
+  secretRevision: "1"
 
 # OpenTelemetry tracing
 telemetry:
@@ -57,9 +69,13 @@ securityContext:
 # Persistence for WAL + index files
 persistence:
   enabled: true
+  existingClaim: ""
   storageClass: ""
   accessMode: ReadWriteOnce
   size: 5Gi
+  # Set true only after verifying the selected volume provides advisory locks,
+  # atomic same-directory rename, fsync, and directory fsync semantics.
+  verifiedPOSIXSemantics: false
 
 resources:
   limits:
@@ -68,21 +84,31 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-nodeSelector: {}
+nodeSelector:
+  kubernetes.io/os: linux
+  kubernetes.io/arch: amd64
 tolerations: []
 affinity: {}
 
 # Liveness and readiness probes
 probes:
+  startup:
+    path: /livez
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 60
   liveness:
     path: /livez
     initialDelaySeconds: 5
     periodSeconds: 15
     timeoutSeconds: 3
     failureThreshold: 3
+
   readiness:
     path: /readyz
     initialDelaySeconds: 10
     periodSeconds: 10
     timeoutSeconds: 3
     failureThreshold: 3
+
+terminationGracePeriodSeconds: 90

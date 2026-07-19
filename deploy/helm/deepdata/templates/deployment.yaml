@@ -1,3 +1,38 @@
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "the DeepData RC supports exactly one replica" }}
+{{- end }}
+{{- if ne .Values.config.mode "local" }}
+{{- fail "the DeepData RC supports only config.mode=local" }}
+{{- end }}
+{{- if not .Values.persistence.enabled }}
+{{- fail "the DeepData RC chart requires persistent storage" }}
+{{- end }}
+{{- if not .Values.persistence.verifiedPOSIXSemantics }}
+{{- fail "set persistence.verifiedPOSIXSemantics=true only after verifying flock/fsync/atomic-rename semantics" }}
+{{- end }}
+{{- if ne (index .Values.nodeSelector "kubernetes.io/os") "linux" }}
+{{- fail "the DeepData RC requires nodeSelector kubernetes.io/os=linux" }}
+{{- end }}
+{{- if ne (index .Values.nodeSelector "kubernetes.io/arch") "amd64" }}
+{{- fail "the DeepData RC currently requires nodeSelector kubernetes.io/arch=amd64" }}
+{{- end }}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.image.digest) }}
+{{- fail "image.digest must be an immutable lowercase sha256 digest" }}
+{{- end }}
+{{- if eq (trim .Values.auth.existingSecret) "" }}
+{{- fail "auth.existingSecret is required" }}
+{{- end }}
+{{- if eq (trim .Values.auth.existingSecretKey) "" }}
+{{- fail "auth.existingSecretKey is required" }}
+{{- end }}
+{{- if and (ne .Values.auth.existingSecretType "apiToken") (ne .Values.auth.existingSecretType "jwtSecret") }}
+{{- fail "auth.existingSecretType must be apiToken or jwtSecret" }}
+{{- end }}
+{{- $authSecretName := .Values.auth.existingSecret }}
+{{- $claimName := printf "%s-deepdata-data" .Release.Name }}
+{{- if .Values.persistence.existingClaim }}
+{{- $claimName = .Values.persistence.existingClaim }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,6 +40,7 @@ metadata:
   labels:
     app.kubernetes.io/name: deepdata
     app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 spec:
   replicas: {{ .Values.replicaCount }}
   strategy:
@@ -18,7 +54,12 @@ spec:
       labels:
         app.kubernetes.io/name: deepdata
         app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+      annotations:
+        deepdata.io/auth-secret-revision: {{ .Values.auth.secretRevision | quote }}
     spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.nodeSelector }}
@@ -35,7 +76,7 @@ spec:
       {{- end }}
       containers:
         - name: deepdata
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
@@ -59,26 +100,32 @@ spec:
               value: {{ .Values.config.mode | quote }}
             - name: LOG_FORMAT
               value: {{ .Values.config.logFormat | quote }}
-            - name: API_RPS
-              value: {{ .Values.config.apiRps | quote }}
-            {{- if .Values.auth.apiToken }}
+            - name: TENANT_RPS
+              value: {{ .Values.config.tenantRps | quote }}
+            - name: TENANT_BURST
+              value: {{ .Values.config.tenantBurst | quote }}
+            - name: AUTH_FAILURE_RPS
+              value: {{ .Values.config.authFailureRps | quote }}
+            - name: AUTH_FAILURE_BURST
+              value: {{ .Values.config.authFailureBurst | quote }}
+            - name: MAX_RATE_LIMIT_KEYS
+              value: {{ .Values.config.maxRateLimitKeys | quote }}
+            {{- if eq .Values.auth.existingSecretType "apiToken" }}
             - name: API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-deepdata-auth
-                  key: api-token
+                  name: {{ $authSecretName }}
+                  key: {{ .Values.auth.existingSecretKey }}
             {{- end }}
-            {{- if .Values.auth.jwtSecret }}
+            {{- if eq .Values.auth.existingSecretType "jwtSecret" }}
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Release.Name }}-deepdata-auth
-                  key: jwt-secret
+                  name: {{ $authSecretName }}
+                  key: {{ .Values.auth.existingSecretKey }}
             {{- end }}
-            {{- if .Values.auth.requireAuth }}
             - name: REQUIRE_AUTH
               value: "1"
-            {{- end }}
             {{- if .Values.telemetry.enabled }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.telemetry.endpoint | quote }}
@@ -93,6 +140,13 @@ spec:
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
           readinessProbe:
             httpGet:
               path: {{ .Values.probes.readiness.path }}
@@ -110,11 +164,7 @@ spec:
               mountPath: /tmp
       volumes:
         - name: data
-          {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-deepdata-data
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
+            claimName: {{ $claimName }}
         - name: tmp
           emptyDir: {}

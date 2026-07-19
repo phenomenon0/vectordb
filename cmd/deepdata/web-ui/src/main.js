@@ -1,3 +1,5 @@
+// Legacy dashboard source archive. The RC index.html does not import this
+// entrypoint, so none of these handlers enter the generated RC web artifact.
 import Alpine from 'alpinejs'
 import 'highlight.js/styles/monokai-sublime.css'
 import './style.css'

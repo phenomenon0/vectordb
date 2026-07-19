@@ -1,0 +1,218 @@
+name: DeepData RC artifacts
+
+on:
+  push:
+    tags:
+      - 'deepdata-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish signed artifacts after all preflight gates
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.25.5'
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  build-unsigned:
+    name: Reproducible unsigned candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.18.4
+
+      - name: Verify ref and version parity
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\n' < internal/releaseinfo/version.txt)
+          python3 scripts/check_version_contract.py
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "deepdata-v$version" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match deepdata-v$version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run release-surface gates
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go vet ./...
+          CGO_ENABLED=1 go test -short -timeout 600s -count=1 ./...
+          bash tests/deployment_manifests_test.sh
+          python -m pip install --disable-pip-version-check './sdk/python[dev]' build
+          python -m pytest -q sdk/python/tests --ignore=sdk/python/tests/test_integration.py
+          python -m mypy sdk/python/deepdata
+
+      - name: Build binary, Python, Helm, and container artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/binary artifacts/python artifacts/helm artifacts/sbom artifacts/provenance
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -trimpath -ldflags='-s -w -buildid=' \
+            -o artifacts/binary/deepdata ./cmd/deepdata
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C artifacts/binary -czf "artifacts/deepdata_${VERSION}_linux_amd64.tar.gz" deepdata
+          (cd sdk/python && python -m build --outdir ../../artifacts/python)
+          helm package deploy/helm/deepdata \
+            --version "$VERSION" --app-version "$VERSION" \
+            --destination artifacts/helm
+          docker build --build-arg "DEEPDATA_VERSION=$VERSION" \
+            --tag "deepdata:$VERSION" .
+          docker save "deepdata:$VERSION" | gzip -n > "artifacts/deepdata_${VERSION}_linux_amd64.oci.tar.gz"
+
+      - name: Generate dependency manifests, SBOMs, and provenance
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SYFT_SHA256: 6cef9a7f37220d9067eaf9cfaaa2fce986e9f320a8d42cbc36658c99af78ea04
+        run: |
+          set -euo pipefail
+          syft_archive="$RUNNER_TEMP/syft.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "$syft_archive" \
+            https://github.com/anchore/syft/releases/download/v1.48.0/syft_1.48.0_linux_amd64.tar.gz
+          echo "$SYFT_SHA256  $syft_archive" | sha256sum --check --strict
+          tar -xzf "$syft_archive" -C "$RUNNER_TEMP" syft
+          "$RUNNER_TEMP/syft" dir:. \
+            -o cyclonedx-json=artifacts/sbom/deepdata-source.cdx.json
+          "$RUNNER_TEMP/syft" "docker:deepdata:$VERSION" \
+            -o cyclonedx-json=artifacts/sbom/deepdata-container.cdx.json
+          go version -m artifacts/binary/deepdata > artifacts/provenance/go-buildinfo.txt
+          go list -m -json all > artifacts/provenance/go-modules.json
+          python -m pip freeze --all > artifacts/provenance/python-build-environment.txt
+          cat > artifacts/provenance/build.json <<EOF
+          {
+            "version": "$VERSION",
+            "commit": "$GITHUB_SHA",
+            "repository": "$GITHUB_REPOSITORY",
+            "ref": "$GITHUB_REF",
+            "workflow": "$GITHUB_WORKFLOW",
+            "run_id": "$GITHUB_RUN_ID",
+            "run_attempt": "$GITHUB_RUN_ATTEMPT",
+            "runner_os": "$RUNNER_OS",
+            "runner_arch": "$RUNNER_ARCH"
+          }
+          EOF
+          find artifacts -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > artifacts/SHA256SUMS
+
+      - name: Upload unsigned dry-run bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deepdata-${{ steps.version.outputs.version }}-unsigned
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Explicit signed publication
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: build-unsigned
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: deepdata-*-unsigned
+          path: artifacts
+          merge-multiple: true
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.18.4
+
+      - name: Enforce publication authority and legal gates
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\n' < internal/releaseinfo/version.txt)
+          [[ "$GITHUB_REF" == "refs/tags/deepdata-v$version" ]] || {
+            echo "publication must be dispatched from refs/tags/deepdata-v$version" >&2
+            exit 1
+          }
+          [[ -s LICENSE ]] || {
+            echo "publication is blocked until the approved root LICENSE exists" >&2
+            exit 1
+          }
+          [[ -n "${{ secrets.PYPI_API_TOKEN }}" ]] || {
+            echo "PYPI_API_TOKEN is required for explicit publication" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Keyless-sign checksum manifest
+        env:
+          COSIGN_SHA256: f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf
+        run: |
+          set -euo pipefail
+          cosign="$RUNNER_TEMP/cosign"
+          curl --fail --location --silent --show-error \
+            --output "$cosign" \
+            https://github.com/sigstore/cosign/releases/download/v3.1.2/cosign-linux-amd64
+          echo "$COSIGN_SHA256  $cosign" | sha256sum --check --strict
+          chmod +x "$cosign"
+          "$cosign" sign-blob --yes \
+            --bundle artifacts/SHA256SUMS.sigstore.json \
+            artifacts/SHA256SUMS
+
+      - name: Publish container and Helm chart to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          gunzip -c "artifacts/deepdata_${VERSION}_linux_amd64.oci.tar.gz" | docker load
+          docker tag "deepdata:$VERSION" "ghcr.io/$owner/deepdata:$VERSION"
+          docker push "ghcr.io/$owner/deepdata:$VERSION"
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          helm push "artifacts/helm/deepdata-$VERSION.tgz" "oci://ghcr.io/$owner/charts"
+
+      - name: Publish Python distribution
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'twine==6.2.0'
+          python -m twine upload artifacts/python/*
+
+      - name: Create immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "deepdata-v$VERSION" \
+            --verify-tag \
+            --title "DeepData $VERSION" \
+            --generate-notes \
+            artifacts/deepdata_* \
+            artifacts/python/* \
+            artifacts/helm/* \
+            artifacts/sbom/* \
+            artifacts/provenance/* \
+            artifacts/SHA256SUMS \
+            artifacts/SHA256SUMS.sigstore.json

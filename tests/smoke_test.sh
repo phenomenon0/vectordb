@@ -1,892 +1,380 @@
 #!/usr/bin/env bash
-#
-# DeepData Smoke Test — end-to-end validation with real Ollama embeddings
-#
-# Covers: server boot, Ollama embedder, insert, query, semantic accuracy,
-# metadata filtering, batch, upsert, delete, collections, hybrid/BM25,
-# scroll, compact, export/import, concurrency, edge cases, WAL persistence,
-# restart persistence (data survival across server restart), graceful shutdown.
-#
-# Usage:
-#   ./tests/smoke_test.sh
-#   DEEPDATA_PORT=8888 ./tests/smoke_test.sh
-#   SKIP_BUILD=1 ./tests/smoke_test.sh
-#
-set -euo pipefail
+# Canonical DeepData RC smoke: authenticated HTTP V3, all nine unary gRPC
+# methods, unsupported-surface checks, graceful restart, and durable state.
+set -Eeuo pipefail
 
-# ── Config ──────────────────────────────────────────────────────────────────
-PORT="${DEEPDATA_PORT:-9777}"
-BASE="http://localhost:${PORT}"
-BASE_DIR=$(mktemp -d /tmp/deepdata-test-XXXXXX)
-BINARY="bin/deepdata-test"
-PASS=0
-FAIL=0
-SKIP=0
-TOTAL=0
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+WORK_DIR=$(mktemp -d /tmp/deepdata-rc-smoke-XXXXXX)
+STATE_ROOT="$WORK_DIR/state"
+SERVER_LOG="$WORK_DIR/server.log"
+HTTP_PORT=${DEEPDATA_PORT:-9777}
+GRPC_PORT_NUMBER=${DEEPDATA_GRPC_PORT:-59777}
+BASE_URL="http://127.0.0.1:$HTTP_PORT"
+GRPC_ADDRESS="127.0.0.1:$GRPC_PORT_NUMBER"
+API_TOKEN=${DEEPDATA_API_TOKEN:-canonical-smoke-test-token-strong-credential}
+TENANT=smoke
 SERVER_PID=""
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GRN='\033[0;32m'
-YEL='\033[0;33m'
-BLD='\033[1m'
-RST='\033[0m'
+if [[ -n "${DEEPDATA_BINARY:-}" ]]; then
+  BINARY=$(realpath -e -- "$DEEPDATA_BINARY")
+  [[ -x "$BINARY" ]]
+else
+  BINARY="$WORK_DIR/deepdata"
+fi
 
 cleanup() {
-    if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-        kill "$SERVER_PID" 2>/dev/null || true
-        wait "$SERVER_PID" 2>/dev/null || true
+  local rc=$?
+  set +e
+  if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill -TERM "$SERVER_PID" 2>/dev/null
+    for _ in $(seq 1 100); do
+      kill -0 "$SERVER_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$SERVER_PID" 2>/dev/null; then
+      kill -KILL "$SERVER_PID" 2>/dev/null
     fi
-    rm -rf "$BASE_DIR"
-    rm -f "$BINARY"
-    echo ""
-    echo -e "${BLD}═══════════════════════════════════════════════${RST}"
-    if [[ $SKIP -gt 0 ]]; then
-        echo -e "  ${GRN}${PASS} passed${RST}  ${RED}${FAIL} failed${RST}  ${YEL}${SKIP} skipped${RST}  ${TOTAL} total"
-    else
-        echo -e "  ${GRN}${PASS} passed${RST}  ${RED}${FAIL} failed${RST}  ${TOTAL} total"
-    fi
-    echo -e "${BLD}═══════════════════════════════════════════════${RST}"
-    if [[ $FAIL -gt 0 ]]; then
-        exit 1
-    fi
+    wait "$SERVER_PID" 2>/dev/null
+  fi
+  if ((rc == 0)); then
+    rm -rf -- "$WORK_DIR"
+  else
+    echo "smoke failed; retained evidence at $WORK_DIR" >&2
+    tail -n 120 "$SERVER_LOG" >&2 2>/dev/null
+  fi
 }
 trap cleanup EXIT
 
-assert() {
-    local name="$1"; shift
-    TOTAL=$((TOTAL + 1))
-    if eval "$@"; then
-        PASS=$((PASS + 1))
-        echo -e "  ${GRN}PASS${RST}  $name"
-    else
-        FAIL=$((FAIL + 1))
-        echo -e "  ${RED}FAIL${RST}  $name"
-    fi
+fail() {
+  echo "FAIL: $*" >&2
+  return 1
 }
 
-assert_eq() {
-    local name="$1" expected="$2" actual="$3"
-    TOTAL=$((TOTAL + 1))
-    if [[ "$expected" == "$actual" ]]; then
-        PASS=$((PASS + 1))
-        echo -e "  ${GRN}PASS${RST}  $name"
-    else
-        FAIL=$((FAIL + 1))
-        echo -e "  ${RED}FAIL${RST}  $name  (expected='$expected' got='$actual')"
-    fi
+require_command() {
+  command -v "$1" >/dev/null || fail "required command not found: $1"
 }
 
-assert_contains() {
-    local name="$1" haystack="$2" needle="$3"
-    TOTAL=$((TOTAL + 1))
-    if echo "$haystack" | grep -q "$needle"; then
-        PASS=$((PASS + 1))
-        echo -e "  ${GRN}PASS${RST}  $name"
-    else
-        FAIL=$((FAIL + 1))
-        echo -e "  ${RED}FAIL${RST}  $name  (missing '$needle')"
-    fi
-}
+require_command curl
+require_command jq
+require_command go
 
-assert_http() {
-    local name="$1" expected="$2"; shift 2
-    local actual
-    actual=$(curl -s -o /dev/null -w "%{http_code}" "$@")
-    assert_eq "$name" "$expected" "$actual"
-}
+mkdir -m 0700 -- "$STATE_ROOT"
+cd -- "$ROOT_DIR"
 
-skip() {
-    local name="$1"
-    TOTAL=$((TOTAL + 1))
-    SKIP=$((SKIP + 1))
-    echo -e "  ${YEL}SKIP${RST}  $name"
-}
-
-jv() { echo "$1" | jq -r "$2" 2>/dev/null || echo "JQ_ERR"; }
-
-post() { curl -sf -X POST "$1" -H "Content-Type: application/json" -d "$2" 2>/dev/null || echo '{"error":"request_failed"}'; }
-
-# ── Build ───────────────────────────────────────────────────────────────────
-cd "$(dirname "$0")/.."
-
-# Source .env for API keys (OPENAI_API_KEY etc)
-if [[ -f ../.env ]]; then
-    set -a; source ../.env; set +a
-elif [[ -f .env ]]; then
-    set -a; source .env; set +a
+if [[ -z "${DEEPDATA_BINARY:-}" ]]; then
+  echo "building canonical server"
+  go build -trimpath -o "$BINARY" ./cmd/deepdata
 fi
 
-# Determine mode: pro if OPENAI_API_KEY is set, local otherwise
-if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-    TEST_MODE="pro"
-else
-    TEST_MODE="local"
-fi
+GRPC_SOURCE="$WORK_DIR/grpc_smoke.go"
+GRPC_PROBE="$WORK_DIR/grpc_smoke"
+cat >"$GRPC_SOURCE" <<'GOEOF'
+package main
 
-if [[ "${SKIP_BUILD:-}" != "1" ]]; then
-    echo -e "${BLD}Building...${RST}"
-    CGO_ENABLED=0 go build -o "$BINARY" ./cmd/deepdata/
-fi
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
 
-# ── Start Server (isolated, no hydration) ──────────────────────────────────
-echo -e "${BLD}Starting server on :${PORT} (mode=${TEST_MODE})${RST}"
+	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+)
 
-VECTORDB_BASE_DIR="$BASE_DIR" \
-VECTORDB_MODE="$TEST_MODE" \
-HYDRATION_COUNT=0 \
-PORT="$PORT" \
-"$BINARY" serve --port "$PORT" --mode "$TEST_MODE" >"$BASE_DIR/server.log" 2>&1 &
-SERVER_PID=$!
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
 
-echo -n "  Waiting"
-for i in $(seq 1 60); do
-    if curl -sf "$BASE/healthz" >/dev/null 2>&1; then
-        echo " ready (${i}x0.5s)"
-        break
-    fi
+func dense(values ...float32) *deepdatav3.VectorData {
+	return &deepdatav3.VectorData{Data: &deepdatav3.VectorData_Dense{
+		Dense: &deepdatav3.DenseVector{Values: values},
+	}}
+}
+
+func containsID(results []*deepdatav3.SearchHit, id uint64) bool {
+	for _, result := range results {
+		if result.GetId() == id {
+			return true
+		}
+	}
+	return false
+}
+
+func main() {
+	if len(os.Args) != 4 {
+		panic("usage: grpc_smoke exercise|verify address token")
+	}
+	mode, address, token := os.Args[1], os.Args[2], os.Args[3]
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	conn, err := grpc.DialContext(
+		ctx,
+		address,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+	)
+	must(err)
+	defer conn.Close()
+	client := deepdatav3.NewDeepDataClient(conn)
+	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+
+	const tenant = "smoke"
+	const collection = "grpc_docs"
+
+	if mode == "exercise" {
+		_, err = client.CreateCollection(ctx, &deepdatav3.CreateCollectionRequest{
+			TenantId: tenant,
+			Name:     collection,
+			Fields: []*deepdatav3.VectorFieldConfig{{
+				Name: "embedding", Type: 0, Dim: 3, IndexType: "flat",
+			}},
+		})
+		must(err)
+		_, err = client.GetTenantInfo(ctx, &deepdatav3.GetTenantInfoRequest{TenantId: tenant})
+		must(err)
+		listed, err := client.ListCollections(ctx, &deepdatav3.ListCollectionsRequest{TenantId: tenant})
+		must(err)
+		if len(listed.GetCollections()) < 2 {
+			panic("gRPC list did not include HTTP and gRPC collections")
+		}
+		_, err = client.GetCollection(ctx, &deepdatav3.GetCollectionRequest{TenantId: tenant, Name: collection})
+		must(err)
+		inserted, err := client.Insert(ctx, &deepdatav3.InsertRequest{
+			TenantId: tenant, Collection: collection, Id: 201,
+			Vectors: map[string]*deepdatav3.VectorData{"embedding": dense(1, 0, 0)},
+		})
+		must(err)
+		if inserted.GetId() != 201 {
+			panic("gRPC insert returned the wrong ID")
+		}
+		batch, err := client.BatchInsert(ctx, &deepdatav3.BatchInsertRequest{
+			TenantId:   tenant,
+			Collection: collection,
+			Docs: []*deepdatav3.BatchDoc{
+				{Id: 202, Vectors: map[string]*deepdatav3.VectorData{"embedding": dense(0, 1, 0)}},
+				{Id: 203, Vectors: map[string]*deepdatav3.VectorData{"embedding": dense(0, 0, 1)}},
+			},
+		})
+		must(err)
+		if batch.GetInserted() != 2 || len(batch.GetIds()) != 2 {
+			panic("gRPC batch acknowledgement mismatch")
+		}
+		search, err := client.Search(ctx, &deepdatav3.SearchRequest{
+			TenantId: tenant, Collection: collection, TopK: 10,
+			Queries: map[string]*deepdatav3.VectorData{"embedding": dense(0, 1, 0)},
+		})
+		must(err)
+		if !containsID(search.GetResults(), 202) {
+			panic("gRPC search did not return the inserted document")
+		}
+		_, err = client.DeleteDoc(ctx, &deepdatav3.DeleteDocRequest{
+			TenantId: tenant, Collection: collection, DocId: 201,
+		})
+		must(err)
+		fmt.Println("gRPC exercise passed")
+		return
+	}
+
+	if mode != "verify" {
+		panic("unknown mode")
+	}
+	_, err = client.GetTenantInfo(ctx, &deepdatav3.GetTenantInfoRequest{TenantId: tenant})
+	must(err)
+	_, err = client.GetCollection(ctx, &deepdatav3.GetCollectionRequest{TenantId: tenant, Name: collection})
+	must(err)
+	search, err := client.Search(ctx, &deepdatav3.SearchRequest{
+		TenantId: tenant, Collection: collection, TopK: 10,
+		Queries: map[string]*deepdatav3.VectorData{"embedding": dense(0, 1, 0)},
+	})
+	must(err)
+	if containsID(search.GetResults(), 201) || !containsID(search.GetResults(), 202) || !containsID(search.GetResults(), 203) {
+		panic("gRPC restart state mismatch")
+	}
+	_, err = client.DeleteCollection(ctx, &deepdatav3.DeleteCollectionRequest{
+		TenantId: tenant, Name: collection,
+	})
+	must(err)
+	listed, err := client.ListCollections(ctx, &deepdatav3.ListCollectionsRequest{TenantId: tenant})
+	must(err)
+	for _, collectionInfo := range listed.GetCollections() {
+		if collectionInfo.GetName() == collection {
+			panic("gRPC collection remained after deletion")
+		}
+	}
+	fmt.Println("gRPC restart verification passed")
+}
+GOEOF
+
+go build -trimpath -o "$GRPC_PROBE" "$GRPC_SOURCE"
+
+start_server() {
+  : >>"$SERVER_LOG"
+  VECTORDB_MODE=local \
+  VECTORDB_BASE_DIR="$STATE_ROOT" \
+  VECTORDB_DATA_DIR=local \
+  PORT="$HTTP_PORT" \
+  GRPC_PORT="$GRPC_PORT_NUMBER" \
+  API_TOKEN="$API_TOKEN" \
+  REQUIRE_AUTH=1 \
+  LOG_FORMAT=json \
+  "$BINARY" serve >>"$SERVER_LOG" 2>&1 &
+  SERVER_PID=$!
+
+  local ready=false
+  for _ in $(seq 1 300); do
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo -e " ${RED}CRASHED${RST}"; SERVER_PID=""; exit 1
+      fail "server exited before readiness"
     fi
-    echo -n "."
-    sleep 0.5
-done
-curl -sf "$BASE/healthz" >/dev/null 2>&1 || { echo -e " ${RED}TIMEOUT${RST}"; exit 1; }
+    if curl -fsS --max-time 1 "$BASE_URL/readyz" >/dev/null 2>&1; then
+      ready=true
+      break
+    fi
+    sleep 0.1
+  done
+  [[ "$ready" == true ]] || fail "server did not become ready"
+}
 
-MODE_RESP=$(curl -sf "$BASE/api/mode" 2>/dev/null || echo '{}')
-EMBEDDER=$(jv "$MODE_RESP" '.embedder_type // "unknown"')
-echo -e "  Embedder: ${YEL}${EMBEDDER}${RST}"
-echo ""
+stop_server() {
+  [[ -n "$SERVER_PID" ]] || return 0
+  kill -TERM "$SERVER_PID"
+  for _ in $(seq 1 300); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+      local wait_rc=0
+      wait "$SERVER_PID" || wait_rc=$?
+      SERVER_PID=""
+      ((wait_rc == 0)) || fail "server exited with status $wait_rc during graceful shutdown"
+      return 0
+    fi
+    sleep 0.1
+  done
+  fail "server did not stop after SIGTERM"
+}
 
-# ═══════════════════════════════════════════════════════════════════════════
-# TESTS
-# ═══════════════════════════════════════════════════════════════════════════
+api() {
+  local method=$1 path=$2 body=${3-}
+  if [[ -n "$body" ]]; then
+    curl -fsS --max-time 10 -X "$method" "$BASE_URL$path" \
+      -H "Authorization: Bearer $API_TOKEN" \
+      -H 'Content-Type: application/json' \
+      --data-binary "$body"
+  else
+    curl -fsS --max-time 10 -X "$method" "$BASE_URL$path" \
+      -H "Authorization: Bearer $API_TOKEN"
+  fi
+}
 
-# ── 1. Health & Probes ─────────────────────────────────────────────────────
-echo -e "${BLD}[1] Health & Probes${RST}"
-assert_http "GET /healthz → 200" "200" "$BASE/healthz"
-assert_http "GET /health → 200"  "200" "$BASE/health"
-assert_http "GET /readyz → 200"  "200" "$BASE/readyz"
+assert_json() {
+  local name=$1 json=$2 filter=$3
+  if ! jq -e "$filter" <<<"$json" >/dev/null; then
+    echo "$json" >&2
+    fail "$name"
+  fi
+  echo "PASS: $name"
+}
 
-H=$(curl -sf "$BASE/health")
-assert_contains "health.ok=true" "$H" '"ok":true'
-assert_contains "health has 'total'" "$H" '"total"'
-assert_contains "health has 'active'" "$H" '"active"'
+assert_status() {
+  local name=$1 expected=$2 method=$3 path=$4
+  local actual
+  actual=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+    -X "$method" "$BASE_URL$path")
+  [[ "$actual" == "$expected" ]] || fail "$name: expected $expected, got $actual"
+  echo "PASS: $name"
+}
 
-INITIAL=$(jv "$H" '.total')
-assert_eq "empty DB has 0 vectors" "0" "$INITIAL"
-echo ""
+echo "starting canonical server"
+start_server
 
-# ── 2. Single Inserts (Ollama embeddings) ──────────────────────────────────
-echo -e "${BLD}[2] Insert (5 docs via Ollama)${RST}"
+assert_status "liveness" 200 GET /livez
+assert_status "readiness" 200 GET /readyz
+assert_status "root mutation is unavailable" 404 POST /insert
+assert_status "V2 collections are unavailable" 404 GET /v2/collections
+assert_status "legacy dashboard is unavailable" 404 GET /dashboard/
 
-R=$(post "$BASE/insert" '{"doc":"Machine learning uses neural networks to learn patterns from data","id":"ml-101","meta":{"topic":"machine-learning","level":"beginner"}}')
-assert_eq "insert ml-101" "ml-101" "$(jv "$R" '.id')"
+CREATE_BODY='{
+  "name":"http_docs",
+  "fields":[
+    {"name":"embedding","type":"dense","dim":3,"index":{"type":"hnsw"}},
+    {"name":"keywords","type":"sparse","dim":64,"index":{"type":"inverted"}}
+  ]
+}'
+response=$(api POST "/v3/tenants/$TENANT/collections" "$CREATE_BODY")
+assert_json "HTTP create collection" "$response" '.status == "success"'
 
-R=$(post "$BASE/insert" '{"doc":"PostgreSQL is a powerful open-source relational database management system","id":"pg-101","meta":{"topic":"databases","level":"beginner"}}')
-assert_eq "insert pg-101" "pg-101" "$(jv "$R" '.id')"
+response=$(api GET "/v3/tenants/$TENANT/collections")
+assert_json "HTTP list collections" "$response" '.count == 1 and .collections[0].Name == "http_docs"'
+response=$(api GET "/v3/tenants/$TENANT/collections/http_docs")
+assert_json "HTTP get collection" "$response" '.collection.Name == "http_docs"'
 
-R=$(post "$BASE/insert" '{"doc":"Kubernetes orchestrates containerized applications across clusters of machines","id":"k8s-101","meta":{"topic":"infrastructure","level":"intermediate"}}')
-assert_eq "insert k8s-101" "k8s-101" "$(jv "$R" '.id')"
-
-R=$(post "$BASE/insert" '{"doc":"Transformer architecture revolutionized NLP with self-attention mechanisms","id":"transformer-101","meta":{"topic":"machine-learning","level":"advanced"}}')
-assert_eq "insert transformer-101" "transformer-101" "$(jv "$R" '.id')"
-
-R=$(post "$BASE/insert" '{"doc":"Docker containers package applications with dependencies for consistent deployment","id":"docker-101","meta":{"topic":"infrastructure","level":"beginner"}}')
-assert_eq "insert docker-101" "docker-101" "$(jv "$R" '.id')"
-
-# Verify count
-H=$(curl -sf "$BASE/health")
-assert_eq "5 vectors after insert" "5" "$(jv "$H" '.total')"
-echo ""
-
-# ── 3. Semantic Query ──────────────────────────────────────────────────────
-echo -e "${BLD}[3] Semantic Query${RST}"
-
-R=$(post "$BASE/query" '{"query":"how do neural networks learn?","top_k":3,"include_meta":true}')
-TOP=$(jv "$R" '.ids[0]')
-assert_eq "query 'neural networks' → ml-101" "ml-101" "$TOP"
-
-COUNT=$(jv "$R" '.ids | length')
-assert "query returns multiple results" "[[ $COUNT -ge 2 ]]"
-
-# Infrastructure query
-R=$(post "$BASE/query" '{"query":"container orchestration deployment","top_k":3}')
-TOP=$(jv "$R" '.ids[0]')
-assert "infra query → k8s or docker" "[[ '$TOP' == 'k8s-101' || '$TOP' == 'docker-101' ]]"
-
-# Database query
-R=$(post "$BASE/query" '{"query":"SQL relational database management","top_k":1}')
-TOP=$(jv "$R" '.ids[0]')
-assert_eq "database query → pg-101" "pg-101" "$TOP"
-
-# Transformer query
-R=$(post "$BASE/query" '{"query":"attention mechanism NLP transformers","top_k":1}')
-TOP=$(jv "$R" '.ids[0]')
-assert_eq "transformer query → transformer-101" "transformer-101" "$TOP"
-echo ""
-
-# ── 4. Metadata Filtering ─────────────────────────────────────────────────
-echo -e "${BLD}[4] Metadata Filtering${RST}"
-
-# AND: topic=machine-learning
-R=$(post "$BASE/query" '{"query":"learning algorithms","top_k":10,"include_meta":true,"meta":{"topic":"machine-learning"}}')
-FCOUNT=$(jv "$R" '.ids | length')
-assert "AND filter returns results" "[[ $FCOUNT -ge 1 ]]"
-
-ALL_OK=$(echo "$R" | jq '[.meta[]?.topic] | all(. == "machine-learning")' 2>/dev/null || echo "false")
-assert_eq "all AND results have topic=machine-learning" "true" "$ALL_OK"
-
-# NOT: exclude infrastructure
-R=$(post "$BASE/query" '{"query":"technology","top_k":10,"include_meta":true,"meta_not":{"topic":"infrastructure"}}')
-NO_INFRA=$(echo "$R" | jq '[.meta[]?.topic] | all(. != "infrastructure")' 2>/dev/null || echo "false")
-assert_eq "NOT filter excludes infrastructure" "true" "$NO_INFRA"
-
-# AND: topic=databases
-R=$(post "$BASE/query" '{"query":"data storage","top_k":10,"meta":{"topic":"databases"}}')
-DCOUNT=$(jv "$R" '.ids | length')
-assert_eq "databases filter returns 1 result" "1" "$DCOUNT"
-echo ""
-
-# ── 5. Batch Insert ────────────────────────────────────────────────────────
-echo -e "${BLD}[5] Batch Insert (5 docs)${RST}"
-
-R=$(post "$BASE/batch_insert" '{
-    "docs": [
-        {"doc":"Redis is an in-memory data structure store used as cache and message broker","id":"redis-101","meta":{"topic":"databases"}},
-        {"doc":"GraphQL provides a complete description of data in your API with a type system","id":"graphql-101","meta":{"topic":"api"}},
-        {"doc":"Rust programming language focuses on memory safety and zero-cost abstractions","id":"rust-101","meta":{"topic":"programming"}},
-        {"doc":"WebAssembly enables near-native performance for web applications","id":"wasm-101","meta":{"topic":"web"}},
-        {"doc":"gRPC uses protocol buffers for efficient serialized remote procedure calls","id":"grpc-101","meta":{"topic":"api"}}
-    ]
+response=$(api POST "/v3/tenants/$TENANT/collections/http_docs/docs" '{
+  "id":101,
+  "vectors":{
+    "embedding":[1,0,0],
+    "keywords":{"indices":[1,3],"values":[0.8,0.4],"dim":64}
+  },
+  "metadata":{"kind":"single"}
 }')
-BATCH_COUNT=$(jv "$R" '.ids | length')
-assert_eq "batch insert 5 docs" "5" "$BATCH_COUNT"
+assert_json "HTTP insert" "$response" '.id == 101'
 
-# Verify retrievable
-R=$(post "$BASE/query" '{"query":"in-memory caching message broker","top_k":1}')
-assert_eq "batch doc queryable (redis)" "redis-101" "$(jv "$R" '.ids[0]')"
-
-H=$(curl -sf "$BASE/health")
-assert_eq "10 vectors total" "10" "$(jv "$H" '.total')"
-echo ""
-
-# ── 6. Upsert ──────────────────────────────────────────────────────────────
-echo -e "${BLD}[6] Upsert${RST}"
-
-R=$(post "$BASE/insert" '{
-    "doc":"Deep learning is a subset of machine learning using multi-layer neural networks for representation learning",
-    "id":"ml-101",
-    "upsert": true,
-    "meta":{"topic":"machine-learning","level":"intermediate","updated":"true"}
+response=$(api POST "/v3/tenants/$TENANT/collections/http_docs/docs/batch" '{
+  "documents":[
+    {"id":102,"vectors":{
+      "embedding":[0,1,0],
+      "keywords":{"indices":[2],"values":[1],"dim":64}
+    }},
+    {"id":103,"vectors":{
+      "embedding":[0,0,1],
+      "keywords":{"indices":[3],"values":[1],"dim":64}
+    }}
+  ]
 }')
-assert_eq "upsert ml-101" "ml-101" "$(jv "$R" '.id')"
-
-R=$(post "$BASE/query" '{"query":"deep learning representation","top_k":1,"include_meta":true}')
-assert_eq "upserted doc is top result" "ml-101" "$(jv "$R" '.ids[0]')"
-UPDATED=$(echo "$R" | jq -r '.meta[0].updated // "missing"' 2>/dev/null)
-assert_eq "upserted meta has updated=true" "true" "$UPDATED"
-echo ""
-
-# ── 7. Delete ──────────────────────────────────────────────────────────────
-echo -e "${BLD}[7] Delete${RST}"
-
-R=$(post "$BASE/delete" '{"id":"rust-101"}')
-assert_eq "delete rust-101" "rust-101" "$(jv "$R" '.deleted')"
-
-R=$(post "$BASE/query" '{"query":"rust memory safety","top_k":10}')
-HAS_RUST=$(echo "$R" | jq '[.ids[] // empty] | any(. == "rust-101")' 2>/dev/null || echo "false")
-assert_eq "rust-101 absent from results" "false" "$HAS_RUST"
-
-assert_http "delete nonexistent → 404" "404" \
-    -X POST "$BASE/delete" -H "Content-Type: application/json" -d '{"id":"no-such-doc"}'
-
-H=$(curl -sf "$BASE/health")
-assert "health.deleted >= 1" "[[ $(jv "$H" '.deleted') -ge 1 ]]"
-echo ""
-
-# ── 8. Scroll ─────────────────────────────────────────────────────────────
-echo -e "${BLD}[8] Scroll${RST}"
-
-R=$(curl -sf "$BASE/scroll?limit=3")
-SCOUNT=$(jv "$R" '.ids | length')
-assert "scroll returns results" "[[ $SCOUNT -ge 1 ]]"
-assert "scroll respects limit=3" "[[ $SCOUNT -le 3 ]]"
-
-NEXT=$(jv "$R" '.next_offset')
-if [[ "$NEXT" != "null" && "$NEXT" != "0" ]]; then
-    R2=$(curl -sf "$BASE/scroll?limit=3&offset=$NEXT")
-    S2=$(jv "$R2" '.ids | length')
-    assert "scroll page 2 returns results" "[[ $S2 -ge 1 ]]"
-fi
-
-STOTAL=$(jv "$R" '.total')
-assert "scroll total >= 9" "[[ $STOTAL -ge 9 ]]"
-echo ""
-
-# ── 9. Collections ────────────────────────────────────────────────────────
-echo -e "${BLD}[9] Collections${RST}"
-
-R=$(post "$BASE/insert" '{"doc":"The mitochondria is the powerhouse of the cell producing ATP","id":"bio-101","collection":"science","meta":{"topic":"biology"}}')
-assert_eq "insert bio-101 → science" "bio-101" "$(jv "$R" '.id')"
-
-R=$(post "$BASE/insert" '{"doc":"Photosynthesis converts light energy into chemical energy in plants","id":"bio-102","collection":"science","meta":{"topic":"biology"}}')
-assert_eq "insert bio-102 → science" "bio-102" "$(jv "$R" '.id')"
-
-R=$(post "$BASE/query" '{"query":"cellular energy ATP production","top_k":2,"collection":"science"}')
-TOP=$(jv "$R" '.ids[0]')
-assert_eq "collection query → bio-101" "bio-101" "$TOP"
-assert_eq "collection returns 2" "2" "$(jv "$R" '.ids | length')"
-
-# Cross-collection isolation: default query shouldn't return science docs
-R=$(post "$BASE/query" '{"query":"mitochondria ATP","top_k":10}')
-HAS_BIO=$(echo "$R" | jq '[.ids[] // empty] | any(. == "bio-101")' 2>/dev/null || echo "false")
-assert_eq "bio-101 not in default collection" "false" "$HAS_BIO"
-echo ""
-
-# ── 10. Hybrid + BM25 Search ──────────────────────────────────────────────
-echo -e "${BLD}[10] Hybrid + BM25 Search${RST}"
-
-R=$(post "$BASE/query" '{"query":"PostgreSQL database","top_k":3,"mode":"hybrid"}')
-HCOUNT=$(jv "$R" '.ids | length')
-assert "hybrid search returns results" "[[ $HCOUNT -ge 1 ]]"
-
-R=$(post "$BASE/query" '{"query":"PostgreSQL relational database","top_k":3,"mode":"bm25"}')
-BCOUNT=$(jv "$R" '.ids | length')
-assert "BM25 search returns results" "[[ $BCOUNT -ge 1 ]]"
-
-R=$(post "$BASE/query" '{"query":"gRPC protocol buffers","top_k":1,"mode":"bm25"}')
-assert_eq "BM25 keyword match → grpc-101" "grpc-101" "$(jv "$R" '.ids[0]')"
-echo ""
-
-# ── 11. Edge Cases ────────────────────────────────────────────────────────
-echo -e "${BLD}[11] Edge Cases${RST}"
-
-# Empty doc → 400
-assert_http "empty doc → 400" "400" \
-    -X POST "$BASE/insert" -H "Content-Type: application/json" -d '{"doc":"","id":"empty"}'
-
-# Missing doc field → 400
-assert_http "missing doc → 400" "400" \
-    -X POST "$BASE/insert" -H "Content-Type: application/json" -d '{"id":"nodoc"}'
-
-# Long doc
-LONG_DOC=$(python3 -c "print('knowledge ' * 2000)")
-R=$(post "$BASE/insert" "$(jq -n --arg d "$LONG_DOC" '{doc: $d, id: "long-doc"}')")
-assert_eq "insert long doc (2000 words)" "long-doc" "$(jv "$R" '.id')"
-
-# Unicode
-R=$(post "$BASE/insert" '{"doc":"Les r\u00e9seaux de neurones \u2014 \u4eba\u5de5\u77e5\u80fd \u2014 \u041d\u0435\u0439\u0440\u043e\u043d\u043d\u044b\u0435","id":"unicode-doc","meta":{"lang":"multi"}}')
-assert_eq "insert unicode doc" "unicode-doc" "$(jv "$R" '.id')"
-
-# Special chars in metadata
-R=$(post "$BASE/insert" '{"doc":"special metadata test document","id":"special-meta","meta":{"path":"/usr/local/bin","sql":"SELECT * FROM t","html":"<b>bold</b>"}}')
-assert_eq "special chars in meta" "special-meta" "$(jv "$R" '.id')"
-
-# Duplicate without upsert → error (500)
-assert_http "duplicate (no upsert) → 500" "500" \
-    -X POST "$BASE/insert" -H "Content-Type: application/json" -d '{"doc":"dup","id":"pg-101"}'
-
-# Duplicate with upsert → success
-R=$(post "$BASE/insert" '{"doc":"updated PostgreSQL content","id":"pg-101","upsert":true}')
-assert_eq "duplicate with upsert → ok" "pg-101" "$(jv "$R" '.id')"
-
-# Single-char query
-R=$(post "$BASE/query" '{"query":"a","top_k":1}')
-assert "single-char query doesn't crash" "[[ $(jv "$R" '.ids | length') -ge 0 ]]"
-
-# top_k controls result count
-R=$(post "$BASE/query" '{"query":"technology","top_k":2}')
-assert "top_k=2 returns <= 2" "[[ $(jv "$R" '.ids | length') -le 2 ]]"
-
-R=$(post "$BASE/query" '{"query":"technology","top_k":1}')
-assert_eq "top_k=1 returns exactly 1" "1" "$(jv "$R" '.ids | length')"
-
-R=$(post "$BASE/query" '{"query":"technology","top_k":100}')
-T100=$(jv "$R" '.ids | length')
-assert "top_k=100 returns all available (<=100)" "[[ $T100 -ge 5 && $T100 -le 100 ]]"
-echo ""
-
-# ── 12. Embed Endpoint ───────────────────────────────────────────────────
-echo -e "${BLD}[12] Embed Endpoint${RST}"
-
-R=$(post "$BASE/api/embed" '{"text":"test embedding vector"}')
-DIM=$(jv "$R" '.embedding | length')
-assert "embed returns vector" "[[ $DIM -ge 100 ]]"
-echo -e "  Dimension: ${YEL}${DIM}${RST}"
-echo ""
-
-# ── 13. Integrity ─────────────────────────────────────────────────────────
-echo -e "${BLD}[13] Integrity${RST}"
-assert_http "GET /integrity → 200" "200" "$BASE/integrity"
-echo ""
-
-# ── 14. Compact ───────────────────────────────────────────────────────────
-echo -e "${BLD}[14] Compact${RST}"
-
-H_PRE=$(curl -sf "$BASE/health")
-DEL_PRE=$(jv "$H_PRE" '.deleted')
-assert "has deleted vectors before compact" "[[ $DEL_PRE -ge 1 ]]"
-
-# Compact — may 500 if no snapshot path exists yet (no prior save)
-COMPACT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/compact")
-assert "compact → 200 or 500" "[[ $COMPACT_CODE == '200' || $COMPACT_CODE == '500' ]]"
-
-H_POST=$(curl -sf "$BASE/health")
-assert "active > 0 after compact" "[[ $(jv "$H_POST" '.active') -ge 1 ]]"
-echo ""
-
-# ── 15. Export / Import ───────────────────────────────────────────────────
-echo -e "${BLD}[15] Export / Import${RST}"
-
-EXPORT_FILE="$BASE_DIR/snapshot.bin"
-HTTP_CODE=$(curl -s -o "$EXPORT_FILE" -w "%{http_code}" "$BASE/export")
-assert_eq "export → 200" "200" "$HTTP_CODE"
-
-FSIZE=$(stat -c%s "$EXPORT_FILE" 2>/dev/null || stat -f%z "$EXPORT_FILE")
-assert "export file non-empty" "[[ $FSIZE -gt 0 ]]"
-echo -e "  Export size: ${YEL}${FSIZE} bytes${RST}"
-echo ""
-
-# ── 16. Rapid Sequential Inserts ──────────────────────────────────────────
-echo -e "${BLD}[16] Rapid Sequential Inserts (10 docs)${RST}"
-
-RAPID_OK=0
-for i in $(seq 1 10); do
-    R=$(post "$BASE/insert" "{\"doc\":\"rapid test document number $i about topic $i\",\"id\":\"rapid-$i\"}")
-    [[ "$(jv "$R" '.id')" == "rapid-$i" ]] && RAPID_OK=$((RAPID_OK + 1))
-done
-assert_eq "all 10 rapid inserts succeed" "10" "$RAPID_OK"
-
-# Verify via BM25
-FOUND=0
-for i in $(seq 1 10); do
-    R=$(post "$BASE/query" "{\"query\":\"rapid test document number $i\",\"top_k\":1,\"mode\":\"bm25\"}")
-    [[ "$(jv "$R" '.ids[0]')" == "rapid-$i" ]] && FOUND=$((FOUND + 1))
-done
-assert_eq "all 10 rapid docs retrievable via BM25" "10" "$FOUND"
-echo ""
-
-# ── 17. Batch (20 docs) ──────────────────────────────────────────────────
-echo -e "${BLD}[17] Batch Insert (20 docs)${RST}"
-
-BATCH20=$(python3 -c "
-import json
-topics = ['physics','chemistry','math','history','literature']
-docs = [{'doc': f'Detailed document about {topics[i%5]} covering concept number {i}', 'id': f'b20-{i}', 'meta': {'topic': topics[i%5], 'batch': 'test'}} for i in range(20)]
-print(json.dumps({'docs': docs}))
-")
-R=$(post "$BASE/batch_insert" "$BATCH20")
-B20=$(jv "$R" '.ids | length')
-assert_eq "batch 20 docs inserted" "20" "$B20"
-
-R=$(post "$BASE/query" '{"query":"physics concepts","top_k":5,"meta":{"topic":"physics"}}')
-PCOUNT=$(jv "$R" '.ids | length')
-assert "physics filter returns results" "[[ $PCOUNT -ge 1 ]]"
-echo ""
-
-# ── 18. Semantic Accuracy ─────────────────────────────────────────────────
-echo -e "${BLD}[18] Semantic Accuracy${RST}"
-
-if [[ "$EMBEDDER" != "hash" ]]; then
-    # Semantic: ML query should rank ML docs in top 3
-    R=$(post "$BASE/query" '{"query":"neural network gradient descent training","top_k":3}')
-    HAS_ML=$(echo "$R" | jq '[.ids[]] | any(. == "ml-101" or . == "transformer-101")' 2>/dev/null || echo "false")
-    assert_eq "ML query has ML doc in top 3" "true" "$HAS_ML"
-
-    # Bio in science collection — either bio doc is valid
-    R=$(post "$BASE/query" '{"query":"plant energy conversion sunlight","top_k":1,"collection":"science"}')
-    BIO_TOP=$(jv "$R" '.ids[0]')
-    assert "bio query → bio doc" "[[ '$BIO_TOP' == 'bio-101' || '$BIO_TOP' == 'bio-102' ]]"
-
-    # Cache query — should not return infrastructure
-    R=$(post "$BASE/query" '{"query":"in-memory cache data store","top_k":1}')
-    assert_eq "cache query → redis-101" "redis-101" "$(jv "$R" '.ids[0]')"
-else
-    skip "semantic accuracy (hash embedder)"
-fi
-echo ""
-
-# ── 19. Config Endpoints ─────────────────────────────────────────────────
-echo -e "${BLD}[19] Config Endpoints${RST}"
-
-R=$(curl -sf "$BASE/api/mode")
-assert_contains "/api/mode has mode" "$R" '"mode"'
-assert_contains "/api/mode has dimension" "$R" '"dimension"'
-
-R=$(curl -sf "$BASE/api/config/embedder")
-assert_contains "/api/config/embedder responds" "$R" "type"
-echo ""
-
-# ── 20. Prometheus Metrics ────────────────────────────────────────────────
-echo -e "${BLD}[20] Metrics${RST}"
-
-M=$(curl -sf "$BASE/metrics")
-assert_contains "has vectordb_operations_total" "$M" "vectordb_operations_total"
-assert_contains "has vectordb_http_requests_total" "$M" "vectordb_http_requests_total"
-assert_contains "has vectordb_query_duration_seconds" "$M" "vectordb_query_duration_seconds"
-echo ""
-
-# ── 21. WAL & Persistence ────────────────────────────────────────────────
-echo -e "${BLD}[21] WAL & Data${RST}"
-
-WAL_COUNT=$(find "$BASE_DIR" -name "*.wal" 2>/dev/null | wc -l)
-assert "WAL files exist" "[[ $WAL_COUNT -ge 1 ]]"
-
-FILE_COUNT=$(find "$BASE_DIR" -type f 2>/dev/null | wc -l)
-assert "data dir has files" "[[ $FILE_COUNT -ge 1 ]]"
-echo ""
-
-# ── 22. Final Health ─────────────────────────────────────────────────────
-echo -e "${BLD}[22] Final Health${RST}"
-
-H=$(curl -sf "$BASE/health")
-TOTAL_VEC=$(jv "$H" '.total')
-ACTIVE_VEC=$(jv "$H" '.active')
-echo -e "  Total: ${YEL}${TOTAL_VEC}${RST}  Active: ${YEL}${ACTIVE_VEC}${RST}"
-assert "total vectors > 30" "[[ $TOTAL_VEC -gt 30 ]]"
-assert "active > 0" "[[ $ACTIVE_VEC -gt 0 ]]"
-
-COLL_COUNT=$(echo "$H" | jq '.collections | length' 2>/dev/null || echo "0")
-assert "multiple collections" "[[ $COLL_COUNT -ge 2 ]]"
-echo ""
-
-# ── 23. Sparse Vector Insert + Query ────────────────────────────────────
-echo -e "${BLD}[23] Sparse Vector Insert + Query${RST}"
-
-# Get store dimension from mode endpoint so sparse vectors match
-STORE_DIM=$(jv "$(curl -sf "$BASE/api/mode")" '.dimension')
-if [[ "$STORE_DIM" == "null" || "$STORE_DIM" == "JQ_ERR" || -z "$STORE_DIM" ]]; then
-    STORE_DIM=1536
-fi
-
-R=$(post "$BASE/insert/sparse" "{\"id\":\"sparse-1\",\"doc\":\"sparse test document about quantum computing\",\"indices\":[0,5,10,15],\"values\":[1.0,2.5,0.8,1.2],\"dimension\":$STORE_DIM}")
-assert_eq "sparse insert sparse-1" "sparse-1" "$(jv "$R" '.id')"
-
-R=$(post "$BASE/insert/sparse" "{\"id\":\"sparse-2\",\"doc\":\"sparse test document about neural networks\",\"indices\":[0,3,7,20],\"values\":[0.9,1.5,2.0,0.7],\"dimension\":$STORE_DIM}")
-assert_eq "sparse insert sparse-2" "sparse-2" "$(jv "$R" '.id')"
-
-# Query sparse
-R=$(post "$BASE/query/sparse" "{\"indices\":[0,5,10],\"values\":[1.0,2.0,1.0],\"dimension\":$STORE_DIM,\"top_k\":2}")
-SCOUNT=$(jv "$R" '.ids | length')
-assert "sparse query returns results" "[[ $SCOUNT -ge 1 ]]"
-
-# Edge: mismatched indices/values length → 400
-assert_http "sparse mismatched lengths → 400" "400" \
-    -X POST "$BASE/insert/sparse" -H "Content-Type: application/json" \
-    -d '{"id":"sparse-bad","doc":"bad","indices":[0,1,2],"values":[1.0,2.0],"dimension":100}'
-
-# Edge: missing indices → 400
-assert_http "sparse missing indices → 400" "400" \
-    -X POST "$BASE/insert/sparse" -H "Content-Type: application/json" \
-    -d '{"id":"sparse-bad2","doc":"bad","indices":[],"values":[],"dimension":100}'
-
-# Edge: missing dimension → 400
-assert_http "sparse no dimension → 400" "400" \
-    -X POST "$BASE/insert/sparse" -H "Content-Type: application/json" \
-    -d '{"id":"sparse-bad3","doc":"bad","indices":[0],"values":[1.0],"dimension":0}'
-echo ""
-
-# ── 24. Batch Embed ─────────────────────────────────────────────────────
-echo -e "${BLD}[24] Batch Embed${RST}"
-
-R=$(post "$BASE/api/embed/batch" '{"texts":["hello world","machine learning","database systems"]}')
-BCOUNT=$(jv "$R" '.count')
-assert_eq "batch embed returns 3 embeddings" "3" "$BCOUNT"
-
-BDIM=$(jv "$R" '.dimension')
-assert "batch embed dimension > 0" "[[ $BDIM -gt 0 ]]"
-
-# Verify embeddings array exists and has correct count
-ELEN=$(jv "$R" '.embeddings | length')
-assert_eq "embeddings array length = 3" "3" "$ELEN"
-
-# Edge: empty texts → 400
-assert_http "batch embed empty texts → 400" "400" \
-    -X POST "$BASE/api/embed/batch" -H "Content-Type: application/json" -d '{"texts":[]}'
-echo ""
-
-# ── 25. Index Management ────────────────────────────────────────────────
-echo -e "${BLD}[25] Index Management${RST}"
-
-# GET /api/index/types
-R=$(curl -sf "$BASE/api/index/types")
-assert_contains "index types has 'types'" "$R" '"types"'
-assert_contains "index types has hnsw" "$R" 'hnsw'
-
-# GET /api/index/list
-R=$(curl -sf "$BASE/api/index/list")
-assert_contains "index list has 'indexes'" "$R" '"indexes"'
-ICOUNT=$(jv "$R" '.count')
-assert "index list count >= 1" "[[ $ICOUNT -ge 1 ]]"
-
-# GET /api/index/stats?collection=default
-R=$(curl -sf "$BASE/api/index/stats?collection=default")
-assert_contains "index stats has 'collection'" "$R" '"collection"'
-assert_contains "index stats has 'stats'" "$R" '"stats"'
-echo ""
-
-# ── 26. Cost Tracking ──────────────────────────────────────────────────
-echo -e "${BLD}[26] Cost Tracking${RST}"
-
-# GET /api/costs — works in both local and pro mode
-R=$(curl -sf "$BASE/api/costs")
-if [[ "$TEST_MODE" == "pro" ]]; then
-    assert_contains "costs has session data" "$R" '"session"'
-else
-    assert_contains "costs has mode=local" "$R" '"local"'
-fi
-
-# GET /api/costs/daily
-R=$(curl -sf "$BASE/api/costs/daily")
-assert_contains "costs/daily has 'daily'" "$R" '"daily"'
-echo ""
-
-# ── 27. Collection Admin ───────────────────────────────────────────────
-echo -e "${BLD}[27] Collection Admin${RST}"
-
-# Admin endpoints require JWT in secure mode; without auth, adminGuard returns 403.
-# Test that endpoints respond correctly based on auth configuration.
-ADMIN_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/admin/collection/create" \
-    -H "Content-Type: application/json" -d '{"name":"test-admin-coll","index_type":"hnsw"}')
-
-if [[ "$ADMIN_CODE" == "201" ]]; then
-    # Auth not required — admin endpoints accessible
-    assert_eq "admin create collection → 201" "201" "$ADMIN_CODE"
-
-    R=$(curl -sf "$BASE/admin/collection/list")
-    assert_contains "admin list has 'collections'" "$R" '"collections"'
-    assert_contains "admin list has test-admin-coll" "$R" 'test-admin-coll'
-
-    ACOLL_COUNT=$(jv "$R" '.count')
-    assert "admin list count >= 1" "[[ $ACOLL_COUNT -ge 1 ]]"
-
-    R=$(curl -sf "$BASE/admin/collection/stats")
-    assert_contains "admin stats → success" "$R" '"status"'
-    assert_contains "admin stats has 'stats'" "$R" '"stats"'
-else
-    # adminGuard blocks without JWT — verify 403 (expected behavior)
-    assert_eq "admin create → 403 (no JWT)" "403" "$ADMIN_CODE"
-
-    assert_http "admin list → 403 (no JWT)" "403" "$BASE/admin/collection/list"
-    assert_http "admin stats → 403 (no JWT)" "403" "$BASE/admin/collection/stats"
-fi
-echo ""
-
-# ── 28. Feedback System ────────────────────────────────────────────────
-echo -e "${BLD}[28] Feedback System${RST}"
-
-# First record an interaction to get an interaction_id
-R=$(post "$BASE/v2/interaction" '{"query":"test query","result_ids":["ml-101","pg-101"],"scores":[0.9,0.8]}')
-INTERACTION_ID=$(jv "$R" '.id')
-
-# POST /v2/feedback — submit explicit feedback
-R=$(post "$BASE/v2/feedback" "{\"interaction_id\":\"${INTERACTION_ID}\",\"type\":\"explicit\",\"rating\":5,\"clicked_ids\":[\"ml-101\"]}")
-assert_contains "feedback recorded" "$R" '"recorded"'
-
-# GET /v2/feedback/stats
-R=$(curl -sf "$BASE/v2/feedback/stats")
-assert_contains "feedback stats has 'enabled'" "$R" '"enabled"'
-echo ""
-
-# ── 29. Extraction Status ──────────────────────────────────────────────
-echo -e "${BLD}[29] Extraction Status${RST}"
-
-R=$(curl -sf "$BASE/v2/extract/status")
-assert_contains "extract status has 'enabled'" "$R" '"enabled"'
-echo ""
-
-# ── 30. Web UI / Dashboard ─────────────────────────────────────────────
-echo -e "${BLD}[30] Web UI / Dashboard${RST}"
-
-# GET / → 302 redirect to /dashboard/
-DASH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/")
-assert_eq "GET / → 302 redirect" "302" "$DASH_CODE"
-
-# GET /dashboard/ → 200 (serves web UI)
-DASH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/dashboard/")
-assert "GET /dashboard/ → 200 or 404" "[[ $DASH_CODE == '200' || $DASH_CODE == '404' ]]"
-echo ""
-
-# ── 31. Restart Persistence ──────────────────────────────────────────────
-echo -e "${BLD}[31] Restart Persistence${RST}"
-
-# Capture pre-restart state
-PRE_HEALTH=$(curl -sf "$BASE/health")
-PRE_TOTAL=$(jv "$PRE_HEALTH" '.total')
-PRE_ACTIVE=$(jv "$PRE_HEALTH" '.active')
-PRE_DELETED=$(jv "$PRE_HEALTH" '.deleted')
-PRE_COLLS=$(echo "$PRE_HEALTH" | jq '.collections | keys | sort' 2>/dev/null)
-
-# Verify a specific doc is queryable before restart (default collection)
-PRE_QUERY=$(post "$BASE/query" '{"query":"SQL relational database management","top_k":1,"mode":"bm25"}')
-PRE_TOP=$(jv "$PRE_QUERY" '.ids[0]')
-
-# Verify science collection doc
-PRE_SCI=$(post "$BASE/query" '{"query":"mitochondria ATP","top_k":1,"collection":"science"}')
-PRE_SCI_TOP=$(jv "$PRE_SCI" '.ids[0]')
-
-echo -e "  Pre-restart: total=${YEL}${PRE_TOTAL}${RST} active=${YEL}${PRE_ACTIVE}${RST} deleted=${YEL}${PRE_DELETED}${RST}"
-
-# ── Graceful shutdown via SIGTERM ──
-echo -n "  Stopping server (SIGTERM)..."
-kill -TERM "$SERVER_PID" 2>/dev/null || true
-# Wait for process to exit (up to 30s)
-for i in $(seq 1 60); do
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo " stopped (${i}x0.5s)"
-        break
-    fi
-    sleep 0.5
-done
-if kill -0 "$SERVER_PID" 2>/dev/null; then
-    echo -e " ${RED}TIMEOUT — force killing${RST}"
-    kill -9 "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-else
-    wait "$SERVER_PID" 2>/dev/null || true
-fi
-SERVER_PID=""
-
-# Verify data files exist on disk after shutdown
-SNAP_COUNT=$(find "$BASE_DIR" -name "*.gob" -o -name "*.cowrie" -o -name "*.cowrie.zst" 2>/dev/null | wc -l)
-assert "snapshot file exists on disk after shutdown" "[[ $SNAP_COUNT -ge 1 ]]"
-
-# ── Restart server with same data dir ──
-echo -n "  Restarting server on :${PORT}..."
-VECTORDB_BASE_DIR="$BASE_DIR" \
-VECTORDB_MODE="$TEST_MODE" \
-HYDRATION_COUNT=0 \
-PORT="$PORT" \
-"$BINARY" serve --port "$PORT" --mode "$TEST_MODE" >>"$BASE_DIR/server.log" 2>&1 &
-SERVER_PID=$!
-
-for i in $(seq 1 60); do
-    if curl -sf "$BASE/healthz" >/dev/null 2>&1; then
-        echo " ready (${i}x0.5s)"
-        break
-    fi
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo -e " ${RED}CRASHED on restart${RST}"
-        echo "  Server log tail:"
-        tail -20 "$BASE_DIR/server.log" 2>/dev/null || true
-        SERVER_PID=""
-        FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1))
-        exit 1
-    fi
-    echo -n "."
-    sleep 0.5
-done
-curl -sf "$BASE/healthz" >/dev/null 2>&1 || { echo -e " ${RED}TIMEOUT on restart${RST}"; exit 1; }
-
-# ── Verify data survived restart ──
-POST_HEALTH=$(curl -sf "$BASE/health")
-POST_TOTAL=$(jv "$POST_HEALTH" '.total')
-POST_ACTIVE=$(jv "$POST_HEALTH" '.active')
-POST_DELETED=$(jv "$POST_HEALTH" '.deleted')
-POST_COLLS=$(echo "$POST_HEALTH" | jq '.collections | keys | sort' 2>/dev/null)
-
-echo -e "  Post-restart: total=${YEL}${POST_TOTAL}${RST} active=${YEL}${POST_ACTIVE}${RST} deleted=${YEL}${POST_DELETED}${RST}"
-
-assert_eq "total vectors survived restart" "$PRE_TOTAL" "$POST_TOTAL"
-assert_eq "active vectors survived restart" "$PRE_ACTIVE" "$POST_ACTIVE"
-assert_eq "deleted count survived restart" "$PRE_DELETED" "$POST_DELETED"
-assert_eq "collections survived restart" "$PRE_COLLS" "$POST_COLLS"
-
-# Verify BM25 keyword search still works (proves sparse index rebuilt)
-POST_QUERY=$(post "$BASE/query" '{"query":"SQL relational database management","top_k":1,"mode":"bm25"}')
-POST_TOP=$(jv "$POST_QUERY" '.ids[0]')
-assert_eq "BM25 query returns same doc after restart" "$PRE_TOP" "$POST_TOP"
-
-# Verify ANN search in default collection
-POST_ANN=$(post "$BASE/query" '{"query":"how do neural networks learn?","top_k":1}')
-POST_ANN_TOP=$(jv "$POST_ANN" '.ids[0]')
-assert "ANN query returns result after restart" "[[ -n '$POST_ANN_TOP' && '$POST_ANN_TOP' != 'null' ]]"
-
-# Verify cross-collection isolation survives restart
-POST_SCI=$(post "$BASE/query" '{"query":"mitochondria ATP","top_k":1,"collection":"science"}')
-POST_SCI_TOP=$(jv "$POST_SCI" '.ids[0]')
-assert_eq "collection query returns same doc after restart" "$PRE_SCI_TOP" "$POST_SCI_TOP"
-
-# Verify science collection docs don't leak into default after restart
-POST_LEAK=$(post "$BASE/query" '{"query":"mitochondria ATP","top_k":10}')
-LEAK_BIO=$(echo "$POST_LEAK" | jq '[.ids[] // empty] | any(. == "bio-101")' 2>/dev/null || echo "false")
-assert_eq "collection isolation survived restart" "false" "$LEAK_BIO"
-
-# Verify metadata survived
-POST_META=$(post "$BASE/query" '{"query":"technology","top_k":5,"include_meta":true,"meta":{"topic":"machine-learning"}}')
-META_COUNT=$(jv "$POST_META" '.ids | length')
-assert "metadata filter works after restart" "[[ $META_COUNT -ge 1 ]]"
-
-# Verify health endpoint reports ok after restart
-POST_OK=$(jv "$POST_HEALTH" '.ok')
-assert_eq "health.ok=true after restart" "true" "$POST_OK"
-
-# Verify readiness after restart
-assert_http "GET /readyz → 200 after restart" "200" "$BASE/readyz"
-
-# Verify metrics endpoint works after restart
-POST_METRICS=$(curl -sf "$BASE/metrics")
-assert_contains "metrics endpoint works after restart" "$POST_METRICS" "vectordb_operations_total"
-
-# Verify new inserts work after restart
-R=$(post "$BASE/insert" '{"doc":"Post-restart test document about verification","id":"restart-test-1"}')
-assert_eq "insert works after restart" "restart-test-1" "$(jv "$R" '.id')"
-
-# Verify the new insert is queryable
-R=$(post "$BASE/query" '{"query":"post-restart verification","top_k":1,"mode":"bm25"}')
-assert_eq "new doc queryable after restart" "restart-test-1" "$(jv "$R" '.ids[0]')"
-
-echo ""
-
-# ── 32. Graceful Shutdown Behavior ───────────────────────────────────────
-echo -e "${BLD}[32] Graceful Shutdown${RST}"
-
-# Insert a doc, then immediately SIGTERM — verify it survives the next restart
-R=$(post "$BASE/insert" '{"doc":"Graceful shutdown durability test document","id":"shutdown-test-1"}')
-assert_eq "insert shutdown-test-1" "shutdown-test-1" "$(jv "$R" '.id')"
-
-echo -n "  Stopping server (SIGTERM)..."
-kill -TERM "$SERVER_PID" 2>/dev/null || true
-for i in $(seq 1 60); do
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo " stopped (${i}x0.5s)"
-        break
-    fi
-    sleep 0.5
-done
-if kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill -9 "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-else
-    wait "$SERVER_PID" 2>/dev/null || true
-fi
-SERVER_PID=""
-
-echo -n "  Restarting server on :${PORT}..."
-VECTORDB_BASE_DIR="$BASE_DIR" \
-VECTORDB_MODE="$TEST_MODE" \
-HYDRATION_COUNT=0 \
-PORT="$PORT" \
-"$BINARY" serve --port "$PORT" --mode "$TEST_MODE" >>"$BASE_DIR/server.log" 2>&1 &
-SERVER_PID=$!
-
-for i in $(seq 1 60); do
-    if curl -sf "$BASE/healthz" >/dev/null 2>&1; then
-        echo " ready (${i}x0.5s)"
-        break
-    fi
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo -e " ${RED}CRASHED on 2nd restart${RST}"
-        SERVER_PID=""
-        FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1))
-        exit 1
-    fi
-    echo -n "."
-    sleep 0.5
-done
-curl -sf "$BASE/healthz" >/dev/null 2>&1 || { echo -e " ${RED}TIMEOUT on 2nd restart${RST}"; exit 1; }
-
-# Verify the just-inserted doc survived shutdown → restart
-R=$(post "$BASE/query" '{"query":"graceful shutdown durability","top_k":1,"mode":"bm25"}')
-assert_eq "shutdown-test-1 survived restart" "shutdown-test-1" "$(jv "$R" '.ids[0]')"
+assert_json "HTTP atomic batch" "$response" '.inserted == 2 and .ids == [102,103]'
+
+response=$(api POST "/v3/tenants/$TENANT/collections/http_docs/search" '{
+  "queries":{"embedding":[1,0,0]},"top_k":10
+}')
+assert_json "HTTP dense search" "$response" '([.documents[].id] | index(101)) != null'
+
+response=$(api POST "/v3/tenants/$TENANT/collections/http_docs/search" '{
+  "queries":{
+    "embedding":[1,0,0],
+    "keywords":{"indices":[1,3],"values":[0.8,0.4],"dim":64}
+  },
+  "top_k":10,
+  "hybrid_params":{"strategy":"weighted","weights":{"embedding":0.7,"keywords":0.3}}
+}')
+assert_json "HTTP hybrid search" "$response" '([.documents[].id] | index(101)) != null'
+
+response=$(api DELETE "/v3/tenants/$TENANT/collections/http_docs/docs" '{"doc_id":103}')
+assert_json "HTTP delete document" "$response" '.status == "success"'
+response=$(api GET "/v3/tenants/$TENANT")
+assert_json "HTTP tenant info" "$response" '.tenant_id == "smoke" and .total_documents == 2'
+
+"$GRPC_PROBE" exercise "$GRPC_ADDRESS" "$API_TOKEN"
+
+echo "restarting canonical server"
+stop_server
+start_server
+
+response=$(api GET "/v3/tenants/$TENANT/collections/http_docs")
+assert_json "HTTP collection survived restart" "$response" '.collection.DocCount == 2'
+response=$(api POST "/v3/tenants/$TENANT/collections/http_docs/search" '{
+  "queries":{"embedding":[0,1,0]},"top_k":10
+}')
+assert_json "HTTP mutations survived restart" "$response" \
+  '([.documents[].id] | index(101)) != null and
+   ([.documents[].id] | index(102)) != null and
+   ([.documents[].id] | index(103)) == null'
+
+"$GRPC_PROBE" verify "$GRPC_ADDRESS" "$API_TOKEN"
+
+response=$(api DELETE "/v3/tenants/$TENANT/collections/http_docs")
+assert_json "HTTP delete collection" "$response" '.status == "success"'
+response=$(api GET "/v3/tenants/$TENANT/collections")
+assert_json "all smoke collections removed" "$response" '.count == 0'
+
+stop_server
+echo "canonical RC smoke passed"

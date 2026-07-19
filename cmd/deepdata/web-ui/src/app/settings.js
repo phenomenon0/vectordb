@@ -69,26 +69,6 @@ export const settingsMixin = {
       this.compactResult = 'Failed'
     }
   },
-  async importSnapshot(event) {
-    const file = event.target.files[0]
-    if (!file) return
-    this.importRunning = true
-    const formData = new FormData()
-    formData.append('file', file)
-    try {
-      const r = await fetch(this.apiBase + '/import', { method: 'POST', body: formData })
-      if (r.ok) {
-        this.toast('Import successful', 'success')
-        this.loadHealth()
-      } else {
-        this.toast('Import failed', 'error')
-      }
-    } catch (e) {
-      this.toast('Import error: ' + e.message, 'error')
-    }
-    this.importRunning = false
-    event.target.value = ''
-  },
   async createIndex() {
     let config = {}
     if (this.newIdxConfig) {

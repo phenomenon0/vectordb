@@ -3,7 +3,7 @@
 # ============================================================================
 
 # --- Build stage ---
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.25.5-bookworm@sha256:d9132cce84391efab786495288756d60e1da215b1f94e87860aeefc3d4c45b6d AS builder
 
 WORKDIR /src
 
@@ -21,13 +21,19 @@ COPY api ./api
 COPY cmd ./cmd
 COPY internal ./internal
 
-# Build with CGO enabled (required for go-sqlite3 cost tracker)
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && \
-    CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" \
+# The canonical RC never initializes the legacy SQLite cost tracker. A static,
+# CGO-free binary therefore matches the cross-compile proof and avoids a second
+# architecture/runtime contract.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
     -o /out/deepdata ./cmd/deepdata/
 
 # --- Runtime stage ---
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e
+
+ARG DEEPDATA_VERSION=0.2.0-rc.1
+LABEL org.opencontainers.image.title="DeepData" \
+      org.opencontainers.image.version="$DEEPDATA_VERSION" \
+      org.opencontainers.image.source="https://github.com/phenomenon0/vectordb"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl && \

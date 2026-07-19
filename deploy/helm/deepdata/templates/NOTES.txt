@@ -1,5 +1,20 @@
 DeepData vector database has been deployed.
 
+Authentication is mandatory. This release uses exactly one of API_TOKEN or
+JWT_SECRET and rejects missing or conflicting credential configuration before
+opening persistent state.
+The credential is read from existing Secret {{ .Values.auth.existingSecret }},
+key {{ .Values.auth.existingSecretKey }} (type {{ .Values.auth.existingSecretType }}).
+Secret values are intentionally not accepted through Helm because Helm retains
+values in its release record. When rotating the same Secret name and key,
+increment auth.secretRevision or restart the Deployment explicitly.
+Never set DEEPDATA_INSECURE_DEV_MODE in this deployment; it is only for
+credentialless, disposable local development.
+
+The chart-owned PVC is annotated with helm.sh/resource-policy=keep. Helm
+uninstall will orphan it intentionally; back up the whole PVC while DeepData is
+stopped and delete retained storage only through a separate reviewed action.
+
 1. Get the application URL:
 {{- if eq .Values.service.type "ClusterIP" }}
   kubectl port-forward svc/{{ .Release.Name }}-deepdata \
@@ -19,5 +34,7 @@ DeepData vector database has been deployed.
 
 The gRPC API listens on port {{ .Values.service.grpcPort }}.
 
-3. Use the tenant-aware V3 HTTP API or gRPC API for data operations. Clients
-   must supply vectors; server-managed embedding routes are not part of the RC.
+3. Use the tenant-aware V3 HTTP API or gRPC API for data operations. Send the
+   configured credential as `Authorization: Bearer <token>` (HTTP) or
+   `authorization: Bearer <token>` metadata (gRPC). Clients must supply
+   vectors; server-managed embedding routes are not part of the RC.
