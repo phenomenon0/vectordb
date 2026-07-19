@@ -1,209 +1,154 @@
-# Security Guide
+# Security guide for the release candidate
 
-## Authentication
+DeepData's supported security boundary is intentionally explicit:
 
-### JWT Authentication
+| Layer | RC responsibility |
+|---|---|
+| Request authentication/authorization | Static bearer token or HMAC JWT |
+| Tenant/collection scope | Enforced by canonical V3 HTTP and unary gRPC |
+| TLS and mTLS | External reverse proxy, ingress, or service mesh |
+| Disk and backup encryption | External filesystem, volume, or cloud KMS |
+| Network policy and denial-of-service controls | Deployment environment |
+| Compliance audit trail | External proxy/platform logging; not an RC server claim |
 
-DeepData uses JWT tokens for multi-tenant authentication.
+## Require authentication
 
-#### Enable Authentication
+Normal startup is fail-closed and requires exactly one authentication mode:
+`API_TOKEN` or `JWT_SECRET`. Setting neither or both is a configuration error
+detected before the persistent data directory is opened. `REQUIRE_AUTH=1`
+remains set in the shipped deployment manifests as defense in depth; it does
+not turn credentialless startup into a supported mode. Either credential must
+contain at least 32 bytes and must not have leading or trailing whitespace.
+
+`DEEPDATA_INSECURE_DEV_MODE=1` is the sole credentialless escape hatch. Use it
+only for an explicit local, disposable development process. Never use it with
+persistent data or a listener reachable by another machine.
+
+### Static administrative token
 
 ```bash
-export JWT_SECRET="your-very-long-secret-key-at-least-32-chars"
-export JWT_REQUIRED=true
+export API_TOKEN='replace-with-a-long-random-token'
 ./deepdata serve
 ```
 
-#### Generate Tokens
+Clients send:
 
-**Using the CLI:**
-```bash
-# Admin token
-deepdata-cli gentoken --tenant admin --permissions admin --secret "$JWT_SECRET"
-
-# Read-only token
-deepdata-cli gentoken --tenant viewer --permissions read --secret "$JWT_SECRET"
-
-# Scoped to specific collections
-deepdata-cli gentoken --tenant partner --permissions read,write \
-  --collections public,shared --expires 168h --secret "$JWT_SECRET"
+```http
+Authorization: Bearer replace-with-a-long-random-token
 ```
 
-**Using the Admin API:**
+The static token has full administrative access to every tenant and
+collection. Use it for tightly controlled service-to-service deployments, not
+as a per-user credential. Generate one with `openssl rand -hex 32`; do not use
+the literal example value.
+
+### Tenant JWTs
+
+Configure one sufficiently random HMAC secret and an optional issuer:
+
 ```bash
-curl -X POST http://localhost:8080/admin/tokens \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tenant_id": "customer-1",
-    "permissions": ["read", "write"],
-    "collections": ["customer-1-docs"],
-    "expires_in": "720h"
-  }'
-```
-
-#### Token Claims
-
-```json
-{
-  "tenant_id": "customer-1",
-  "permissions": ["read", "write"],
-  "collections": ["docs", "images"],
-  "iss": "deepdata",
-  "exp": 1735689600
-}
-```
-
-### API Key Authentication
-
-For simpler setups, use a static API token:
-```bash
-export API_TOKEN="your-api-key"
+export JWT_SECRET="$(openssl rand -hex 32)"
+export JWT_ISSUER='deepdata-production'
 ./deepdata serve
 ```
 
-Clients include it as a header:
-```bash
-curl -H "Authorization: Bearer your-api-key" http://localhost:8080/health
-```
-
-## TLS/HTTPS
-
-### Self-Signed Certificate (Development)
-
-DeepData can generate self-signed certificates:
-```bash
-export TLS_ENABLED=true
-export TLS_CERT_FILE=cert.pem
-export TLS_KEY_FILE=key.pem
-export TLS_AUTO_CERT=true  # auto-generate if files don't exist
-./deepdata serve
-```
-
-### Production TLS
-
-Use real certificates from Let's Encrypt or your CA:
-```bash
-export TLS_ENABLED=true
-export TLS_CERT_FILE=/etc/deepdata/tls/tls.crt
-export TLS_KEY_FILE=/etc/deepdata/tls/tls.key
-export TLS_MIN_VERSION=1.2
-./deepdata serve
-```
-
-### Mutual TLS (mTLS)
-
-For service-to-service authentication:
-```bash
-export TLS_ENABLED=true
-export TLS_CERT_FILE=server.crt
-export TLS_KEY_FILE=server.key
-export TLS_CLIENT_CA=ca.crt
-export TLS_CLIENT_AUTH=require
-./deepdata serve
-```
-
-## Authorization (RBAC)
-
-### Permission Model
-
-| Permission | Allows |
-|------------|--------|
-| `read` | Query, scroll, health check |
-| `write` | Insert, delete, upsert |
-| `admin` | All operations + tenant management + audit access |
-
-### Collection-Level Access
-
-Tokens can be scoped to specific collections:
-```json
-{
-  "tenant_id": "partner",
-  "permissions": ["read", "write"],
-  "collections": ["shared-docs", "public"]
-}
-```
-
-Requests to other collections return `403 Forbidden`.
-
-### Per-Tenant Rate Limiting
+Generate short-lived tokens offline with the same secret and issuer:
 
 ```bash
-# Global rate limit (all tenants)
-export TENANT_RPS=100
-export TENANT_BURST=100
-
-# Or set per-tenant via admin API
-curl -X POST http://localhost:8080/admin/ratelimit/set \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '{"tenant_id": "customer-1", "rps": 50}'
+./deepdata gentoken \
+  -tenant=acme \
+  -permissions=read,write \
+  -collections=docs \
+  -expires=24h \
+  -issuer=deepdata-production
 ```
 
-### Storage Quotas
+JWTs are HMAC-signed and carry `tenant_id`, `permissions`, `collections`,
+issuer, issued-at, and expiry claims. An empty collection list means all
+collections within the token's permitted tenant. An `admin` JWT is
+administrative only inside its declared tenant; it never becomes the
+server-wide administrator represented by `API_TOKEN`. A non-empty collection
+claim continues to restrict an admin JWT, and tenant-wide list/info operations
+reject collection-scoped tokens.
 
-```bash
-curl -X POST http://localhost:8080/admin/quota/set \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '{"tenant_id": "customer-1", "max_vectors": 100000, "max_bytes": 1073741824}'
-```
+There is no canonical HTTP token-issuance API. Generate and distribute tokens
+through a protected operator workflow. Replacing `JWT_SECRET` and restarting
+invalidates tokens signed with the old secret.
 
-## Encryption at Rest
+## Permission map
 
-DeepData supports AES-256-GCM and ChaCha20-Poly1305 encryption for all persisted data:
+| Canonical operation | Permission |
+|---|---|
+| Tenant info | `admin` |
+| List collections | `admin` |
+| Create collection | `admin` |
+| Delete collection | `admin` |
+| Get collection | `read` |
+| Search | `read` |
+| Insert / atomic batch insert | `write` |
+| Delete document | `write` |
 
-```bash
-export ENCRYPTION_ENABLED=true
-export ENCRYPTION_PASSPHRASE="your-encryption-passphrase"
-export ENCRYPTION_ALGORITHM=aes-256-gcm  # or chacha20-poly1305
-./deepdata serve
-```
+For every JWT, including an admin JWT, `tenant_id` must match the tenant in the
+V3 path or gRPC request. A non-empty collection claim restricts
+collection-level operations and cannot authorize tenant-wide list/info.
+HTTP and gRPC use the same decisions; send the bearer token as HTTP
+`Authorization` or gRPC `authorization` metadata. Query-string bearer tokens
+are rejected so credentials do not enter URLs, access logs, or browser history.
+JWT verification accepts HS256 only.
 
-- **AES-256-GCM**: Default. Hardware-accelerated on modern CPUs (AES-NI).
-- **ChaCha20-Poly1305**: Better performance on hardware without AES-NI.
-- **Key derivation**: Argon2id with configurable parameters. Keys are never stored directly — they're derived from the passphrase at startup.
+## Transport security is external
 
-Encrypted files use a binary header with magic bytes `VDBE`, making it easy to identify encrypted vs. plaintext data files.
+The RC server listens on cleartext HTTP/h2c (default port 8080) and cleartext
+gRPC (default port 50051). Terminate TLS at a reverse proxy, ingress, or service
+mesh and keep the backend listeners on a private network or loopback interface.
+Do not rely on legacy `TLS_*` settings as part of the production RC contract.
 
-## Audit Logging
+At the TLS boundary:
 
-Track all write, admin, and auth operations:
+- require modern TLS policy and a certificate from your managed CA;
+- use mTLS when workload identity is required;
+- forward `Authorization` without logging its value;
+- cap request sizes and connection rates; and
+- expose only the canonical paths that clients need.
 
-```bash
-export AUDIT_LOG=true
-export AUDIT_LOG_FILE=/var/log/deepdata/audit.log
-./deepdata serve
-```
+## Persistence encryption is external
 
-Audit log format:
-```json
-{
-  "timestamp": "2026-03-01T10:30:00Z",
-  "tenant_id": "customer-1",
-  "action": "insert",
-  "collection": "docs",
-  "doc_id": "abc123",
-  "outcome": "success",
-  "ip": "10.0.0.5"
-}
-```
+Canonical snapshots and mutation journals are not application-encrypted.
+Place the entire data directory on an encrypted filesystem or volume, manage
+keys outside DeepData, and encrypt stopped backups separately. Restrict the
+directory to the service account and test recovery with the encryption layer
+enabled.
 
-25+ event types across categories: authentication, RBAC, vector operations, admin actions, cluster events, and system events.
+Do not copy individual live journal/snapshot files as a consistency claim.
+Use the documented stopped-backup procedure and validate application-specific
+queries after restore.
 
-## gRPC Security
+## Operational endpoints
 
-gRPC on port 50051 inherits the same JWT/TLS configuration as HTTP. When TLS is enabled, gRPC uses the same certificate. Requests without valid tokens are rejected at the interceptor level.
+The canonical allowlist includes:
 
-## Network Security Checklist
+- `/v3/tenants/...`
+- `/livez` and `/healthz`
+- `/readyz`
+- `/metrics`
 
-- [ ] Enable TLS in production (`TLS_ENABLED=true`)
-- [ ] Use strong JWT secret (32+ characters, randomly generated)
-- [ ] Enable `JWT_REQUIRED=true` to block unauthenticated access
-- [ ] Set per-tenant rate limits to prevent abuse
-- [ ] Set storage quotas for multi-tenant deployments
-- [ ] Enable encryption at rest for sensitive data
-- [ ] Enable audit logging for compliance
-- [ ] Restrict network access (firewall, security groups)
-- [ ] Use mTLS for service-to-service communication
-- [ ] Rotate JWT secrets periodically
-- [ ] Monitor `/metrics` endpoint for anomalies
-- [ ] Review audit logs regularly
+Health and metrics routes are intentionally unauthenticated so orchestrators
+can probe them. They can reveal availability and operational metadata, so
+restrict them with firewall, ingress, or service-mesh policy. A durable-store
+fault makes `/readyz` return `503`; liveness alone is not proof that persisted
+data is safe to serve.
+
+## Production checklist
+
+- [ ] Run the persistent server only on Linux under a dedicated unprivileged account.
+- [ ] Configure exactly one of `API_TOKEN` or `JWT_SECRET`; verify that missing or conflicting credentials prevent startup.
+- [ ] Keep `REQUIRE_AUTH=1` in deployment configuration and never set `DEEPDATA_INSECURE_DEV_MODE` outside disposable local development.
+- [ ] Store `API_TOKEN` or `JWT_SECRET` in a secret manager, not source control or command history.
+- [ ] Use short-lived, tenant-scoped JWTs and the smallest required permissions.
+- [ ] Terminate TLS externally and isolate cleartext backend ports.
+- [ ] Restrict unauthenticated health and metrics endpoints by network policy.
+- [ ] Encrypt the data directory and backups outside the process.
+- [ ] Protect file ownership and deny a second process access to the data path.
+- [ ] Alert on readiness failure, authentication failures at the edge, and restart loops.
+- [ ] Test crash recovery and stopped-backup restore before accepting traffic.
+- [ ] Do not claim built-in audit logging, at-rest encryption, replication, or mTLS for this RC.

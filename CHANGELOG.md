@@ -1,142 +1,67 @@
-# Changelog
+# DeepData changelog
 
-All notable changes to VectorDB will be documented in this file.
+This changelog describes the headless, persistent, single-node DeepData
+server. The current candidate is `0.2.0-rc.1`; it does not yet have a legal
+license or published artifact.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
+## Unreleased single-node release candidate
 
 ### Added
-- **CLI tool** (`vectordb-cli`): health, insert, query, delete, collections, stats, import/export (JSONL), compact, gentoken
-- **Go client improvements**: `Compact()`, `ListCollections()`, `Scroll()` methods, typed error hierarchy (`APIError`, sentinel errors), exponential backoff retry with jitter
-- **Scroll endpoint** (`GET/POST /scroll`): paginated document iteration with tenant/collection filtering
-- **Grafana dashboard**: 16-panel template with query latency, throughput, error rates, shard health, and alerting rules
-- **Cowrie codec support**: `Accept: application/cowrie` for ~48% smaller float32 array responses
-- **Docker deployment**: multi-stage Dockerfile + docker-compose.yml
-- **Documentation**: Installation guide, Troubleshooting (20+ issues), Cookbook (6 recipes), Security guide, Kubernetes deployment, Benchmarks, migration guides (ChromaDB, Qdrant, Pinecone), "Why VectorDB" positioning page
 
-### Fixed
-- **Sparse search scoring**: replaced placeholder `0.5` score with actual cosine similarity computation
-- **SIMD safety**: added `Safe` variants of distance functions that return errors instead of panicking on dimension mismatch
-- **NaN/Inf rejection**: `validateVector()` on insert path prevents corrupt vectors from entering the index
-- **PQ serialization**: implemented `Export`/`Import` for PQ4 and PQ-ADC indices (was returning "not implemented")
-- **Missing strconv import**: scroll endpoint wouldn't compile
+- Tenant-aware HTTP V3 and matching unary `deepdata.v3.DeepData` gRPC
+  contracts for collection create/delete, single and atomic batch insert,
+  document delete, collection get/list, tenant info, and search.
+- One durable canonical mutation journal with sequence numbers, checksummed
+  frames, synchronized acknowledgements, checkpoint rotation, strict replay,
+  and narrowly scoped torn-tail recovery.
+- Dense HNSW/Flat, sparse inverted/BM25, and two-field hybrid retrieval using
+  caller-supplied vectors.
+- Static administrative bearer authentication and scoped HS256 JWT policy
+  shared by HTTP and gRPC.
+- A deliberately small tenant-aware Python client, strict typing, package
+  build checks, and authenticated live restart integration coverage.
+- Hardened Linux amd64 Docker, Compose, and Helm contracts with non-root
+  identity, read-only root filesystem, persistent storage, immutable image
+  digest requirements, and public liveness/readiness probes.
 
 ### Changed
-- `HTTPError` is now a type alias for `APIError` (backward compatible)
-- Client retries enabled by default (3 retries, exponential backoff, jitter)
-- Distributed architecture docs marked as experimental with warning banners
 
-## [0.1.0] - 2024-12-17
+- Normal startup exposes only the canonical V3 HTTP routes and V3 gRPC
+  service. Legacy root/V2 mutation APIs and advanced recommendation,
+  discovery, embedding-provider, GraphRAG, extraction, and feedback handlers
+  are outside the RC and are not registered.
+- Persistent runtime support is explicitly Linux amd64 for this candidate.
+  Other OS/architecture jobs are compile proofs, not support claims.
+- Authentication now requires exactly one credential of at least 32 bytes,
+  rejects surrounding whitespace and URL query tokens, compares static tokens
+  in constant time, and pins JWT validation to HS256.
+- Historical `deepdata.v1` protobuf descriptors remain frozen; the breaking
+  tenant-aware contract moved to `deepdata.v3`.
 
-### Added
+### Fixed
 
-#### Core Features
-- **HNSW Index**: High-performance approximate nearest neighbor search with O(log n) complexity
-- **IVF Index**: Clustering-based search with configurable nlist/nprobe parameters
-- **DiskANN Index**: Memory-mapped disk-backed index for large-scale datasets
-- **Flat Index**: Brute-force exact search for small datasets or ground truth
+- Snapshot serialization now preserves tenant, vector, index, metadata, ID,
+  and recovery semantics and fails closed on corrupt/incompatible state.
+- WAL and checkpoint ordering now preserve acknowledged mutations across
+  crash, rotation, and restart scenarios without duplicate replay.
+- Request cancellation after a durable append can no longer strand memory
+  behind the journal or fault the store until restart.
+- Python mutations are single-attempt after an ambiguous transport failure;
+  only safe reads and explicitly read-only search requests are retried.
 
-#### Vector Types
-- Dense vectors (float32)
-- Sparse vectors (BM25/SPLADE compatible)
-- Binary vectors (planned)
+### Security and operational notes
 
-#### Quantization
-- Float16 quantization (~50% memory reduction)
-- Uint8 quantization (~75% memory reduction)  
-- Product Quantization (PQ8) for extreme compression
-- 4-bit Product Quantization (PQ4) for maximum compression
+- TLS termination and encryption at rest remain deployment responsibilities.
+- Distributed/HA behavior, compliance audit logging, the web UI, and desktop
+  packaging are not release gates or supported production surfaces.
+- Python distribution metadata uses `deepdata-client` (the import remains
+  `deepdata`) because the `deepdata` project on PyPI is unrelated. Claiming or
+  publishing the selected name still requires explicit release authority.
+- Legal ownership and license text must be resolved before publication.
 
-#### Hybrid Search
-- Dense + sparse vector fusion
-- Reciprocal Rank Fusion (RRF) strategy
-- Weighted fusion with configurable alpha
-- Linear combination fusion
+## Historical tag warning
 
-#### Multi-tenancy
-- Tenant isolation with separate namespaces
-- Per-tenant quotas and rate limits
-- Collection-level ACLs
-
-#### Persistence
-- Write-Ahead Logging (WAL) with CRC checksums
-- Automatic snapshots with configurable thresholds
-- SJSON binary format (~48% smaller than JSON)
-- Gob format for backward compatibility
-
-#### API
-- HTTP REST API with JSON/SJSON support
-- Batch insert (up to 10K documents)
-- Filtered search with metadata predicates
-- Prometheus metrics endpoint
-- Health and readiness probes (Kubernetes compatible)
-
-#### Security
-- JWT authentication
-- API key rotation
-- Role-Based Access Control (RBAC)
-- TLS support
-- Audit logging
-
-#### Embeddings
-- Built-in hash embedder for testing
-- OpenAI API integration
-- Ollama local model support
-- ONNX runtime support (optional)
-
-### Experimental
-- **Distributed Mode**: Sharding, replication, and query routing
-  - WARNING: Not recommended for production use
-  - Incomplete quorum safety checks
-  - Limited snapshot sync for replicas
-
-### Security Fixes
-- Removed hardcoded default JWT secret (now fails fast if not configured)
-- Fixed potential panic in MAC address generation
-- Replaced production panics with proper error handling/logging
-
-### Bug Fixes
-- Fixed audit log rotation not triggering on sync writes
-- Fixed HNSW race condition in lock yielding during bulk insert
-- Fixed collection cleanup memory leak on delete
-- Fixed response encoding errors being silently ignored
-
-### Performance
-- Reduced test suite runtime with `-short` flag support
-- Optimized k-means training dataset sizes for CI
-
-### Developer Experience
-- Added comprehensive Makefile with common targets
-- Enhanced CI workflow with race detection
-- Separate VectorDB test job in CI pipeline
-
-## [0.0.1] - 2024-11-01
-
-### Added
-- Initial development release
-- Basic HNSW implementation
-- Simple HTTP API
-- In-memory storage only
-
----
-
-## Versioning
-
-VectorDB uses semantic versioning:
-- **MAJOR**: Breaking API changes
-- **MINOR**: New features, backward compatible
-- **PATCH**: Bug fixes, backward compatible
-
-## Upgrade Guide
-
-### 0.0.x to 0.1.0
-
-1. **JWT Configuration**: If using JWT authentication, you MUST now set the `JWT_SECRET` environment variable. The default secret has been removed for security.
-
-2. **API Response Handling**: Response encoding errors are now logged. Check your logs for any `failed to encode response` warnings.
-
-3. **Distributed Mode**: If using distributed mode, note that it is now marked experimental. Consider using single-node mode for production until v1.0.
-
-4. **Collection Deletion**: Collections now properly clean up resources on deletion. This is automatic and requires no changes.
+Repository tags `v1.0.0` and `v1.0.1` describe an unrelated Atlas Runtime
+artifact and must not be interpreted as DeepData releases. Older `v0.1.x`
+source predates this canonical durability contract. Future DeepData tags and
+migration guarantees will be documented explicitly before publication.

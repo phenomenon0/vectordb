@@ -1,176 +1,198 @@
-# Installation
+# DeepData RC Installation
 
-## Requirements
+## Supported runtime
 
-- **Go 1.24+** (for building from source)
-- **Linux, macOS, or Windows** (amd64/arm64)
-- **RAM**: 256MB minimum, 1GB+ recommended for large datasets
-- **Disk**: Depends on dataset size; ~100 bytes per vector (768d with HNSW)
+The persistent release candidate supports Linux amd64 only. It is a headless,
+single-process, single-node server. Linux arm64 and non-Linux cross-builds are
+compile proofs, not persistence-supported release artifacts.
 
-## Quick Start (Docker)
+The server exposes tenant-aware HTTP V3 on port 8080 and the matching nine
+unary gRPC methods on port 50051. Clients provide vectors; the server does not
+initialize an embedding service.
+
+## Container quick start
+
+Use an immutable release tag and digest. Replace the placeholders with values
+from the candidate manifest; do not deploy a floating tag.
 
 ```bash
-git clone https://github.com/phenomenon0/vectordb.git
-cd vectordb
-docker compose up -d
-
-# Verify
-curl http://localhost:8080/health
+export DEEPDATA_VERSION='0.2.0-rc.1'
+export DEEPDATA_IMAGE="ghcr.io/phenomenon0/deepdata:${DEEPDATA_VERSION}@sha256:<RC_DIGEST>"
+export DEEPDATA_API_TOKEN='replace-with-a-long-random-token'
+docker compose pull deepdata
+docker compose up -d --no-build deepdata
+curl -fsS http://localhost:8080/livez
+curl -fsS http://localhost:8080/readyz
 ```
 
-## Build from Source
+Compose refuses to render without `DEEPDATA_API_TOKEN`; it passes that value as
+the server's only `API_TOKEN`. Keep the variable in a protected operator
+environment or secret injection mechanism. Do not add `JWT_SECRET` alongside
+it: server startup rejects simultaneous static-token and JWT configuration.
+
+The official container runs as numeric UID/GID `10001:10001` and stores its
+primary state under `/data/local`. Back up the whole `/data` volume while the
+container is stopped.
+
+## Build from source
+
+Go 1.25 or newer is required.
 
 ```bash
 git clone https://github.com/phenomenon0/vectordb.git
 cd vectordb
-
-# Build server
-go build -o deepdata ./cmd/deepdata
-
-# Build CLI
-go build -o deepdata-cli ./cmd/cli
-
-# Run
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -o deepdata ./cmd/deepdata
+export API_TOKEN='replace-with-a-long-random-token'
 ./deepdata serve
 ```
 
-## Pre-built Binaries
+Source-built persistent deployments are supported only on Linux amd64. A
+production build should be tied to an exact source commit and the evidence
+generated for that commit.
 
-Download from [GitHub Releases](https://github.com/phenomenon0/vectordb/releases/latest). No Go toolchain required:
-
-```bash
-chmod +x deepdata-linux-amd64
-./deepdata-linux-amd64 serve
-```
-
-## Go Client Library
+## Canonical Python client
 
 ```bash
-go get github.com/phenomenon0/vectordb/client
-```
-
-```go
-import "github.com/phenomenon0/vectordb/client"
-
-c := client.New("http://localhost:8080")
-resp, err := c.Insert(ctx, client.InsertRequest{
-    Doc:        "Hello world",
-    Collection: "docs",
-})
-```
-
-## Python Client
-
-```bash
-pip install deepdata
+pip install deepdata-client
 ```
 
 ```python
 from deepdata import DeepDataClient
 
-client = DeepDataClient("http://localhost:8080")
-client.insert("Hello world", collection="docs")
-results = client.search("Hello", top_k=5, collection="docs")
+with DeepDataClient(
+    "http://localhost:8080",
+    api_token="replace-with-token",
+) as client:
+    tenant = client.tenant("org-123")
+    tenant.create_collection(
+        "docs",
+        fields=[{
+            "name": "embedding",
+            "type": "dense",
+            "dim": 3,
+            "index": {"type": "hnsw"},
+        }],
+    )
+    tenant.insert("docs", vectors={"embedding": [0.1, 0.2, 0.3]})
+    results = tenant.search(
+        "docs",
+        queries={"embedding": [0.1, 0.2, 0.3]},
+        top_k=5,
+    )
 ```
 
-Async variant:
+See the [Python SDK guide](../sdk/python/README.md#canonical-v3-quick-start)
+for the complete typed sync and async contract.
 
-```python
-from deepdata import AsyncDeepDataClient
+## Supported configuration
 
-async with AsyncDeepDataClient("http://localhost:8080") as client:
-    results = await client.search("Hello", top_k=5)
-```
-
-## Configuration
-
-DeepData is configured via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8080` | HTTP server port |
-| `GRPC_PORT` | `50051` | gRPC server port |
-| `DATA_DIR` | `./data` | Data directory for persistence |
-| `LOG_LEVEL` | `info` | Log level: debug, info, warn, error |
-| `LOG_FORMAT` | `json` | Log format: json or text |
-| `VECTORDB_MODE` | `local` | Embedder mode: local (Ollama), pro (OpenAI) |
-| `JWT_SECRET` | _(empty)_ | JWT signing secret (enables auth) |
-| `JWT_REQUIRED` | `false` | Require JWT for all requests |
-| `API_TOKEN` | _(empty)_ | Simple bearer token auth |
-| `MAX_COLLECTIONS` | `10000` | Maximum number of collections |
-| `MAX_TENANTS` | `100000` | Maximum number of tenants |
-| `TENANT_RPS` | `100` | Per-tenant rate limit (requests/sec) |
+| Variable | Default | RC meaning |
+|---|---|---|
+| `PORT` | `8080` | HTTP listen port |
+| `GRPC_PORT` | `50051` | gRPC listen port; set `0` only when intentionally testing HTTP alone |
+| `VECTORDB_MODE` | `local` | Must be `local` in canonical startup |
+| `VECTORDB_BASE_DIR` | `~/.vectordb` | Parent used when the data directory is relative or unset |
+| `VECTORDB_DATA_DIR` | empty | Exact primary directory if absolute; otherwise relative to the base directory |
+| `API_TOKEN` | unset | Static bearer token with server-wide administrative access; at least 32 bytes with no surrounding whitespace; configure this or `JWT_SECRET`, never both |
+| `JWT_SECRET` | unset | HS256 JWT verification secret; at least 32 bytes with no surrounding whitespace; configure this or `API_TOKEN`, never both |
+| `REQUIRE_AUTH` | `0` | Compatibility/defense-in-depth switch set to `1` by shipped deployments; it does not relax the exact-one-credential startup requirement |
+| `DEEPDATA_INSECURE_DEV_MODE` | `0` | Set to `1` only for explicit credentialless local development; never for persistent or network-accessible deployments |
+| `TRUST_PROXY` | `0` | Trust `X-Forwarded-For`/`X-Real-IP`; enable only when direct backend access is blocked and the proxy overwrites both headers |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
+| `LOG_FORMAT` | `json` | `json` or `text` |
+| `MAX_COLLECTIONS` | `10000` | Collection limit |
+| `MAX_TENANTS` | `100000` | Tenant limit |
+| `TENANT_RPS` | `100` | Per-tenant requests per second |
 | `TENANT_BURST` | `100` | Per-tenant burst allowance |
-| `STORAGE_FORMAT` | `gob` | Serialization: gob, cowrie, cowrie-zstd |
-| `WAL_MAX_BYTES` | `5242880` | WAL file size limit (5MB) |
-| `WAL_MAX_OPS` | `1000` | WAL ops before rotation |
-| `VECTOR_CAPACITY` | `1000` | Initial vector store capacity |
-| `USE_HASH_EMBEDDER` | `0` | Use hash embedder (low-memory/benchmarks) |
-| `COMPACT_INTERVAL_MIN` | _(disabled)_ | Auto-compact interval in minutes |
-| `SNAPSHOT_EXPORT_PATH` | _(empty)_ | Auto-export snapshot path |
-| `ENCRYPTION_ENABLED` | `false` | Enable encryption at rest |
-| `ENCRYPTION_PASSPHRASE` | _(empty)_ | Encryption passphrase |
-| `ENCRYPTION_ALGORITHM` | `aes-gcm` | aes-gcm or chacha20 |
-| `AUDIT_LOG` | `false` | Enable audit logging |
-| `AUDIT_LOG_FILE` | _(empty)_ | Audit log file path |
-| `TLS_ENABLED` | `false` | Enable TLS |
-| `TLS_CERT_FILE` | _(empty)_ | TLS certificate file |
-| `TLS_KEY_FILE` | _(empty)_ | TLS private key file |
-| `TLS_CLIENT_AUTH` | _(empty)_ | mTLS client auth mode (require) |
-| `TLS_MIN_VERSION` | `1.2` | Minimum TLS version |
+| `AUTH_FAILURE_RPS` | `1` | Failed-auth attempts replenished per peer IP per second |
+| `AUTH_FAILURE_BURST` | `5` | Failed-auth attempts allowed per peer IP before temporary throttling |
+| `MAX_RATE_LIMIT_KEYS` | `100000` | Maximum keys tracked by each rate limiter; a full failed-auth map rejects unseen peers until capacity recovers |
 
-## systemd Service
+Terminate TLS at a trusted proxy or ingress and use encrypted storage. Do not
+place bearer tokens in URLs or command history.
+
+HTTP and gRPC share a failure-only authentication throttle keyed by normalized
+peer IP. Successful authentication does not spend this budget. When
+`TRUST_PROXY=1`, the trusted proxy must overwrite forwarding headers and be the
+only path to the backend; otherwise clients can forge the throttle key.
+
+Authentication is fail-closed before persistent state is opened: normal
+startup requires exactly one of `API_TOKEN` or `JWT_SECRET`; neither and both
+are configuration errors. Generate either credential with at least 32 random
+bytes (for example, `openssl rand -hex 32`). Query-string bearer tokens are not
+accepted. `DEEPDATA_INSECURE_DEV_MODE=1` is an explicit local
+development exception, not a production configuration.
+
+## systemd service
+
+Create a dedicated account and state root:
+
+```bash
+getent group deepdata >/dev/null || sudo groupadd --system deepdata
+getent passwd deepdata >/dev/null || \
+  sudo useradd --system --home-dir /var/lib/deepdata \
+    --gid deepdata --shell /usr/sbin/nologin deepdata
+sudo install -d -o deepdata -g deepdata -m 0750 /var/lib/deepdata
+```
+
+Install the exact candidate binary at `/usr/local/bin/deepdata`, then create:
 
 ```ini
 # /etc/systemd/system/deepdata.service
 [Unit]
-Description=DeepData Vector Database
+Description=DeepData single-node vector server
 After=network.target
 
 [Service]
 Type=simple
 User=deepdata
+Group=deepdata
+WorkingDirectory=/var/lib/deepdata
 ExecStart=/usr/local/bin/deepdata serve
 Environment=PORT=8080
 Environment=GRPC_PORT=50051
-Environment=DATA_DIR=/var/lib/deepdata
-Environment=LOG_LEVEL=info
+Environment=VECTORDB_MODE=local
+Environment=VECTORDB_BASE_DIR=/var/lib/deepdata
+Environment=VECTORDB_DATA_DIR=local
+Environment=REQUIRE_AUTH=1
+EnvironmentFile=-/etc/deepdata/deepdata.env
 Restart=on-failure
 RestartSec=5
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+Store exactly one of `API_TOKEN` or `JWT_SECRET` in
+`/etc/deepdata/deepdata.env`, readable only by root and the service account.
+Do not set `DEEPDATA_INSECURE_DEV_MODE` in the service environment. Then start
+and verify:
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now deepdata
+curl -fsS http://localhost:8080/livez
+curl -fsS http://localhost:8080/readyz
+sudo systemctl show deepdata --property=MainPID --value
+sudo test -d /var/lib/deepdata/local
 ```
 
-## Verify Installation
+The exact primary directory is `/var/lib/deepdata/local`; the stopped backup
+boundary is the whole `/var/lib/deepdata` state root. Use the
+[offline backup and restore procedure](cookbook.md#offline-backup), including
+its mandatory V3/gRPC data assertion.
+
+## Canonical surface check
+
+After authentication is configured, run the repository smoke test from the
+exact candidate checkout:
 
 ```bash
-# Health check
-curl -s http://localhost:8080/health | jq .
-
-# Liveness probe
-curl -s http://localhost:8080/healthz
-
-# Readiness probe
-curl -s http://localhost:8080/readyz
-
-# Insert a test document
-curl -X POST http://localhost:8080/insert \
-  -H "Content-Type: application/json" \
-  -d '{"doc": "test document", "collection": "test"}'
-
-# Query
-curl -X POST http://localhost:8080/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "test", "top_k": 3}'
-
-# Using the CLI
-deepdata-cli health
-deepdata-cli insert --doc "test document" --collection test
-deepdata-cli query --query "test" --top-k 3
+./tests/smoke_test.sh
 ```
+
+It exercises HTTP V3 and all nine unary gRPC methods, restarts the process, and
+checks that unsupported legacy routes remain unavailable.

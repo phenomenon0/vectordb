@@ -1,332 +1,388 @@
-# DeepData Cookbook
+# DeepData RC Cookbook
 
-Practical recipes for common use cases.
+This cookbook describes the supported release-candidate surface: one persistent
+DeepData process on Linux, tenant-aware HTTP V3, and the matching unary gRPC
+service. Clients provide every dense and sparse vector.
 
----
+Supported mutations are create collection, delete collection, insert one,
+batch insert, and delete document. Supported reads are tenant information,
+collection get/list, and dense, sparse, or hybrid search. Dense fields use
+HNSW or Flat; sparse fields use the inverted index.
 
-## 1. Building a RAG System
-
-Retrieval-Augmented Generation: store documents, retrieve relevant chunks, feed to an LLM.
-
-### Ingest Documents
+## Canonical Python client
 
 ```python
 from deepdata import DeepDataClient
 
-client = DeepDataClient("http://localhost:8080")
-
-# Split documents into chunks (400-800 tokens each)
-chunks = [
-    {"doc": "Python is a programming language...", "meta": {"source": "wiki", "topic": "python"}},
-    {"doc": "Go is a statically typed language...", "meta": {"source": "wiki", "topic": "go"}},
-    {"doc": "Rust focuses on memory safety...", "meta": {"source": "wiki", "topic": "rust"}},
-]
-
-# Batch insert
-client.batch_insert(chunks, collection="knowledge-base")
-```
-
-### Retrieve & Generate
-
-```python
-def rag_query(question: str, llm_client) -> str:
-    # 1. Retrieve relevant chunks
-    results = client.search(
-        query=question,
-        top_k=5,
-        collection="knowledge-base",
+with DeepDataClient(
+    "http://localhost:8080",
+    api_token="replace-with-token",
+) as client:
+    tenant = client.tenant("org-123")
+    tenant.create_collection(
+        "docs",
+        fields=[
+            {
+                "name": "embedding",
+                "type": "dense",
+                "dim": 3,
+                "index": {"type": "hnsw"},
+            },
+            {
+                "name": "keywords",
+                "type": "sparse",
+                "dim": 10000,
+                "index": {"type": "inverted"},
+            },
+        ],
     )
 
-    # 2. Build context
-    context = "\n\n".join(r.doc for r in results)
+    first = tenant.insert(
+        "docs",
+        vectors={
+            "embedding": [0.1, 0.2, 0.3],
+            "keywords": {"indices": [4, 9], "values": [0.8, 0.4], "dim": 10000},
+        },
+        metadata={"source": "example"},
+    )
 
-    # 3. Generate answer
-    response = llm_client.chat([
-        {"role": "system", "content": f"Answer using this context:\n\n{context}"},
-        {"role": "user", "content": question}
-    ])
+    tenant.batch_insert(
+        "docs",
+        [
+            {"vectors": {
+                "embedding": [0.3, 0.2, 0.1],
+                "keywords": {"indices": [2], "values": [1.0], "dim": 10000},
+            }},
+            {"id": 1002, "vectors": {
+                "embedding": [0.2, 0.3, 0.1],
+                "keywords": {"indices": [7], "values": [1.0], "dim": 10000},
+            }},
+        ],
+    )
 
-    return response
+    results = tenant.search(
+        "docs",
+        queries={"embedding": [0.1, 0.2, 0.3]},
+        top_k=5,
+    )
+    tenant.delete_document("docs", first.id)
 ```
 
----
+Generate query vectors with the same client-side model and normalization used
+for inserts. DeepData does not transform text into vectors.
 
-## 2. Hybrid Search (Dense + Sparse)
+## Raw HTTP V3
 
-Combine semantic (dense) search with keyword (BM25) matching for best recall.
-
-### Setup with V2 API
+All canonical routes are below
+`/v3/tenants/{tenant}/collections`. Send credentials in the `Authorization`
+header, never in a URL.
 
 ```bash
-# Create a hybrid collection
-curl -X POST http://localhost:8080/v2/collections \
-  -H "Content-Type: application/json" \
+BASE_URL=http://localhost:8080
+TENANT=org-123
+TOKEN=replace-with-token
+
+# Create a collection.
+curl -fsS -X POST "$BASE_URL/v3/tenants/$TENANT/collections" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
   -d '{
-    "name": "articles",
-    "fields": [
-      {"name": "embedding", "type": 0, "dim": 384,
-       "index": {"type": 0, "params": {"m": 16, "ef_construction": 200}}},
-      {"name": "keywords", "type": 1, "dim": 30000,
-       "index": {"type": 4}}
+    "name":"docs",
+    "fields":[
+      {"name":"embedding","type":"dense","dim":3,"index":{"type":"flat"}},
+      {"name":"keywords","type":"sparse","dim":64,"index":{"type":"inverted"}}
     ]
   }'
+
+# Insert one document with a caller-selected ID.
+curl -fsS -X POST "$BASE_URL/v3/tenants/$TENANT/collections/docs/docs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id":101,
+    "vectors":{
+      "embedding":[1,0,0],
+      "keywords":{"indices":[1,3],"values":[0.8,0.4],"dim":64}
+    },
+    "metadata":{"kind":"example"}
+  }'
+
+# Batch insert is all-or-nothing.
+curl -fsS -X POST "$BASE_URL/v3/tenants/$TENANT/collections/docs/docs/batch" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"documents":[
+    {"vectors":{
+      "embedding":[0,1,0],
+      "keywords":{"indices":[2],"values":[1],"dim":64}
+    }},
+    {"id":103,"vectors":{
+      "embedding":[0,0,1],
+      "keywords":{"indices":[3],"values":[1],"dim":64}
+    }}
+  ]}'
+
+# List, get, and search.
+curl -fsS "$BASE_URL/v3/tenants/$TENANT/collections" \
+  -H "Authorization: Bearer $TOKEN"
+curl -fsS "$BASE_URL/v3/tenants/$TENANT/collections/docs" \
+  -H "Authorization: Bearer $TOKEN"
+curl -fsS -X POST "$BASE_URL/v3/tenants/$TENANT/collections/docs/search" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"queries":{"embedding":[1,0,0]},"top_k":5}'
+
+# Delete one document, then delete the collection.
+curl -fsS -X DELETE "$BASE_URL/v3/tenants/$TENANT/collections/docs/docs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"doc_id":103}'
+curl -fsS -X DELETE "$BASE_URL/v3/tenants/$TENANT/collections/docs" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### Query with Hybrid Scoring
+For hybrid search, send exactly two query fields and an explicit fusion policy:
 
-```python
-results = client.search(
-    query="machine learning optimization",
-    top_k=10,
-    collection="articles",
-    score_mode="hybrid",    # Combine dense + lexical scores
-    hybrid_alpha=0.7        # 70% semantic, 30% keyword
-)
+```json
+{
+  "queries": {
+    "embedding": [1, 0, 0],
+    "keywords": {"indices": [1, 3], "values": [0.8, 0.4], "dim": 64}
+  },
+  "top_k": 10,
+  "hybrid_params": {
+    "strategy": "weighted",
+    "weights": {"embedding": 0.7, "keywords": 0.3}
+  }
+}
 ```
 
-### Tuning Alpha
-
-| Use Case | Alpha | Why |
-|----------|-------|-----|
-| General search | 0.7 | Semantic-heavy, keyword backup |
-| Technical docs | 0.5 | Balance (exact terms matter) |
-| Code search | 0.3 | Keywords dominate (function names, etc.) |
-| Creative writing | 0.9 | Semantic meaning over exact words |
-
----
-
-## 3. Multi-Tenant SaaS
-
-Isolate data per customer with JWT authentication.
-
-### Setup
-
-```bash
-JWT_SECRET="$(openssl rand -hex 32)" JWT_REQUIRED=true ./deepdata serve
-```
-
-### Provision a Customer
-
-```bash
-# Generate customer token
-TOKEN=$(deepdata-cli gentoken --tenant customer-42 \
-  --permissions read,write \
-  --collections customer-42-docs \
-  --expires 8760h \
-  --secret "$JWT_SECRET" --json | jq -r .token)
-
-# Set quota
-curl -X POST http://localhost:8080/admin/quota/set \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '{"tenant_id": "customer-42", "max_vectors": 50000}'
-
-# Set rate limit
-curl -X POST http://localhost:8080/admin/ratelimit/set \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '{"tenant_id": "customer-42", "rps": 50}'
-```
-
-### Customer Usage
-
-```python
-from deepdata import DeepDataClient
-
-# Customer's application uses their token
-client = DeepDataClient(
-    "http://deepdata.yourservice.com",
-    api_key=customer_token
-)
-
-# They can only access their collection
-client.insert("My document", collection="customer-42-docs")
-results = client.search("find this", collection="customer-42-docs")
-
-# Access to other collections is denied (403)
-```
-
----
-
-## 4. HNSW Parameter Tuning
-
-### Parameters
-
-| Parameter | Default | Effect | Trade-off |
-|-----------|---------|--------|-----------|
-| `m` | 16 | Edges per node | Higher = better recall, more RAM |
-| `ef_construction` | 200 | Build-time search width | Higher = better index quality, slower build |
-| `ef_search` | 50 | Query-time search width | Higher = better recall, slower queries |
-
-### Benchmarking
-
-```bash
-# Low recall, fast queries (real-time search)
-ef_search=20   # ~95% recall, <2ms
-
-# Balanced (default)
-ef_search=50   # ~98% recall, ~5ms
-
-# High recall (accuracy-critical)
-ef_search=200  # ~99.5% recall, ~15ms
-
-# Maximum recall (near-exact)
-ef_search=500  # ~99.9% recall, ~40ms
-```
-
-### Per-Query Override
-
-```python
-results = client.search(
-    query="precision search",
-    top_k=10,
-    ef_search=200  # Override for this query only
-)
-```
-
-### When to Rebuild the Index
-
-Rebuild with higher `m` and `ef_construction` if:
-- Recall drops below 95% at your target latency
-- Dataset grows 10x from initial index creation
-- You need sub-millisecond latency (reduce `m` to 8)
-
-```bash
-curl -X POST http://localhost:8080/compact
-```
-
----
-
-## 5. Embedding Modes
-
-### Local (Ollama)
-
-Default mode. Requires Ollama running locally:
-
-```bash
-VECTORDB_MODE=local ./deepdata serve
-```
-
-### Pro (OpenAI)
-
-Uses OpenAI's `text-embedding-3-small` (~$0.02/1M tokens):
-
-```bash
-VECTORDB_MODE=pro OPENAI_API_KEY=sk-... ./deepdata serve
-```
-
-### Hash Embedder (Benchmarking)
-
-Deterministic hash — zero network calls, zero cost. Not semantically meaningful, but useful for benchmarking insert/query throughput:
-
-```bash
-USE_HASH_EMBEDDER=1 ./deepdata serve
-```
-
-### Bring Your Own Embeddings
-
-Embed client-side and send raw vectors:
-
-```python
-import openai
-
-def embed(text):
-    resp = openai.embeddings.create(model="text-embedding-3-small", input=text)
-    return resp.data[0].embedding
-
-# Insert with pre-computed vector
-import requests
-requests.post("http://localhost:8080/insert", json={
-    "doc": "Hello world",
-    "vector": embed("Hello world"),
-    "collection": "docs"
-})
-```
-
-### Direct Embedding Endpoint
-
-Get embeddings without inserting:
-
-```bash
-curl -X POST http://localhost:8080/api/embed -d '{"text":"hello world"}'
-```
-
----
-
-## 6. Backup & Disaster Recovery
-
-### Automated Snapshots
-
-```bash
-SNAPSHOT_EXPORT_PATH=/backup/deepdata EXPORT_INTERVAL_MIN=30 ./deepdata serve
-```
-
-### Manual Backup
-
-```bash
-# Export
-curl -s http://localhost:8080/export > deepdata-backup-$(date +%Y%m%d).bin
-
-# Restore
-curl -X POST http://localhost:8080/import --data-binary @deepdata-backup-20260101.bin
-```
-
-### Backup Strategy
-
-| Strategy | RPO | Method |
-|----------|-----|--------|
-| WAL replay | ~seconds | WAL files persist all writes |
-| Periodic snapshot | 30-60min | `EXPORT_INTERVAL_MIN` |
-| External backup | daily | CronJob + object storage |
-| Streaming replication | ~real-time | WAL shipping to replicas |
-
-### Testing Restore
-
-```bash
-# Start fresh instance
-DATA_DIR=/tmp/restore-test PORT=8081 ./deepdata serve &
-
-# Import backup
-curl -X POST http://localhost:8081/import --data-binary @backup.bin
-
-# Verify
-curl http://localhost:8081/health | jq .total
-```
-
----
-
-## 7. gRPC Usage
-
-DeepData exposes gRPC on port 50051 (configurable via `GRPC_PORT`). Same operations as the HTTP API, protobuf-encoded for lower overhead.
-
-### Go Client via gRPC
+## gRPC contract
+
+The gRPC service mirrors the tenant and operation model. It exposes nine unary
+methods; there are no streaming RPCs and server reflection is not part of the
+RC contract.
+
+| Method | Operation |
+|---|---|
+| `GetTenantInfo` | Tenant and collection counts |
+| `ListCollections` | List tenant collections |
+| `GetCollection` | Read one collection schema |
+| `CreateCollection` | Create collection |
+| `DeleteCollection` | Delete collection |
+| `Insert` | Insert one document |
+| `BatchInsert` | Atomic batch insert |
+| `Search` | Dense, sparse, or hybrid search |
+| `DeleteDoc` | Delete one document |
+
+Use the checked-in schema at `api/proto/deepdata/v3/deepdata.proto`. A minimal
+Go request looks like this:
 
 ```go
-import (
-    pb "github.com/phenomenon0/vectordb/api/proto/deepdata/v1"
-    "google.golang.org/grpc"
+conn, err := grpc.NewClient(
+    "localhost:50051",
+    grpc.WithTransportCredentials(insecure.NewCredentials()),
 )
+if err != nil {
+    return err
+}
+defer conn.Close()
 
-conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
-client := pb.NewDeepDataServiceClient(conn)
-
-// Insert
-resp, err := client.Insert(ctx, &pb.InsertRequest{
-    Doc:        "Hello world",
+client := deepdatav3.NewDeepDataClient(conn)
+ctx := metadata.AppendToOutgoingContext(
+    context.Background(),
+    "authorization", "Bearer "+token,
+)
+response, err := client.Search(ctx, &deepdatav3.SearchRequest{
+    TenantId:  "org-123",
     Collection: "docs",
-})
-
-// Search
-results, err := client.Search(ctx, &pb.SearchRequest{
-    Query: "Hello",
-    TopK:  5,
+    Queries: map[string]*deepdatav3.VectorData{
+        "embedding": {
+            Data: &deepdatav3.VectorData_Dense{
+                Dense: &deepdatav3.DenseVector{Values: []float32{1, 0, 0}},
+            },
+        },
+    },
+    TopK: 5,
 })
 ```
 
-### When to Use gRPC vs HTTP
+Production deployments terminate TLS at a trusted proxy or load balancer. The
+plaintext credentials above are suitable only for a trusted local connection.
 
-| | HTTP | gRPC |
-|---|---|---|
-| Ease of use | curl, any language | Needs protobuf codegen |
-| Throughput | Good | ~2x higher |
-| Payload size | JSON overhead | Compact binary |
-| Streaming | No | Yes |
-| Browser support | Yes | Needs grpc-web proxy |
+## Offline backup
+
+Official systemd deployments use:
+
+```ini
+Environment=VECTORDB_MODE=local
+Environment=VECTORDB_BASE_DIR=/var/lib/deepdata
+Environment=VECTORDB_DATA_DIR=local
+```
+
+The exact primary directory is `/var/lib/deepdata/local`; the backup boundary
+is the whole `/var/lib/deepdata` state root. Stop DeepData before copying it.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+wait_for_deepdata() {
+  local deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
+  while ((SECONDS < deadline)); do
+    sudo systemctl is-active --quiet deepdata || return 1
+    if curl -fsS --max-time 1 http://localhost:8080/readyz >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+verify_process_contract() {
+  local main_pid process_env
+  main_pid=$(sudo systemctl show deepdata --property=MainPID --value)
+  [[ "$main_pid" =~ ^[1-9][0-9]*$ ]]
+  process_env=$(sudo cat -- "/proc/$main_pid/environ" | tr '\0' '\n')
+  grep -Fqx -- "VECTORDB_MODE=local" <<<"$process_env"
+  grep -Fqx -- "VECTORDB_BASE_DIR=$STATE_ROOT" <<<"$process_env"
+  grep -Fqx -- "VECTORDB_DATA_DIR=local" <<<"$process_env"
+}
+
+STATE_ROOT=$(realpath -e -- /var/lib/deepdata)
+BACKUP_PARENT=$(realpath -e -- /backup)
+READY_TIMEOUT_SECONDS=${READY_TIMEOUT_SECONDS:-300}
+BACKUP_DIR="$BACKUP_PARENT/deepdata-state-$(date +%Y%m%dT%H%M%S)"
+MANIFEST="$BACKUP_DIR.manifest"
+
+[[ "$READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]
+[[ "$STATE_ROOT" != / && -d "$STATE_ROOT/local" ]]
+[[ ! -e "$BACKUP_DIR" && ! -e "$MANIFEST" ]]
+case "$BACKUP_DIR/" in
+  "$STATE_ROOT/"*) echo "backup destination is inside state root" >&2; exit 1 ;;
+esac
+
+wait_for_deepdata
+verify_process_contract
+sudo systemctl stop deepdata
+! sudo systemctl is-active --quiet deepdata
+
+sudo cp -a -- "$STATE_ROOT" "$BACKUP_DIR"
+printf '%s\n' \
+  'VECTORDB_MODE=local' \
+  "VECTORDB_BASE_DIR=$STATE_ROOT" \
+  'VECTORDB_DATA_DIR=local' \
+  "PRIMARY_DIRECTORY=$STATE_ROOT/local" | sudo tee "$MANIFEST" >/dev/null
+sudo chmod 0600 "$MANIFEST"
+sync
+sudo test -d "$BACKUP_DIR/local"
+
+sudo systemctl start deepdata
+wait_for_deepdata
+verify_process_contract
+```
+
+If any precondition or copy fails, leave DeepData stopped and preserve both the
+source and partial destination for diagnosis.
+
+## Offline restore with rollback
+
+Restore only a verified whole-root backup. Never merge it into existing state.
+`RESTORE_ASSERT_SCRIPT` is mandatory and must fail unless the expected V3
+tenant, collection schema, meaningful document count, representative query,
+and gRPC result are all correct. It receives the HTTP base URL and gRPC address;
+credentials can be passed through its environment.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+wait_for_deepdata() {
+  local deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
+  while ((SECONDS < deadline)); do
+    sudo systemctl is-active --quiet deepdata || return 1
+    if curl -fsS --max-time 1 http://localhost:8080/readyz >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+verify_process_contract() {
+  local main_pid process_env
+  main_pid=$(sudo systemctl show deepdata --property=MainPID --value)
+  [[ "$main_pid" =~ ^[1-9][0-9]*$ ]]
+  process_env=$(sudo cat -- "/proc/$main_pid/environ" | tr '\0' '\n')
+  grep -Fqx -- "VECTORDB_MODE=local" <<<"$process_env"
+  grep -Fqx -- "VECTORDB_BASE_DIR=$STATE_ROOT" <<<"$process_env"
+  grep -Fqx -- "VECTORDB_DATA_DIR=local" <<<"$process_env"
+}
+
+STATE_ROOT=$(realpath -e -- /var/lib/deepdata)
+RESTORE_SRC=$(realpath -e -- /backup/deepdata-state-20260718T020000)
+: "${RESTORE_ASSERT_SCRIPT:?set an executable V3/gRPC assertion script}"
+RESTORE_ASSERT_SCRIPT=$(realpath -e -- "$RESTORE_ASSERT_SCRIPT")
+READY_TIMEOUT_SECONDS=${READY_TIMEOUT_SECONDS:-300}
+TAG=$(date +%Y%m%dT%H%M%S)
+STATE_PARENT=$(dirname -- "$STATE_ROOT")
+RESTORE_STAGE="$STATE_PARENT/.deepdata-restore-$TAG"
+ROLLBACK_ROOT="$STATE_PARENT/deepdata-before-restore-$TAG"
+FAILED_ROOT="$STATE_PARENT/deepdata-failed-restore-$TAG"
+
+[[ "$READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]
+[[ -x "$RESTORE_ASSERT_SCRIPT" ]]
+[[ "$STATE_ROOT" != / && "$RESTORE_SRC" != / ]]
+[[ -d "$STATE_ROOT/local" && -d "$RESTORE_SRC/local" ]]
+[[ ! -e "$RESTORE_STAGE" && ! -e "$ROLLBACK_ROOT" && ! -e "$FAILED_ROOT" ]]
+case "$RESTORE_SRC/" in
+  "$STATE_ROOT/"*) echo "restore source is inside live state" >&2; exit 1 ;;
+esac
+case "$STATE_ROOT/" in
+  "$RESTORE_SRC/"*) echo "live state is inside restore source" >&2; exit 1 ;;
+esac
+
+wait_for_deepdata
+verify_process_contract
+sudo cp -a -- "$RESTORE_SRC" "$RESTORE_STAGE"
+sudo test -d "$RESTORE_STAGE/local"
+sync
+
+sudo systemctl stop deepdata
+! sudo systemctl is-active --quiet deepdata
+sudo mv -- "$STATE_ROOT" "$ROLLBACK_ROOT"
+if ! sudo mv -- "$RESTORE_STAGE" "$STATE_ROOT"; then
+  sudo mv -- "$ROLLBACK_ROOT" "$STATE_ROOT"
+  echo "restore cutover failed; original state reinstated" >&2
+  exit 1
+fi
+sync
+
+if sudo systemctl start deepdata &&
+   wait_for_deepdata &&
+   verify_process_contract &&
+   "$RESTORE_ASSERT_SCRIPT" http://localhost:8080 localhost:50051
+then
+  echo "restore passed readiness plus V3/gRPC data assertions"
+  echo "retain rollback state at $ROLLBACK_ROOT until the change is accepted"
+else
+  sudo systemctl stop deepdata || true
+  if sudo systemctl is-active --quiet deepdata; then
+    echo "restored server would not stop; manual recovery required" >&2
+    exit 1
+  fi
+  sudo mv -- "$STATE_ROOT" "$FAILED_ROOT"
+  sudo mv -- "$ROLLBACK_ROOT" "$STATE_ROOT"
+  sync
+  if sudo systemctl start deepdata && wait_for_deepdata && verify_process_contract; then
+    echo "restore validation failed; original state reinstated and ready" >&2
+  else
+    echo "original state was reinstated but did not become ready" >&2
+  fi
+  exit 1
+fi
+```
+
+Rehearse the same procedure and assertion script on an isolated Linux host
+before relying on a backup. Readiness without semantic V3 and gRPC checks is not
+restore evidence.
