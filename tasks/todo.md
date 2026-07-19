@@ -2,6 +2,10 @@
 
 Generated: 2026-07-17
 
+Reconciled: 2026-07-19. Checkmarks in Phases 2-7 record implemented behavior and
+local pre-freeze evidence. They are not an exact-SHA release attestation; every final
+candidate rerun and report remains open in Phases 8-9.
+
 Execution is pre-approved by the user for all in-repository implementation, tests,
 local builds, and checkpoint commits required by this plan. The authoritative readiness
 assessment is [`docs/PRE_RELEASE_STATUS.md`](../docs/PRE_RELEASE_STATUS.md). The completed
@@ -88,31 +92,37 @@ injection cannot silently replace recoverable state with an empty database.
 
 ## Phase 2 — One Canonical Crash-Durable Mutation Engine
 
-- [ ] Disable the legacy root and V2 collection mutation surfaces in normal RC startup.
-- [ ] Make V3 the canonical tenant-aware collection contract and make gRPC mirror it.
-- [ ] Inventory the five supported mutations and route them through one durability boundary.
-- [ ] Specify sequence numbers, WAL records, fsync acknowledgement, replay idempotency,
+- [x] Disable the legacy root and V2 collection mutation surfaces in normal RC startup.
+- [x] Make V3 the canonical tenant-aware collection contract and make gRPC mirror it.
+- [x] Inventory the five supported mutations and route them through one durability boundary.
+- [x] Specify sequence numbers, WAL records, fsync acknowledgement, replay idempotency,
       checkpoint ordering, rotation, and partial-record handling.
-- [ ] Implement the collection WAL/checkpoint path without HTTP/gRPC bypasses.
-- [ ] Ensure acknowledged writes survive SIGKILL/power-loss simulation.
-- [ ] Ensure unacknowledged/partial writes are either absent or replayed exactly once.
-- [ ] Persist collection/index lifecycle operations, not only document mutations.
-- [ ] Add subprocess crash matrices for HTTP V3 and tenant-aware gRPC.
-- [ ] Add upgrade/replay tests from the last published compatible format.
-- [ ] Fail non-Linux persistent startup explicitly; cross-compilation is not a support claim.
+- [x] Implement the collection WAL/checkpoint path without HTTP/gRPC bypasses.
+- [x] Ensure acknowledged writes survive SIGKILL/power-loss simulation.
+- [x] Ensure unacknowledged/partial writes are either absent or replayed exactly once.
+- [x] Persist collection/index lifecycle operations, not only document mutations.
+- [x] Add subprocess crash matrices for HTTP V3 and tenant-aware gRPC.
+- [x] Preserve and test frozen canonical V1 journal replay, including acknowledged batches
+      above current request-admission limits.
+- [x] Refuse raw or unified legacy root/V2 state without modifying it, and document the
+      explicit offline export/import boundary.
+- [ ] Rehearse offline export/import from the last published legacy root/V2 format and
+      retain semantic validation evidence; there is deliberately no automatic in-place
+      migration.
+- [x] Fail non-Linux persistent startup explicitly; cross-compilation is not a support claim.
 
 Exit gate: all advertised protocols pass the same crash/replay invariants across repeated
 kill points, checkpoint rotation, and restart.
 
 ## Phase 3 — Authorization and Tenant Isolation
 
-- [ ] Define one operation policy matrix for read, write, collection-admin, and server-admin.
-- [ ] Centralize policy evaluation for tenant and collection scope.
-- [ ] Apply it to every supported V3 HTTP route and every gRPC method.
-- [ ] Prove unsupported legacy/advanced handlers are unreachable in normal RC startup.
-- [ ] Remove bearer tokens from URL query parameters.
-- [ ] Make static-token behavior and administrative capabilities explicit and testable.
-- [ ] Add table-driven allow/deny tests for cross-tenant, cross-collection, read-only,
+- [x] Define one operation policy matrix for read, write, collection-admin, and server-admin.
+- [x] Centralize policy evaluation for tenant and collection scope.
+- [x] Apply it to every supported V3 HTTP route and every gRPC method.
+- [x] Prove unsupported legacy/advanced handlers are unreachable in normal RC startup.
+- [x] Remove bearer tokens from URL query parameters.
+- [x] Make static-token behavior and administrative capabilities explicit and testable.
+- [x] Add table-driven allow/deny tests for cross-tenant, cross-collection, read-only,
       expired, malformed, and missing credentials on both transports.
 
 Exit gate: a shared authorization suite proves least privilege and isolation across all
@@ -120,13 +130,17 @@ exposed routes and protocols.
 
 ## Phase 4 — Runtime Security and Operational Safety
 
-- [ ] Enforce the frozen scope in configuration, startup warnings, support docs, and examples.
-- [ ] Unregister GraphRAG, recommendation/discovery, feedback, extraction, and server-managed
+- [x] Enforce the frozen scope in configuration, startup warnings, support docs, and examples.
+- [x] Unregister GraphRAG, recommendation/discovery, feedback, extraction, and server-managed
       embedding/configuration handlers from the RC runtime.
-- [ ] Emit useful structured security events without secrets or compliance-grade claims.
-- [ ] Ensure secrets and bearer tokens never enter logs, URLs, panic output, or metrics.
-- [ ] Make health/liveness/readiness probes work with authentication enabled.
-- [ ] Validate backup, restore, disk-full, permission-denied, and graceful-shutdown behavior.
+- [x] Emit useful structured security events without secrets or compliance-grade claims.
+- [x] Ensure secrets and bearer tokens never enter logs, URLs, panic output, or metrics.
+- [x] Make health/liveness/readiness probes work with authentication enabled.
+- [x] Validate graceful shutdown in standalone, direct-container, and Compose paths.
+- [x] Document a stopped whole-root backup/restore procedure with semantic verification and
+      rollback rather than enabling unsafe online import.
+- [ ] Run and retain an actual offline backup/restore rehearsal plus process-level disk-full
+      and permission-denied evidence on the frozen candidate.
 
 Exit gate: the runtime matches the support matrix, and enabled security features are proved
 through the production startup path rather than library-only tests.
@@ -134,44 +148,55 @@ through the production startup path rather than library-only tests.
 ## Phase 5 — CI, UI, and Python SDK Gates
 
 - [x] Fix the CGO-disabled SIMD test/build-constraint failure.
-- [ ] Keep ordinary Go CI short; move 10M/50M/100M tests to a deliberate scale job.
+- [x] Keep required Go CI short and exclude experimental/large scale work from the required
+      RC package matrix.
+- [ ] Add a deliberate scheduled/manual 10M/50M/100M scale job if those scenarios remain
+      part of the release evidence policy.
 - [x] Make Playwright launch the binary produced by its CI job.
 - [x] Fix the 16 strict SDK mypy errors from the SDK's own project directory.
-- [ ] Reduce the Python SDK to the canonical tenant-aware contract, then add unit, strict
+- [x] Reduce the Python SDK to the canonical tenant-aware contract, then add unit, strict
       typing, package-build, install, and live-server integration CI.
-- [ ] Keep the web UI build healthy without making it an RC durability/evidence gate.
-- [ ] Add crash/restart smoke, Docker, Helm, and VDB correctness jobs at suitable cadence.
-- [ ] Remove artifact uploads that silently ignore missing outputs.
-- [ ] Split or budget the long race scenario so timeout headroom is credible.
+- [x] Keep the web UI build healthy without making it an RC durability/evidence gate.
+- [x] Run canonical subprocess crash/restart tests in the supported Go suite and add direct
+      Docker, Compose, and Helm manifest/lint CI contracts.
+- [ ] Add live Kubernetes/Helm and VDB correctness jobs at a suitable deliberate cadence.
+- [x] Remove artifact uploads that silently ignore missing outputs.
+- [x] Split or budget the long race scenario so timeout headroom is credible.
 
 Exit gate: all required local equivalents pass twice and the release-branch workflow is
 green on the exact candidate SHA when network execution becomes available.
 
 ## Phase 6 — Docker, Compose, and Helm Parity
 
-- [ ] Expose and smoke-test both HTTP and gRPC where both are advertised.
-- [ ] Pin image versions/digests and enforce the Linux-only support statement.
-- [ ] Fix authenticated probes to use the public readiness/liveness contract.
-- [ ] Provide a valid existing-Secret/managed-Secret path for Helm authentication.
-- [ ] Add security contexts, capability drops, termination grace, persistent volumes,
-      resource defaults, and sane disruption/network controls.
-- [ ] Prove first boot, authenticated access, restart persistence, SIGTERM, upgrade, and
-      rollback in Compose and a local Kubernetes/Helm environment.
+- [x] Expose and smoke-test both HTTP and gRPC where both are advertised.
+- [x] Pin image versions/digests and enforce the Linux-only support statement.
+- [x] Fix authenticated probes to use the public readiness/liveness contract.
+- [x] Provide a valid existing-Secret path for Helm authentication without retaining secret
+      material in Helm values or release records.
+- [x] Add security contexts, capability drops, termination grace, persistent volumes,
+      resource defaults, a single-node Recreate strategy, and ClusterIP-only defaults.
+- [ ] Provide and validate the intended network-isolation contract, either as a chart
+      NetworkPolicy or as an explicit operator-managed requirement.
+- [x] Prove direct-container and Compose first boot, authenticated HTTP/gRPC, replacement
+      persistence, cleanup, and graceful SIGTERM locally.
+- [x] Complete a local Kubernetes/Helm install, authenticated HTTP/gRPC, PVC replacement,
+      upgrade, rollback, and graceful uninstall rehearsal.
 
 Exit gate: packaged deployments preserve data and protocol/security behavior under the
 same smoke contract as the standalone binary.
 
 ## Phase 7 — Release Identity, Documentation, and Reproducibility
 
-- [ ] Establish one version source and propagate it to server, Python, Helm, artifacts,
+- [x] Establish one version source and propagate it to server, Python, Helm, artifacts,
       and docs; UI/desktop metadata is non-gating.
-- [ ] Resolve the Python distribution name collision or prepare the exact ownership action.
+- [x] Resolve the Python distribution name collision for the candidate by selecting
+      `deepdata-client` and documenting the required ownership recheck before publication.
 - [ ] Add the license once the legal copyright holder/choice is confirmed.
-- [ ] Correct repository/module/package URLs and namespace future DeepData tags.
-- [ ] Mark distributed/HA and incomplete index operations experimental or unsupported.
-- [ ] Correct security, environment-variable, dashboard, benchmark, and roadmap claims.
-- [ ] Write changelog, upgrade/migration notes, support matrix, and security policy.
-- [ ] Add a tag-driven dry-run-capable workflow for binaries, containers, Python, Helm,
+- [x] Correct repository/module/package URLs and namespace future DeepData tags.
+- [x] Mark distributed/HA and incomplete index operations experimental or unsupported.
+- [x] Correct security, environment-variable, dashboard, benchmark, and roadmap claims.
+- [x] Write changelog, upgrade/migration notes, support matrix, and security policy.
+- [x] Add a tag-driven dry-run-capable workflow for binaries, containers, Python, Helm,
       checksums, SBOM, provenance, and optional signatures/publication.
 
 Exit gate: one command can build reproducible unsigned RC artifacts whose metadata and
@@ -180,6 +205,8 @@ documentation identify the same version and commit.
 ## Phase 8 — Exact-SHA Release Evidence
 
 - [ ] Freeze the candidate SHA and regenerate dependency/tool manifests.
+- [ ] Resolve or explicitly retain the recorded Cowrie dormant-build-tag limitation; never
+      import the unrelated retired `Agent-GO` dependency solely to make `go mod tidy` pass.
 - [ ] Run Go vet, short unit, race, fuzz/property targets, and focused persistence tests.
 - [ ] Run Python unit/type/build/install/live integration; keep UI checks informational.
 - [ ] Run V3/gRPC restart and crash matrices plus explicit unsupported-surface checks.

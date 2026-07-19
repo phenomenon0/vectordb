@@ -1,94 +1,160 @@
 # DeepData Pre-Release Status
 
-**Last audited:** 2026-07-17
-**Audited codebase:** `fa521cc`
-**Verdict:** **Not release-ready.** The responsible near-term target is a **single-node release candidate**. Distributed/HA mode is still experimental and should be a separate milestone.
+**Last reconciled:** 2026-07-19
 
-This is the overall product checklist. The completed [mega benchmark report](../benchmarks/results/mega/REPORT.md) covers only benchmark repair, not the full release.
+**Candidate state:** Implementation checkpointed through `e01c41b` on
+`gnhf/i-want-you-to-mnake-26a28a`; the exact candidate SHA is not frozen.
 
-## What Is Done
+**Technical verdict:** **Pre-exact-SHA validation, not ready to tag.** The narrow
+single-node RC implementation is substantially complete and has passed preliminary local
+gates, but the final dependency/toolchain tree has not completed the exact-SHA evidence
+matrix.
 
-- Seventeen production-hardening commits added server timeouts, panic recovery, safe background shutdown, startup configuration validation, structured logging, working Prometheus metrics, smaller default search payloads, gRPC authentication, request IDs, sanitized server errors, and multiple concurrency/atomicity fixes.
-- The legacy store received substantial WAL and snapshot repair: fsync before rename, WAL error surfacing, WAL rotation, restart coverage, range-index reconstruction, and safer final shutdown.
-- CI definitions now cover Go tests/vet, a short race suite, web UI build/Playwright, four server cross-compiles, and desktop builds on Linux, macOS, and Windows.
-- Docker, Compose, Helm, a Python SDK, a desktop wrapper, operational docs, smoke tests, and VDB correctness/soak tooling exist.
-- The corrected VDB benchmark contains **108/108 cells**, zero failed/pending cells, and **7/7** passing failure-mode probes.
-- Current local verification: the short Go race suite passes; Python has **75 passing tests and 5 integration skips**.
+**Publication verdict:** **Not authorized and legally gated.** No root `LICENSE` exists
+because the copyright holder and license choice require an external decision. Publication,
+tag creation, registry uploads, signing, and use of private credentials are separate from
+technical candidate preparation and from the authorized branch push.
 
-## Release Blockers
+This report covers the single-node candidate defined in
+[`tasks/todo.md`](../tasks/todo.md). The completed
+[mega benchmark repair](../benchmarks/results/mega/REPORT.md) remains historical evidence;
+it is not a substitute for final candidate correctness or soak results.
 
-| Priority | Gate | Current gap | Exit condition |
-|---|---|---|---|
-| P0 | Data durability and recovery | Default snapshots omit ownership/index state; V2/V3/gRPC writes have no crash WAL/checkpoint; corrupt snapshots can boot empty and later overwrite recoverable state. | Every advertised API survives SIGKILL/power loss; all fields and index types round-trip; corrupt state fails closed or enters an explicit recovery path; upgrade/crash tests pass. |
-| P0 | Authorization and security surface | Authentication exists, but V2/V3/gRPC do not consistently enforce permissions and collection scopes. Feedback/extraction routes bypass auth. Documented TLS, encryption-at-rest, and audit logging are not wired into server startup. | One policy layer covers HTTP and gRPC; cross-tenant/read-only tests pass; all sensitive routes are guarded; security features are wired and tested or removed from the release claims. |
-| P0 | Green, trustworthy CI | The latest GitHub main run failed Go, race, and Playwright jobs. CGO-disabled vet is locally reproducible as broken; normal Go CI includes 10M/50M/100M scale tests; Playwright does not use the binary CI builds. | A new run on the release SHA is green, with scale tests separated from PR CI and the UI starting the intended freshly built binary. |
-| P0 | Legal and release identity | No `LICENSE` file exists; component versions disagree; historical tags mix DeepData with Atlas Runtime; the current hardening is newer than the published v1.1.0 release. | Add the intended license, choose one version/source of truth, namespace or clean future tags, update changelog/upgrade notes, and release only from the reviewed SHA. |
-| P0 | Python distribution | `pip install deepdata` currently resolves to an unrelated 2020 package on PyPI, while the README advertises that command. Python tests are not in CI, and strict SDK mypy reports 16 `no-any-return` errors. | Choose an available package name or obtain the existing name; fix the strict typing gate; update imports/docs as needed; build, install, test, and publish through trusted CI. |
-| P0 | Deployment parity | Docker/Compose/Helm do not expose advertised gRPC; Helm references a missing auth Secret; authenticated health checks target `/health` instead of the public probe; static CGO-off binaries lose SQLite cost tracking. | Docker and Helm smoke tests prove HTTP, gRPC, auth, probes, persistence, shutdown, and artifact feature parity using pinned images. |
-| P0 | Honest supported scope | README claims production cluster scaling, replication, TLS, encryption, audit logging, and other behaviors that source/runtime label experimental or do not wire up. | Publish a precise support matrix. For the first RC, label distributed mode experimental and remove unsupported claims, or complete and prove those features. |
-| P0 | Release-candidate proof | Existing smoke/soak artifacts predate the latest hardening; no exact-SHA release rehearsal covers upgrades and every shipped artifact. | Archive an exact-SHA matrix: unit/race, restart/crash, UI, Python integration, Docker, Helm, cross-platform binaries, upgrade from v1.1.0, soak, security scan, and fresh benchmark provenance. |
+## Candidate Contract
 
-## Highest-Risk Technical Work
+The candidate is a persistent Linux amd64, headless, single-node server with:
 
-### 1. Fix persistence before adding features
+- tenant-aware HTTP V3 and mirrored `deepdata.v3.DeepData` gRPC;
+- create/delete collection, insert, batch insert, and delete-document mutations;
+- collection get/list plus dense, sparse/BM25, and hybrid search;
+- caller-provided vectors with HNSW, Flat, and inverted sparse indexes;
+- static bearer or HS256 JWT authentication with read, write, collection-admin, and
+  server-admin authorization;
+- one deliberately small `deepdata-client` Python distribution;
+- a hardened direct container, Compose contract, and single-replica Helm chart; and
+- plaintext listeners behind an operator-managed trusted TLS proxy/ingress and encrypted
+  disk/PVC boundary.
 
-- `storage.Default()` selects `cowrie-zstd`, but its codec does not serialize `TenantID` or named `Indexes`: [`internal/storage/format.go`](../internal/storage/format.go#L66), [`internal/storage/cowrie.go`](../internal/storage/cowrie.go#L52).
-- V2/V3/gRPC collection state loads at startup and is only saved during graceful shutdown; there is no collection WAL/autosave path: [`cmd/deepdata/server.go`](../cmd/deepdata/server.go#L2090), [`cmd/deepdata/main.go`](../cmd/deepdata/main.go#L2588), [`internal/collection/manager.go`](../internal/collection/manager.go#L12).
-- An unreadable legacy snapshot can fall back to a fresh store instead of stopping or quarantining state: [`cmd/deepdata/main.go`](../cmd/deepdata/main.go#L897).
-- Legacy snapshots do not persist index type reliably, so non-HNSW configurations are not restart-safe.
+The root and V2 mutation APIs, historical V1 gRPC service, advanced/LLM routes, online
+snapshot import, non-Linux persistent runtime, distributed/HA, DiskANN/IVF/PQ, built-in
+TLS, built-in encryption at rest, and compliance-grade audit logging are not RC features.
+The web UI and non-Linux cross-compiles are informational compile/build checks only.
 
-### 2. Finish authorization, not just authentication
+## Implemented and Demonstrated Before Freeze
 
-- The common guard authenticates and injects tenant context, while V2 handlers and gRPC methods operate without consistent permission/collection checks: [`cmd/deepdata/server.go`](../cmd/deepdata/server.go#L150), [`cmd/deepdata/collection_http.go`](../cmd/deepdata/collection_http.go#L125), [`cmd/deepdata/collection_grpc.go`](../cmd/deepdata/collection_grpc.go#L20).
-- V3 checks tenant identity but does not enforce read versus write permission for each operation: [`cmd/deepdata/collection_http.go`](../cmd/deepdata/collection_http.go#L1016).
-- Feedback and extraction endpoints are registered outside the guard: [`cmd/deepdata/server.go`](../cmd/deepdata/server.go#L2098).
-- TLS, encryption, and audit packages exist, but the production startup path still uses plaintext listeners and direct storage.
+These are implemented and have preliminary local evidence. They must still be rerun from
+the frozen candidate because security-sensitive dependencies and the Go toolchain changed
+after some earlier passes.
 
-### 3. Make CI describe the real product
+### Durability and recovery
 
-- Latest remote run: [GitHub Actions run 24375610647](https://github.com/phenomenon0/vectordb/actions/runs/24375610647) — Go, race, and UI jobs failed; build/cross-compile/desktop jobs passed.
-- `CGO_ENABLED=0 go vet ./...` fails because an unconditional SIMD test imports a CGO-only package: [`internal/index/simd/bench_cref_test.go`](../internal/index/simd/bench_cref_test.go#L1).
-- The normal job runs all tests without `-short`, including scale tests intended for 10M, 50M, and 100M vectors: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml#L14), [`cmd/deepdata/benchmark_test.go`](../cmd/deepdata/benchmark_test.go#L354).
-- CI builds `tests/ui/deepdata-test`, but Playwright starts `../../deepdata-server`: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml#L76), [`tests/ui/playwright.config.ts`](../tests/ui/playwright.config.ts#L22).
-- Python unit tests pass locally, but strict mypy reports 16 `no-any-return` errors; neither check has a workflow job.
+- All five advertised HTTP and gRPC mutations enter the same collection journal/apply
+  boundary; reads observe an apply barrier and durability faults gate both transports.
+- The journal defines sequence, fsync acknowledgement, replay, checkpoint, rotation,
+  cleanup, partial-tail repair, and fault-latching behavior.
+- Subprocess tests cover repeated SIGKILL/restart, acknowledged writes, all five mutations,
+  checkpoint recovery, exactly-once replay, corruption, and lifetime locking.
+- Snapshot state preserves tenant, collection, schema, documents, vectors, metadata,
+  supported indexes, and recovery sequence information.
+- Corrupt state and raw/unified legacy root/V2 artifacts fail closed without being rewritten.
+  Frozen canonical V1 journal records remain replayable, including batches above current
+  admission limits.
+- Legacy root/V2 data does not receive an unsafe implicit migration. The documented path is
+  stopped backup followed by explicit offline export/import and semantic verification.
 
-### 4. Repair the release surface
+### Authorization and operational safety
 
-- README claims MIT but links a missing license: [`README.md`](../README.md#L6).
-- Server/web/Helm use `1.0.0` or `1.1.0` concepts while Python/desktop/chart use `0.1.0`; the changelog does not describe the current release candidate.
-- The published [DeepData v1.1.0 release](https://github.com/phenomenon0/vectordb/releases/tag/v1.1.0) points to `add91ea`, before the April production-hardening series.
-- The PyPI name [`deepdata`](https://pypi.org/project/deepdata/) belongs to an unrelated project; the advertised install command installs the wrong software.
-- There is no tag-driven workflow for GitHub Release assets, container publishing, Python publishing, Helm packaging, checksums, SBOM, signatures, or provenance.
+- One policy layer enforces tenant, optional collection, and read/write/admin claims across
+  canonical HTTP and gRPC. Tests cover cross-tenant, cross-collection, read-only, expired,
+  malformed, missing, and wrong-algorithm credentials.
+- Bearer tokens are accepted only from the authorization header, never URL parameters.
+- Production startup requires one strong credential. Explicit insecure development mode is
+  loopback-only.
+- Failed authentication uses a bounded shared HTTP/gRPC peer limiter. Tenant rate limiting,
+  tenant/collection caps, schema/dimension/payload bounds, and response budgets are shared
+  across the canonical surface.
+- Unsupported legacy and advanced handlers are unregistered. Health, liveness, and readiness
+  remain usable when authentication is enabled.
+- Secret scanning passed on a candidate source copy; static-analysis findings were reviewed
+  for the supported surface. Both scans require final-tree reruns.
 
-## Recommended Release Scope
+### SDK, CI, deployment, and release identity
 
-Ship the first candidate as:
+- The Python package exposes only sync/async lifecycle methods plus canonical tenant V3
+  clients. Preliminary unit, strict typing, package build, wheel install, and authenticated
+  restart integration gates passed.
+- Required Go CI uses a short supported-package matrix and a bounded race matrix. Generated
+  protobuf and version-parity checks are pinned; experimental packages are non-gating.
+- Direct-container and Compose contracts exercise hardened identity/filesystem settings,
+  probes, authenticated HTTP and gRPC, persistent replacement, cleanup, and SIGTERM.
+- Helm requires Linux amd64, one replica, a digest-pinned image, verified POSIX storage, and
+  an existing Secret. A local kind rehearsal covered install, authenticated HTTP/gRPC, PVC
+  replacement, upgrade, rollback, and graceful uninstall before candidate freeze.
+- Version `0.2.0-rc.1` comes from `internal/releaseinfo/version.txt` and maps to Python
+  `0.2.0rc1`. The candidate Python distribution is `deepdata-client`.
+- The tag/manual release workflow builds unsigned Linux amd64, Python, Helm, container,
+  checksum, SBOM, and provenance artifacts. Its publication job separately requires the
+  exact tag, a root `LICENSE`, credentials, explicit dispatch, and scoped permissions.
 
-- **Single-node only**.
-- HTTP and gRPC only after the same durability and authorization rules cover both.
-- A clearly enumerated set of restart-safe index types.
-- Distributed/HA, unsupported index variants, and unwired security features explicitly marked experimental or excluded.
-- One pinned Docker image and signed/checksummed platform binaries built from the same commit.
+## Remaining Technical Candidate Gates
 
-Treat production cluster parity as a later milestone; current cluster code itself warns that quorum, snapshot catch-up, and leader-election safety are incomplete: [`internal/cluster/distributed.go`](../internal/cluster/distributed.go#L102).
+| Priority | Gate still open | Required evidence |
+|---|---|---|
+| P0 | Final dependency and toolchain tree | Verify the module graph, rebuild with the pinned Go toolchain, and rerun vet, short, race, focused persistence, crash, compatibility, and unsupported-surface tests on one frozen SHA. |
+| P0 | Exact-SHA security and artifact proof | Rerun dependency, secret, static, filesystem, image, and SBOM checks; triage supported-scope findings; build and smoke every promised Linux amd64 artifact; generate the exact-tree evidence report. |
+| P1 | Final deployment parity | Rebuild the candidate image and repeat direct container, Compose, manifest, and corrected Helm/kind auth, probe, persistence, shutdown, upgrade, and rollback contracts. |
+| P1 | Operational fault and migration rehearsal | Retain a real whole-root backup/restore result, process-level disk-full and permission-denied behavior, and an explicit legacy export/import semantic rehearsal. |
+| P1 | Long-running correctness | Run deliberate VDB correctness, mixed-load soak, restart-under-load, memory-drift, and chaos scenarios without treating the older mega benchmark as current proof. |
+| P1 | Network isolation contract | Add and validate a chart NetworkPolicy or document and test a precise operator-managed isolation requirement. |
+| External | Remote CI | Obtain a green required workflow run on the exact candidate SHA. A branch push alone does not trigger the current main-push-or-PR workflow. |
 
-## Release Exit Checklist
+No item in this table is waived by a preliminary pass from the dirty worktree.
 
-- [ ] Fix default snapshot round-trip and corrupt-state recovery.
-- [ ] Add crash durability for V2/V3/gRPC mutations.
-- [ ] Enforce permissions, collection scopes, and tenant isolation on every protocol and route.
-- [ ] Wire or de-scope TLS, encryption-at-rest, and audit logging.
-- [ ] Make all required CI jobs green on the candidate SHA.
-- [ ] Add `LICENSE`, unify versions/names/tags, and resolve the PyPI name collision.
-- [ ] Fix and smoke-test Docker/Compose/Helm with auth, gRPC, probes, persistence, and shutdown.
-- [ ] Update README, security docs, changelog, supported-feature matrix, and upgrade notes.
-- [ ] Run and archive the exact-SHA release evidence matrix.
-- [ ] Publish the RC through a reproducible release workflow.
+One upstream module-hygiene limitation is also recorded: `go mod tidy` follows every build
+tag and therefore reaches Cowrie's dormant `agentgo` file, which imports the retired private
+`Agent-GO` module. The default graph contains no `Agent-GO` dependency and passes readonly
+module resolution, build, test, and verification. Do not add that unrelated graph merely to
+make tidy succeed; isolate the unused converter or take an upstream Cowrie fix before
+claiming a tidy-clean module.
 
-## Later Hardening
+## Publication-Only Gates
 
-- Branch protection, `SECURITY.md`, dependency/secret/image scanning, SBOM, signatures, and provenance.
-- Fresh 108-cell benchmark run with uniform timestamps and apples-to-apples DeepData transport settings.
-- Longer mixed-load soak, restart-under-load, memory-drift, and chaos testing.
-- Real macOS/Windows signing if the desktop app ships.
-- Distributed quorum, snapshot catch-up, failover, fencing, and rebalancing proof.
+These do not prevent committing and pushing the reviewed candidate branch, but they prevent
+tagging or publishing an RC:
+
+- [ ] The owner confirms the copyright holder and approved license, then adds the root
+      `LICENSE`.
+- [ ] The owner rechecks and secures the `deepdata-client` distribution name and configures
+      trusted publishing.
+- [ ] The exact DeepData tag is created only after technical evidence and remote CI are
+      accepted.
+- [ ] Signing, GitHub Release creation, PyPI upload, container/Helm registry pushes, and use
+      of credentials receive separate explicit authority.
+
+The dry-run workflow being present is not publication authorization.
+
+## Technical Exit Checklist
+
+- [x] Snapshot fidelity, integrity, and fail-closed recovery are implemented.
+- [x] Canonical V3 HTTP and mirrored gRPC share one crash-durable five-mutation engine.
+- [x] Tenant/collection permissions and unsupported-surface isolation are implemented.
+- [x] Runtime support claims are narrowed to the actual single-node contract.
+- [x] The canonical Python client and local package/live integration gates are implemented.
+- [x] Docker, Compose, Helm manifests, and an initial local kind lifecycle have preliminary
+      parity evidence.
+- [x] Version, changelog, upgrade, support, security, and dry-run release metadata are
+      aligned for the candidate.
+- [ ] Complete the final dependency-aware local matrix on one frozen SHA.
+- [ ] Complete operational fault, migration, VDB correctness, soak, restart-under-load,
+      memory-drift, and chaos evidence.
+- [ ] Complete exact-SHA security, image, SBOM, artifact, and evidence-report gates.
+- [ ] Obtain green remote CI on the exact candidate SHA.
+- [ ] Perform the final adversarial review with a clean worktree and no untracked
+      release-critical files.
+
+## Current Decision
+
+The worktree may proceed through final correction, local validation, cohesive commits, and
+the authorized push of the current branch. It must not be described as a release-ready,
+exact-SHA-attested, signed, tagged, or published RC until the open technical and external
+gates above are resolved.
