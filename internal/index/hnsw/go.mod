@@ -1,6 +1,6 @@
 module github.com/coder/hnsw
 
-go 1.25.0
+go 1.25.12
 
 require github.com/viterin/vek v0.4.2
 

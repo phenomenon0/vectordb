@@ -1,6 +1,6 @@
 module github.com/phenomenon0/vectordb
 
-go 1.25.0
+go 1.25.12
 
 require (
 	github.com/Neumenon/cowrie/go v0.0.0-20260306181650-7d62141ec1de

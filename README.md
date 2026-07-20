@@ -39,7 +39,7 @@ but the production server cannot enable their handlers.
 
 ## Run from source
 
-Requirements: Linux and Go 1.25+.
+Requirements: Linux and Go 1.25.12 or newer.
 
 ```bash
 go build -trimpath -o deepdata ./cmd/deepdata

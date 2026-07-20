@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- Go 1.25 or later
+- Go 1.25.12 or later
 - golangci-lint (for linting)
 
 ### Getting Started
