@@ -54,13 +54,16 @@
   "validation_caveat": "The Go toolchain and security-sensitive dependencies changed after some preliminary passes. No preliminary result is an exact-SHA release attestation; all required final gates must be rerun after the candidate commit is frozen.",
   "known_module_hygiene": "go mod tidy traverses Cowrie's dormant agentgo build tag and reaches retired private Agent-GO imports; the default graph intentionally contains no Agent-GO dependency and must be validated with readonly module resolution until the unused converter is isolated or Cowrie is fixed upstream",
   "pending_local_gates": [
-    "rerun Python wheel-install and live-server restart integration gates (unit/mypy/sdist+wheel build already green today)",
-    "run workflow lint on the release/CI workflows",
     "rerun the Helm/kind live lifecycle contract (helm lint and manifest contracts already green today; kind not installed on this host)",
-    "generate the SBOM and run the trivy filesystem scan on the candidate source tree",
     "rehearse offline whole-root backup/restore and process-level disk-full and permission-denied behavior",
     "run deliberate VDB correctness, mixed-load soak, restart-under-load, memory-drift, and chaos gates",
     "build and smoke the promised Linux amd64 artifacts and generate the exact-tree evidence report"
+  ],
+  "post_toolchain_rerun_evidence_2026_07_22_late": [
+    "actionlint clean on ci.yml and release.yml (shellcheck/pyflakes sub-rules unavailable on this host)",
+    "live SDK gate green: wheel built and installed into a clean venv, seed against a live authenticated server, restart, verify (sync and async lifecycles)",
+    "syft 1.48.0 SBOMs generated for the HEAD source tree and the ece6f23 image",
+    "trivy filesystem scan: only findings are 9 HIGH advisories in tools/jobhunter/web/package-lock.json (next 16.2.1, sharp 0.34.5) — not part of any shipped RC artifact, triaged out of scope; upstream fixes exist if the tool is kept"
   ],
   "external_gates": [
     "legal owner must choose the license and copyright holder before a root LICENSE can be added",
