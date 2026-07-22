@@ -1,3 +1,5 @@
+//go:build amd64 && cgo && cref
+
 package simd
 
 import (

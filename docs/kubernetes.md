@@ -1,11 +1,22 @@
 # Kubernetes Deployment Guide
 
-## Quick Start with kubectl
+This guide deploys the Linux-only, persistent, single-node release candidate.
+Keep `replicas: 1`; the RC has no supported clustering or failover path.
 
-### Single-Node Deployment
+## StatefulSet
+
+Replace `<RC_VERSION>`, `<RC_DIGEST>`, storage class, and token before applying.
+The image reference must resolve to the exact candidate image.
 
 ```yaml
-# deepdata-deployment.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: deepdata-auth
+type: Opaque
+stringData:
+  api-token: "replace-with-a-long-random-token"
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -23,26 +34,57 @@ spec:
       labels:
         app: deepdata
     spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: amd64
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: deepdata
-          image: ghcr.io/phenomenon0/vectordb:latest
+          image: "ghcr.io/phenomenon0/deepdata:<RC_VERSION>@sha256:<RC_DIGEST>"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
-            - containerPort: 8080
-              name: http
-            - containerPort: 50051
-              name: grpc
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 50051
           env:
             - name: PORT
               value: "8080"
             - name: GRPC_PORT
               value: "50051"
-            - name: DATA_DIR
+            - name: VECTORDB_MODE
+              value: local
+            - name: VECTORDB_BASE_DIR
               value: /data
-            - name: LOG_LEVEL
-              value: info
+            - name: VECTORDB_DATA_DIR
+              value: local
+            - name: REQUIRE_AUTH
+              value: "1"
+            - name: API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: deepdata-auth
+                  key: api-token
+            - name: LOG_FORMAT
+              value: json
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 250m
@@ -50,28 +92,34 @@ spec:
             limits:
               cpu: "2"
               memory: 4Gi
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            failureThreshold: 60
+            periodSeconds: 2
           livenessProbe:
             httpGet:
-              path: /healthz
-              port: 8080
-            initialDelaySeconds: 5
+              path: /livez
+              port: http
             periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8080
-            initialDelaySeconds: 3
+              port: http
             periodSeconds: 5
-          startupProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-            failureThreshold: 30
-            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: tmp
+          emptyDir: {}
   volumeClaimTemplates:
     - metadata:
         name: data
       spec:
+        storageClassName: YOUR_STORAGE_CLASS
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
@@ -85,217 +133,175 @@ spec:
   selector:
     app: deepdata
   ports:
-    - port: 8080
-      targetPort: 8080
-      name: http
-    - port: 50051
-      targetPort: 50051
-      name: grpc
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 50051
+      targetPort: grpc
   type: ClusterIP
 ```
 
 ```bash
-kubectl apply -f deepdata-deployment.yaml
+kubectl apply -f deepdata.yaml
+kubectl rollout status statefulset/deepdata --timeout=5m
+kubectl exec deepdata-0 -- curl -fsS http://localhost:8080/livez
+kubectl exec deepdata-0 -- curl -fsS http://localhost:8080/readyz
 ```
 
-### With Authentication
+The official image and pod security context use the stable numeric identity
+`10001:10001`. Confirm that the storage driver honors `fsGroup`; otherwise
+pre-provision ownership outside the application pod. Do not run DeepData as
+root or grant privileged mode.
 
-```yaml
-# deepdata-secret.yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: deepdata-auth
-type: Opaque
-stringData:
-  jwt-secret: "your-jwt-secret-at-least-32-chars-long"
-```
+`VECTORDB_DATA_DIR=local` resolves below `VECTORDB_BASE_DIR=/data`, so the exact
+primary directory is `/data/local`. The backup boundary is the whole `/data`
+PVC, not selected files beneath the primary directory.
 
-Add to the container env:
-```yaml
-env:
-  - name: JWT_SECRET
-    valueFrom:
-      secretKeyRef:
-        name: deepdata-auth
-        key: jwt-secret
-  - name: JWT_REQUIRED
-    value: "true"
-```
+## Helm invariants
 
-### With Encryption at Rest
+The chart must render the same contract as the manifest above:
 
-```yaml
-# deepdata-encryption-secret.yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: deepdata-encryption
-type: Opaque
-stringData:
-  passphrase: "your-encryption-passphrase"
-```
+- exactly one replica and a `Recreate` strategy;
+- an immutable image digest and Linux/amd64 node selection;
+- UID/GID/fsGroup `10001`, dropped capabilities, read-only root filesystem,
+  and a writable `/tmp` `emptyDir`;
+- `/data/local` as primary state on a persistent `ReadWriteOnce` volume;
+- both HTTP and gRPC ports;
+- public liveness/readiness probes; and
+- `REQUIRE_AUTH=1` with an existing Secret.
 
-Add to the container env:
-```yaml
-env:
-  - name: ENCRYPTION_ENABLED
-    value: "true"
-  - name: ENCRYPTION_PASSPHRASE
-    valueFrom:
-      secretKeyRef:
-        name: deepdata-encryption
-        key: passphrase
-```
+By default the chart reads `API_TOKEN` from the existing Secret
+`deepdata-auth`, key `api-token`. Create that Secret before installing (the
+manifest above shows its required shape). To use an existing JWT Secret
+instead, set `auth.existingSecret`, `auth.existingSecretType=jwtSecret`, and
+the matching `auth.existingSecretKey`.
 
-### Ingress
+The chart deliberately does not accept secret material through Helm values,
+because Helm would retain it in the release record. It rejects a missing
+Secret name or key and any auth type other than `apiToken` or `jwtSecret`.
 
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: deepdata
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
-spec:
-  rules:
-    - host: deepdata.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: deepdata
-                port:
-                  number: 8080
-  tls:
-    - hosts:
-        - deepdata.example.com
-      secretName: deepdata-tls
-```
-
-## Resource Sizing Guide
-
-| Dataset Size | Dimension | RAM Request | RAM Limit | CPU | PVC |
-|-------------|-----------|-------------|-----------|-----|-----|
-| <100K vectors | 384 | 256Mi | 1Gi | 250m | 2Gi |
-| 100K-500K | 384 | 1Gi | 4Gi | 500m | 10Gi |
-| 500K-1M | 768 | 4Gi | 8Gi | 1 | 20Gi |
-| 1M-5M | 768 | 8Gi | 16Gi | 2 | 50Gi |
-| 5M+ | 768 | 16Gi+ | 32Gi+ | 4+ | 100Gi+ |
-
-**Formula**: ~(dim × 4 + 200) bytes per vector for HNSW index.
-- 384d: ~1.7KB/vector → 1M vectors ≈ 1.7GB RAM
-- 768d: ~3.3KB/vector → 1M vectors ≈ 3.3GB RAM
-
-With DiskANN, memory requirements drop significantly since graph data is memory-mapped from disk.
-
-## Backup & Restore
-
-### Manual Snapshot
+Replace the digest placeholder below with the candidate's lowercase 64-digit
+SHA-256 digest. Set `persistence.verifiedPOSIXSemantics=true` only after
+verifying that the selected volume supports advisory locks, atomic
+same-directory rename, file `fsync`, and directory `fsync`.
 
 ```bash
-# Create snapshot
-kubectl exec deepdata-0 -- curl -s http://localhost:8080/export > backup.bin
+export DEEPDATA_IMAGE_REPOSITORY='ghcr.io/phenomenon0/deepdata'
+export DEEPDATA_IMAGE_DIGEST='sha256:<64-lowercase-hex-digest>'
+export DEEPDATA_API_TOKEN='replace-with-a-long-random-token'
 
-# Restore
-kubectl cp backup.bin deepdata-0:/data/backup.bin
-kubectl exec deepdata-0 -- curl -X POST http://localhost:8080/import \
-  --data-binary @/data/backup.bin
+kubectl create secret generic deepdata-auth \
+  --from-literal="api-token=$DEEPDATA_API_TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+helm lint deploy/helm/deepdata --strict \
+  --set-string image.repository="$DEEPDATA_IMAGE_REPOSITORY" \
+  --set-string image.digest="$DEEPDATA_IMAGE_DIGEST" \
+  --set persistence.verifiedPOSIXSemantics=true \
+  --set-string auth.existingSecret=deepdata-auth \
+  --set-string auth.existingSecretType=apiToken \
+  --set-string auth.existingSecretKey=api-token
+
+helm template deepdata deploy/helm/deepdata \
+  --set-string image.repository="$DEEPDATA_IMAGE_REPOSITORY" \
+  --set-string image.digest="$DEEPDATA_IMAGE_DIGEST" \
+  --set persistence.verifiedPOSIXSemantics=true \
+  --set-string auth.existingSecret=deepdata-auth \
+  --set-string auth.existingSecretType=apiToken \
+  --set-string auth.existingSecretKey=api-token \
+  > /tmp/deepdata-rendered.yaml
+kubectl apply --dry-run=server -f /tmp/deepdata-rendered.yaml
+
+helm upgrade --install deepdata deploy/helm/deepdata \
+  --set-string image.repository="$DEEPDATA_IMAGE_REPOSITORY" \
+  --set-string image.digest="$DEEPDATA_IMAGE_DIGEST" \
+  --set persistence.verifiedPOSIXSemantics=true \
+  --set-string auth.existingSecret=deepdata-auth \
+  --set-string auth.existingSecretType=apiToken \
+  --set-string auth.existingSecretKey=api-token \
+  --wait --timeout=5m
 ```
 
-### CronJob for Automated Backups
+Do not set `DEEPDATA_INSECURE_DEV_MODE` in a pod. It exists only for explicit
+credentialless local development and is not a supported persistent deployment
+mode.
+
+## Ingress and storage security
+
+Terminate TLS at a trusted ingress or load balancer. Use encrypted PVCs and
+restrict network access to intended clients. HTTP and gRPC require separate
+ingress routing rules unless the selected ingress supports both protocols on a
+shared listener.
+
+## Offline backup
+
+Stop the only pod before capturing the whole PVC:
+
+```bash
+kubectl scale statefulset/deepdata --replicas=0
+kubectl wait --for=delete pod/deepdata-0 --timeout=180s
+```
+
+Create a CSI snapshot of `data-deepdata-0`:
 
 ```yaml
-apiVersion: batch/v1
-kind: CronJob
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
 metadata:
-  name: deepdata-backup
+  name: deepdata-state-20260718
 spec:
-  schedule: "0 2 * * *"  # Daily at 2 AM
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-            - name: backup
-              image: curlimages/curl:latest
-              command:
-                - sh
-                - -c
-                - |
-                  curl -s http://deepdata:8080/export > /backup/deepdata-$(date +%Y%m%d).bin
-                  # Keep last 7 days
-                  find /backup -name "deepdata-*.bin" -mtime +7 -delete
-              volumeMounts:
-                - name: backup
-                  mountPath: /backup
-          volumes:
-            - name: backup
-              persistentVolumeClaim:
-                claimName: deepdata-backup
-          restartPolicy: OnFailure
+  volumeSnapshotClassName: YOUR_SNAPSHOT_CLASS
+  source:
+    persistentVolumeClaimName: data-deepdata-0
 ```
+
+```bash
+kubectl apply -f deepdata-snapshot.yaml
+kubectl wait volumesnapshot/deepdata-state-20260718 \
+  --for=jsonpath='{.status.readyToUse}'=true --timeout=10m
+kubectl scale statefulset/deepdata --replicas=1
+kubectl rollout status statefulset/deepdata --timeout=5m
+```
+
+If CSI snapshots are unavailable, keep the StatefulSet at zero and use a
+one-shot maintenance pod that mounts both the state PVC and a backup PVC. Copy
+`/data/.` recursively with ownership, permissions, and hidden files preserved.
+
+## Offline restore
+
+Restore a snapshot into a new PVC; never merge it into the current PVC:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deepdata-restore-candidate-20260718
+spec:
+  storageClassName: YOUR_STORAGE_CLASS
+  dataSource:
+    apiGroup: snapshot.storage.k8s.io
+    kind: VolumeSnapshot
+    name: deepdata-state-20260718
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+The example StatefulSet uses `volumeClaimTemplates`, so ordinal zero remains
+bound to `data-deepdata-0`. It cannot attach the candidate by name. Do not
+delete the original PVC or assume scaling up will select the candidate.
+
+Production cutover therefore requires a rehearsed CSI/operator procedure or a
+manifest with an explicit existing-claim setting. Before accepting cutover,
+start the candidate as the only writer and require an executable assertion that
+checks the expected V3 tenant, schema, document count, representative search,
+and gRPC result. Retain the original PVC and snapshot until those checks pass.
 
 ## Monitoring
 
-### Prometheus ServiceMonitor
-
-```yaml
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: deepdata
-spec:
-  selector:
-    matchLabels:
-      app: deepdata
-  endpoints:
-    - port: http
-      path: /metrics
-      interval: 15s
-```
-
-### OpenTelemetry Collector
-
-To export traces to an OTEL collector:
-```yaml
-env:
-  - name: OTEL_EXPORTER_OTLP_ENDPOINT
-    value: "http://otel-collector:4317"
-```
-
-### Key Metrics to Alert On
-
-| Metric | Warning | Critical | Description |
-|--------|---------|----------|-------------|
-| `deepdata_search_duration_seconds` (P99) | >100ms | >500ms | Query latency |
-| `deepdata_insert_duration_seconds` (P99) | >50ms | >200ms | Insert latency |
-| `deepdata_vectors_total` | - | >capacity×0.9 | Approaching capacity |
-| `deepdata_search_requests_total` (error rate) | >1% | >5% | Error rate |
-| `deepdata_memory_bytes` | >limit×0.8 | >limit×0.9 | Memory pressure |
-
-See [Grafana Dashboard](grafana/) for a pre-built dashboard with 40+ panels and alerting rules.
-
-## Troubleshooting
-
-### Pod stuck in Pending
-Check PVC binding: `kubectl describe pvc data-deepdata-0`
-
-### OOMKilled
-Increase memory limits. Check vector count vs RAM sizing guide above. Consider DiskANN or PQ quantization to reduce memory footprint.
-
-### Slow startup with large dataset
-Increase `startupProbe.failureThreshold`. Loading 1M+ vectors can take 30-60 seconds.
-
-### Data loss after pod restart
-Ensure PVC is `ReadWriteOnce` and the StatefulSet `volumeClaimTemplates` is configured. Data should persist across restarts.
-
-### gRPC not reachable
-Ensure the Service exposes port 50051 and your Ingress or load balancer routes gRPC traffic correctly. For gRPC through nginx ingress, add:
-```yaml
-annotations:
-  nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-```
+Prometheus metrics are available at `/metrics`; liveness is `/livez` and
+readiness is `/readyz`. Alert on readiness failures, request error rate,
+high-latency searches, memory pressure, and PVC capacity. A ready response is
+not a substitute for V3/gRPC data validation after restore or upgrade.

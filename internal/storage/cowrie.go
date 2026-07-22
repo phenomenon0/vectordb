@@ -69,8 +69,12 @@ func (s *CowrieFormat) Save(w io.Writer, p *Payload) error {
 	obj.Set("delta_encoded", cowrie.Bool(deltaEncoded))
 
 	// Scalar fields
+	obj.Set("format_version", cowrie.Int64(int64(p.FormatVersion)))
 	obj.Set("dim", cowrie.Int64(int64(p.Dim)))
+	obj.Set("vector_type", cowrie.Int64(int64(p.VectorType)))
 	obj.Set("next", cowrie.Int64(p.Next))
+	obj.Set("next_seq", cowrie.Uint64(p.NextSeq))
+	obj.Set("wal_high_water", cowrie.Uint64(p.WALHighWater))
 	obj.Set("count", cowrie.Int64(int64(p.Count)))
 	obj.Set("sum_doc_l", cowrie.Int64(int64(p.SumDocL)))
 	obj.Set("checksum", cowrie.String(p.Checksum))
@@ -79,6 +83,7 @@ func (s *CowrieFormat) Save(w io.Writer, p *Payload) error {
 	// String arrays
 	obj.Set("docs", cowrieutil.EncodeStringArray(p.Docs))
 	obj.Set("ids", cowrieutil.EncodeStringArray(p.IDs))
+	obj.Set("seqs", cowrieutil.EncodeUint64Array(p.Seqs))
 
 	// HNSW binary blob
 	if len(p.HNSW) > 0 {
@@ -89,6 +94,12 @@ func (s *CowrieFormat) Save(w io.Writer, p *Payload) error {
 	obj.Set("meta", cowrieutil.EncodeStringMapMap(p.Meta))
 	obj.Set("deleted", cowrieutil.EncodeBoolMap(p.Deleted))
 	obj.Set("coll", cowrieutil.EncodeStringMapUint64(p.Coll))
+	obj.Set("tenant_id", cowrieutil.EncodeStringMapUint64(p.TenantID))
+	obj.Set("vector_data", cowrieutil.EncodeBytesMapUint64(p.VectorData))
+	obj.Set("indexes", cowrieutil.EncodeBytesMapString(p.Indexes))
+	obj.Set("index_types", cowrieutil.EncodeStringStringMap(p.IndexTypes))
+	obj.Set("index_dims", cowrieutil.EncodeStringIntMap(p.IndexDims))
+	obj.Set("index_checksums", cowrieutil.EncodeStringStringMap(p.IndexChecksums))
 	obj.Set("lex_tf", cowrieutil.EncodeIntMapMap(p.LexTF))
 	obj.Set("doc_len", cowrieutil.EncodeIntMapUint64(p.DocLen))
 	obj.Set("df", cowrieutil.EncodeStringIntMap(p.DF))
@@ -109,7 +120,10 @@ func (s *CowrieFormat) Save(w io.Writer, p *Payload) error {
 		return err
 	}
 
-	_, err = w.Write(data)
+	n, err := w.Write(data)
+	if err == nil && n != len(data) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
@@ -153,11 +167,23 @@ func (s *CowrieFormat) Load(r io.Reader) (*Payload, error) {
 	}
 
 	// Scalar fields
+	if v := obj.Get("format_version"); v != nil {
+		p.FormatVersion = int(cowrieutil.SafeInt64(v))
+	}
 	if v := obj.Get("dim"); v != nil {
 		p.Dim = int(cowrieutil.SafeInt64(v))
 	}
+	if v := obj.Get("vector_type"); v != nil {
+		p.VectorType = int(cowrieutil.SafeInt64(v))
+	}
 	if v := obj.Get("next"); v != nil {
 		p.Next = cowrieutil.SafeInt64(v)
+	}
+	if v := obj.Get("next_seq"); v != nil {
+		p.NextSeq = cowrieutil.SafeUint64(v)
+	}
+	if v := obj.Get("wal_high_water"); v != nil {
+		p.WALHighWater = cowrieutil.SafeUint64(v)
 	}
 	if v := obj.Get("count"); v != nil {
 		p.Count = int(cowrieutil.SafeInt64(v))
@@ -181,6 +207,9 @@ func (s *CowrieFormat) Load(r io.Reader) (*Payload, error) {
 	if v := obj.Get("ids"); v != nil {
 		p.IDs = cowrieutil.DecodeStringArray(v)
 	}
+	if v := obj.Get("seqs"); v != nil {
+		p.Seqs = cowrieutil.DecodeUint64Array(v)
+	}
 
 	// HNSW binary
 	if v := obj.Get("hnsw"); v != nil && v.Type() == cowrie.TypeBytes {
@@ -196,6 +225,24 @@ func (s *CowrieFormat) Load(r io.Reader) (*Payload, error) {
 	}
 	if v := obj.Get("coll"); v != nil {
 		p.Coll = cowrieutil.DecodeStringMapUint64(v)
+	}
+	if v := obj.Get("tenant_id"); v != nil {
+		p.TenantID = cowrieutil.DecodeStringMapUint64(v)
+	}
+	if v := obj.Get("vector_data"); v != nil {
+		p.VectorData = cowrieutil.DecodeBytesMapUint64(v)
+	}
+	if v := obj.Get("indexes"); v != nil {
+		p.Indexes = cowrieutil.DecodeBytesMapString(v)
+	}
+	if v := obj.Get("index_types"); v != nil {
+		p.IndexTypes = cowrieutil.DecodeStringStringMap(v)
+	}
+	if v := obj.Get("index_dims"); v != nil {
+		p.IndexDims = cowrieutil.DecodeStringIntMap(v)
+	}
+	if v := obj.Get("index_checksums"); v != nil {
+		p.IndexChecksums = cowrieutil.DecodeStringStringMap(v)
 	}
 	if v := obj.Get("lex_tf"); v != nil {
 		p.LexTF = cowrieutil.DecodeIntMapMap(v)

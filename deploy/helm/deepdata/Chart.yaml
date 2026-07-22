@@ -1,9 +1,9 @@
 apiVersion: v2
 name: deepdata
-description: DeepData vector database — HNSW-based vector search with persistence
+description: Persistent single-node DeepData vector search server
 type: application
-version: 0.1.0
-appVersion: "1.0.0"
+version: 0.2.0-rc.1
+appVersion: "0.2.0-rc.1"
 keywords:
   - vectordb
   - vector-search

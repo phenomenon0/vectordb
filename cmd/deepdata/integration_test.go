@@ -45,7 +45,10 @@ func TestVectorStoreIndexIntegration(t *testing.T) {
 	}
 
 	// Test loading
-	loadedStore, loaded := loadOrInitStore(indexPath, 100, dim)
+	loadedStore, loaded, err := loadOrInitStore(indexPath, 100, dim)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
 	if !loaded {
 		t.Error("Failed to load index")
 	}

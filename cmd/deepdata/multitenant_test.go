@@ -18,7 +18,7 @@ import (
 // ======================================================================================
 
 const (
-	testJWTSecret = "test-secret-min-32-chars-long-12345"
+	testJWTSecret = "test-secret-min-32-chars-long-12345" // gitleaks:allow -- deterministic test-only credential
 	testIssuer    = "vectordb-test"
 )
 

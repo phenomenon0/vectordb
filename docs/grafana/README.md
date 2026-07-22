@@ -1,98 +1,63 @@
-# Grafana Dashboard for VectorDB
+# Prometheus and Grafana status for the release candidate
 
-Pre-built dashboard for monitoring VectorDB via Prometheus.
+DeepData exposes `GET /metrics` on the HTTP listener. The endpoint is useful
+for scrape discovery, but the bundled `vectordb-dashboard.json` predates the
+narrowed single-node RC contract and is an **experimental compatibility
+asset**, not a supported UI or release gate.
 
-## Setup
-
-1. Ensure VectorDB is running — metrics are exposed at `GET /metrics`
-2. Point Prometheus at your VectorDB instance:
+## Scrape configuration
 
 ```yaml
-# prometheus.yml
 scrape_configs:
-  - job_name: vectordb
-    scrape_interval: 10s
+  - job_name: deepdata
+    scrape_interval: 15s
+    metrics_path: /metrics
     static_configs:
-      - targets: ['localhost:8080']
+      - targets:
+          - 127.0.0.1:8080
 ```
 
-3. Import the dashboard:
-   - Grafana → Dashboards → Import → Upload `vectordb-dashboard.json`
-   - Select your Prometheus data source when prompted
+`/metrics` is unauthenticated. Bind it to a protected network or restrict it at
+the reverse proxy/service mesh; do not expose it directly to the internet.
 
-## Panels
+## Dashboard limitations
 
-### Overview Row
-- **Total Vectors** — gauge of stored vectors across all shards
-- **Deleted (Tombstones)** — vectors pending compaction
-- **Queries/sec** — current query throughput
-- **Query P50 / P99** — latency percentiles
-- **Error Rate** — 5xx responses as fraction of total
+The JSON dashboard contains panels for historical root/V2 traffic and for
+shards, replication lag, and failover. Those are outside the RC and may remain
+empty. In particular, these panels must not be used to claim distributed
+health:
 
-### Query Performance Row
-- **Query Latency Percentiles** — P50/P95/P99 over time
-- **Requests/sec by Endpoint** — stacked area per endpoint
-- **Results per Query** — distribution of result set sizes
-- **HTTP Latency by Endpoint** — P95 per endpoint
+- Shard Node Health
+- Replication Lag
+- Failover Events
+- Failover Duration
 
-### Operations Row
-- **Operations by Type** — insert/query/delete rates
-- **Errors by Type** — error breakdown by operation
+Some query and operation panels also depend on legacy instrumentation rather
+than canonical V3/gRPC traffic. Import the dashboard only as a starting point,
+hide unsupported panels, and verify every PromQL expression against the series
+actually emitted by the exact release binary.
 
-### Shard Health Row (Distributed Mode)
-- **Shard Node Health** — UP/DOWN per node
-- **Replication Lag** — ops behind primary per replica
-- **Failover Events** — failover rate by shard
-- **Failover Duration** — P95 failover time
+To inspect the raw contract before building alerts:
 
-## Metrics Reference
-
-All metrics are prefixed with `vectordb_`:
-
-| Metric | Type | Labels |
-|--------|------|--------|
-| `vectordb_vectors_total` | Gauge | shard_id, collection, node_id |
-| `vectordb_vectors_deleted` | Gauge | shard_id, collection, node_id |
-| `vectordb_operations_total` | Counter | operation, shard_id, status |
-| `vectordb_operation_duration_seconds` | Histogram | operation, shard_id |
-| `vectordb_operation_errors_total` | Counter | operation, shard_id, error_type |
-| `vectordb_query_duration_seconds` | Histogram | mode, collections |
-| `vectordb_query_results` | Histogram | mode |
-| `vectordb_http_requests_total` | Counter | method, endpoint, status |
-| `vectordb_http_request_duration_seconds` | Histogram | method, endpoint |
-| `vectordb_shard_health_status` | Gauge | shard_id, node_id, role |
-| `vectordb_shard_replication_lag_operations` | Gauge | shard_id, node_id |
-| `vectordb_failover_total` | Counter | shard_id, status |
-| `vectordb_failover_duration_seconds` | Histogram | shard_id |
-
-## Alerting Rules (Optional)
-
-```yaml
-# prometheus-alerts.yml
-groups:
-  - name: vectordb
-    rules:
-      - alert: HighQueryLatency
-        expr: histogram_quantile(0.99, rate(vectordb_query_duration_seconds_bucket[5m])) > 0.5
-        for: 5m
-        labels: { severity: warning }
-        annotations: { summary: "VectorDB P99 query latency > 500ms" }
-
-      - alert: HighErrorRate
-        expr: sum(rate(vectordb_http_requests_total{status=~"5.."}[5m])) / sum(rate(vectordb_http_requests_total[5m])) > 0.05
-        for: 5m
-        labels: { severity: critical }
-        annotations: { summary: "VectorDB error rate > 5%" }
-
-      - alert: ShardDown
-        expr: vectordb_shard_health_status == 0
-        for: 1m
-        labels: { severity: critical }
-        annotations: { summary: "VectorDB shard {{ $labels.shard_id }} node {{ $labels.node_id }} is down" }
-
-      - alert: HighReplicationLag
-        expr: vectordb_shard_replication_lag_operations > 1000
-        for: 5m
-        labels: { severity: warning }
-        annotations: { summary: "Replica lag > 1000 ops for shard {{ $labels.shard_id }}" }
+```bash
+curl --fail --silent http://127.0.0.1:8080/metrics
 ```
+
+## RC health signals
+
+Use the process probes as the primary release signals:
+
+| Endpoint | Meaning |
+|---|---|
+| `/livez` | The process can answer its liveness check |
+| `/readyz` | Snapshot, mutation journal, and lifetime lock are healthy |
+| `/metrics` | Prometheus exposition endpoint is reachable |
+
+A `200` from `/livez` is not sufficient for traffic admission. Alert on a
+non-`200` `/readyz` and remove the instance from service; a persistence fault
+is intentionally fail-closed.
+
+The RC does not ship a supported Grafana dashboard, web UI, replication
+dashboard, or predefined production alert pack. Treat any customized dashboard
+and alert thresholds as deployment-owned configuration that must be tested
+against workload-specific objectives.

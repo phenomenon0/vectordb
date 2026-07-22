@@ -1,8 +1,10 @@
-{{- if .Values.persistence.enabled }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Release.Name }}-deepdata-data
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/name: deepdata
     app.kubernetes.io/instance: {{ .Release.Name }}

@@ -1,145 +1,167 @@
-# Migrating from Pinecone to VectorDB
+# Migrating from Pinecone to DeepData RC
 
-## Overview
+This guide covers a dense-vector migration from a Pinecone index into the
+canonical tenant-aware V3 API. DeepData is self-hosted and single-node in this
+release candidate; it is not a managed or highly available replacement.
 
-Pinecone is a managed vector database. VectorDB is self-hosted, giving you full control over data, costs, and infrastructure. This guide covers migrating from Pinecone's serverless or pod-based indexes.
+## Contract differences to decide first
 
-## Concept Mapping
+| Pinecone concept | DeepData RC |
+|---|---|
+| Index / namespace | Tenant collection; define an explicit namespace map |
+| String vector ID | Positive `uint64`; preserve the source ID in metadata |
+| Upsert | Not supported; import into an empty collection |
+| Query vector | Caller-supplied query vector |
+| Fetch by ID | Not supported |
+| List/paginated scan | Not supported |
+| Delete by ID | Delete one numeric document ID |
+| Metadata filter | Supported subset; validate each application filter |
+| Managed replication/HA | Not provided by the RC |
 
-| Pinecone | VectorDB | Notes |
-|----------|----------|-------|
-| Index | Collection | One index → one collection |
-| Namespace | Collection name or metadata | Use separate collections or `meta` tags |
-| Vector | Document/Vector | VectorDB auto-embeds text |
-| Metadata | `meta` (string map) | Similar key-value metadata |
-| API key | JWT token | `VECTORDB_TOKEN` env var |
-| Serverless | Self-hosted | Run your own server |
-| `upsert()` | `POST /insert` with `upsert: true` | Same semantics |
-| `query()` | `POST /query` | Semantic search |
-| `delete()` | `POST /delete` | By ID |
-| `fetch()` | `POST /query` with scan mode | No direct fetch-by-ID |
-| `list()` | `POST /query` with scan mode | Paginated scan |
+The destination supports HNSW cosine search and Flat cosine or Euclidean
+search. A Pinecone dot-product index is not a direct semantic match. Normalize
+stored and query vectors and validate rankings, or defer that migration.
 
-## Step-by-Step Migration
+## 1. Freeze writes and export values
 
-### 1. Export from Pinecone
+Use Pinecone's list and fetch operations while the source is still available.
+The example creates a positive DeepData ID per namespace and preserves the
+original ID as `_pinecone_id`.
 
 ```python
-from pinecone import Pinecone
 import json
+from pathlib import Path
 
-pc = Pinecone(api_key="your-api-key")
-index = pc.Index("my-index")
-
-# List all namespaces
-stats = index.describe_index_stats()
-namespaces = list(stats.namespaces.keys()) or [""]
-
-for ns in namespaces:
-    # Paginate through all vectors
-    all_ids = []
-    for ids_batch in index.list(namespace=ns):
-        all_ids.extend(ids_batch)
-
-    # Fetch in batches of 100
-    records = []
-    for i in range(0, len(all_ids), 100):
-        batch_ids = all_ids[i:i+100]
-        result = index.fetch(ids=batch_ids, namespace=ns)
-
-        for vid, vec in result.vectors.items():
-            record = {
-                "id": vid,
-                "doc": vec.metadata.get("text", vec.metadata.get("content", "")),
-                "meta": {k: str(v) for k, v in (vec.metadata or {}).items()
-                         if k not in ("text", "content")},
-                "collection": ns if ns else "default",
-            }
-            if record["doc"]:
-                records.append(record)
-
-    filename = f"pinecone-{ns or 'default'}.jsonl"
-    with open(filename, "w") as f:
-        for r in records:
-            f.write(json.dumps(r) + "\n")
-
-    print(f"Exported {len(records)} vectors from namespace '{ns or 'default'}'")
-```
-
-### 2. Import into VectorDB
-
-```bash
-./vectordb-server &
-
-for file in pinecone-*.jsonl; do
-    vectordb-cli import --file "$file" --batch-size 500
-done
-```
-
-### 3. Update Application Code
-
-**Pinecone (before):**
-```python
 from pinecone import Pinecone
 
-pc = Pinecone(api_key="your-key")
+pc = Pinecone(api_key="replace-me")
 index = pc.Index("my-index")
 
-# Upsert
-index.upsert(vectors=[{
-    "id": "doc1",
-    "values": [0.1, 0.2, ...],  # pre-computed embedding
-    "metadata": {"source": "web", "category": "tech"}
-}])
+NAMESPACE_MAP = {
+    "": "default",
+    "customer-a": "customer_a",
+}
 
-# Query
-results = index.query(
-    vector=[0.1, 0.2, ...],
-    top_k=5,
-    filter={"source": {"$eq": "web"}},
-    include_metadata=True
-)
+for namespace, collection in NAMESPACE_MAP.items():
+    source_ids = []
+    for page in index.list(namespace=namespace):
+        source_ids.extend(page)
+
+    output = Path(f"pinecone-{collection}.jsonl")
+    deepdata_id = 1
+    with output.open("w", encoding="utf-8") as handle:
+        for start in range(0, len(source_ids), 100):
+            fetched = index.fetch(
+                ids=source_ids[start : start + 100],
+                namespace=namespace,
+            )
+            for source_id in source_ids[start : start + 100]:
+                source = fetched.vectors.get(source_id)
+                if source is None:
+                    raise RuntimeError(f"missing fetched vector {source_id}")
+                metadata = dict(source.metadata or {})
+                metadata["_pinecone_id"] = str(source_id)
+                record = {
+                    "id": deepdata_id,
+                    "vector": list(source.values),
+                    "metadata": metadata,
+                }
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                deepdata_id += 1
+
+    print(namespace or "<default>", "->", collection, deepdata_id - 1, "records")
 ```
 
-**VectorDB (after):**
+Pinecone SDK pagination shapes can differ by client version. Test the exporter
+against a copy, confirm that no IDs are skipped, and validate every vector's
+dimension before deleting any managed data.
+
+## 2. Create and import a destination collection
+
+This example uses HNSW for a cosine source index. For an Euclidean source,
+choose `{"type": "flat", "params": {"metric": "euclidean"}}` and validate
+the operational cost of exact search.
+
 ```python
-from vectordb import VectorDBClient
+import json
+import os
+from pathlib import Path
 
-client = VectorDBClient("http://localhost:8080")
+from deepdata import DeepDataClient
 
-# Insert (auto-embeds text — no need for external embedding)
-client.insert(
-    doc="Document text here",
-    id="doc1",
-    meta={"source": "web", "category": "tech"},
-    collection="default"
-)
+TENANT = "acme"
+COLLECTION = "default"
+BATCH_SIZE = 500
+path = Path(f"pinecone-{COLLECTION}.jsonl")
 
-# Search
-results = client.search(
-    query="search term",
-    top_k=5,
-    meta={"source": "web"},
-    include_meta=True
+records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+if not records:
+    raise RuntimeError("empty namespaces need an explicitly configured dimension")
+dimension = len(records[0]["vector"])
+if any(len(record["vector"]) != dimension for record in records):
+    raise RuntimeError("inconsistent vector dimensions")
+
+with DeepDataClient(
+    os.environ.get("DEEPDATA_URL", "http://localhost:8080"),
+    api_token=os.environ["DEEPDATA_TOKEN"],
+) as client:
+    tenant = client.tenant(TENANT)
+    tenant.create_collection(
+        COLLECTION,
+        fields=[{
+            "name": "embedding",
+            "type": "dense",
+            "dim": dimension,
+            "index": {"type": "hnsw"},
+        }],
+    )
+
+    for start in range(0, len(records), BATCH_SIZE):
+        batch = records[start : start + BATCH_SIZE]
+        tenant.batch_insert(
+            COLLECTION,
+            [{
+                "id": record["id"],
+                "vectors": {"embedding": record["vector"]},
+                "metadata": record["metadata"],
+            } for record in batch],
+        )
+```
+
+Import into a new empty collection. V3 batch insert is atomic, but the entire
+multi-batch migration is not one transaction and there is no upsert/resume
+mode.
+
+The importer credential needs `admin` permission to create the collection and
+`write` permission to insert. Use narrower tenant JWTs for application traffic
+after provisioning.
+
+## 3. Change application queries
+
+Continue generating query vectors in the application and pass them directly:
+
+```python
+results = tenant.search(
+    "default",
+    queries={"embedding": query_vector},
+    top_k=10,
+    filters={"source": {"$eq": "web"}},
 )
 ```
 
-### 4. Filter Translation
+Pinecone sparse values can be mapped only through an explicitly configured
+DeepData sparse field using `{indices, values, dim}`. This guide does not claim
+equivalent sparse scoring; validate it as a separate migration.
 
-| Pinecone Filter | VectorDB equivalent |
-|-----------------|---------------------|
-| `{"field": {"$eq": "val"}}` | `"meta": {"field": "val"}` |
-| `{"$and": [...]}` | `"meta": {"k1": "v1", "k2": "v2"}` |
-| `{"$or": [...]}` | `"meta_any": [{"k": "v1"}, {"k": "v2"}]` |
-| `{"field": {"$ne": "x"}}` | `"meta_not": {"field": "x"}` |
-| `{"field": {"$gt": 5}}` | `"meta_ranges": [{"key": "field", "min": 5}]` |
-| `{"field": {"$in": [...]}}` | `"meta_any": [{"field": "a"}, {"field": "b"}]` |
+## 4. Verify before cutover
 
-## Key Differences
+- Compare namespace counts with each destination collection's `doc_count`.
+- Compare neighbors for a fixed corpus of query vectors and filters.
+- Confirm score/ranking behavior for the source metric.
+- Retain the JSONL ID map because DeepData has no fetch-by-ID or document scan.
+- Exercise stopped backup and recovery for the Linux data directory.
+- Keep Pinecone writes frozen until validation and application cutover finish.
 
-1. **Self-hosted**: No API costs. You control your data and infrastructure.
-2. **No embedding pipeline needed**: VectorDB embeds text server-side. No need for OpenAI/Cohere embedding API calls.
-3. **Namespaces → Collections**: Map Pinecone namespaces to VectorDB collections.
-4. **Hybrid search**: VectorDB supports dense + sparse (BM25) hybrid search natively — Pinecone requires separate sparse-dense indexes.
-5. **No vendor lock-in**: Standard JSONL import/export. Data is always yours.
-6. **Cost**: Self-hosted on a $20/mo Hetzner box can handle what costs $70+/mo on Pinecone.
+If the application requires upsert, fetch, list, managed replication, or
+online migration with concurrent writes, the current RC is not a compatible
+target. Delete then insert is not an atomic replacement operation.

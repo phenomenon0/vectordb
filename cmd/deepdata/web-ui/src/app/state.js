@@ -123,7 +123,6 @@ export function initialState() {
     integrityRunning: false,
     compactResult: null,
     compactRunning: false,
-    importRunning: false,
     newIdxCollection: 'default',
     newIdxType: 'hnsw',
     newIdxConfig: '{}',

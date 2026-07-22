@@ -1,260 +1,271 @@
-# Troubleshooting
+# DeepData RC Troubleshooting
 
-## Server Won't Start
+These procedures apply to the Linux-only, persistent, single-node release
+candidate and its tenant-aware V3/gRPC contract.
 
-### Port already in use
-```
-listen tcp :8080: bind: address already in use
-```
-**Fix**: Another process is using port 8080. Either stop it or change the port:
+## Startup failures
+
+### Authentication configuration rejected
+
+Normal startup requires exactly one of `API_TOKEN` or `JWT_SECRET`. If neither
+is set, configure one credential. If both are set, remove the unintended one.
+The process rejects either condition before opening the data directory.
+
+`DEEPDATA_INSECURE_DEV_MODE=1` permits credentialless startup only for an
+explicit disposable local development process. Do not use it to bypass a
+production startup failure, with persistent data, or on a network-accessible
+listener.
+
+### HTTP or gRPC address already in use
+
+DeepData requires the complete configured listener set. If either bind fails,
+startup fails rather than serving a partial API.
+
 ```bash
-PORT=8081 ./deepdata serve
+ss -ltnp | grep -E ':(8080|50051)\b'
+PORT=8081 GRPC_PORT=50052 ./deepdata serve
 ```
 
-### Permission denied on data directory
-```
-failed to create data directory: permission denied
-```
-**Fix**: Ensure the user has write access:
+### State directory permission denied
+
+The systemd layout must be writable only by the service account:
+
 ```bash
-sudo mkdir -p /var/lib/deepdata
-sudo chown $USER /var/lib/deepdata
-DATA_DIR=/var/lib/deepdata ./deepdata serve
+sudo install -d -o deepdata -g deepdata -m 0750 /var/lib/deepdata
+sudo -u deepdata test -w /var/lib/deepdata
+sudo systemctl show deepdata --property=User,Group,WorkingDirectory
 ```
 
-### Out of memory at startup
-**Fix**: Reduce initial capacity and use hash embedder for minimal memory:
+With `VECTORDB_BASE_DIR=/var/lib/deepdata` and
+`VECTORDB_DATA_DIR=local`, the exact primary directory is
+`/var/lib/deepdata/local`.
+
+The official container identity is `10001:10001`, and its exact primary
+directory is `/data/local` on the whole `/data` state volume.
+
+### Another process owns the state lock
+
+Only one process may open a persistent canonical store. Confirm that a previous
+process or container is not still running. Do not delete the lock file to work
+around a live owner.
+
 ```bash
-VECTOR_CAPACITY=100 USE_HASH_EMBEDDER=1 ./deepdata serve
+systemctl status deepdata --no-pager
+ps -ef | grep '[d]eepdata'
+docker compose ps
 ```
 
-### Embedder fails to connect
-```
-failed to initialize embedder: connection refused
-```
-**Fix**: Either ensure Ollama is running or fall back to hash embedder:
+### Existing legacy state blocks canonical startup
+
+Canonical startup fails closed when it finds older root or unscoped collection
+state. Preserve the entire stopped state root. Do not rename, delete, or merge
+individual files. Migrate with a separately tested offline tool before starting
+the RC against that path.
+
+## Connectivity
+
+### HTTP readiness
+
 ```bash
-# Option 1: Start Ollama
-ollama serve
-
-# Option 2: Use hash embedder (no external dependencies)
-USE_HASH_EMBEDDER=1 ./deepdata serve
-
-# Option 3: Use OpenAI
-VECTORDB_MODE=pro OPENAI_API_KEY=sk-... ./deepdata serve
+curl -fsS http://localhost:8080/livez
+curl -fsS http://localhost:8080/readyz
 ```
 
----
+Liveness proves the process can answer. Readiness also includes canonical
+persistence health; neither proves that a particular collection contains the
+expected data.
 
-## Connection Issues
+### gRPC connectivity without reflection
 
-### Client can't connect
-```
-connection failed: dial tcp 127.0.0.1:8080: connect: connection refused
-```
-**Fix**: Verify the server is running and the URL is correct:
+The RC does not require server reflection. Point `grpcurl` at the checked-in
+schema and call a concrete unary method:
+
 ```bash
-curl http://localhost:8080/health
+grpcurl -plaintext \
+  -import-path api/proto \
+  -proto deepdata/v3/deepdata.proto \
+  -H 'authorization: Bearer replace-with-token' \
+  -d '{"tenant_id":"org-123"}' \
+  localhost:50051 deepdata.v3.DeepData/ListCollections
 ```
 
-### gRPC connection refused
-**Fix**: gRPC runs on port 50051 by default, separate from HTTP:
+If HTTP is ready but this call fails, verify `GRPC_PORT`, the Service or load
+balancer port, and protocol routing.
+
+## Authentication and authorization
+
+Set exactly one static token or JWT secret. Authentication is required by
+normal startup; shipped deployments also set `REQUIRE_AUTH=1` as defense in
+depth:
+
 ```bash
-# Check gRPC port
-curl http://localhost:8080/health  # HTTP
-grpcurl -plaintext localhost:50051 list  # gRPC
-
-# Change gRPC port
-GRPC_PORT=50052 ./deepdata serve
+export API_TOKEN='replace-with-a-long-random-token'
+REQUIRE_AUTH=1 ./deepdata serve
 ```
 
-### Request timeout
-**Fix**: The server is overloaded or the query is too complex:
-- Reduce `top_k` value
-- Use `mode: "ann"` instead of `"scan"`
-- Increase client timeout: `client.New(url, client.WithTimeout(60*time.Second))`
+Send the token in a header:
 
-### 401 Unauthorized
-**Fix**: Authentication is enabled. Set your token:
 ```bash
-# curl
-curl -H "Authorization: Bearer your-token" http://localhost:8080/health
-
-# Go client
-c := client.New(url, client.WithToken("your-token"))
-
-# Python client
-from deepdata import DeepDataClient
-c = DeepDataClient(url, api_key="your-token")
+curl -fsS \
+  -H "Authorization: Bearer ${API_TOKEN}" \
+  http://localhost:8080/v3/tenants/org-123/collections
 ```
 
-### 429 Too Many Requests
-**Fix**: You're being rate-limited. The client auto-retries with backoff. To increase limits:
-```bash
-TENANT_RPS=500 TENANT_BURST=500 ./deepdata serve
-```
+- `401` means credentials are absent or invalid.
+- `403` means the authenticated tenant, permission, collection scope, or
+  administrative role does not allow the operation.
+- Collection create/delete and tenant-wide list/info require administrative
+  authorization.
+- Search/get require read permission; insert/batch/delete-document require
+  write permission.
 
----
+Never put a bearer token in a URL.
 
-## Query Issues
+## Insert and search errors
 
-### Empty results
-- Verify documents exist: `deepdata-cli stats`
-- Check collection name matches: queries default to the `"default"` collection
-- If using metadata filters, verify metadata was set during insert
-- For ANN mode, the HNSW index needs at least a few vectors to work
+### Invalid field or dimension
 
-### Low quality results / wrong documents returned
-- **Hash embedder**: Only useful for testing. Use Ollama or OpenAI for semantic search
-- **Dimension mismatch**: Ensure query and stored vectors use the same embedding model
-- **Try scan mode**: `"mode": "scan"` does exact search (slower but guaranteed correct)
-- **Increase ef_search**: `"ef_search": 200` improves recall at cost of latency
+Every supplied vector must match a declared field and dimension. Dense fields
+accept finite numeric arrays. Sparse fields accept equal-length `indices` and
+`values`, an integer `dim`, and in-range unsigned indices.
 
-### Scores are all 0 or 1
-- Scores depend on the distance metric. Cosine similarity returns 0-1
-- Hash embedder produces random-ish embeddings — scores won't be meaningful
+Dense fields support only HNSW or Flat. Sparse fields use the inverted index.
 
----
+### Empty or low-quality results
 
-## Data Issues
+- Confirm the tenant and collection path are correct.
+- Confirm the same client-side vector model and normalization were used for
+  inserts and queries.
+- Confirm metadata filters match stored metadata.
+- Reduce `top_k` while diagnosing and increase `ef_search` only when using an
+  HNSW field.
+- For hybrid search, send exactly two declared query fields and explicit
+  weights for those field names.
 
-### WAL corruption
-```
-failed to replay WAL: unexpected EOF
-```
-**Fix**: The WAL file was truncated (crash, disk full). The server will skip corrupted entries and continue. To force a clean start:
-```bash
-# Backup existing data
-cp -r data/ data-backup/
-# Remove WAL (will lose un-snapshotted changes)
-rm data/*.wal
-```
+### Batch request rejected
 
-### Snapshot won't load
-```
-failed to load snapshot: gob decode error
-```
-**Fix**: The snapshot format may have changed between versions. Export data and re-import:
-```bash
-# If the old binary can still start:
-deepdata-cli export --output backup.jsonl
-# Start with new binary
-deepdata-cli import --file backup.jsonl
-```
+Canonical batch insert is atomic. One malformed document rejects the whole
+batch; the server never reports partial success. Correct the failing item and
+retry with the same intended IDs.
+
+## Persistence and recovery
+
+### Corrupt or truncated journal/snapshot
+
+The only automatic repair is a structurally valid, terminal EOF-short frame in
+the active journal. That frame was never fully appended or acknowledged;
+startup truncates it back to the last completely verified record, synchronizes
+the repair, reparses the journal, and resumes at the next sequence number.
+
+Every other recovery error fails closed: a partial frozen journal, complete
+frame with a bad checksum, unknown version/store ID, sequence gap, non-prefix
+junk, or corrupt/truncated snapshot. Keep the server stopped and preserve a
+copy of the whole configured state root. Do not edit or delete snapshot,
+journal, or lock artifacts, because doing so can discard acknowledged writes
+or destroy diagnostic evidence.
+
+Restore a previously verified whole-root backup with the
+[offline procedure](cookbook.md#offline-restore-with-rollback). Restore is not
+successful until its mandatory assertion checks expected V3 tenant/schema,
+document counts, representative search results, and gRPC access.
 
 ### Disk full
-**Fix**: Enable auto-compaction to reclaim deleted vector space:
-```bash
-COMPACT_INTERVAL_MIN=60 ./deepdata serve
-```
-Or trigger manual compaction:
-```bash
-curl -X POST http://localhost:8080/compact
-```
 
-### Encrypted data on wrong binary
-```
-failed to read data: invalid header
-```
-**Fix**: If encryption was enabled, you need the same passphrase to decrypt:
-```bash
-ENCRYPTION_ENABLED=true ENCRYPTION_PASSPHRASE="original-passphrase" ./deepdata serve
-```
-Encrypted files have a `VDBE` magic header. You can check with `hexdump -C data/file | head -1`.
+Stop writes, free space outside the DeepData state root, and inspect filesystem
+and volume capacity. Do not manually remove files beneath `/var/lib/deepdata`
+or `/data`. Expand the filesystem/PVC when the state itself consumes the
+available capacity.
 
----
+### Readiness changes to 503 after startup
 
-## Performance Issues
+Treat this as loss of canonical persistence health. Stop routing traffic,
+preserve the complete state root, and inspect server logs. Restart only after
+the cause is understood; repeated restarts are not a repair procedure.
 
-### Slow inserts
-- Use **batch insert** (`/batch/insert`) instead of single inserts — 10-100x faster
-- CLI: `deepdata-cli import --file data.jsonl --batch-size 500`
-- Reduce WAL rotation frequency: `WAL_MAX_OPS=5000`
-- For maximum throughput, use **gRPC** (port 50051) — ~2x over HTTP
-
-### Slow queries
-- Use **ANN mode** (default) instead of scan mode
-- Reduce `top_k` — smaller k = faster
-- Increase HNSW `ef_construction` for better index quality (requires rebuild)
-- Enable query caching (enabled by default)
-
-### High memory usage
-- **Expected**: HNSW index keeps all vectors in RAM
-- **Estimate**: ~(dim × 4 + 200) bytes per vector. For 768d: ~3.3KB per vector
-- **1M vectors at 768d**: ~3.3GB RAM
-- **Mitigation**: Use PQ4 quantization for 32x compression, or DiskANN for disk-backed index
-- Reduce initial capacity: `VECTOR_CAPACITY=1000`
-
-### CPU spikes during compaction
-Compaction rebuilds the HNSW index. This is CPU-intensive but temporary:
-- Schedule compaction during low-traffic periods
-- Set `COMPACT_INTERVAL_MIN` to a longer interval
-
----
-
-## Docker Issues
+## Docker and Compose
 
 ### Container exits immediately
-Check logs:
+
 ```bash
-docker compose logs deepdata
-```
-Common causes: port conflict, missing volume mount, environment misconfiguration.
-
-### Data lost after container restart
-Ensure a volume is mounted:
-```yaml
-volumes:
-  - deepdata-data:/data
+docker compose ps
+docker compose logs --no-color deepdata
+docker inspect --format '{{.Config.User}}' "$(docker compose images -q deepdata)"
 ```
 
-### Health check failing
-The health check hits `/health`. If the server takes time to start:
-```yaml
-healthcheck:
-  start_period: 30s  # give more time for large datasets
-```
+Compose requires `DEEPDATA_API_TOKEN` while resolving the file. If Compose
+reports that the variable is missing, set it in the protected operator
+environment before `pull`, `config`, or `up`:
 
----
-
-## Authentication Issues
-
-### Generate a test token
 ```bash
-# Set JWT_SECRET on the server
-JWT_SECRET=my-secret ./deepdata serve
-
-# Generate token with CLI
-deepdata-cli gentoken --tenant test --permissions read,write --secret my-secret
-
-# Or via admin API
-curl -X POST http://localhost:8080/admin/tokens \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id": "test", "permissions": ["read", "write"]}'
+export DEEPDATA_API_TOKEN='replace-with-a-long-random-token'
+docker compose config
+docker compose up -d --no-build deepdata
 ```
 
-### Token expired
-Generate a new token with longer expiration. Default is 24h.
+Do not also inject `JWT_SECRET`; the server rejects both authentication modes
+being configured at once.
 
-### Collection access denied
-Your token may not have access to the requested collection. Check token claims:
+The candidate image must run as `10001:10001`, mount the named state volume at
+`/data`, and set:
+
+```text
+VECTORDB_MODE=local
+VECTORDB_BASE_DIR=/data
+VECTORDB_DATA_DIR=local
+```
+
+### Existing volume has the wrong numeric owner
+
+Treat ownership migration as an offline upgrade:
+
+1. Record and retain the exact previous image ID.
+2. Stop Compose and prove no container still mounts the state volume.
+3. Capture and verify a read-only archive or storage snapshot of the whole
+   volume.
+4. Verify the candidate image runs as `10001:10001` without mounting state.
+5. Change ownership with a short-lived root maintenance container, not the
+   DeepData container.
+6. Start the candidate without rebuilding.
+7. Require readiness plus the same V3/gRPC assertion used for restore.
+
+If validation fails, restore the verified archive into a new empty volume and
+run the recorded previous image. Never unpack a backup over the modified source
+volume.
+
+## Kubernetes
+
+### Pod pending or volume not writable
+
 ```bash
-# Decode JWT (base64)
-echo "YOUR_TOKEN" | cut -d. -f2 | base64 -d | jq .
+kubectl describe pod deepdata-0
+kubectl describe pvc data-deepdata-0
+kubectl get node -L kubernetes.io/os
 ```
 
----
+The pod must schedule to Linux and the storage driver must honor `fsGroup:
+10001`, or ownership must be prepared before the application starts. Do not use
+privileged mode as a permission workaround.
 
-## Build Issues
+### OOMKilled
 
-### `go build` fails with missing dependencies
-```bash
-go mod download
-go mod tidy
-```
+Increase the memory request and limit or reduce the active dataset. HNSW keeps
+vectors and graph data in memory; budget at least vector bytes plus graph,
+metadata, process, and transient indexing overhead.
 
-### CGO issues
-DeepData can be built without CGO for maximum portability:
-```bash
-CGO_ENABLED=0 go build -o deepdata ./cmd/deepdata
-```
+### Restore candidate cannot attach
+
+The example StatefulSet uses `volumeClaimTemplates`; ordinal zero remains bound
+to its original claim. Use a rehearsed CSI/operator cutover or a manifest with
+an explicit existing-claim setting. Retain the original PVC and snapshot until
+semantic V3/gRPC validation passes.
+
+## Evidence to collect
+
+For an unresolved incident, preserve:
+
+- exact binary/image digest and source commit;
+- sanitized environment names and resolved state paths;
+- server logs around the first failure;
+- filesystem type, free space, and mount options;
+- stopped whole-state copy or volume snapshot; and
+- the exact request shape and HTTP/gRPC status without credentials.

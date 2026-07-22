@@ -53,7 +53,6 @@ def should_retry(status_code: int, attempt: int, cfg: RetryConfig | None) -> boo
 
 def build_headers(
     token: str | None = None,
-    tenant_id: str | None = None,
     extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build default request headers."""
@@ -63,8 +62,6 @@ def build_headers(
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    if tenant_id:
-        headers["X-Tenant-ID"] = tenant_id
     if extra:
         headers.update(extra)
     return headers

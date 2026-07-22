@@ -26,12 +26,13 @@ import (
 	"time"
 
 	"github.com/Neumenon/cowrie/go/codec"
+	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/index"
 	"github.com/phenomenon0/vectordb/internal/logging"
 	"github.com/phenomenon0/vectordb/internal/obsidian"
+	"github.com/phenomenon0/vectordb/internal/releaseinfo"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
-
 )
 
 // ===========================================================================================
@@ -134,9 +135,20 @@ func decodeRequest(r *http.Request, v any) error {
 	return requestCodec.Decode(r.Body, v)
 }
 
-// newHTTPHandler builds the HTTP mux for insert/query/delete/health/metrics.
+// newHTTPHandler retains the broad historical surface for focused compatibility
+// tests and explicit migration tooling. Production serve uses
+// newCanonicalHTTPHandler instead.
 func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
+	return newHTTPHandlerWithSurface(store, embedder, reranker, indexPath, false)
+}
+
+func newCanonicalHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
+	return newHTTPHandlerWithSurface(store, embedder, reranker, indexPath, true)
+}
+
+func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string, canonicalOnly bool) (http.Handler, *CollectionHTTPServer) {
 	mux := http.NewServeMux()
+	var collectionHTTP *CollectionHTTPServer
 	configDir := "."
 	if indexPath != "" {
 		configDir = filepath.Dir(indexPath)
@@ -145,6 +157,22 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		rps := envInt("API_RPS", 100)
 		store.rl = newRateLimiter(rps, rps, envInt("MAX_RATE_LIMIT_KEYS", 100_000), time.Minute)
 	}
+	if store.authFailureRL == nil {
+		store.authFailureRL = newAuthFailureLimiter(
+			envInt("AUTH_FAILURE_RPS", 1),
+			envInt("AUTH_FAILURE_BURST", 5),
+			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
+			time.Second,
+		)
+	}
+	if canonicalOnly && store.canonicalTenantRL == nil {
+		store.canonicalTenantRL = newRateLimiter(
+			envInt("TENANT_RPS", 100),
+			envInt("TENANT_BURST", 100),
+			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
+			time.Second,
+		)
+	}
 	trustProxy := os.Getenv("TRUST_PROXY") == "1"
 
 	// SECURITY FIX: Proper JWT validation guard
@@ -152,9 +180,19 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	guard := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			token := r.Header.Get("Authorization")
-			if token == "" {
-				token = r.URL.Query().Get("token")
+			authPeerKey := httpAuthPeerKey(r, trustProxy)
+			authAttempt, allowed := store.authFailureRL.begin(authPeerKey)
+			if !allowed {
+				http.Error(w, "authentication rate limited", http.StatusTooManyRequests)
+				return
 			}
+			finishAuthAttempt := func(failed bool) {
+				if authAttempt != nil {
+					authAttempt.finish(failed)
+					authAttempt = nil
+				}
+			}
+			defer func() { finishAuthAttempt(false) }()
 
 			authenticated := false
 			var tenantCtx *security.TenantContext
@@ -164,6 +202,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				if token == "" {
 					// No token provided, but JWT is configured
 					if store.requireAuth {
+						finishAuthAttempt(true)
 						http.Error(w, "unauthorized: missing authentication token", http.StatusUnauthorized)
 						return
 					}
@@ -181,6 +220,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 					tenantCtx, err = store.jwtMgr.ValidateTenantToken(jwtToken)
 					if err != nil {
 						logging.Default().Warn("JWT validation failed", "error", err, "path", r.URL.Path)
+						finishAuthAttempt(true)
 						http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
 						return
 					}
@@ -190,21 +230,25 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				// No JWT manager configured - fallback to legacy API token auth
 				// Simple API token authentication (legacy)
 				if store.apiToken != "" {
-					if token == "Bearer "+store.apiToken || token == store.apiToken {
+					candidate := strings.TrimPrefix(token, "Bearer ")
+					if security.SecureCompare(candidate, store.apiToken) {
 						authenticated = true
 					} else if token != "" {
+						finishAuthAttempt(true)
 						http.Error(w, "unauthorized", http.StatusUnauthorized)
 						return
 					}
 				}
 
 				if store.requireAuth && !authenticated {
+					finishAuthAttempt(true)
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
 				}
 
 				requestedTenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
 				if requestedTenantID != "" && !isValidTenantID(requestedTenantID) {
+					finishAuthAttempt(false)
 					http.Error(w, "invalid X-Tenant-ID header", http.StatusBadRequest)
 					return
 				}
@@ -215,14 +259,19 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 				// Use default tenant context for non-JWT mode
 				if tenantCtx == nil {
+					serverAdmin := authenticated || (store.jwtMgr == nil && store.apiToken == "" && requestedTenantID == "")
 					tenantCtx = &security.TenantContext{
 						TenantID:    tenantID,
 						Permissions: map[string]bool{"read": true, "write": true},
 						Collections: make(map[string]bool),
-						IsAdmin:     store.jwtMgr == nil && store.apiToken == "" && requestedTenantID == "",
+						// A configured static server token is an explicit full-control
+						// credential. JWTs remain the path for scoped tenant roles.
+						IsAdmin:       serverAdmin,
+						IsServerAdmin: serverAdmin,
 					}
 				}
 			}
+			finishAuthAttempt(false)
 
 			// Global rate limiting (per-IP or per-token)
 			if store.rl != nil {
@@ -252,6 +301,14 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				}
 				if !store.rl.allow(key) {
 					http.Error(w, "rate limited", http.StatusTooManyRequests)
+					return
+				}
+			}
+
+			if canonicalOnly && store.canonicalTenantRL != nil {
+				tenantKey := canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
+				if !store.canonicalTenantRL.allow(tenantKey) {
+					http.Error(w, "tenant rate limited", http.StatusTooManyRequests)
 					return
 				}
 			}
@@ -1357,7 +1414,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		deleted := len(store.Deleted)
 		active := total - deleted
 		lastSaved := store.lastSaved
-		walReplayErr := store.walReplayError
+		walFault := store.walFault
 		_, embedderIsONNX := embedder.(*OnnxEmbedder)
 		_, embedderIsOpenAI := embedder.(*OpenAIEmbedder)
 		_, embedderIsTracked := embedder.(*TrackedEmbedder)
@@ -1395,7 +1452,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		}
 
 		// Build response with mode info
-		healthy := walReplayErr == nil
+		healthy := walFault == nil
 		response := map[string]any{
 			"ok":              healthy,
 			"total":           total,
@@ -1416,8 +1473,8 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			"collections": collections,
 		}
 
-		if walReplayErr != nil {
-			response["wal_replay_error"] = walReplayErr.Error()
+		if walFault != nil {
+			response["wal_error"] = walFault.Error()
 		}
 
 		// Add mode information if available
@@ -1432,7 +1489,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 	// Kubernetes-style health probes
 	// /healthz - Liveness probe: Is the process alive and not deadlocked?
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	livenessHandler := func(w http.ResponseWriter, r *http.Request) {
 		// Liveness check: verify we can acquire locks (not deadlocked).
 		// Use a context-aware pattern to avoid leaking goroutines when the
 		// timeout fires while the lock is still held (e.g., during a snapshot).
@@ -1457,10 +1514,57 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			w.WriteHeader(http.StatusServiceUnavailable)
 			w.Write([]byte("deadlock detected"))
 		}
-	})
+	}
+	mux.HandleFunc("/healthz", livenessHandler)
+	mux.HandleFunc("/livez", livenessHandler)
 
 	// /readyz - Readiness probe: Is the service ready to accept traffic?
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if canonicalOnly {
+			issues := []string{}
+			type canonicalHealth struct {
+				durable bool
+				err     error
+			}
+			health := make(chan canonicalHealth, 1)
+			go func() {
+				if collectionHTTP == nil {
+					health <- canonicalHealth{}
+					return
+				}
+				durable := collectionHTTP.IsDurable()
+				var err error
+				if durable {
+					err = collectionHTTP.PersistenceError()
+				}
+				health <- canonicalHealth{durable: durable, err: err}
+			}()
+			select {
+			case state := <-health:
+				if !state.durable {
+					issues = append(issues, "durable collection store not initialized")
+				} else if state.err != nil {
+					logging.Default().Error("readyz: durable collection fault", "error", state.err)
+					issues = append(issues, "durable collection store faulted")
+				}
+			case <-time.After(5 * time.Second):
+				issues = append(issues, "durable collection health check timed out")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if len(issues) == 0 {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ready":   true,
+					"checks":  []string{"collection_snapshot", "mutation_journal", "lifetime_lock"},
+					"version": releaseinfo.Version(),
+				})
+			} else {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]any{"ready": false, "issues": issues})
+			}
+			return
+		}
+
 		// Use a timeout to prevent readiness probes from hanging indefinitely
 		// when the write lock is held during long snapshot operations.
 		type storeState struct {
@@ -1478,7 +1582,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			s := storeState{
 				ready:      store.Count >= 0 && store.Dim > 0,
 				indexCount: len(store.indexes),
-				walErr:     store.walReplayError,
+				walErr:     store.walFault,
 			}
 			store.RUnlock()
 			stateCh <- s
@@ -1505,7 +1609,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 				issues = append(issues, "no index available")
 			}
 			if state.walErr != nil {
-				logging.Default().Error("readyz: WAL replay error", "error", state.walErr)
+				logging.Default().Error("readyz: WAL fault", "error", state.walErr)
 				issues = append(issues, "wal replay failed")
 			}
 		}
@@ -1522,7 +1626,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ready":   true,
 				"checks":  []string{"store", "index", "embedder_initialized"},
-				"version": "1.0.0",
+				"version": releaseinfo.Version(),
 			})
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -1610,7 +1714,7 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		http.ServeFile(w, r, path)
 	})))
 
-	// Import snapshot (overwrites current index) - Two-phase commit with validation
+	// Online snapshot import is deliberately unavailable in the single-node RC.
 	mux.HandleFunc("/import", withMetrics("import", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1625,169 +1729,27 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 			http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
 			return
 		}
-
-		// Add request size limit (max 1GB for snapshot)
-		r.Body = http.MaxBytesReader(w, r.Body, limitSnapshotBody)
-
-		// Phase 1: Validate imported snapshot
-		tmp, err := os.CreateTemp("", "vectordb-import-*.gob")
-		if err != nil {
-			logging.Default().LogError(r.Context(), "import_create_temp", err)
-			http.Error(w, "import failed: server error", http.StatusInternalServerError)
-			return
-		}
-		defer os.Remove(tmp.Name())
-
-		if _, err := io.Copy(tmp, r.Body); err != nil {
-			logging.Default().LogError(r.Context(), "import_read_snapshot", err)
-			http.Error(w, "import failed: unable to read snapshot", http.StatusInternalServerError)
-			return
-		}
-		if err := tmp.Close(); err != nil {
-			logging.Default().LogError(r.Context(), "import_close_temp", err)
-			http.Error(w, "import failed: server error", http.StatusInternalServerError)
-			return
-		}
-
-		// Load and validate the new snapshot
-		newStore, loaded := loadOrInitStore(tmp.Name(), store.Count+1, store.Dim)
-		if !loaded {
-			http.Error(w, "import failed: unable to load snapshot", http.StatusBadRequest)
-			return
-		}
-
-		// Validate dimensions match
-		if newStore.Dim != store.Dim {
-			http.Error(w, fmt.Sprintf("dimension mismatch: current=%d, import=%d", store.Dim, newStore.Dim), http.StatusBadRequest)
-			return
-		}
-
-		// Validate checksum
-		if !newStore.validateChecksum() {
-			http.Error(w, "checksum validation failed", http.StatusBadRequest)
-			return
-		}
-
-		// Phase 2: Atomically replace store
-		// Create backup before replacement
-		backupPath := indexPath + ".backup"
-		store.RLock()
-		if err := store.Save(backupPath); err != nil {
-			store.RUnlock()
-			logging.Default().LogError(r.Context(), "import_backup", err, "backup_path", backupPath)
-			http.Error(w, "import failed: unable to create backup", http.StatusInternalServerError)
-			return
-		}
-		store.RUnlock()
-
-		// Replace store atomically - swap data fields individually to avoid copying mutex
-		store.Lock()
-		// Save old state for potential rollback (data fields only, not mutex)
-		oldData := store.Data
-		oldDim := store.Dim
-		oldCount := store.Count
-		oldDocs := store.Docs
-		oldIDs := store.IDs
-		oldSeqs := store.Seqs
-		oldNext := store.next
-		oldIndexes := store.indexes
-		oldIdToIx := store.idToIx
-		oldMeta := store.Meta
-		oldDeleted := store.Deleted
-		oldColl := store.Coll
-		oldNumMeta := store.NumMeta
-		oldTimeMeta := store.TimeMeta
-		oldNumIndex := store.numIndex
-		oldTimeIndex := store.timeIndex
-		oldLexTF := store.lexTF
-		oldDocLen := store.docLen
-		oldDF := store.df
-		oldSumDocL := store.sumDocL
-		oldTenantID := store.TenantID
-		oldMetaIndex := store.metaIndex
-
-		// Copy data from newStore (preserving store's mutex and config fields)
-		store.Data = newStore.Data
-		store.Dim = newStore.Dim
-		store.Count = newStore.Count
-		store.Docs = newStore.Docs
-		store.IDs = newStore.IDs
-		store.Seqs = newStore.Seqs
-		store.next = newStore.next
-		store.indexes = newStore.indexes
-		store.idToIx = newStore.idToIx
-		store.Meta = newStore.Meta
-		store.Deleted = newStore.Deleted
-		store.Coll = newStore.Coll
-		store.NumMeta = newStore.NumMeta
-		store.TimeMeta = newStore.TimeMeta
-		store.numIndex = newStore.numIndex
-		store.timeIndex = newStore.timeIndex
-		store.lexTF = newStore.lexTF
-		store.docLen = newStore.docLen
-		store.df = newStore.df
-		store.sumDocL = newStore.sumDocL
-		store.TenantID = newStore.TenantID
-		store.metaIndex = newStore.metaIndex
-		// Note: walPath, apiToken, rl, acl, quotas, etc. are preserved from old store
-		store.Unlock()
-
-		// Save new store
-		if err := store.Save(indexPath); err != nil {
-			// Rollback on failure - restore old data fields
-			store.Lock()
-			store.Data = oldData
-			store.Dim = oldDim
-			store.Count = oldCount
-			store.Docs = oldDocs
-			store.IDs = oldIDs
-			store.Seqs = oldSeqs
-			store.next = oldNext
-			store.indexes = oldIndexes
-			store.idToIx = oldIdToIx
-			store.Meta = oldMeta
-			store.Deleted = oldDeleted
-			store.Coll = oldColl
-			store.NumMeta = oldNumMeta
-			store.TimeMeta = oldTimeMeta
-			store.numIndex = oldNumIndex
-			store.timeIndex = oldTimeIndex
-			store.lexTF = oldLexTF
-			store.docLen = oldDocLen
-			store.df = oldDF
-			store.sumDocL = oldSumDocL
-			store.TenantID = oldTenantID
-			store.metaIndex = oldMetaIndex
-			store.Unlock()
-			logging.Default().LogError(r.Context(), "import_save", err)
-			http.Error(w, "import failed, rolled back", http.StatusInternalServerError)
-			os.Remove(backupPath)
-			return
-		}
-
-		// Success - remove backup
-		os.Remove(backupPath)
-
-		if err := encodeResponse(w, r, map[string]any{
-			"ok":      true,
-			"count":   store.Count,
-			"deleted": len(store.Deleted),
-		}); err != nil {
-			logging.Default().LogError(r.Context(), "encode_response", err)
-		}
+		// Online import cannot safely cross the live WAL/checkpoint generation
+		// boundary yet. The single-node RC therefore supports restore only while
+		// the server is stopped; leaving this endpoint active could mix an old WAL
+		// with imported state after a crash.
+		http.Error(w, "online snapshot import is disabled; use the offline restore procedure", http.StatusNotImplemented)
+		return
 	})))
 
 	// ==================================================================================
 	// ADMIN API ENDPOINTS - ACL & Quota Management
 	// ==================================================================================
 
-	// Admin middleware - requires admin permission
+	// Global administration middleware. A tenant-admin JWT remains constrained
+	// to its tenant and optional collection scope; only the configured static
+	// server credential may reach legacy global administration tooling.
 	adminGuard := func(next http.HandlerFunc) http.HandlerFunc {
 		return guard(func(w http.ResponseWriter, r *http.Request) {
 			// Read tenant context from request context (set by guard middleware)
 			tenantCtx, ok := security.GetTenantContextFromContext(r.Context())
-			if !ok || !tenantCtx.IsAdmin {
-				http.Error(w, "forbidden: admin permission required", http.StatusForbidden)
+			if !ok || !tenantCtx.IsServerAdmin {
+				http.Error(w, "forbidden: server admin permission required", http.StatusForbidden)
 				return
 			}
 			next(w, r)
@@ -2089,11 +2051,30 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 
 	// NEW Multi-Vector Collection API (v2) - supports hybrid search with dense + sparse vectors
 	// Initialize collection HTTP server for multi-vector support
-	collectionHTTP := NewCollectionHTTPServer(indexPath + ".collections")
-	if err := collectionHTTP.Load(indexPath + ".collections"); err != nil {
-		logging.Default().Warn("failed to load collection state", "error", err)
+	collectionBasePath := ""
+	if indexPath != "" {
+		collectionBasePath = indexPath + ".collections"
 	}
-	collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
+	collectionHTTP = NewCollectionHTTPServer(collectionBasePath)
+	if collectionBasePath != "" {
+		var err error
+		if canonicalOnly {
+			err = collectionHTTP.LoadDurableWithLimits(collectionBasePath, vcollection.StoreLimits{
+				MaxTenants:     envInt("MAX_TENANTS", 100_000),
+				MaxCollections: envInt("MAX_COLLECTIONS", 10_000),
+			})
+		} else {
+			err = collectionHTTP.Load(collectionBasePath)
+		}
+		if err != nil {
+			collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
+		}
+	}
+	if canonicalOnly {
+		collectionHTTP.RegisterCanonicalHandlers(mux, guard)
+	} else {
+		collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
+	}
 
 	// ==========================================================================
 	// FEEDBACK API ENDPOINTS (v2)
@@ -2101,14 +2082,18 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 	// Enables relevance feedback collection and boost-based re-ranking
 	// Endpoints: /v2/feedback, /v2/feedback/batch, /v2/feedback/stats,
 	//            /v2/feedback/boosts, /v2/feedback/implicit, /v2/interaction
-	RegisterFeedbackHandlers(mux)
+	if !canonicalOnly {
+		RegisterFeedbackHandlers(mux)
+	}
 
 	// ==========================================================================
 	// KNOWLEDGE GRAPH EXTRACTION API ENDPOINTS (v2)
 	// ==========================================================================
 	// LLM-based entity/relationship extraction from text
 	// Endpoints: /v2/extract, /v2/extract/batch, /v2/extract/temporal, /v2/extract/status
-	RegisterExtractionHandlers(mux)
+	if !canonicalOnly {
+		RegisterExtractionHandlers(mux)
+	}
 
 	// ==========================================================================
 	// MODE & COST TRACKING API ENDPOINTS
@@ -3374,7 +3359,50 @@ func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, in
 		})
 	}
 
-	return requestIDMiddleware(recoveryMiddleware(requestTimeoutMiddleware(corsMiddleware(otelMiddleware(mux))))), collectionHTTP
+	var routed http.Handler = corsMiddleware(otelMiddleware(mux))
+	if canonicalOnly {
+		// Keep the allowlist outside CORS so OPTIONS cannot make an unsupported
+		// legacy/provider route appear reachable.
+		routed = canonicalRCSurface(routed)
+	}
+	return requestIDMiddleware(recoveryMiddleware(requestTimeoutMiddleware(routed))), collectionHTTP
+}
+
+func canonicalTenantIDFromPath(path string) string {
+	const prefix = "/v3/tenants/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	tenantID := strings.TrimPrefix(path, prefix)
+	if slash := strings.IndexByte(tenantID, '/'); slash >= 0 {
+		tenantID = tenantID[:slash]
+	}
+	return tenantID
+}
+
+func canonicalRateLimitTenant(tenantCtx *security.TenantContext, targetTenant string) string {
+	if tenantCtx == nil {
+		return "default"
+	}
+	tenantKey := tenantCtx.TenantID
+	if tenantCtx.IsServerAdmin && isValidTenantID(targetTenant) {
+		tenantKey = targetTenant
+	}
+	if tenantKey == "" {
+		return "default"
+	}
+	return tenantKey
+}
+
+func canonicalRCSurface(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/v3/tenants/") || path == "/healthz" || path == "/readyz" || path == "/livez" || path == "/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
 }
 
 func ageMillis(path string, fallback time.Time) int64 {
@@ -3491,48 +3519,51 @@ func hashQueryCursor(query string, topK int, pageSize int, limit int, meta map[s
 	return fmt.Sprintf("%x", sum.Sum64())
 }
 
-// Compact rebuilds the index and purges tombstones, then saves a snapshot.
+// Compact purges tombstoned row storage while preserving the per-collection
+// indexes (Delete already removes their entries), then saves a snapshot.
 func (vs *VectorStore) Compact(path string) error {
-	vs.Lock()
-	defer vs.Unlock()
+	if err := func() error {
+		vs.Lock()
+		defer vs.Unlock()
 
-	cfg := loadHNSWConfig()
-	newIdx, err := index.NewHNSWIndex(vs.Dim, map[string]interface{}{
-		"m":         cfg.M,
-		"ml":        cfg.Ml,
-		"ef_search": cfg.EfSearch,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create new index: %w", err)
-	}
-
-	vs.idToIx = make(map[uint64]int)
-	newData := make([]float32, 0, len(vs.Data))
-	newDocs := make([]string, 0, len(vs.Docs))
-	newIDs := make([]string, 0, len(vs.IDs))
-	for i, id := range vs.IDs {
-		hid := hashID(id)
-		if vs.Deleted[hid] {
-			continue
+		newIDToIx := make(map[uint64]int)
+		newData := make([]float32, 0, len(vs.Data))
+		newDocs := make([]string, 0, len(vs.Docs))
+		newIDs := make([]string, 0, len(vs.IDs))
+		newSeqs := make([]uint64, 0, len(vs.Seqs))
+		newTenantID := make(map[uint64]string, len(vs.TenantID))
+		for i, id := range vs.IDs {
+			hid := hashID(id)
+			if vs.Deleted[hid] {
+				continue
+			}
+			if i >= len(vs.Seqs) {
+				return fmt.Errorf("missing sequence for vector %q", id)
+			}
+			vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
+			base := len(newDocs)
+			newData = append(newData, vec...)
+			newDocs = append(newDocs, vs.Docs[i])
+			newIDs = append(newIDs, id)
+			newSeqs = append(newSeqs, vs.Seqs[i])
+			newIDToIx[hid] = base
+			newTenantID[hid] = vs.TenantID[hid]
 		}
-		vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
-		base := len(newDocs)
-		newData = append(newData, vec...)
-		newDocs = append(newDocs, vs.Docs[i])
-		newIDs = append(newIDs, id)
-		if err := newIdx.Add(context.Background(), hid, vec); err != nil {
-			return fmt.Errorf("failed to add vector to new index: %w", err)
-		}
-		vs.idToIx[hid] = base
-	}
-	vs.Data = newData
-	vs.Docs = newDocs
-	vs.IDs = newIDs
-	vs.Count = len(newDocs)
-	vs.indexes["default"] = newIdx
-	vs.Deleted = make(map[uint64]bool) // Clear tombstones
-	if err := vs.Save(path); err != nil {
+		vs.Data = newData
+		vs.Docs = newDocs
+		vs.IDs = newIDs
+		vs.Seqs = newSeqs
+		vs.Count = len(newDocs)
+		vs.idToIx = newIDToIx
+		vs.TenantID = newTenantID
+		vs.Deleted = make(map[uint64]bool) // Clear tombstones
+		return nil
+	}(); err != nil {
 		return err
 	}
-	return nil
+
+	// Save acquires its own read lock; calling it after the compaction critical
+	// section avoids recursive RWMutex acquisition and permits normal writes to
+	// proceed while the durable snapshot is encoded.
+	return vs.Save(path)
 }

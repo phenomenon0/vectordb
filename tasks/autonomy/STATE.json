@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "generation": 7,
+  "workflow": "deepdata-single-node-production-hardening",
+  "status": "active",
+  "execution_preapproved": true,
+  "scope": {
+    "release_target": "headless-single-node-server-rc",
+    "persistent_runtime": "linux-amd64-only",
+    "canonical_api": "tenant-aware-http-v3-and-mirrored-grpc",
+    "supported_mutations": "create-delete-collection-insert-batch-delete-document",
+    "supported_indexes": "hnsw-flat-inverted-sparse-bm25-hybrid",
+    "vectors": "caller-supplied",
+    "legacy_root_v2_writes": "disabled-out-of-scope",
+    "advanced_retrieval_and_llm_apis": "disabled-out-of-scope",
+    "web_ui": "non-gating",
+    "distributed_ha": "experimental-out-of-scope",
+    "desktop_installers": "out-of-scope",
+    "transport_tls": "external-proxy-or-ingress",
+    "encryption_at_rest": "encrypted-disk-or-pvc",
+    "feedback_extraction": "disabled-out-of-scope",
+    "external_publication": "requires-separate-explicit-authority"
+  },
+  "started_at": "2026-07-17T22:51:42-05:00",
+  "updated_at": "2026-07-22T13:20:00-05:00",
+  "resumed_at": "2026-07-22T12:45:00-05:00",
+  "current_phase": "phase-8-pre-exact-sha-validation",
+  "current_step": "run the required post-dependency evidence matrix on the checkpointed branch and correct findings before the authorized push",
+  "candidate_worktree": {
+    "branch": "gnhf/i-want-you-to-mnake-26a28a",
+    "implementation_checkpoint_head": "ece6f23 (grpc GHSA-hrxh-6v49-42gf patch on top of 16acda0 toolchain pin)",
+    "state": "post-toolchain-evidence-rerun-in-progress",
+    "exact_candidate_sha": null,
+    "final_validation": "pending"
+  },
+  "post_toolchain_rerun_evidence_2026_07_22": [
+    "go vet/storage/short/race suites, proto freshness, and version parity green at ece6f23 with pinned Go 1.25.12 (receipts in .deepdata-run/checks)",
+    "focused crash/journal/replay/subprocess matrices rerun verbosely: 170 pass, 0 skip, 0 fail at ece6f23",
+    "standalone RC smoke (five mutations, dense/sparse/hybrid, gRPC, restart persistence) green at ece6f23",
+    "image rebuilt from ece6f23; direct-container and Compose contracts green against that exact image (earlier same-day container passes used a stale Jul-19 :test image and were discarded as evidence)",
+    "gitleaks clean on git-archive source copy of HEAD; 8 history-only placeholder-token hits triaged as non-findings",
+    "govulncheck: 0 reachable vulnerabilities; GO-2026-5932 (x/crypto/openpgp, unfixable, never imported) accepted at module level",
+    "gosec 393 findings; all HIGH findings in RC-scope packages triaged benign (G115 bounded length-prefix/syscall-fd conversions, G404 deterministic mock embeddings)",
+    "trivy on ece6f23 image: grpc advisory cleared by v1.82.1 bump; 36 HIGH/CRITICAL remain, all OS packages with no bookworm fix available (accepted-risk set of the digest-pinned debian base)"
+  ],
+  "preliminary_local_evidence": [
+    "canonical HTTP V3 and mirrored gRPC exercise all five mutations through the shared durable store",
+    "subprocess SIGKILL/restart, partial-tail, corruption, checkpoint, compatibility, and exactly-once tests passed before candidate freeze",
+    "central HTTP/gRPC authorization, tenant isolation, failed-auth throttling, resource limits, and unsupported-surface tests passed before candidate freeze",
+    "Python canonical client unit, strict typing, build, wheel-install, and authenticated restart integration gates passed before candidate freeze",
+    "direct container, Compose, and local kind/Helm lifecycle rehearsals passed before candidate freeze",
+    "protobuf freshness, version parity, workflow lint, Helm manifest, UI build, secret scan, static scan, and preliminary dependency scan were exercised before candidate freeze"
+  ],
+  "validation_caveat": "The Go toolchain and security-sensitive dependencies changed after some preliminary passes. No preliminary result is an exact-SHA release attestation; all required final gates must be rerun after the candidate commit is frozen.",
+  "known_module_hygiene": "go mod tidy traverses Cowrie's dormant agentgo build tag and reaches retired private Agent-GO imports; the default graph intentionally contains no Agent-GO dependency and must be validated with readonly module resolution until the unused converter is isolated or Cowrie is fixed upstream",
+  "pending_local_gates": [
+    "rerun the Helm/kind live lifecycle contract (helm lint and manifest contracts already green today; kind not installed on this host)",
+    "rehearse offline whole-root backup/restore and process-level disk-full and permission-denied behavior",
+    "run deliberate VDB correctness, mixed-load soak, restart-under-load, memory-drift, and chaos gates",
+    "build and smoke the promised Linux amd64 artifacts and generate the exact-tree evidence report"
+  ],
+  "post_toolchain_rerun_evidence_2026_07_22_late": [
+    "actionlint clean on ci.yml and release.yml (shellcheck/pyflakes sub-rules unavailable on this host)",
+    "live SDK gate green: wheel built and installed into a clean venv, seed against a live authenticated server, restart, verify (sync and async lifecycles)",
+    "syft 1.48.0 SBOMs generated for the HEAD source tree and the ece6f23 image",
+    "trivy filesystem scan: only findings are 9 HIGH advisories in tools/jobhunter/web/package-lock.json (next 16.2.1, sharp 0.34.5) — not part of any shipped RC artifact, triaged out of scope; upstream fixes exist if the tool is kept"
+  ],
+  "external_gates": [
+    "legal owner must choose the license and copyright holder before a root LICENSE can be added",
+    "remote CI must run and pass on the future exact candidate SHA; pushing this branch alone does not trigger the current main-or-PR workflow",
+    "Python distribution ownership, trusted publishing, signing, registry credentials, tag creation, and publication require separate confirmation and authority"
+  ],
+  "authority": {
+    "push_current_branch": "authorized",
+    "publication": "not-authorized",
+    "private_credentials": "not-authorized",
+    "license_choice": "pending-external-decision"
+  },
+  "next_action": "Complete the post-dependency local gates on the checkpointed branch, correct any concrete finding, and push only the reviewed commits; the full exact-SHA release attestation remains open.",
+  "offline_queue": [
+    "verify remote CI on the future exact candidate SHA when an authorized trigger is available",
+    "prepare but do not execute signing, registry upload, tag creation, or external publication"
+  ],
+  "deferred_but_required": [
+    "offline backup/restore plus disk-full and permission-denied process rehearsal",
+    "long-duration VDB correctness, mixed-load soak, restart-under-load, memory-drift, and chaos evidence"
+  ],
+  "blocked": [],
+  "completed": [
+    "overall-pre-release-audit",
+    "persistent-goal-created",
+    "global-workflow-skill-upgraded",
+    "phase-0-plan-baseline-resume-protocol-and-local-check-runner",
+    "phase-1-snapshot-fidelity-integrity-and-fail-closed-recovery",
+    "canonical-linux-tenant-http-v3-and-grpc-scope",
+    "shared-crash-durable-five-mutation-engine",
+    "journal-sequencing-fsync-replay-checkpoint-rotation-and-tail-repair",
+    "canonical-v1-journal-compatibility-and-legacy-root-v2-fail-closed-refusal",
+    "central-authorization-tenant-isolation-and-url-token-removal",
+    "failed-auth-throttling-resource-limits-and-production-auth-defaults",
+    "unsupported-legacy-and-advanced-runtime-surface-disabled",
+    "canonical-python-sdk-contract-typing-package-and-live-integration",
+    "short-supported-ci-and-budgeted-race-contracts",
+    "direct-container-compose-and-initial-kind-helm-lifecycle-rehearsals",
+    "single-version-source-support-docs-upgrade-notes-security-policy-and-changelog",
+    "dry-run-capable-release-workflow-with-explicit-publication-gates"
+  ]
+}

@@ -269,6 +269,53 @@ func DecodeStringMapUint64(v *cowrie.Value) map[uint64]string {
 	return result
 }
 
+// EncodeBytesMapUint64 encodes a uint64-keyed byte map. Byte slices are stored
+// as native Cowrie byte values so arbitrary vector encodings round-trip exactly.
+func EncodeBytesMapUint64(m map[uint64][]byte) *cowrie.Value {
+	obj := cowrie.Object()
+	for k, data := range m {
+		obj.Set(Uint64Key(k), cowrie.Bytes(data))
+	}
+	return obj
+}
+
+func DecodeBytesMapUint64(v *cowrie.Value) map[uint64][]byte {
+	if v.Type() != cowrie.TypeObject {
+		return nil
+	}
+	result := make(map[uint64][]byte)
+	for _, member := range v.Members() {
+		if member.Value.Type() != cowrie.TypeBytes {
+			continue
+		}
+		result[ParseUint64Key(member.Key)] = append([]byte(nil), member.Value.Bytes()...)
+	}
+	return result
+}
+
+// EncodeBytesMapString encodes a string-keyed byte map for named index blobs.
+func EncodeBytesMapString(m map[string][]byte) *cowrie.Value {
+	obj := cowrie.Object()
+	for k, data := range m {
+		obj.Set(k, cowrie.Bytes(data))
+	}
+	return obj
+}
+
+func DecodeBytesMapString(v *cowrie.Value) map[string][]byte {
+	if v.Type() != cowrie.TypeObject {
+		return nil
+	}
+	result := make(map[string][]byte)
+	for _, member := range v.Members() {
+		if member.Value.Type() != cowrie.TypeBytes {
+			continue
+		}
+		result[member.Key] = append([]byte(nil), member.Value.Bytes()...)
+	}
+	return result
+}
+
 func EncodeIntMapMap(m map[uint64]map[string]int) *cowrie.Value {
 	if m == nil {
 		return cowrie.Object()

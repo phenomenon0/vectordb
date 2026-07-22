@@ -2,6 +2,10 @@ syntax = "proto3";
 package deepdata.v1;
 option go_package = "github.com/phenomenon0/vectordb/api/gen/deepdata/v1;deepdatav1";
 
+// Historical v1 wire contract. The canonical runtime registers only
+// deepdata.v3; this schema remains frozen so existing generated clients and
+// stored descriptors are not silently broken.
+
 // ── Collection Management ────────────────────────────────────────────
 
 message VectorFieldConfig {

@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/phenomenon0/vectordb/internal/security"
 )
 
 type failingEmbedder struct {
@@ -126,21 +130,126 @@ func TestReadyzDoesNotCallEmbedder(t *testing.T) {
 	}
 }
 
-func TestVaultEndpointsRequireAdmin(t *testing.T) {
+func TestReadyzFailsClosedAfterWALFault(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	store.walFault = errors.New("indeterminate append")
+	emb := NewHashEmbedder(3)
+	handler, _ := newHTTPHandler(store, emb, &SimpleReranker{Embedder: emb}, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected readyz status 503 after WAL fault, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCollectionPersistenceCorruptionIsRetainedForStartupRefusal(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, basePath string)
+	}{
+		{
+			name: "manager",
+			setup: func(t *testing.T, basePath string) {
+				t.Helper()
+				if err := os.WriteFile(basePath+".manager", []byte(`{"collections":{"broken":null}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "tenants",
+			setup: func(t *testing.T, basePath string) {
+				t.Helper()
+				seed := NewCollectionHTTPServer(basePath)
+				if err := seed.manager.Save(basePath + ".manager"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(basePath+".tenants", []byte(`{"tenants":{"broken":null}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			indexPath := filepath.Join(dir, "index.gob")
+			basePath := indexPath + ".collections"
+			test.setup(t, basePath)
+
+			store := NewVectorStore(100, 3)
+			emb := NewHashEmbedder(3)
+			_, collections := newHTTPHandler(store, emb, &SimpleReranker{Embedder: emb}, indexPath)
+			if err := collections.PersistenceError(); err == nil {
+				t.Fatal("expected corrupt collection persistence to block production startup")
+			}
+			if _, err := os.Stat(basePath + ".snapshot"); !os.IsNotExist(err) {
+				t.Fatalf("failed load replaced corrupt state: %v", err)
+			}
+		})
+	}
+}
+
+func TestOnlineSnapshotImportDisabledInRC(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.gob")
+	store := NewVectorStore(100, 3)
+	store.walPath = indexPath + ".wal"
+	if _, err := store.Add([]float32{1, 0, 0}, "existing", "id-1", nil, "default", "default"); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	wantWAL, err := os.ReadFile(store.walPath)
+	if err != nil {
+		t.Fatalf("read seed WAL: %v", err)
+	}
+	wantHighWater := store.appliedWALSeq
+	emb := NewHashEmbedder(3)
+	handler, _ := newHTTPHandler(store, emb, &SimpleReranker{Embedder: emb}, indexPath)
+
+	req := httptest.NewRequest(http.MethodPost, "/import", bytes.NewBufferString("not-a-snapshot"))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("expected online import status 501, got %d: %s", w.Code, w.Body.String())
+	}
+	if store.Count != 1 || store.GetDoc(0) != "existing" {
+		t.Fatalf("disabled online import mutated store: count=%d", store.Count)
+	}
+	if store.appliedWALSeq != wantHighWater {
+		t.Fatalf("disabled online import changed WAL high-water: got=%d want=%d", store.appliedWALSeq, wantHighWater)
+	}
+	gotWAL, err := os.ReadFile(store.walPath)
+	if err != nil {
+		t.Fatalf("read WAL after disabled import: %v", err)
+	}
+	if !bytes.Equal(gotWAL, wantWAL) {
+		t.Fatal("disabled online import changed WAL artifact")
+	}
+	if _, err := os.Stat(indexPath); !os.IsNotExist(err) {
+		t.Fatalf("disabled online import created snapshot: %v", err)
+	}
+}
+
+func TestVaultEndpointsRequireServerAdmin(t *testing.T) {
 	store := NewVectorStore(100, 3)
 	store.requireAuth = true
-	store.apiToken = "secret-token"
+	store.jwtMgr = security.NewJWTManager("tenant-admin-secret-for-tests", "deepdata")
 	emb := NewHashEmbedder(3)
 	reranker := &SimpleReranker{Embedder: emb}
 	handler, _ := newHTTPHandler(store, emb, reranker, filepath.Join(t.TempDir(), "index.gob"))
+	token, err := store.jwtMgr.GenerateTenantToken("acme", []string{"admin"}, nil, time.Hour)
+	if err != nil {
+		t.Fatalf("generate tenant-admin token: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/vault/browse", nil)
-	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for non-admin vault access, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 403 for tenant-admin vault access, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

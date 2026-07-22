@@ -10,9 +10,9 @@ import (
 // ======================================================================================
 // VectorDB Mode System
 // ======================================================================================
-// Two deployment profiles:
-// - LOCAL: ONNX BGE-small embeddings, 384d, FREE, offline
-// - PRO: OpenAI text-embedding-3-small, 1536d, ~$0.02/1M tokens
+// Historical compatibility profiles. The canonical RC forces local mode and
+// accepts caller-supplied vectors; server-managed embedding modes are outside
+// the supported production surface.
 // ======================================================================================
 
 // VectorDBMode represents the operational mode of the server
@@ -118,6 +118,17 @@ func GetDataDirectory(mode VectorDBMode) string {
 		}
 		baseDir = filepath.Join(home, ".vectordb")
 	}
+	baseDir = filepath.Clean(baseDir)
+
+	// VECTORDB_DATA_DIR is the exact primary state directory. Relative values
+	// are resolved below VECTORDB_BASE_DIR; absolute values are used directly.
+	// This makes --data-dir and container volume configuration authoritative.
+	if dataDir := strings.TrimSpace(os.Getenv("VECTORDB_DATA_DIR")); dataDir != "" {
+		if filepath.IsAbs(dataDir) {
+			return filepath.Clean(dataDir)
+		}
+		return filepath.Join(baseDir, dataDir)
+	}
 
 	config, exists := ModeConfigs[mode]
 	if !exists {
@@ -193,7 +204,7 @@ func PrintModeBanner(config *ModeConfig) {
 
 	fmt.Println()
 	fmt.Println("╔════════════════════════════════════════════════════════════════╗")
-	fmt.Printf("║  %s%s VectorDB %s Mode%s                                            ║\n", 
+	fmt.Printf("║  %s%s VectorDB %s Mode%s                                            ║\n",
 		modeColor, modeIcon, strings.ToUpper(string(config.Mode)), reset)
 	fmt.Println("╠════════════════════════════════════════════════════════════════╣")
 	fmt.Printf("║  Embedder:  %-50s ║\n", config.EmbedderType+"/"+config.EmbedderModel)

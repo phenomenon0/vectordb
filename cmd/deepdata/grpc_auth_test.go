@@ -78,6 +78,9 @@ func TestGRPCAuth_JWT_ValidToken(t *testing.T) {
 	if !tc.Collections["my-collection"] {
 		t.Errorf("expected my-collection in collections, got %v", tc.Collections)
 	}
+	if tc.IsServerAdmin {
+		t.Error("tenant JWT unexpectedly received global server-admin authority")
+	}
 }
 
 func TestGRPCAuth_JWT_InvalidToken(t *testing.T) {
@@ -163,6 +166,9 @@ func TestGRPCAuth_APIToken_Valid(t *testing.T) {
 	if tc.TenantID != "default" {
 		t.Errorf("expected default tenant, got %s", tc.TenantID)
 	}
+	if !tc.IsServerAdmin {
+		t.Error("expected static API token to receive server-admin authority")
+	}
 }
 
 func TestGRPCAuth_APIToken_Invalid(t *testing.T) {
@@ -216,6 +222,9 @@ func TestGRPCAuth_NoAuth_PassThrough(t *testing.T) {
 	if !tc.IsAdmin {
 		t.Error("expected IsAdmin=true when no auth is configured")
 	}
+	if !tc.IsServerAdmin {
+		t.Error("explicit no-auth interceptor mode must be marked as global development authority")
+	}
 	if !tc.Permissions["read"] || !tc.Permissions["write"] {
 		t.Errorf("expected read+write permissions, got %v", tc.Permissions)
 	}
@@ -267,6 +276,9 @@ func TestGRPCAuth_TenantContextInjected(t *testing.T) {
 		}
 		if !tc.IsAdmin {
 			t.Error("expected IsAdmin=true for admin permission")
+		}
+		if tc.IsServerAdmin {
+			t.Error("tenant admin JWT unexpectedly received server-admin authority")
 		}
 		if !tc.Collections["products"] || !tc.Collections["orders"] {
 			t.Errorf("expected products+orders collections, got %v", tc.Collections)

@@ -3,6 +3,7 @@ package collection
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -465,6 +466,64 @@ func TestCollection_SearchHybrid(t *testing.T) {
 
 	t.Logf("Hybrid search returned %d results, examined %d candidates",
 		len(resp.Documents), resp.CandidatesExamined)
+}
+
+func TestValidateHybridSearchParamsUsesQueryFieldNames(t *testing.T) {
+	queries := map[string]interface{}{"embedding": nil, "keywords": nil}
+	if err := validateHybridSearchParams(queries, &HybridSearchParams{
+		Strategy: "weighted",
+		Weights:  map[string]float32{"embedding": 0.8, "keywords": 0.2},
+	}); err != nil {
+		t.Fatalf("valid field weights rejected: %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		params HybridSearchParams
+	}{
+		{name: "strategy", params: HybridSearchParams{Strategy: "mystery"}},
+		{name: "unknown field", params: HybridSearchParams{Strategy: "weighted", Weights: map[string]float32{"other": 1}}},
+		{name: "negative", params: HybridSearchParams{Strategy: "linear", Weights: map[string]float32{"embedding": -1}}},
+		{name: "nan", params: HybridSearchParams{Strategy: "rrf", RRFConstant: float32(math.NaN())}},
+		{name: "zero weights", params: HybridSearchParams{Strategy: "weighted", Weights: map[string]float32{"embedding": 0, "keywords": 0}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateHybridSearchParams(queries, &test.params); err == nil {
+				t.Fatal("invalid hybrid parameters were accepted")
+			}
+		})
+	}
+}
+
+func TestCollectionSearchEnforcesCanonicalRequestBounds(t *testing.T) {
+	coll, err := NewCollection(CollectionSchema{
+		Name: "docs",
+		Fields: []VectorField{{
+			Name: "dense", Type: VectorTypeDense, Dim: 1,
+			Index: IndexConfig{Type: IndexTypeFLAT},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coll.Search(context.Background(), SearchRequest{
+		CollectionName: "docs",
+		Queries:        map[string]interface{}{"dense": []float32{1}},
+		TopK:           CanonicalMaxSearchTopK + 1,
+	}); err == nil || !strings.Contains(err.Error(), "top_k") {
+		t.Fatalf("oversized top_k error = %v", err)
+	}
+	if _, err := coll.Search(context.Background(), SearchRequest{
+		CollectionName: "docs",
+		Queries: map[string]interface{}{
+			"one": []float32{1}, "two": []float32{1}, "three": []float32{1},
+		},
+		TopK: 1,
+		HybridParams: &HybridSearchParams{
+			Strategy: "rrf",
+		},
+	}); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("query-field bound error = %v", err)
+	}
 }
 
 func TestCollection_SearchCanOmitVectors(t *testing.T) {

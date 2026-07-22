@@ -1,195 +1,205 @@
 # DeepData
 
-**High-performance vector database. Single binary. Zero dependencies.**
+DeepData is a tenant-aware vector search server written in Go.
 
-[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/phenomenon0/vectordb)](https://github.com/phenomenon0/vectordb/releases/latest)
+The first release candidate is intentionally narrow: a persistent, headless,
+single-node server for Linux. It accepts caller-supplied vectors through one V3
+HTTP contract and a matching unary gRPC contract.
 
-DeepData is a vector database written in Go. One binary, no runtime deps. Five index types (HNSW, IVF, DiskANN, Flat, Sparse/BM25), hybrid dense+sparse search, gRPC and HTTP APIs, quantization down to binary, and streaming replication. Runs on a laptop. Scales to a cluster.
+Candidate version: `0.2.0-rc.1`. The value is embedded from
+`internal/releaseinfo/version.txt` and checked against Python, Helm, and image
+metadata in CI.
 
-## Download
+## RC support matrix
 
-Pre-built binaries — no Go toolchain required:
+| Area | Supported in RC1 |
+|---|---|
+| Runtime | Linux amd64, single process, one persistent node |
+| Dense indexes | HNSW and Flat |
+| Sparse index | Inverted/BM25 |
+| Retrieval | Dense, sparse, and two-field hybrid search |
+| Mutations | Create/delete collection, insert, atomic batch insert, delete document |
+| Reads | Tenant info, list/get collection, search |
+| Protocols | Tenant-aware V3 HTTP and the same nine unary gRPC operations |
+| Embeddings | Caller-supplied vectors only |
+| Auth | Static bearer token or scoped JWT |
+| Deployment | Linux binary, Docker/Compose, and Helm |
+| Client contract | Tenant-aware Python V3 client |
 
-| Platform | Download |
-|----------|----------|
-| Linux x86_64 | [deepdata-linux-amd64](https://github.com/phenomenon0/vectordb/releases/latest/download/deepdata-linux-amd64) |
-| macOS x86_64 | [deepdata-darwin-amd64](https://github.com/phenomenon0/vectordb/releases/latest/download/deepdata-darwin-amd64) |
-| macOS ARM (Apple Silicon) | [deepdata-darwin-arm64](https://github.com/phenomenon0/vectordb/releases/latest/download/deepdata-darwin-arm64) |
-| Windows x86_64 | [deepdata-windows-amd64.exe](https://github.com/phenomenon0/vectordb/releases/latest/download/deepdata-windows-amd64.exe) |
+Published RC runtime evidence is Linux amd64 only. Linux arm64 and non-Linux
+cross-builds are compile proofs, not supported release artifacts. Persistent
+startup fails closed on macOS and Windows.
 
-```bash
-# Linux/macOS: download, make executable, run
-chmod +x deepdata-linux-amd64
-./deepdata-linux-amd64 serve
-```
+The RC does **not** include V2/root mutations, server-managed embedding
+providers, runtime provider switching, GraphRAG, extraction, recommendations,
+feedback loops, replication, clustering, follower restore, snapshot streaming,
+DiskANN, IVF, quantization, CUDA, desktop packages, or a supported web UI.
+Those source trees may remain for experimental research or offline migration,
+but the production server cannot enable their handlers.
 
-## Quick Start
+## Run from source
 
-```bash
-go build ./cmd/deepdata && ./deepdata serve
-# Web UI → http://localhost:8080
-```
-
-Or with Docker:
-
-```bash
-docker compose up
-```
-
-## Usage
-
-Insert a document:
-
-```bash
-curl -X POST http://localhost:8080/insert \
-  -d '{"doc": "vector databases use ANN for fast retrieval", "id": "doc-1", "meta": {"topic": "databases"}}'
-```
-
-Query it back:
+Requirements: Linux and Go 1.25.12 or newer.
 
 ```bash
-curl -X POST http://localhost:8080/query \
-  -d '{"query": "how do vector databases work?", "top_k": 5, "mode": "ann", "include_meta": true}'
+go build -trimpath -o deepdata ./cmd/deepdata
+
+export VECTORDB_BASE_DIR="$PWD/.deepdata"
+export VECTORDB_DATA_DIR=local
+export API_TOKEN='replace-with-a-long-random-token'
+
+./deepdata serve
 ```
 
-Create a V2 collection (multi-vector, typed):
+Persistent startup requires exactly one of `API_TOKEN` or `JWT_SECRET`. Setting
+both, setting neither, using fewer than 32 bytes, or including surrounding
+whitespace fails before the data directory is opened. The only
+credentialless mode is the explicit `DEEPDATA_INSECURE_DEV_MODE=1` local
+development escape hatch; never use it for persistent or network-accessible
+deployments. Compose and Helm keep this invariant enabled by default.
+
+HTTP listens on `:8080` and gRPC on `:50051` by default. Liveness is
+`GET /livez`; readiness is `GET /readyz`.
+
+For Docker, Helm, systemd, filesystem ownership, and proxy TLS guidance, see
+[installation](docs/installation.md) and [Kubernetes](docs/kubernetes.md).
+Existing deployments must also read the explicit
+[0.2 RC migration policy](docs/upgrade-to-0.2-rc.md). Release operators use the
+[dry-run and publication process](docs/releasing.md).
+
+## Canonical HTTP example
+
+Create a tenant collection:
 
 ```bash
-curl -X POST http://localhost:8080/v2/collections \
-  -d '{"name": "papers", "dimension": 384, "distance": "cosine"}'
+curl --fail-with-body \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -X POST http://127.0.0.1:8080/v3/tenants/acme/collections \
+  -d '{
+    "name": "papers",
+    "fields": [
+      {
+        "name": "embedding",
+        "type": "dense",
+        "dim": 3,
+        "index": {"type": "hnsw", "params": {"m": 16, "ef_construction": 200}}
+      },
+      {
+        "name": "keywords",
+        "type": "sparse",
+        "dim": 10000,
+        "index": {"type": "inverted", "params": {"k1": 1.2, "b": 0.75}}
+      }
+    ]
+  }'
 ```
 
-Metadata filtering with `meta` (AND), `meta_any` (OR), `meta_not` (NOT).
-
-## Why DeepData
-
-**Search.** Dense vectors, sparse BM25, or both fused via RRF. Reranking, pagination, and metadata filters — range, time, numeric. The query planner picks the fastest path.
-
-**Indexes.** Five types. HNSW for low-latency recall. IVF for memory-constrained workloads. DiskANN when your data doesn't fit in RAM — it memory-maps the graph and streams from disk. Flat scan for small collections where building an index isn't worth it. Sparse inverted index for keyword/BM25 search. Quantization (FP16, Uint8, PQ8, PQ4, Binary) trades precision for 2x–32x memory savings. SIMD-accelerated distance kernels, optional CUDA.
-
-**Scale.** WAL with CRC checksums for crash safety. Streaming replication from primary to replicas via WAL log shipping. Streaming snapshots (disk-backed, gzip-compressed) for bootstrapping new nodes without OOM. DiskANN handles billion-scale on commodity hardware. All scale limits — max collections, max tenants, rate limits — are env-configurable.
-
-**Security.** JWT authentication, RBAC with fine-grained permissions, TLS and mutual TLS, encryption at rest (AES-256-GCM or ChaCha20-Poly1305 with Argon2id key derivation), and audit logging with 25+ event types covering auth, vector ops, admin, and cluster actions.
-
-**Observability.** Prometheus metrics endpoint, OpenTelemetry traces (stdout or OTLP export), Grafana dashboard with 40+ panels and alerting rules, health endpoint for liveness probes.
-
-**Multi-tenant.** Per-tenant collections with isolation, quotas, and rate limiting. One server, many tenants.
-
-**Embedders.** Ollama and OpenAI built in, hot-swappable at runtime. Hash embedder for zero-cost benchmarking and testing. Set `VECTORDB_MODE=local` for Ollama, `VECTORDB_MODE=pro` for OpenAI.
-
-**GraphRAG.** Entity extraction feeds a graph index that boosts hybrid search with relationship-aware scoring. Feedback loops let you feed relevance signals back to improve ranking over time.
-
-## Architecture
-
-```
-DeepData/
-  cmd/
-    deepdata/       # Main server + embedded web UI + gRPC
-    cli/            # Command-line client
-    gentoken/       # JWT token generator
-  api/proto/        # gRPC protobuf definitions
-  client/           # Go client library
-  sdk/python/       # Python client (pip install deepdata)
-  internal/
-    index/          # HNSW, IVF, DiskANN, flat, sparse — SIMD kernels
-    collection/     # Collection manager, filtered search
-    cluster/        # Election, replication, sharding, snapshots
-    security/       # JWT, RBAC, TLS, encryption at rest, audit
-    telemetry/      # Prometheus metrics, OpenTelemetry traces
-    hybrid/         # Dense+sparse fusion (RRF)
-    sparse/         # Inverted index, BM25
-    graph/          # GraphRAG entity-aware index
-    feedback/       # Relevance feedback loop
-    storage/        # Persistence (gob, cowrie/SJSON)
-    wal/            # Write-ahead log
-    extraction/     # LLM-powered metadata extraction
-    filter/         # Metadata filter engine
-  benchmarks/       # Python benchmark suite
-  desktop/          # Tauri v2 native wrapper
-  docs/             # Guides, migration, benchmarks
-```
-
-## API at a Glance
-
-| | Endpoint | What it does |
-|---|---|---|
-| **POST** | `/insert` | Add or upsert a document |
-| **POST** | `/query` | Search with filters |
-| **POST** | `/delete` | Delete by ID |
-| **POST** | `/batch/insert` | Bulk insert (up to 10K) |
-| **GET** | `/scroll` | Paginated iteration |
-| **POST** | `/api/embed` | Get embedding for text |
-| **POST** | `/v2/collections` | Create / list / delete collections |
-| **POST** | `/v2/insert` | Insert into a V2 collection |
-| **POST** | `/v2/search` | Search a V2 collection |
-| **POST** | `/v2/recommend` | Recommend similar items |
-| **POST** | `/v2/discover` | Discovery search |
-| **GET** | `/health` | Stats + liveness |
-| **GET** | `/metrics` | Prometheus endpoint |
-
-gRPC on `:50051` (configurable via `GRPC_PORT`). Same operations, protobuf-efficient. Max message size 64MB.
-
-Full API reference in [`internal/collection/API.md`](internal/collection/API.md).
-
-## Modes
-
-| Mode | Embedder | Cost |
-|------|----------|------|
-| `local` | Ollama | Free |
-| `pro` | OpenAI `text-embedding-3-small` | ~$0.02/1M tokens |
-| `hash` | Deterministic hash | Free (benchmarks/testing) |
-
-Set with `--mode local` or `VECTORDB_MODE=local`.
-
-## Configuration
-
-Key environment variables:
-
-| Variable | Default | What it controls |
-|----------|---------|------------------|
-| `VECTORDB_MODE` | `local` | Embedder backend (local/pro) |
-| `API_TOKEN` | — | Simple bearer token auth |
-| `JWT_SECRET` | — | JWT signing key |
-| `GRPC_PORT` | `50051` | gRPC listener port |
-| `MAX_COLLECTIONS` | `10000` | Collection count limit |
-| `MAX_TENANTS` | `100000` | Tenant count limit |
-| `TENANT_RPS` | `100` | Per-tenant rate limit (req/s) |
-| `STORAGE_FORMAT` | `gob` | Serialization: gob, cowrie, cowrie-zstd |
-| `ENCRYPTION_ENABLED` | `false` | Enable encryption at rest |
-| `ENCRYPTION_ALGORITHM` | `aes-gcm` | aes-gcm or chacha20 |
-| `AUDIT_LOG` | `false` | Enable audit logging |
-| `TLS_ENABLED` | `false` | Enable TLS/mTLS |
-
-## Clients
-
-| Language | Install |
-|----------|---------|
-| Go | `import "github.com/phenomenon0/vectordb/client"` |
-| Python | `pip install deepdata` |
-
-## Desktop App
-
-The `desktop/` directory wraps DeepData in a Tauri v2 native window with dynamic port allocation and native controls. Build with:
+Insert a document with vectors generated by the caller:
 
 ```bash
-cd desktop && npm install && npm run tauri build
+curl --fail-with-body \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -X POST http://127.0.0.1:8080/v3/tenants/acme/collections/papers/docs \
+  -d '{
+    "id": 1,
+    "vectors": {
+      "embedding": [0.1, 0.2, 0.3],
+      "keywords": {"indices": [7, 42], "values": [1.0, 0.5], "dim": 10000}
+    },
+    "metadata": {"title": "Crash-safe retrieval"}
+  }'
 ```
 
-## Docs
+Search one field:
 
-- [Installation](docs/installation.md) — Docker, source, systemd
-- [Cookbook](docs/cookbook.md) — RAG, hybrid search, multi-tenancy
-- [Security](docs/security.md) — JWT, TLS/mTLS, RBAC, encryption
-- [Distributed Architecture](docs/distributed-architecture.md) — Replication, sharding
-- [Benchmarks](docs/benchmarks.md) — Latency and throughput numbers
-- [Kubernetes](docs/kubernetes.md) — StatefulSet, Ingress, backups
-- [Troubleshooting](docs/troubleshooting.md) — Common issues
-- [Grafana Dashboard](docs/grafana/) — Prometheus dashboard + alerts
-- [Contributing](docs/contributing.md)
-- [Changelog](CHANGELOG.md)
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -X POST http://127.0.0.1:8080/v3/tenants/acme/collections/papers/search \
+  -d '{
+    "queries": {"embedding": [0.1, 0.2, 0.3]},
+    "top_k": 10,
+    "include_vectors": false
+  }'
+```
+
+A hybrid request supplies exactly two query fields plus `hybrid_params`. See
+the [cookbook](docs/cookbook.md) for the complete V3 examples.
+
+## gRPC contract
+
+The `deepdata.v3.DeepData` service exposes exactly:
+
+- `GetTenantInfo`, `ListCollections`, `GetCollection`
+- `CreateCollection`, `DeleteCollection`
+- `Insert`, `BatchInsert`, `DeleteDoc`
+- `Search`
+
+All methods use explicit tenant IDs and the same durable collection engine as
+HTTP. The protobuf source is
+[api/proto/deepdata/v3/deepdata.proto](api/proto/deepdata/v3/deepdata.proto).
+
+## Python client
+
+The supported client entry point is tenant-aware:
+
+```python
+from deepdata import DeepDataClient
+
+with DeepDataClient("http://127.0.0.1:8080", api_token="replace-me") as client:
+    tenant = client.tenant("acme")
+    tenant.insert(
+        "papers",
+        id=2,
+        vectors={
+            "embedding": [0.3, 0.2, 0.1],
+            "keywords": {"indices": [7], "values": [1.0], "dim": 10000},
+        },
+        metadata={"title": "Tenant-safe search"},
+    )
+```
+
+See the [Python SDK guide](sdk/python/README.md). The package omits older
+unscoped and V1/V2 helpers so unsupported server routes cannot be selected by
+accident.
+
+## Persistence and operations
+
+The acknowledged mutation boundary is the canonical collection journal.
+Graceful shutdown checkpoints it; restart replays acknowledged records. Corrupt,
+incompatible, locked, or legacy state causes startup/readiness failure instead
+of an empty replacement store.
+
+Back up or restore only while the server is stopped, and copy the complete
+configured state root. The legacy `/export` and `/import` routes are not RC
+backup mechanisms. Follow the tested procedure in the
+[cookbook](docs/cookbook.md#offline-backup).
+
+Terminate TLS at a trusted reverse proxy or ingress and use encrypted
+disks/PVCs. The RC server itself exposes cleartext HTTP/h2c and gRPC; built-in
+TLS, encryption-at-rest, and compliance-grade audit claims are outside RC1.
+
+## Development
+
+The release-gating checks are the Linux server contract, canonical Python
+client, container/Helm contract, crash/restart tests, and focused race suites.
+UI, desktop, distributed, provider, and advanced-index code is experimental and
+does not gate the RC.
+
+```bash
+go test -count=1 ./internal/collection
+go test -count=1 ./cmd/deepdata -run '^TestCanonical'
+cd sdk/python && python -m pytest -q && python -m mypy deepdata
+```
+
+See [tasks/todo.md](tasks/todo.md) for the production-hardening gates and
+[docs/PRE_RELEASE_STATUS.md](docs/PRE_RELEASE_STATUS.md) for evidence status.
 
 ## License
 
-MIT
+No project license has been selected yet. Do not describe or publish this
+release candidate as MIT-licensed until the legal owner and license text are
+confirmed and a root `LICENSE` file is committed.

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -35,7 +37,7 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	deepdatav1 "github.com/phenomenon0/vectordb/api/gen/deepdata/v1"
+	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -50,58 +52,63 @@ import (
 
 type VectorStore struct {
 	sync.RWMutex
-	Data  []float32
-	Dim   int
-	Count int
-	Docs  []string
-	IDs   []string
-	Seqs  []uint64
-	next  int64
+	Data    []float32
+	Dim     int
+	Count   int
+	Docs    []string
+	IDs     []string
+	Seqs    []uint64
+	next    int64
+	nextSeq uint64
 	// Index abstraction - the single source of truth for vector search
-	indexes     map[string]index.Index // Collection -> Index mapping
-	idToIx      map[uint64]int
-	Meta        map[uint64]map[string]string
-	Deleted     map[uint64]bool
-	Coll        map[uint64]string
-	NumMeta     map[uint64]map[string]float64
-	TimeMeta    map[uint64]map[string]time.Time
-	numIndex    map[string][]numEntry
-	timeIndex   map[string][]timeEntry
-	walPath     string
-	walMu       sync.Mutex
-	walMaxBytes int64
-	walMaxOps   int
-	walOps      int
-	walRotate   int64
-	walHook     func(walEntry) // Optional hook to forward WAL events (e.g., to replication stream)
-	apiToken    string
-	rl          *rateLimiter
-	checksum    string
-	lastSaved   time.Time
+	indexes            map[string]index.Index // Collection -> Index mapping
+	idToIx             map[uint64]int
+	Meta               map[uint64]map[string]string
+	Deleted            map[uint64]bool
+	Coll               map[uint64]string
+	NumMeta            map[uint64]map[string]float64
+	TimeMeta           map[uint64]map[string]time.Time
+	numIndex           map[string][]numEntry
+	timeIndex          map[string][]timeEntry
+	walPath            string
+	walMu              sync.Mutex
+	walMaxBytes        int64
+	walMaxOps          int
+	walOps             int
+	walRotate          int64
+	walHook            func(walEntry) // Optional hook to forward WAL events (e.g., to replication stream)
+	walFault           error          // Latched after an append may have partially reached durable storage
+	nextWALSeq         uint64         // Next monotonic WAL sequence to allocate (starts at 1)
+	appliedWALSeq      uint64         // Highest WAL sequence represented in logical state
+	apiToken           string
+	rl                 *rateLimiter
+	authFailureRL      *authFailureLimiter // shared HTTP/gRPC failed-auth budget keyed by peer IP
+	checksum           string
+	lastSaved          time.Time
+	lastSnapshotWALSeq uint64 // WAL high-water in the last successfully renamed snapshot
 	// Lexical stats for hybrid/BM25
 	lexTF   map[uint64]map[string]int
 	docLen  map[uint64]int
 	df      map[string]int
 	sumDocL int
 	// Multi-tenancy support
-	TenantID    map[uint64]string     // vector hash -> tenant ID
-	acl         *security.ACL         // access control lists
-	quotas      *security.TenantQuota // storage quotas per tenant
-	tenantRL    *tenantRateLimiter    // per-tenant rate limiting
-	jwtMgr      *security.JWTManager  // JWT token manager
-	requireAuth bool                  // Require JWT authentication
+	TenantID          map[uint64]string     // vector hash -> tenant ID
+	acl               *security.ACL         // access control lists
+	quotas            *security.TenantQuota // storage quotas per tenant
+	tenantRL          *tenantRateLimiter    // per-tenant rate limiting
+	canonicalTenantRL *rateLimiter          // shared V3 HTTP/gRPC limiter keyed by authenticated tenant
+	jwtMgr            *security.JWTManager  // JWT token manager
+	requireAuth       bool                  // Require JWT authentication
 	// Storage format (gob, cowrie, cowrie-zstd)
 	storageFormat storage.Format
 	// Metadata bitmap index for fast pre-filtering
 	// Metadata bitmap index for fast pre-filtering
 	metaIndex *MetadataIndex
 
-	// Recovery state
-	walReplayError error // Non-nil if WAL replay failed during load
-
 	// Background goroutine lifecycle
-	bgWg             sync.WaitGroup // Tracks in-flight background snapshot goroutines
-	snapshotRunning  atomic.Bool    // Guards against concurrent background snapshots racing on .tmp file
+	bgWg            sync.WaitGroup // Tracks in-flight background snapshot goroutines
+	snapshotRunning atomic.Bool    // Deduplicates background checkpoint scheduling
+	snapshotMu      sync.Mutex     // Serializes every snapshot commit, including explicit saves
 
 	// Limits (configurable via env vars)
 	maxCollections int // MAX_COLLECTIONS (default 10,000)
@@ -159,6 +166,7 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		timeIndex:   make(map[string][]timeEntry),
 		walMaxBytes: 0,
 		walMaxOps:   0,
+		nextWALSeq:  1,
 		apiToken:    apiToken,
 		requireAuth: requireAuth,
 		lexTF:       make(map[uint64]map[string]int),
@@ -219,7 +227,8 @@ func (vs *VectorStore) commitNewVectorLocked(v []float32, doc, id string, meta m
 	vs.Data = append(vs.Data, v...)
 	vs.Docs = append(vs.Docs, doc)
 	vs.IDs = append(vs.IDs, id)
-	vs.Seqs = append(vs.Seqs, uint64(vs.Count))
+	vs.Seqs = append(vs.Seqs, vs.nextSeq)
+	vs.nextSeq++
 	vs.Count++
 	if autoGenerated {
 		vs.next++
@@ -265,16 +274,27 @@ func (vs *VectorStore) addNewLocked(v []float32, doc, id string, meta map[string
 
 	hid := hashID(id)
 	if err := idx.Add(context.Background(), hid, v); err != nil {
-		vs.rollbackNewVectorLocked(idx, collection, createdIndex, hid, tenantID, totalBytes)
+		// A rejected Add (most commonly a duplicate ID) did not install this
+		// vector. Deleting hid here would remove the pre-existing index entry.
+		if createdIndex {
+			delete(vs.indexes, collection)
+		}
+		vs.quotas.RemoveUsage(tenantID, totalBytes, 1)
 		return "", fmt.Errorf("failed to add vector to index: %w", err)
 	}
 
-	if err := vs.appendWAL("insert", id, doc, meta, v, collection, tenantID); err != nil {
+	nextID := vs.next
+	if autoGenerated {
+		nextID++
+	}
+	walRecord, err := vs.appendWAL("insert", id, doc, meta, v, collection, tenantID, nextID)
+	if err != nil {
 		vs.rollbackNewVectorLocked(idx, collection, createdIndex, hid, tenantID, totalBytes)
 		return "", fmt.Errorf("failed to append to WAL: %w", err)
 	}
 
 	vs.commitNewVectorLocked(v, doc, id, meta, collection, tenantID, autoGenerated)
+	vs.commitWALMutation(walRecord)
 	return id, nil
 }
 
@@ -286,15 +306,29 @@ func (vs *VectorStore) Add(v []float32, doc string, id string, meta map[string]s
 		return "", fmt.Errorf("dimension mismatch: expected %d, got %d", vs.Dim, len(v))
 	}
 	autoGenerated := false
+	originalNext := vs.next
 	if id == "" {
-		id = fmt.Sprintf("doc-%d", vs.next)
 		autoGenerated = true
+		for {
+			if vs.next == math.MaxInt64 {
+				return "", fmt.Errorf("automatic document ID space exhausted")
+			}
+			id = fmt.Sprintf("doc-%d", vs.next)
+			if _, exists := vs.idToIx[hashID(id)]; !exists {
+				break
+			}
+			vs.next++
+		}
 	}
 	if tenantID == "" {
 		tenantID = "default" // Default tenant for backward compatibility
 	}
 
-	return vs.addNewLocked(v, doc, id, meta, collection, tenantID, autoGenerated)
+	result, err := vs.addNewLocked(v, doc, id, meta, collection, tenantID, autoGenerated)
+	if err != nil && autoGenerated {
+		vs.next = originalNext
+	}
+	return result, err
 }
 
 // Upsert replaces existing vector/doc/meta if ID exists; otherwise adds new with tenant ownership.
@@ -371,7 +405,8 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 			return "", fmt.Errorf("failed to update vector in index: %w", err)
 		}
 
-		if err := vs.appendWAL("upsert", id, doc, meta, v, targetCollection, tenantID); err != nil {
+		walRecord, err := vs.appendWAL("upsert", id, doc, meta, v, targetCollection, tenantID, vs.next)
+		if err != nil {
 			if errDel := targetIdx.Delete(context.Background(), hid); errDel != nil && !isNotFoundError(errDel) {
 				logging.Default().Warn("failed to rollback updated index entry", "id", id, "error", errDel)
 			}
@@ -396,6 +431,7 @@ func (vs *VectorStore) Upsert(v []float32, doc string, id string, meta map[strin
 		vs.Coll[hid] = targetCollection
 		vs.TenantID[hid] = tenantID
 		delete(vs.Deleted, hid)
+		vs.commitWALMutation(walRecord)
 		return id, nil
 	}
 
@@ -423,6 +459,12 @@ func (vs *VectorStore) Delete(id string) error {
 	vs.Lock()
 	defer vs.Unlock()
 	hid := hashID(id)
+	if _, exists := vs.idToIx[hid]; !exists {
+		return nil
+	}
+	if vs.Deleted[hid] {
+		return nil
+	}
 	tenant := vs.TenantID[hid]
 	if tenant == "" {
 		tenant = "default"
@@ -432,6 +474,12 @@ func (vs *VectorStore) Delete(id string) error {
 	delCollection := vs.Coll[hid]
 	if delCollection == "" {
 		delCollection = "default"
+	}
+	// The delete record must be durable before logical state changes. If the
+	// process dies after fsync but before mutation, startup replay completes it.
+	walRecord, err := vs.appendWAL("delete", id, "", nil, nil, delCollection, tenant, vs.next)
+	if err != nil {
+		return fmt.Errorf("failed to append to WAL: %w", err)
 	}
 	if idx, ok := vs.indexes[delCollection]; ok && idx != nil {
 		if err := idx.Delete(context.Background(), hid); err != nil && !isNotFoundError(err) {
@@ -448,9 +496,7 @@ func (vs *VectorStore) Delete(id string) error {
 	vs.ejectMeta(hid)
 	delete(vs.Meta, hid)
 	delete(vs.Coll, hid)
-	if err := vs.appendWAL("delete", id, "", nil, nil, delCollection, tenant); err != nil {
-		return fmt.Errorf("failed to append to WAL: %w", err)
-	}
+	vs.commitWALMutation(walRecord)
 	return nil
 }
 
@@ -789,57 +835,125 @@ func (vs *VectorStore) ejectMeta(hid uint64) {
 
 // Persistence snapshot.
 func (vs *VectorStore) Save(path string) error {
+	vs.snapshotMu.Lock()
+	defer vs.snapshotMu.Unlock()
+
 	vs.RLock()
 
-	tmp := path + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		vs.RUnlock()
 		return err
 	}
-	f, err := os.Create(tmp)
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		vs.RUnlock()
 		return err
 	}
+	tmp := f.Name()
 
 	// Export indexes
 	indexData := make(map[string][]byte)
+	indexTypes := make(map[string]string)
+	indexDims := make(map[string]int)
+	indexChecksums := make(map[string]string)
+	activeByCollection := make(map[string]int)
+	for _, id := range vs.IDs {
+		hid := hashID(id)
+		if vs.Deleted[hid] {
+			continue
+		}
+		collection := vs.Coll[hid]
+		if collection == "" {
+			collection = "default"
+		}
+		activeByCollection[collection]++
+	}
+	for collection := range activeByCollection {
+		if vs.indexes[collection] == nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			vs.RUnlock()
+			return fmt.Errorf("active collection %q has no index", collection)
+		}
+	}
 	for collName, idx := range vs.indexes {
 		if idx != nil {
 			data, err := idx.Export()
-			if err == nil {
-				indexData[collName] = data
+			if err != nil {
+				_ = f.Close()
+				_ = os.Remove(tmp)
+				vs.RUnlock()
+				return fmt.Errorf("export index %q: %w", collName, err)
 			}
+			indexType, err := persistedIndexType(idx.Name())
+			if err != nil {
+				_ = f.Close()
+				_ = os.Remove(tmp)
+				vs.RUnlock()
+				return fmt.Errorf("describe index %q: %w", collName, err)
+			}
+			stats := idx.Stats()
+			if stats.Dim != vs.Dim {
+				_ = f.Close()
+				_ = os.Remove(tmp)
+				vs.RUnlock()
+				return fmt.Errorf("index %q dimension mismatch: got %d, want %d", collName, stats.Dim, vs.Dim)
+			}
+			if stats.Active != activeByCollection[collName] {
+				_ = f.Close()
+				_ = os.Remove(tmp)
+				vs.RUnlock()
+				return fmt.Errorf("index %q active count mismatch: got %d, want %d", collName, stats.Active, activeByCollection[collName])
+			}
+			indexData[collName] = data
+			indexTypes[collName] = indexType
+			indexDims[collName] = stats.Dim
+			indexChecksums[collName] = indexBlobChecksum(data)
 		}
 	}
+	newChecksum := vs.computeChecksum()
+	lastSaved := time.Now()
 
 	payload := &storage.Payload{
-		Dim:       vs.Dim,
-		Data:      vs.Data,
-		Docs:      vs.Docs,
-		IDs:       vs.IDs,
-		Meta:      vs.Meta,
-		Deleted:   vs.Deleted,
-		Coll:      vs.Coll,
-		TenantID:  vs.TenantID,
-		Next:      vs.next,
-		Count:     vs.Count,
-		HNSW:      nil,       // Legacy field - no longer written
-		Indexes:   indexData, // Primary index storage
-		Checksum:  vs.checksum,
-		LastSaved: time.Now(),
-		LexTF:     vs.lexTF,
-		DocLen:    vs.docLen,
-		DF:        vs.df,
-		SumDocL:   vs.sumDocL,
-		NumMeta:   vs.NumMeta,
-		TimeMeta:  vs.TimeMeta,
+		FormatVersion:  storage.CurrentFormatVersion,
+		Dim:            vs.Dim,
+		Data:           vs.Data,
+		Docs:           vs.Docs,
+		IDs:            vs.IDs,
+		Seqs:           vs.Seqs,
+		Meta:           vs.Meta,
+		Deleted:        vs.Deleted,
+		Coll:           vs.Coll,
+		TenantID:       vs.TenantID,
+		Next:           vs.next,
+		NextSeq:        vs.nextSeq,
+		WALHighWater:   vs.appliedWALSeq,
+		Count:          vs.Count,
+		HNSW:           nil,       // Legacy field - no longer written
+		Indexes:        indexData, // Primary index storage
+		IndexTypes:     indexTypes,
+		IndexDims:      indexDims,
+		IndexChecksums: indexChecksums,
+		Checksum:       newChecksum,
+		LastSaved:      lastSaved,
+		LexTF:          vs.lexTF,
+		DocLen:         vs.docLen,
+		DF:             vs.df,
+		SumDocL:        vs.sumDocL,
+		NumMeta:        vs.NumMeta,
+		TimeMeta:       vs.TimeMeta,
 	}
 
 	// Use configured storage format (default: gob for backward compatibility)
 	format := vs.storageFormat
 	if format == nil {
 		format = storage.Default()
+	}
+	if err := validateStoragePayload(payload); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		vs.RUnlock()
+		return fmt.Errorf("validate snapshot before save: %w", err)
 	}
 
 	if err := format.Save(f, payload); err != nil {
@@ -863,24 +977,36 @@ func (vs *VectorStore) Save(path string) error {
 		return err
 	}
 
-	// Capture snapshot metadata while under read lock, then update mutable fields under write lock.
-	newChecksum := vs.computeChecksum()
-	lastSaved := payload.LastSaved
 	vs.RUnlock()
-
-	vs.Lock()
-	vs.checksum = newChecksum
-	vs.lastSaved = lastSaved
-	vs.Unlock()
 
 	// Rename atomically commits the new snapshot.
 	// WAL cleanup is the caller's responsibility — Save() must not delete the
 	// WAL because background snapshot goroutines race with concurrent appendWAL
 	// writers: entries written after the RLock was released but before this point
 	// would be lost if we deleted the WAL here.
-	if err := os.Rename(tmp, path); err != nil {
+	if err := renameSnapshotFile(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
+	// Persist the directory entry as well as the file contents. Without this,
+	// a power loss can lose the rename even though the snapshot itself was synced.
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open snapshot directory: %w", err)
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
+		return fmt.Errorf("sync snapshot directory: %w", err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("close snapshot directory: %w", err)
+	}
+
+	vs.Lock()
+	vs.checksum = newChecksum
+	vs.lastSaved = lastSaved
+	vs.lastSnapshotWALSeq = payload.WALHighWater
+	vs.Unlock()
 	return nil
 }
 
@@ -894,55 +1020,223 @@ func getStorageFormat() storage.Format {
 	return storage.Default()
 }
 
-// tryLoadPayload attempts to load a payload from path using multiple formats.
-// Returns the payload and the format used, or nil if all formats fail.
-func tryLoadPayload(path string) (*storage.Payload, storage.Format) {
-	// Try gob first (most common, backward compatible)
-	if payload := tryLoadWithFormat(path, storage.Get("gob")); payload != nil {
-		return payload, storage.Get("gob")
+func persistedIndexType(name string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "hnsw", "ivf", "flat", "diskann", "sparse", "binary", "ivf_binary", "ivf-binary":
+		return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "-", "_"), nil
+	case "pq-adc":
+		return "pq", nil
+	case "ivf-pq-adc":
+		return "ivf_pq", nil
+	case "pq4-adc":
+		return "pq4", nil
+	default:
+		return "", fmt.Errorf("unsupported index type %q", name)
 	}
+}
 
-	// Try cowrie formats
-	for _, formatName := range []string{"cowrie", "cowrie-zstd"} {
-		if f := storage.Get(formatName); f != nil {
-			if payload := tryLoadWithFormat(path, f); payload != nil {
-				return payload, f
-			}
+func indexBlobChecksum(data []byte) string {
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+// tryLoadPayload attempts every supported snapshot codec while preserving the
+// decoder errors. An existing file that no codec can verify is corrupt state,
+// not permission to initialize an empty database.
+func tryLoadPayload(path string) (*storage.Payload, storage.Format, error) {
+	formatNames := []string{"gob", "cowrie", "cowrie-zstd", "cowrie-delta-zstd"}
+	loadErrors := make([]error, 0, len(formatNames))
+	for _, formatName := range formatNames {
+		format := storage.Get(formatName)
+		if format == nil {
+			continue
 		}
+		payload, err := tryLoadWithFormat(path, format)
+		if err != nil {
+			loadErrors = append(loadErrors, fmt.Errorf("%s: %w", formatName, err))
+			continue
+		}
+		if err := validateStoragePayload(payload); err != nil {
+			loadErrors = append(loadErrors, fmt.Errorf("%s validation: %w", formatName, err))
+			continue
+		}
+		return payload, format, nil
 	}
 
-	return nil, nil
+	if len(loadErrors) == 0 {
+		return nil, nil, fmt.Errorf("no snapshot formats are registered")
+	}
+	return nil, nil, fmt.Errorf("load snapshot %q: %w", path, errors.Join(loadErrors...))
 }
 
 // tryLoadWithFormat attempts to load a payload using a specific format.
-func tryLoadWithFormat(path string, format storage.Format) *storage.Payload {
+func tryLoadWithFormat(path string, format storage.Format) (*storage.Payload, error) {
 	if format == nil {
-		return nil
+		return nil, fmt.Errorf("storage format is nil")
 	}
 
 	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
 	payload, err := format.Load(f)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return payload
+	return payload, nil
 }
 
-// Load snapshot or init new store.
-func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
+func validateStoragePayload(payload *storage.Payload) error {
+	if payload == nil {
+		return fmt.Errorf("payload is nil")
+	}
+	if payload.FormatVersion < 0 || payload.FormatVersion > storage.CurrentFormatVersion {
+		return fmt.Errorf("unsupported format version %d", payload.FormatVersion)
+	}
+	if payload.FormatVersion >= storage.CanonicalFormatVersion && payload.Checksum == "" {
+		return fmt.Errorf("canonical snapshot format %d is missing a checksum", payload.FormatVersion)
+	}
+	if payload.FormatVersion < storage.CurrentFormatVersion && payload.WALHighWater != 0 {
+		return fmt.Errorf("snapshot format %d cannot contain a WAL high-water mark", payload.FormatVersion)
+	}
+	if payload.Dim <= 0 {
+		return fmt.Errorf("invalid dimension %d", payload.Dim)
+	}
+	if payload.Count < 0 || payload.Next < 0 {
+		return fmt.Errorf("invalid counters: count=%d next=%d", payload.Count, payload.Next)
+	}
+	if len(payload.Docs) != len(payload.IDs) {
+		return fmt.Errorf("document/id length mismatch: %d != %d", len(payload.Docs), len(payload.IDs))
+	}
+	if payload.Count != len(payload.IDs) {
+		return fmt.Errorf("count/id length mismatch: %d != %d", payload.Count, len(payload.IDs))
+	}
+	if payload.FormatVersion >= storage.CanonicalFormatVersion {
+		if payload.VectorType != 0 || len(payload.VectorData) != 0 {
+			return fmt.Errorf("current server does not support persisted VectorData payloads")
+		}
+		knownIDs := make(map[uint64]struct{}, len(payload.IDs))
+		seenIDs := make(map[string]struct{}, len(payload.IDs))
+		for _, id := range payload.IDs {
+			if id == "" {
+				return fmt.Errorf("document ID is empty")
+			}
+			if _, duplicate := seenIDs[id]; duplicate {
+				return fmt.Errorf("duplicate document ID %q", id)
+			}
+			seenIDs[id] = struct{}{}
+			hashed := hashID(id)
+			if _, collision := knownIDs[hashed]; collision {
+				return fmt.Errorf("document ID hash collision for %q", id)
+			}
+			knownIDs[hashed] = struct{}{}
+			if !payload.Deleted[hashed] {
+				if payload.Coll[hashed] == "" {
+					return fmt.Errorf("active document %q is missing a collection", id)
+				}
+				if payload.TenantID[hashed] == "" {
+					return fmt.Errorf("active document %q is missing a tenant", id)
+				}
+			}
+		}
+		validateKnownKeys := func(name string, keys []uint64) error {
+			for _, id := range keys {
+				if _, ok := knownIDs[id]; !ok {
+					return fmt.Errorf("%s references unknown document hash %d", name, id)
+				}
+			}
+			return nil
+		}
+		for name, keys := range map[string][]uint64{
+			"metadata":         sortedUint64MapKeys(payload.Meta),
+			"deletions":        sortedUint64MapKeys(payload.Deleted),
+			"collections":      sortedUint64MapKeys(payload.Coll),
+			"tenants":          sortedUint64MapKeys(payload.TenantID),
+			"lexical terms":    sortedUint64MapKeys(payload.LexTF),
+			"document lengths": sortedUint64MapKeys(payload.DocLen),
+			"numeric metadata": sortedUint64MapKeys(payload.NumMeta),
+			"time metadata":    sortedUint64MapKeys(payload.TimeMeta),
+		} {
+			if err := validateKnownKeys(name, keys); err != nil {
+				return err
+			}
+		}
+		if len(payload.Seqs) != len(payload.IDs) {
+			return fmt.Errorf("sequence/id length mismatch: %d != %d", len(payload.Seqs), len(payload.IDs))
+		}
+		for i := 1; i < len(payload.Seqs); i++ {
+			if payload.Seqs[i] <= payload.Seqs[i-1] {
+				return fmt.Errorf("sequences are not strictly increasing at position %d", i)
+			}
+		}
+		if len(payload.Seqs) > 0 && payload.NextSeq <= payload.Seqs[len(payload.Seqs)-1] {
+			return fmt.Errorf("next sequence %d does not exceed high-water mark %d", payload.NextSeq, payload.Seqs[len(payload.Seqs)-1])
+		}
+		if len(payload.Indexes) == 0 {
+			return fmt.Errorf("current-format snapshot has no indexes")
+		}
+		if _, ok := payload.Indexes["default"]; !ok {
+			return fmt.Errorf("current-format snapshot has no default index")
+		}
+		if len(payload.IndexTypes) != len(payload.Indexes) || len(payload.IndexDims) != len(payload.Indexes) || len(payload.IndexChecksums) != len(payload.Indexes) {
+			return fmt.Errorf("index descriptor count mismatch: blobs=%d types=%d dims=%d checksums=%d", len(payload.Indexes), len(payload.IndexTypes), len(payload.IndexDims), len(payload.IndexChecksums))
+		}
+		for collection, data := range payload.Indexes {
+			if collection == "" {
+				return fmt.Errorf("index collection name is empty")
+			}
+			if _, err := persistedIndexType(payload.IndexTypes[collection]); err != nil {
+				return fmt.Errorf("index %q: %w", collection, err)
+			}
+			if payload.IndexDims[collection] != payload.Dim {
+				return fmt.Errorf("index %q dimension mismatch: got %d, want %d", collection, payload.IndexDims[collection], payload.Dim)
+			}
+			if got, want := payload.IndexChecksums[collection], indexBlobChecksum(data); got != want {
+				return fmt.Errorf("index %q checksum mismatch", collection)
+			}
+		}
+		for id, collection := range payload.Coll {
+			if payload.Deleted[id] {
+				continue
+			}
+			if collection == "" {
+				collection = "default"
+			}
+			if _, ok := payload.Indexes[collection]; !ok {
+				return fmt.Errorf("document %d references missing collection index %q", id, collection)
+			}
+		}
+	}
+	if len(payload.Data) != len(payload.IDs)*payload.Dim {
+		return fmt.Errorf("vector data length mismatch: got %d, want %d", len(payload.Data), len(payload.IDs)*payload.Dim)
+	}
+	return nil
+}
+
+func recognizedLegacyChecksum(payload *storage.Payload) bool {
+	if payload.Checksum == "" {
+		// The historical Save path wrote the previous in-memory checksum into
+		// the first snapshot, which was empty for a newly initialized store.
+		return true
+	}
+	weakStateChecksum := fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d-%d", payload.Count, payload.Next, len(payload.Docs))))
+	olderCounterChecksum := fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
+	return payload.Checksum == weakStateChecksum || payload.Checksum == olderCounterChecksum
+}
+
+// Load snapshot or initialize a store only when no prior snapshot exists.
+// Existing state that cannot be verified is returned as an error so callers
+// can fail before binding listeners and preserve the original recovery data.
+func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, error) {
 	if _, err := os.Stat(path); err == nil {
 		// Try to load with configured format, fall back to gob for backward compatibility
-		payload, loadedFormat := tryLoadPayload(path)
-		if payload == nil {
-			logging.Default().Warn("failed to load index with any format, rebuilding")
-			return NewVectorStore(capacity, dim), false
+		payload, loadedFormat, err := tryLoadPayload(path)
+		if err != nil {
+			return nil, false, err
 		}
-		_ = loadedFormat // format used for loading (for logging if needed)
+		logging.Default().Info("loaded snapshot", "format", loadedFormat.Name(), "path", path)
 		// Initialize JWT manager if configured
 		var jwtMgr *security.JWTManager
 		if secret := os.Getenv("JWT_SECRET"); secret != "" {
@@ -954,32 +1248,37 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		}
 
 		vs := &VectorStore{
-			Data:        payload.Data,
-			Dim:         payload.Dim,
-			Count:       payload.Count,
-			Docs:        payload.Docs,
-			IDs:         payload.IDs,
-			next:        payload.Next,
-			Meta:        payload.Meta,
-			Deleted:     payload.Deleted,
-			Coll:        payload.Coll,
-			TenantID:    payload.TenantID,
-			indexes:     make(map[string]index.Index),
-			idToIx:      make(map[uint64]int),
-			walPath:     path + ".wal",
-			walMu:       sync.Mutex{},
-			walMaxBytes: 0,
-			walMaxOps:   0,
-			apiToken:    os.Getenv("API_TOKEN"),
-			requireAuth: os.Getenv("REQUIRE_AUTH") == "1" || jwtMgr != nil || os.Getenv("API_TOKEN") != "",
-			checksum:    payload.Checksum,
-			lastSaved:   payload.LastSaved,
-			lexTF:       payload.LexTF,
-			docLen:      payload.DocLen,
-			df:          payload.DF,
-			sumDocL:     payload.SumDocL,
-			NumMeta:     payload.NumMeta,
-			TimeMeta:    payload.TimeMeta,
+			Data:               payload.Data,
+			Dim:                payload.Dim,
+			Count:              payload.Count,
+			Docs:               payload.Docs,
+			IDs:                payload.IDs,
+			Seqs:               payload.Seqs,
+			next:               payload.Next,
+			nextSeq:            payload.NextSeq,
+			nextWALSeq:         payload.WALHighWater + 1,
+			appliedWALSeq:      payload.WALHighWater,
+			lastSnapshotWALSeq: payload.WALHighWater,
+			Meta:               payload.Meta,
+			Deleted:            payload.Deleted,
+			Coll:               payload.Coll,
+			TenantID:           payload.TenantID,
+			indexes:            make(map[string]index.Index),
+			idToIx:             make(map[uint64]int),
+			walPath:            path + ".wal",
+			walMu:              sync.Mutex{},
+			walMaxBytes:        0,
+			walMaxOps:          0,
+			apiToken:           os.Getenv("API_TOKEN"),
+			requireAuth:        os.Getenv("REQUIRE_AUTH") == "1" || jwtMgr != nil || os.Getenv("API_TOKEN") != "",
+			checksum:           payload.Checksum,
+			lastSaved:          payload.LastSaved,
+			lexTF:              payload.LexTF,
+			docLen:             payload.DocLen,
+			df:                 payload.DF,
+			sumDocL:            payload.SumDocL,
+			NumMeta:            payload.NumMeta,
+			TimeMeta:           payload.TimeMeta,
 			// Numeric/time index maps for range queries (must be initialized!)
 			numIndex:  make(map[string][]numEntry),
 			timeIndex: make(map[string][]timeEntry),
@@ -992,19 +1291,6 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			storageFormat: getStorageFormat(),
 			// Metadata index (rebuilt below)
 			metaIndex: NewMetadataIndex(),
-		}
-		if vs.checksum == "" {
-			vs.checksum = vs.computeChecksum()
-		}
-		// Checksum migration: if stored checksum was computed with an older formula, recompute.
-		if !vs.validateChecksum() {
-			oldFormula := fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d", payload.Count, payload.Next)))
-			if vs.checksum == oldFormula {
-				logging.Default().Info("migrating checksum from old formula")
-				vs.checksum = vs.computeChecksum()
-			} else {
-				logging.Default().Warn("checksum mismatch; continuing with loaded snapshot")
-			}
 		}
 		for i, idStr := range vs.IDs {
 			vs.idToIx[hashID(idStr)] = i
@@ -1039,15 +1325,38 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		// Import indexes from snapshot
 		if len(payload.Indexes) > 0 {
 			for collName, data := range payload.Indexes {
-				// Create HNSW index for this collection
-				idx, err := index.NewHNSWIndex(vs.Dim, nil)
+				indexType := "hnsw"
+				indexDim := vs.Dim
+				if payload.FormatVersion >= storage.CanonicalFormatVersion {
+					indexType = payload.IndexTypes[collName]
+					indexDim = payload.IndexDims[collName]
+				}
+				idx, err := index.Create(indexType, indexDim, nil)
 				if err != nil {
-					logging.Default().Warn("failed to create index for collection", "collection", collName, "error", err)
-					continue
+					return nil, false, fmt.Errorf("create %s index for collection %q: %w", indexType, collName, err)
 				}
 				if err := idx.Import(data); err != nil {
-					logging.Default().Warn("failed to import index for collection", "collection", collName, "error", err)
-					continue
+					return nil, false, fmt.Errorf("import index for collection %q: %w", collName, err)
+				}
+				stats := idx.Stats()
+				if stats.Dim != vs.Dim {
+					return nil, false, fmt.Errorf("imported index %q dimension mismatch: got %d, want %d", collName, stats.Dim, vs.Dim)
+				}
+				if payload.FormatVersion >= storage.CanonicalFormatVersion {
+					expectedActive := 0
+					for _, id := range vs.IDs {
+						hid := hashID(id)
+						collection := vs.Coll[hid]
+						if collection == "" {
+							collection = "default"
+						}
+						if collection == collName && !vs.Deleted[hid] {
+							expectedActive++
+						}
+					}
+					if stats.Active != expectedActive {
+						return nil, false, fmt.Errorf("imported index %q active count mismatch: got %d, want %d", collName, stats.Active, expectedActive)
+					}
 				}
 				vs.indexes[collName] = idx
 			}
@@ -1063,7 +1372,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 				"ef_search": cfg.EfSearch,
 			})
 			if err != nil {
-				return nil, false
+				return nil, false, fmt.Errorf("create default index: %w", err)
 			}
 
 			// Migrate all non-deleted vectors to new index
@@ -1075,8 +1384,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 				}
 				vec := vs.Data[i*vs.Dim : (i+1)*vs.Dim]
 				if err := defaultIdx.Add(context.Background(), hid, vec); err != nil {
-					logging.Default().Warn("failed to migrate vector", "id", idStr, "error", err)
-					continue
+					return nil, false, fmt.Errorf("rebuild default index for document %q: %w", idStr, err)
 				}
 				migrated++
 			}
@@ -1086,14 +1394,53 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 			}
 		}
 
-		if vs.next == 0 {
+		if payload.FormatVersion < storage.CanonicalFormatVersion && len(vs.Seqs) == 0 {
+			vs.Seqs = make([]uint64, len(vs.IDs))
+			for i := range vs.Seqs {
+				vs.Seqs[i] = uint64(i)
+			}
+		}
+		if len(vs.Seqs) != len(vs.IDs) {
+			return nil, false, fmt.Errorf("sequence/id length mismatch after migration: %d != %d", len(vs.Seqs), len(vs.IDs))
+		}
+		if payload.FormatVersion < storage.CanonicalFormatVersion {
+			if len(vs.Seqs) > 0 {
+				vs.nextSeq = vs.Seqs[len(vs.Seqs)-1] + 1
+			} else {
+				vs.nextSeq = 0
+			}
+		}
+		if payload.FormatVersion < storage.CanonicalFormatVersion && vs.next == 0 {
 			vs.next = int64(len(vs.IDs))
 		}
-		// Ensure tenant ownership defaults to "default" when missing
-		for idKey := range vs.idToIx {
-			if vs.TenantID[idKey] == "" {
-				vs.TenantID[idKey] = "default"
+		// Normalize fields omitted by historical snapshots before migration.
+		if payload.FormatVersion < storage.CanonicalFormatVersion {
+			for idKey := range vs.idToIx {
+				if vs.TenantID[idKey] == "" {
+					vs.TenantID[idKey] = "default"
+				}
+				if !vs.Deleted[idKey] && vs.Coll[idKey] == "" {
+					vs.Coll[idKey] = "default"
+				}
 			}
+		}
+		// Legacy snapshots omitted fields now covered by the state checksum, so
+		// normalize them before migrating the checksum. Current snapshots must
+		// match exactly after the same codec-stable normalization.
+		if payload.FormatVersion < storage.CurrentFormatVersion {
+			if payload.FormatVersion == storage.CanonicalFormatVersion {
+				if payload.Checksum != vs.computeV3Checksum() {
+					return nil, false, fmt.Errorf("canonical version 3 snapshot checksum mismatch")
+				}
+				logging.Default().Warn("migrating canonical version 3 snapshot checksum")
+			} else if recognizedLegacyChecksum(payload) {
+				logging.Default().Warn("migrating recognized legacy snapshot checksum", "format_version", payload.FormatVersion)
+			} else {
+				return nil, false, fmt.Errorf("unrecognized legacy snapshot checksum")
+			}
+			vs.checksum = vs.computeChecksum()
+		} else if !vs.validateChecksum() {
+			return nil, false, fmt.Errorf("snapshot checksum mismatch")
 		}
 		// Rebuild metadata bitmap index from persisted Meta
 		if vs.metaIndex != nil && len(vs.Meta) > 0 {
@@ -1115,29 +1462,24 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool) {
 		if len(vs.NumMeta) > 0 || len(vs.TimeMeta) > 0 {
 			logging.Default().Info("rebuilt range indexes", "numeric_docs", len(vs.NumMeta), "time_docs", len(vs.TimeMeta))
 		}
-		// Recover any frozen WAL left by a crash during background snapshot.
-		// The frozen WAL contains entries from before the rotation — replay it
-		// first since those entries are older than any entries in the current WAL.
-		frozenPath := vs.walPath + ".frozen"
-		if _, ferr := os.Stat(frozenPath); ferr == nil {
-			logging.Default().Warn("found frozen WAL from interrupted snapshot, replaying", "path", frozenPath)
-			savedPath := vs.walPath
-			vs.walPath = frozenPath
-			if err := replayWAL(vs); err != nil {
-				logging.Default().Error("frozen WAL replay failed", "error", err)
-				vs.walReplayError = err
-			}
-			vs.walPath = savedPath
+		if recovered, err := checkpointWALRecovery(vs, path); err != nil {
+			return nil, false, fmt.Errorf("recover WAL artifacts: %w", err)
+		} else if recovered {
+			logging.Default().Info("WAL recovery checkpoint committed", "path", path, "wal_high_water", vs.appliedWALSeq)
 		}
-		if err := replayWAL(vs); err != nil {
-			logging.Default().Error("WAL replay failed — some data may be lost", "error", err)
-			vs.walReplayError = err // Store error for inspection
-		}
-		return vs, true
+		return vs, true, nil
+	} else if !os.IsNotExist(err) {
+		return nil, false, fmt.Errorf("stat snapshot %q: %w", path, err)
 	}
 	vs := NewVectorStore(capacity, dim)
 	vs.walPath = path + ".wal"
-	return vs, false
+	if recovered, err := checkpointWALRecovery(vs, path); err != nil {
+		return nil, false, fmt.Errorf("recover WAL without snapshot: %w", err)
+	} else if recovered {
+		logging.Default().Info("recovered WAL without prior snapshot", "path", path, "vectors", vs.Count)
+		return vs, true, nil
+	}
+	return vs, false, nil
 }
 
 type hnswConfig struct {
@@ -1172,7 +1514,7 @@ func loadHNSWConfig() hnswConfig {
 
 type Embedder interface {
 	Embed(text string) ([]float32, error)      // encode as document (for indexing)
-	EmbedQuery(text string) ([]float32, error)  // encode as query (for searching)
+	EmbedQuery(text string) ([]float32, error) // encode as query (for searching)
 	Dim() int
 }
 
@@ -1934,16 +2276,21 @@ func loadStopwords() map[string]bool {
 	return stopwords
 }
 
+const currentWALVersion = 1
+
 type walEntry struct {
-	Seq    uint64 // Monotonic sequence number (for WAL streaming)
-	Op     string
-	ID     string
-	Doc    string
-	Meta   map[string]string
-	Vec    []float32
-	Coll   string
-	Tenant string
-	Time   int64 // Unix timestamp (for WAL streaming)
+	Version  int
+	Seq      uint64 // Monotonic durability sequence, distinct from pagination Seqs
+	Op       string
+	ID       string
+	Doc      string
+	Meta     map[string]string
+	Vec      []float32
+	Coll     string
+	Tenant   string
+	NextID   int64  // Auto-generated document ID high-water mark after this mutation
+	Time     int64  // Unix timestamp (for WAL streaming)
+	Checksum string // SHA-256 of this record with Checksum cleared
 }
 
 type numEntry struct {
@@ -1964,7 +2311,69 @@ func (vs *VectorStore) SetWALHook(h func(walEntry)) {
 	vs.walHook = h
 }
 
-func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec []float32, collection string, tenant string) error {
+// commitWALMutation advances the in-memory checkpoint only after the logical
+// mutation is complete. Callers hold vs.Lock, so a snapshot cannot observe an
+// LSN whose state has not been installed yet.
+func (vs *VectorStore) commitWALMutation(entry walEntry) {
+	if entry.Seq > vs.appliedWALSeq {
+		vs.appliedWALSeq = entry.Seq
+	}
+	vs.walMu.Lock()
+	hook := vs.walHook
+	vs.walMu.Unlock()
+	if hook != nil {
+		hook(entry)
+	}
+}
+
+func walEntryChecksum(entry walEntry) (string, error) {
+	entry.Checksum = ""
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", sum[:]), nil
+}
+
+func syncParentDirectory(path string) error {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
+		return err
+	}
+	return dir.Close()
+}
+
+func removeDurableFile(path string) error {
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := syncParentDirectory(path); err != nil {
+		return fmt.Errorf("sync directory after removing %q: %w", path, err)
+	}
+	return nil
+}
+
+// removeWALArtifact is a narrow test seam for cleanup-failure recovery tests.
+var removeWALArtifact = removeDurableFile
+
+// syncWALFile is a narrow test seam for indeterminate append failures.
+var syncWALFile = func(f *os.File) error { return f.Sync() }
+
+// syncWALDirectory is a narrow test seam for WAL create/rotation durability.
+var syncWALDirectory = syncParentDirectory
+
+// renameSnapshotFile is a narrow test seam for snapshot commit ordering.
+var renameSnapshotFile = os.Rename
+
+func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec []float32, collection string, tenant string, nextID int64) (walEntry, error) {
 	// Normalize tenant
 	if tenant == "" && id != "" {
 		tenant = vs.TenantID[hashID(id)]
@@ -1980,166 +2389,626 @@ func (vs *VectorStore) appendWAL(op, id, doc string, meta map[string]string, vec
 	}
 
 	entry := walEntry{
-		Op:     op,
-		ID:     id,
-		Doc:    doc,
-		Meta:   meta,
-		Vec:    vec,
-		Coll:   collection,
-		Tenant: tenant,
-		Time:   time.Now().Unix(),
+		Version: currentWALVersion,
+		Op:      op,
+		ID:      id,
+		Doc:     doc,
+		Meta:    meta,
+		Vec:     vec,
+		Coll:    collection,
+		Tenant:  tenant,
+		NextID:  nextID,
+		Time:    time.Now().Unix(),
 	}
 
-	if vs.walPath != "" {
-		vs.walMu.Lock()
-		f, err := os.OpenFile(vs.walPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			vs.walMu.Unlock()
-			return fmt.Errorf("failed to open WAL: %w", err)
-		}
+	vs.walMu.Lock()
+	if vs.walFault != nil {
+		fault := vs.walFault
+		vs.walMu.Unlock()
+		return entry, fmt.Errorf("WAL writes are disabled after an indeterminate append: %w", fault)
+	}
+	if vs.walPath == "" {
+		vs.walMu.Unlock()
+		return entry, nil
+	}
+	if vs.nextWALSeq == 0 {
+		vs.nextWALSeq = 1
+	}
+	entry.Seq = vs.nextWALSeq
+	checksum, err := walEntryChecksum(entry)
+	if err != nil {
+		vs.walMu.Unlock()
+		return entry, fmt.Errorf("checksum WAL entry: %w", err)
+	}
+	entry.Checksum = checksum
 
-		if err := json.NewEncoder(f).Encode(&entry); err != nil {
-			f.Close()
-			vs.walMu.Unlock()
-			return fmt.Errorf("failed to encode WAL entry: %w", err)
+	_, statErr := os.Stat(vs.walPath)
+	newFile := os.IsNotExist(statErr)
+	if statErr != nil && !newFile {
+		vs.walMu.Unlock()
+		return entry, fmt.Errorf("inspect WAL: %w", statErr)
+	}
+	f, err := os.OpenFile(vs.walPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		vs.walMu.Unlock()
+		return entry, fmt.Errorf("failed to open WAL: %w", err)
+	}
+	latchFault := func(stage string, cause error) (walEntry, error) {
+		if vs.walFault == nil {
+			vs.walFault = fmt.Errorf("WAL append became indeterminate during %s: %w", stage, cause)
 		}
+		fault := vs.walFault
+		vs.walMu.Unlock()
+		return entry, fault
+	}
 
-		// Fsync to ensure durability
-		if err := f.Sync(); err != nil {
-			f.Close()
-			vs.walMu.Unlock()
-			return fmt.Errorf("failed to sync WAL: %w", err)
+	if err := json.NewEncoder(f).Encode(&entry); err != nil {
+		_ = f.Close()
+		return latchFault("encode", err)
+	}
+	if err := syncWALFile(f); err != nil {
+		_ = f.Close()
+		return latchFault("fsync", err)
+	}
+	if err := f.Close(); err != nil {
+		return latchFault("close", err)
+	}
+	if newFile {
+		if err := syncWALDirectory(vs.walPath); err != nil {
+			return latchFault("directory fsync", err)
 		}
-		vs.walOps++
+	}
+	vs.nextWALSeq = entry.Seq + 1
+	vs.walOps++
 
-		var doSnapshot bool
-		if vs.walMaxOps > 0 && vs.walOps >= vs.walMaxOps {
+	var doSnapshot bool
+	if vs.walMaxOps > 0 && vs.walOps >= vs.walMaxOps {
+		doSnapshot = true
+		vs.walOps = 0
+	}
+	if !doSnapshot && vs.walMaxBytes > 0 {
+		if info, err := os.Stat(vs.walPath); err == nil && info.Size() >= vs.walMaxBytes {
 			doSnapshot = true
 			vs.walOps = 0
 		}
-		if !doSnapshot && vs.walMaxBytes > 0 {
-			if info, err := f.Stat(); err == nil && info.Size() >= vs.walMaxBytes {
-				doSnapshot = true
-				vs.walOps = 0
-			}
-		}
-		if err := f.Close(); err != nil {
-			logging.Default().Warn("failed to close WAL file", "error", err)
-		}
-		vs.walMu.Unlock()
+	}
+	vs.walMu.Unlock()
 
-		if doSnapshot && vs.snapshotRunning.CompareAndSwap(false, true) {
-			snapPath := strings.TrimSuffix(vs.walPath, ".wal")
-			// Rotate the WAL under walMu: rename the current WAL to a frozen
-			// path so the snapshot goroutine can safely delete it after Save()
-			// without racing with concurrent appendWAL writers — new writes
-			// will create a fresh WAL file via O_CREATE|O_APPEND.
-			frozenWAL := vs.walPath + ".frozen"
-			vs.walMu.Lock()
-			rotateErr := os.Rename(vs.walPath, frozenWAL)
+	if doSnapshot && vs.snapshotRunning.CompareAndSwap(false, true) {
+		snapPath := strings.TrimSuffix(vs.walPath, ".wal")
+		frozenWAL := vs.walPath + ".frozen"
+		vs.walMu.Lock()
+		_, frozenErr := os.Stat(frozenWAL)
+		frozenExists := frozenErr == nil
+		if frozenErr != nil && !os.IsNotExist(frozenErr) {
+			vs.walMu.Unlock()
+			logging.Default().Warn("failed to inspect frozen WAL", "error", frozenErr)
+			vs.snapshotRunning.Store(false)
+		} else {
+			var rotateErr, rotateSyncErr error
+			if !frozenExists {
+				rotateErr = os.Rename(vs.walPath, frozenWAL)
+				if rotateErr == nil {
+					rotateSyncErr = syncWALDirectory(vs.walPath)
+				}
+			}
 			vs.walOps = 0
 			vs.walMu.Unlock()
-			if rotateErr != nil {
+			if rotateSyncErr != nil {
+				logging.Default().Error("WAL rotation directory sync was indeterminate", "error", rotateSyncErr)
+				vs.snapshotRunning.Store(false)
+				vs.walMu.Lock()
+				return latchFault("WAL rotation directory fsync", rotateSyncErr)
+			} else if rotateErr != nil {
 				logging.Default().Warn("failed to rotate WAL for snapshot", "error", rotateErr)
 				vs.snapshotRunning.Store(false)
+				if _, statErr := os.Stat(vs.walPath); statErr != nil {
+					vs.walMu.Lock()
+					return latchFault("WAL rotation", errors.Join(rotateErr, statErr))
+				}
 			} else {
 				vs.bgWg.Add(1)
 				go func() {
 					defer vs.bgWg.Done()
 					defer vs.snapshotRunning.Store(false)
 					if err := vs.Save(snapPath); err == nil {
-						_ = os.Remove(frozenWAL)
-					} else {
-						// Save failed — restore the frozen WAL so entries aren't lost.
-						// If a new WAL was created concurrently, the rename will fail
-						// and the frozen WAL stays for the next snapshot attempt.
-						if renameErr := os.Rename(frozenWAL, vs.walPath); renameErr != nil {
-							logging.Default().Warn("failed to restore frozen WAL", "error", renameErr, "frozen_path", frozenWAL)
+						covered, verifyErr := vs.frozenWALCoveredByLastSnapshot(frozenWAL)
+						if verifyErr != nil || !covered {
+							if verifyErr == nil {
+								verifyErr = fmt.Errorf("frozen WAL extends beyond committed snapshot")
+							}
+							vs.Lock()
+							if vs.walFault == nil {
+								vs.walFault = fmt.Errorf("cannot verify checkpointed frozen WAL: %w", verifyErr)
+							}
+							vs.Unlock()
+							logging.Default().Error("retaining unverified frozen WAL and disabling writes", "error", verifyErr, "path", frozenWAL)
+						} else if err := removeWALArtifact(frozenWAL); err != nil {
+							logging.Default().Warn("failed to remove checkpointed frozen WAL", "error", err, "path", frozenWAL)
 						}
+					} else {
+						// Keep frozen and current WALs separate. A later checkpoint or
+						// restart validates both before removing either artifact.
+						logging.Default().Warn("background snapshot failed; WAL artifacts retained", "error", err)
 					}
 				}()
 			}
 		}
 	}
 
-	// Forward to external WAL hooks (e.g., replication stream)
-	if vs.walHook != nil {
-		vs.walHook(entry)
-	}
-
-	return nil
+	return entry, nil
 }
 
+func readWALFile(path string, dim int) ([]walEntry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	dec := json.NewDecoder(f)
+	dec.DisallowUnknownFields()
+	entries := make([]walEntry, 0)
+	for {
+		var entry walEntry
+		if err := dec.Decode(&entry); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("decode WAL %q: %w", path, err)
+		}
+		if entry.Op != "insert" && entry.Op != "upsert" && entry.Op != "delete" {
+			return nil, fmt.Errorf("unknown WAL operation %q in %q", entry.Op, path)
+		}
+		if entry.ID == "" {
+			return nil, fmt.Errorf("WAL operation %q has empty ID in %q", entry.Op, path)
+		}
+		if entry.Op != "delete" && len(entry.Vec) != dim {
+			return nil, fmt.Errorf("WAL operation %q for %q has dimension %d, want %d", entry.Op, entry.ID, len(entry.Vec), dim)
+		}
+		legacy := entry.Version == 0 && entry.Seq == 0 && entry.Checksum == ""
+		if !legacy {
+			if entry.Version != currentWALVersion || entry.Seq == 0 || entry.Checksum == "" {
+				return nil, fmt.Errorf("invalid WAL envelope in %q", path)
+			}
+			want, err := walEntryChecksum(entry)
+			if err != nil {
+				return nil, fmt.Errorf("checksum WAL entry in %q: %w", path, err)
+			}
+			if entry.Checksum != want {
+				return nil, fmt.Errorf("WAL checksum mismatch at sequence %d in %q", entry.Seq, path)
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func (vs *VectorStore) frozenWALCoveredByLastSnapshot(path string) (bool, error) {
+	entries, err := readWALFile(path, vs.Dim)
+	if err != nil {
+		return false, err
+	}
+	var maxSeq uint64
+	for _, entry := range entries {
+		if entry.Version == 0 {
+			return false, fmt.Errorf("background checkpoint encountered a legacy WAL record")
+		}
+		if entry.Seq > maxSeq {
+			maxSeq = entry.Seq
+		}
+	}
+	vs.RLock()
+	savedSeq := vs.lastSnapshotWALSeq
+	vs.RUnlock()
+	return maxSeq <= savedSeq, nil
+}
+
+func equalStringMap(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func equalFloat32Slice(left, right []float32) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if math.Float32bits(left[i]) != math.Float32bits(right[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func insertMatchesState(vs *VectorStore, entry walEntry) bool {
+	hid := hashID(entry.ID)
+	ix, ok := vs.idToIx[hid]
+	if !ok || ix < 0 || ix >= len(vs.IDs) || vs.Deleted[hid] {
+		return false
+	}
+	collection := entry.Coll
+	if collection == "" {
+		collection = "default"
+	}
+	tenant := entry.Tenant
+	if tenant == "" {
+		tenant = "default"
+	}
+	return vs.IDs[ix] == entry.ID &&
+		vs.Docs[ix] == entry.Doc &&
+		equalFloat32Slice(vs.Data[ix*vs.Dim:(ix+1)*vs.Dim], entry.Vec) &&
+		equalStringMap(vs.Meta[hid], entry.Meta) &&
+		vs.Coll[hid] == collection &&
+		vs.TenantID[hid] == tenant
+}
+
+func applyWALEntry(vs *VectorStore, entry walEntry) (bool, error) {
+	if entry.Tenant == "" {
+		entry.Tenant = "default"
+	}
+	if entry.Coll == "" {
+		entry.Coll = "default"
+	}
+	changed := true
+	switch entry.Op {
+	case "insert":
+		if _, exists := vs.idToIx[hashID(entry.ID)]; exists {
+			if !insertMatchesState(vs, entry) {
+				return false, fmt.Errorf("conflicting replayed insert for %q", entry.ID)
+			}
+			changed = false
+		} else if _, err := vs.Add(entry.Vec, entry.Doc, entry.ID, entry.Meta, entry.Coll, entry.Tenant); err != nil {
+			return false, fmt.Errorf("replay insert %q: %w", entry.ID, err)
+		}
+	case "upsert":
+		if _, err := vs.Upsert(entry.Vec, entry.Doc, entry.ID, entry.Meta, entry.Coll, entry.Tenant); err != nil {
+			return false, fmt.Errorf("replay upsert %q: %w", entry.ID, err)
+		}
+	case "delete":
+		hid := hashID(entry.ID)
+		if _, exists := vs.idToIx[hid]; !exists || vs.Deleted[hid] {
+			changed = false
+		} else if err := vs.Delete(entry.ID); err != nil {
+			return false, fmt.Errorf("replay delete %q: %w", entry.ID, err)
+		}
+	}
+	if entry.NextID > vs.next {
+		vs.next = entry.NextID
+	} else if entry.Version == 0 && entry.NextID == 0 {
+		// Historical WAL records did not persist the auto-ID counter. Recover a
+		// conservative high-water from IDs produced by the old doc-N allocator so
+		// WAL-only migration cannot reuse an acknowledged identifier.
+		if suffix, ok := strings.CutPrefix(entry.ID, "doc-"); ok {
+			if value, err := strconv.ParseInt(suffix, 10, 64); err == nil && value >= 0 && value < math.MaxInt64 && value+1 > vs.next {
+				vs.next = value + 1
+			}
+		}
+	}
+	return changed, nil
+}
+
+func replayWALEntries(vs *VectorStore, batches [][]walEntry) (bool, error) {
+	var sawLegacy, sawCurrent bool
+	for _, entries := range batches {
+		for _, entry := range entries {
+			if entry.Version == 0 {
+				sawLegacy = true
+			} else {
+				sawCurrent = true
+			}
+		}
+	}
+	if sawLegacy && sawCurrent {
+		return false, fmt.Errorf("mixed legacy and sequenced WAL records require explicit recovery")
+	}
+
+	savedPath := vs.walPath
+	savedHook := vs.walHook
+	vs.walPath = ""
+	vs.walHook = nil
+	defer func() {
+		vs.walPath = savedPath
+		vs.walHook = savedHook
+	}()
+
+	lastSeen := uint64(0)
+	expected := vs.appliedWALSeq + 1
+	changed := false
+	for _, entries := range batches {
+		for _, entry := range entries {
+			legacy := entry.Version == 0
+			if !legacy {
+				if lastSeen != 0 && entry.Seq <= lastSeen {
+					return false, fmt.Errorf("WAL sequence is not strictly increasing: %d after %d", entry.Seq, lastSeen)
+				}
+				lastSeen = entry.Seq
+				if entry.Seq <= vs.appliedWALSeq {
+					continue
+				}
+				if entry.Seq != expected {
+					return false, fmt.Errorf("WAL sequence gap: got %d, want %d", entry.Seq, expected)
+				}
+			}
+			entryChanged, err := applyWALEntry(vs, entry)
+			if err != nil {
+				return false, err
+			}
+			changed = changed || entryChanged
+			if legacy {
+				vs.appliedWALSeq++
+			} else {
+				vs.appliedWALSeq = entry.Seq
+				expected++
+			}
+			vs.nextWALSeq = vs.appliedWALSeq + 1
+		}
+	}
+	return changed, nil
+}
+
+func walArtifactPaths(snapshotPath string) ([]string, error) {
+	paths := make([]string, 0, 2)
+	for _, path := range []string{snapshotPath + ".wal.frozen", snapshotPath + ".wal"} {
+		if _, err := os.Stat(path); err == nil {
+			paths = append(paths, path)
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect WAL artifact %q: %w", path, err)
+		}
+	}
+	return paths, nil
+}
+
+func existingLegacyRootArtifacts(indexPath string) ([]string, error) {
+	if indexPath == "" {
+		return nil, nil
+	}
+	paths := make([]string, 0, 3)
+	for _, path := range []string{indexPath, indexPath + ".wal.frozen", indexPath + ".wal"} {
+		if _, err := os.Lstat(path); err == nil {
+			paths = append(paths, path)
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect legacy root artifact %q: %w", path, err)
+		}
+	}
+	return paths, nil
+}
+
+// checkpointWALRecovery validates every recovery artifact before applying any
+// record, then commits the recovered state before removing either log.
+func checkpointWALRecovery(vs *VectorStore, snapshotPath string) (bool, error) {
+	paths, err := walArtifactPaths(snapshotPath)
+	if err != nil || len(paths) == 0 {
+		return false, err
+	}
+	batches := make([][]walEntry, 0, len(paths))
+	for _, path := range paths {
+		entries, err := readWALFile(path, vs.Dim)
+		if err != nil {
+			return false, err
+		}
+		batches = append(batches, entries)
+	}
+	if _, err := replayWALEntries(vs, batches); err != nil {
+		return false, err
+	}
+	if err := vs.Save(snapshotPath); err != nil {
+		return false, fmt.Errorf("checkpoint recovered WAL state: %w", err)
+	}
+	for _, path := range paths {
+		if err := removeWALArtifact(path); err != nil {
+			return false, fmt.Errorf("remove checkpointed WAL artifact: %w", err)
+		}
+	}
+	return true, nil
+}
+
+// replayWAL is retained for focused tests and manual recovery tooling. It
+// deliberately does not remove the WAL; production startup uses
+// checkpointWALRecovery so cleanup happens only after a durable snapshot.
 func replayWAL(vs *VectorStore) error {
 	if vs.walPath == "" {
 		return nil
 	}
-	f, err := os.Open(vs.walPath)
+	entries, err := readWALFile(vs.walPath, vs.Dim)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // No WAL to replay
+			return nil
 		}
-		return fmt.Errorf("failed to open WAL for replay: %w", err)
+		return err
 	}
-	defer f.Close()
+	_, err = replayWALEntries(vs, [][]walEntry{entries})
+	return err
+}
 
-	// Disable WAL writes during replay to avoid re-appending the same ops.
-	path := vs.walPath
-	vs.walPath = ""
-	hook := vs.walHook
-	vs.walHook = nil
-	defer func() {
-		vs.walPath = path
-		vs.walHook = hook
-	}()
-
-	dec := json.NewDecoder(f)
-	var replayErrors []error
-	for {
-		var e walEntry
-		if err := dec.Decode(&e); err != nil {
-			if err != io.EOF {
-				replayErrors = append(replayErrors, fmt.Errorf("WAL decode error: %w", err))
-			}
-			break
-		}
-		if e.Tenant == "" {
-			e.Tenant = "default"
-		}
-		switch e.Op {
-		case "insert":
-			if _, err := vs.Add(e.Vec, e.Doc, e.ID, e.Meta, e.Coll, e.Tenant); err != nil {
-				replayErrors = append(replayErrors, fmt.Errorf("replay insert failed: %w", err))
-			}
-		case "upsert":
-			if _, err := vs.Upsert(e.Vec, e.Doc, e.ID, e.Meta, e.Coll, e.Tenant); err != nil {
-				replayErrors = append(replayErrors, fmt.Errorf("replay upsert failed: %w", err))
-			}
-		case "delete":
-			if err := vs.Delete(e.ID); err != nil {
-				replayErrors = append(replayErrors, fmt.Errorf("replay delete failed: %w", err))
-			}
-		}
+func sortedUint64MapKeys[V any](values map[uint64]V) []uint64 {
+	keys := make([]uint64, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
 	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	return keys
+}
 
-	if len(replayErrors) > 0 {
-		logging.Default().Error("WAL replay completed with errors — WAL preserved for manual inspection",
-			"error_count", len(replayErrors), "wal_path", path)
-		for _, e := range replayErrors {
-			logging.Default().Warn("WAL replay error", "error", e)
+func sortedStringMapKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// computeChecksum returns a codec-independent digest of every persisted field
+// that defines logical query state. Derived indexes and LastSaved are excluded:
+// index blobs have their own format validation and timestamps are metadata, not
+// database contents. Length-prefixing and sorted map keys make the hash stable
+// across Go map iteration order and across Gob/Cowrie round-trips.
+func (vs *VectorStore) computeChecksumForFormat(formatVersion int, includeWALHighWater bool) string {
+	digest := sha256.New()
+	var scalar [8]byte
+	writeUint64 := func(value uint64) {
+		binary.LittleEndian.PutUint64(scalar[:], value)
+		_, _ = digest.Write(scalar[:])
+	}
+	writeInt64 := func(value int64) { writeUint64(uint64(value)) }
+	writeBytes := func(value []byte) {
+		writeUint64(uint64(len(value)))
+		_, _ = digest.Write(value)
+	}
+	writeString := func(value string) { writeBytes([]byte(value)) }
+	writeBool := func(value bool) {
+		if value {
+			writeUint64(1)
+		} else {
+			writeUint64(0)
 		}
-		// Return an error so walReplayError is set, /health and /readyz report
-		// unhealthy, and the WAL is preserved for operator inspection/recovery.
-		return fmt.Errorf("WAL replay had %d errors", len(replayErrors))
 	}
 
-	// All entries replayed successfully — safe to remove the WAL.
-	_ = os.Remove(path)
-	return nil
+	writeString("deepdata-logical-state-v1")
+	writeString("snapshot_format_version")
+	writeInt64(int64(formatVersion))
+	writeString("dim")
+	writeInt64(int64(vs.Dim))
+	writeString("count")
+	writeInt64(int64(vs.Count))
+	writeString("next")
+	writeInt64(vs.next)
+	writeString("next_seq")
+	writeUint64(vs.nextSeq)
+	if includeWALHighWater {
+		writeString("wal_high_water")
+		writeUint64(vs.appliedWALSeq)
+	}
+
+	writeString("data")
+	writeUint64(uint64(len(vs.Data)))
+	for _, value := range vs.Data {
+		writeUint64(uint64(math.Float32bits(value)))
+	}
+	writeString("docs")
+	writeUint64(uint64(len(vs.Docs)))
+	for _, value := range vs.Docs {
+		writeString(value)
+	}
+	writeString("ids")
+	writeUint64(uint64(len(vs.IDs)))
+	for _, value := range vs.IDs {
+		writeString(value)
+	}
+	writeString("seqs")
+	writeUint64(uint64(len(vs.Seqs)))
+	for _, value := range vs.Seqs {
+		writeUint64(value)
+	}
+
+	writeString("meta")
+	metaKeys := sortedUint64MapKeys(vs.Meta)
+	writeUint64(uint64(len(metaKeys)))
+	for _, id := range metaKeys {
+		writeUint64(id)
+		fields := sortedStringMapKeys(vs.Meta[id])
+		writeUint64(uint64(len(fields)))
+		for _, field := range fields {
+			writeString(field)
+			writeString(vs.Meta[id][field])
+		}
+	}
+	writeString("deleted")
+	deletedKeys := sortedUint64MapKeys(vs.Deleted)
+	writeUint64(uint64(len(deletedKeys)))
+	for _, id := range deletedKeys {
+		writeUint64(id)
+		writeBool(vs.Deleted[id])
+	}
+	writeString("collections")
+	collectionKeys := sortedUint64MapKeys(vs.Coll)
+	writeUint64(uint64(len(collectionKeys)))
+	for _, id := range collectionKeys {
+		writeUint64(id)
+		writeString(vs.Coll[id])
+	}
+	writeString("tenants")
+	tenantKeys := sortedUint64MapKeys(vs.TenantID)
+	writeUint64(uint64(len(tenantKeys)))
+	for _, id := range tenantKeys {
+		writeUint64(id)
+		writeString(vs.TenantID[id])
+	}
+
+	writeString("lex_tf")
+	lexKeys := sortedUint64MapKeys(vs.lexTF)
+	writeUint64(uint64(len(lexKeys)))
+	for _, id := range lexKeys {
+		writeUint64(id)
+		terms := sortedStringMapKeys(vs.lexTF[id])
+		writeUint64(uint64(len(terms)))
+		for _, term := range terms {
+			writeString(term)
+			writeInt64(int64(vs.lexTF[id][term]))
+		}
+	}
+	writeString("doc_len")
+	docLenKeys := sortedUint64MapKeys(vs.docLen)
+	writeUint64(uint64(len(docLenKeys)))
+	for _, id := range docLenKeys {
+		writeUint64(id)
+		writeInt64(int64(vs.docLen[id]))
+	}
+	writeString("df")
+	dfKeys := sortedStringMapKeys(vs.df)
+	writeUint64(uint64(len(dfKeys)))
+	for _, term := range dfKeys {
+		writeString(term)
+		writeInt64(int64(vs.df[term]))
+	}
+	writeString("sum_doc_l")
+	writeInt64(int64(vs.sumDocL))
+
+	writeString("num_meta")
+	numKeys := sortedUint64MapKeys(vs.NumMeta)
+	writeUint64(uint64(len(numKeys)))
+	for _, id := range numKeys {
+		writeUint64(id)
+		fields := sortedStringMapKeys(vs.NumMeta[id])
+		writeUint64(uint64(len(fields)))
+		for _, field := range fields {
+			writeString(field)
+			writeUint64(math.Float64bits(vs.NumMeta[id][field]))
+		}
+	}
+	writeString("time_meta")
+	timeKeys := sortedUint64MapKeys(vs.TimeMeta)
+	writeUint64(uint64(len(timeKeys)))
+	for _, id := range timeKeys {
+		writeUint64(id)
+		fields := sortedStringMapKeys(vs.TimeMeta[id])
+		writeUint64(uint64(len(fields)))
+		for _, field := range fields {
+			writeString(field)
+			writeInt64(vs.TimeMeta[id][field].UTC().UnixNano())
+		}
+	}
+
+	return fmt.Sprintf("sha256:%x", digest.Sum(nil))
 }
 
 func (vs *VectorStore) computeChecksum() string {
-	return fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d-%d", vs.Count, vs.next, len(vs.Docs))))
+	return vs.computeChecksumForFormat(storage.CurrentFormatVersion, true)
+}
+
+// Version 3 was the first canonical snapshot checksum. It predates the WAL
+// checkpoint high-water field, so its digest must be verified with the exact
+// historical field set before migrating to the current format.
+func (vs *VectorStore) computeV3Checksum() string {
+	return vs.computeChecksumForFormat(3, false)
 }
 
 func (vs *VectorStore) validateChecksum() bool {
@@ -2322,6 +3191,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The production server exposes only the caller-supplied-vector V3/gRPC
+	// collection engine. Historical handlers remain in source for offline
+	// migration tests, but no runtime environment switch may re-enable them in
+	// the RC binary.
+	const canonicalOnly = true
+	if canonicalOnly {
+		if err := validateCanonicalAuthEnvironment(); err != nil {
+			logger.Error("canonical authentication configuration rejected", "error", err)
+			os.Exit(1)
+		}
+		configuredMode := strings.ToLower(strings.TrimSpace(os.Getenv("VECTORDB_MODE")))
+		if configuredMode == "" {
+			if err := os.Setenv("VECTORDB_MODE", string(ModeLocal)); err != nil {
+				logger.Error("failed to select canonical local data path", "error", err)
+				os.Exit(1)
+			}
+		} else if configuredMode != string(ModeLocal) {
+			logger.Error("canonical RC accepts caller-supplied vectors and supports only the local persistence path", "VECTORDB_MODE", configuredMode)
+			os.Exit(1)
+		}
+	}
+
 	// ==========================================================================
 	// Mode System Initialization (LOCAL or PRO)
 	// ==========================================================================
@@ -2339,14 +3230,17 @@ func main() {
 	}
 	logger.Info("data directory ready", "path", dataDir)
 
-	// Initialize cost tracker (only for PRO mode)
-	costTracker, err := NewCostTracker(modeConfig.Mode)
-	if err != nil {
-		logger.Warn("failed to initialize cost tracker", "error", err)
-	}
-	if costTracker != nil {
-		defer costTracker.Close()
-		logger.Info("cost tracking enabled", "db", GetCostDBPath(modeConfig.Mode))
+	// Cost tracking belongs to the unsupported provider-backed legacy runtime.
+	var costTracker *CostTracker
+	if !canonicalOnly {
+		costTracker, err = NewCostTracker(modeConfig.Mode)
+		if err != nil {
+			logger.Warn("failed to initialize cost tracker", "error", err)
+		}
+		if costTracker != nil {
+			defer costTracker.Close()
+			logger.Info("cost tracking enabled", "db", GetCostDBPath(modeConfig.Mode))
+		}
 	}
 
 	// Use mode-specific index path
@@ -2373,9 +3267,14 @@ func main() {
 		}()
 	}
 
-	// Initialize embedder based on mode (LOCAL: ONNX, PRO: OpenAI)
+	// Canonical requests carry vectors, so the RC never initializes an external
+	// or model-backed embedder. A tiny in-process placeholder keeps historical
+	// handler construction isolated behind the canonical route allowlist.
 	var embedder Embedder
-	if os.Getenv("USE_HASH_EMBEDDER") == "1" {
+	if canonicalOnly {
+		embedder = NewHashEmbedder(1)
+		logger.Info("server-managed embedding disabled; canonical clients must provide vectors")
+	} else if os.Getenv("USE_HASH_EMBEDDER") == "1" {
 		logger.Info("using hash embedder (low-memory mode)")
 		embedder = NewHashEmbedder(modeConfig.Dimension)
 	} else {
@@ -2390,8 +3289,10 @@ func main() {
 		}
 	}
 
-	// Print mode banner (after embedder init so it reflects actual config)
-	PrintModeBanner(modeConfig)
+	if !canonicalOnly {
+		// Print mode banner only for the provider-backed legacy runtime.
+		PrintModeBanner(modeConfig)
+	}
 
 	// Make initial capacity configurable for low-memory deployments
 	initialCapacity := 1000 // Reduced from 100000 for low-memory deployment
@@ -2400,23 +3301,87 @@ func main() {
 			initialCapacity = v
 		}
 	}
-	// Wrap in SwappableEmbedder so we can hot-swap at runtime via API
+	// Swapping endpoints are absent from the canonical route surface.
 	swappableEmbedder := NewSwappableEmbedder(embedder)
-	store, loaded := loadOrInitStore(indexPath, initialCapacity, swappableEmbedder.Dim())
+	var store *VectorStore
+	loaded := false
+	if canonicalOnly {
+		legacyArtifacts, inspectErr := existingLegacyRootArtifacts(indexPath)
+		if inspectErr != nil {
+			logger.Error("failed to inspect unsupported legacy persistence", "error", inspectErr)
+			os.Exit(1)
+		}
+		if len(legacyArtifacts) > 0 {
+			logger.Error("legacy root persistence requires an explicit offline migration before canonical RC startup", "artifacts", legacyArtifacts)
+			os.Exit(1)
+		}
+		store = NewVectorStore(0, 1)
+	} else {
+		store, loaded, err = loadOrInitStore(indexPath, initialCapacity, swappableEmbedder.Dim())
+		if err != nil {
+			logger.Error("refusing to start with unreadable persistence state", "path", indexPath, "error", err)
+			os.Exit(1)
+		}
+	}
 	store.walMaxBytes = envInt64("WAL_MAX_BYTES", 5*1024*1024)
 	store.walMaxOps = envInt("WAL_MAX_OPS", 1000)
 
-	if !loaded {
+	if !loaded && !canonicalOnly {
 		logger.Info("fresh index initialized", "capacity", initialCapacity, "dimension", swappableEmbedder.Dim())
 	}
-	logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
+	if !canonicalOnly {
+		logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
+	}
 
-	reranker := initReranker(swappableEmbedder)
-	warmupModels(swappableEmbedder, reranker)
+	var reranker Reranker
+	if !canonicalOnly {
+		reranker = initReranker(swappableEmbedder)
+		warmupModels(swappableEmbedder, reranker)
+	}
 
 	// HTTP API with graceful shutdown
-	handler, collectionHTTP := newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
-	addr := fmt.Sprintf(":%d", envInt("PORT", 8080))
+	var handler http.Handler
+	var collectionHTTP *CollectionHTTPServer
+	if canonicalOnly {
+		handler, collectionHTTP = newCanonicalHTTPHandler(store, swappableEmbedder, reranker, indexPath)
+	} else {
+		handler, collectionHTTP = newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
+	}
+	if err := collectionHTTP.PersistenceError(); err != nil {
+		logger.Error("refusing to start with unreadable collection persistence state", "path", indexPath+".collections", "error", err)
+		os.Exit(1)
+	}
+	if canonicalOnly {
+		legacyCollectionCount, inspectErr := collectionHTTP.LegacyCollectionCount()
+		if inspectErr != nil {
+			logger.Error("failed to inspect unified collection state", "error", inspectErr)
+			if abortErr := collectionHTTP.Abort(); abortErr != nil {
+				logger.Error("failed to release collection store after inspection failure", "error", abortErr)
+			}
+			os.Exit(1)
+		}
+		if legacyCollectionCount != 0 {
+			logger.Error("refusing canonical startup with legacy V2 collections; migrate them into tenant-aware V3 collections first",
+				"path", indexPath+".collections", "legacy_collections", legacyCollectionCount)
+			if abortErr := collectionHTTP.Abort(); abortErr != nil {
+				logger.Error("failed to release collection store after migration refusal", "error", abortErr)
+			}
+			os.Exit(1)
+		}
+	}
+	addr, grpcAddr := canonicalListenerAddresses(
+		envInt("PORT", 8080),
+		envInt("GRPC_PORT", 50051),
+		os.Getenv("DEEPDATA_INSECURE_DEV_MODE") == "1",
+	)
+	httpListener, grpcListener, err := bindAPIListeners(addr, grpcAddr)
+	if err != nil {
+		logger.Error("refusing to start without the complete API listener set", "error", err)
+		if closeErr := collectionHTTP.Abort(); closeErr != nil {
+			logger.Error("failed to release collection store after listener failure", "error", closeErr)
+		}
+		os.Exit(1)
+	}
 
 	// Wrap handler with h2c (HTTP/2 cleartext) for connection multiplexing
 	// without TLS. HTTP/1.1 clients continue to work transparently.
@@ -2425,10 +3390,16 @@ func main() {
 	if os.Getenv("HTTP_H2C") != "0" {
 		finalHandler = h2c.NewHandler(handler, &http2.Server{})
 	}
+	var httpRequests sync.WaitGroup
+	trackedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpRequests.Add(1)
+		defer httpRequests.Done()
+		finalHandler.ServeHTTP(w, r)
+	})
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           finalHandler,
+		Handler:           trackedHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       time.Duration(envInt("HTTP_READ_TIMEOUT_SEC", 60)) * time.Second,
 		WriteTimeout:      time.Duration(envInt("HTTP_WRITE_TIMEOUT_SEC", 300)) * time.Second,
@@ -2436,73 +3407,94 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	go func() {
-		logger.Info("http api listening", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("http server error", "error", err)
-		}
-	}()
-
 	// gRPC server (GRPC_PORT=0 to disable, default 50051)
 	var grpcSrv *grpc.Server
-	grpcPort := envInt("GRPC_PORT", 50051)
-	if grpcPort > 0 {
-		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpcPort))
-		if err != nil {
-			logger.Error("failed to listen for gRPC", "error", err)
-		} else {
-			grpcSrv = grpc.NewServer(
-				grpc.MaxRecvMsgSize(64*1024*1024),
-				grpc.MaxSendMsgSize(64*1024*1024),
-				grpc.UnaryInterceptor(grpcAuthInterceptor(store.jwtMgr, store.apiToken, store.requireAuth, logger)),
-			)
-			deepdatav1.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
-				manager: collectionHTTP.Manager(),
-			})
-			go func() {
-				logger.Info("grpc api listening", "addr", lis.Addr())
-				if err := grpcSrv.Serve(lis); err != nil {
-					logger.Error("grpc server error", "error", err)
+	if grpcListener != nil {
+		grpcSrv = grpc.NewServer(
+			grpc.MaxRecvMsgSize(canonicalGRPCMaxReceiveBytes),
+			grpc.MaxSendMsgSize(64*1024*1024),
+			grpc.UnaryInterceptor(grpcAuthInterceptorWithRateLimiters(
+				store.jwtMgr,
+				store.apiToken,
+				store.requireAuth,
+				logger,
+				store.canonicalTenantRL,
+				store.authFailureRL,
+			)),
+		)
+		deepdatav3.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
+			tenants: collectionHTTP.TenantManager(),
+			persistenceHealth: func() error {
+				if !collectionHTTP.IsDurable() {
+					return errors.New("durable collection persistence is not initialized")
 				}
-			}()
-		}
+				return collectionHTTP.PersistenceError()
+			},
+		})
 	}
 
-	// Background compaction
+	type apiServeFailure struct {
+		surface string
+		err     error
+	}
+	serverErrCh := make(chan apiServeFailure, 2)
+	logger.Info("http api listening", "addr", httpListener.Addr())
+	go func() {
+		if err := srv.Serve(httpListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrCh <- apiServeFailure{surface: "http", err: err}
+		}
+	}()
+	if grpcSrv != nil {
+		logger.Info("grpc api listening", "addr", grpcListener.Addr())
+		go func() {
+			if err := grpcSrv.Serve(grpcListener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				serverErrCh <- apiServeFailure{surface: "grpc", err: err}
+			}
+		}()
+	}
+
+	// Background compaction belongs to the legacy VectorStore. Canonical mode
+	// must not evaluate or depend on its interval configuration.
 	compactDone := make(chan struct{})
 	compactStop := make(chan struct{})
-	go func() {
-		defer close(compactDone)
-		interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
-		tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-compactStop:
-				return
-			case <-t.C:
-				store.RLock()
-				total := store.Count
-				deleted := len(store.Deleted)
-				store.RUnlock()
-				if total == 0 {
-					continue
-				}
-				if float64(deleted)/float64(total) >= tombstoneThreshold {
-					logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
-					if err := store.Compact(indexPath); err != nil {
-						logger.Error("compact error", "error", err)
+	if canonicalOnly {
+		close(compactDone)
+	} else {
+		go func() {
+			defer close(compactDone)
+			interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
+			tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0
+			t := time.NewTicker(interval)
+			defer t.Stop()
+			for {
+				select {
+				case <-compactStop:
+					return
+				case <-t.C:
+					store.RLock()
+					total := store.Count
+					deleted := len(store.Deleted)
+					store.RUnlock()
+					if total == 0 {
+						continue
+					}
+					if float64(deleted)/float64(total) >= tombstoneThreshold {
+						logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
+						if err := store.Compact(indexPath); err != nil {
+							logger.Error("compact error", "error", err)
+						}
 					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Background Obsidian vault sync
 	var obsidianSyncCancel context.CancelFunc
 	obsidianDone := make(chan struct{})
-	{
+	if canonicalOnly {
+		close(obsidianDone)
+	} else {
 		cfg := obsidian.LoadOrDetectConfig(dataDir)
 		obsidian.ApplyEnvOverrides(&cfg)
 
@@ -2572,10 +3564,17 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	// Wait for shutdown signal
+	// Wait for a shutdown signal or any unexpected listener/server failure.
 	logging.Default().Info("server running, press Ctrl+C to stop")
-	sig := <-sigCh
-	logging.Default().Info("received signal, initiating graceful shutdown", "signal", sig)
+	serveFailed := false
+	select {
+	case sig := <-sigCh:
+		logging.Default().Info("received signal, initiating graceful shutdown", "signal", sig)
+	case failure := <-serverErrCh:
+		serveFailed = true
+		logging.Default().Error("API server failed; initiating coordinated shutdown", "surface", failure.surface, "error", failure.err)
+	}
+	signal.Stop(sigCh)
 
 	// Stop background compaction
 	close(compactStop)
@@ -2585,7 +3584,11 @@ func main() {
 		obsidianSyncCancel()
 	}
 
-	// Graceful shutdown sequence
+	// Graceful shutdown sequence. A forced or timed-out drain retains WAL
+	// artifacts even if a final snapshot succeeds; only a proven clean drain may
+	// discard the recovery source.
+	cleanDrain := !serveFailed
+	allHandlersDrained := true
 	if grpcSrv != nil {
 		logging.Default().Info("shutting down gRPC server")
 		grpcDone := make(chan struct{})
@@ -2597,7 +3600,14 @@ func main() {
 		case <-grpcDone:
 		case <-time.After(30 * time.Second):
 			logging.Default().Warn("gRPC graceful shutdown timed out, forcing stop")
+			cleanDrain = false
 			grpcSrv.Stop()
+			select {
+			case <-grpcDone:
+			case <-time.After(5 * time.Second):
+				allHandlersDrained = false
+				logging.Default().Error("gRPC handlers did not drain after forced stop")
+			}
 		}
 	}
 	logging.Default().Info("shutting down HTTP server")
@@ -2605,7 +3615,23 @@ func main() {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		logging.Default().Error("HTTP server shutdown error", "error", err)
+		cleanDrain = false
+		logging.Default().Error("HTTP server shutdown error; forcing connection close", "error", err)
+		if closeErr := srv.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
+			logging.Default().Error("HTTP server forced close error", "error", closeErr)
+		}
+	}
+	httpDone := make(chan struct{})
+	go func() {
+		httpRequests.Wait()
+		close(httpDone)
+	}()
+	select {
+	case <-httpDone:
+	case <-time.After(5 * time.Second):
+		allHandlersDrained = false
+		cleanDrain = false
+		logging.Default().Error("HTTP handlers did not drain after shutdown")
 	}
 
 	// Wait for background goroutines to finish before final save
@@ -2613,27 +3639,87 @@ func main() {
 	<-compactDone
 	logger.Info("waiting for obsidian sync to finish...")
 	<-obsidianDone
-	logger.Info("waiting for in-flight WAL snapshots to finish...")
-	store.bgWg.Wait()
+	if allHandlersDrained {
+		if !canonicalOnly {
+			logger.Info("waiting for in-flight legacy WAL snapshots to finish...")
+			store.bgWg.Wait()
 
-	logging.Default().Info("saving final snapshot")
-	if err := store.Save(indexPath); err != nil {
-		logger.Error("failed to save final snapshot", "error", err)
-	} else {
-		logger.Info("final snapshot saved successfully")
-		// Clean up WAL after successful save — safe here because shutdown has
-		// drained all writers (bgWg.Wait completed above, HTTP/gRPC stopped).
-		if store.walPath != "" {
-			_ = os.Remove(store.walPath)
+			logging.Default().Info("saving final legacy snapshot")
+			if err := store.Save(indexPath); err != nil {
+				logger.Error("failed to save final legacy snapshot", "error", err)
+			} else {
+				logger.Info("final legacy snapshot saved successfully")
+				store.RLock()
+				walFault := store.walFault
+				store.RUnlock()
+				if cleanDrain && walFault == nil && store.walPath != "" {
+					for _, walPath := range []string{store.walPath + ".frozen", store.walPath} {
+						if err := removeWALArtifact(walPath); err != nil {
+							logger.Error("failed to remove checkpointed WAL artifact", "path", walPath, "error", err)
+						}
+					}
+				} else if store.walPath != "" {
+					logger.Warn("retaining legacy WAL artifacts after non-clean shutdown or WAL fault", "clean_drain", cleanDrain, "wal_fault", walFault)
+				}
+			}
 		}
-	}
-	if err := collectionHTTP.Save(indexPath + ".collections"); err != nil {
-		logger.Error("failed to save collection state", "error", err)
+		if canonicalOnly {
+			if err := collectionHTTP.Close(); err != nil {
+				logger.Error("failed to checkpoint and close canonical collection state", "error", err)
+			} else {
+				logger.Info("canonical collection state checkpointed and closed successfully")
+			}
+		} else if err := collectionHTTP.Save(indexPath + ".collections"); err != nil {
+			logger.Error("failed to save collection state", "error", err)
+		} else {
+			logger.Info("collection state saved successfully")
+		}
 	} else {
-		logger.Info("collection state saved successfully")
+		logger.Error("skipping final persistence checkpoint because handlers are still active; WAL artifacts retained")
 	}
 
 	logger.Info("shutdown complete")
+	if serveFailed {
+		logger.Error("exiting non-zero after API server failure")
+		os.Exit(1)
+	}
+}
+
+// bindAPIListeners proves the complete configured API surface is available
+// before either protocol begins serving. If the second bind fails, the first
+// listener is closed so a replacement process can start immediately.
+func bindAPIListeners(httpAddr, grpcAddr string) (net.Listener, net.Listener, error) {
+	httpListener, err := net.Listen("tcp", httpAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bind HTTP listener %q: %w", httpAddr, err)
+	}
+	if grpcAddr == "" {
+		return httpListener, nil, nil
+	}
+	grpcListener, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		return nil, nil, errors.Join(
+			fmt.Errorf("bind gRPC listener %q: %w", grpcAddr, err),
+			httpListener.Close(),
+		)
+	}
+	return httpListener, grpcListener, nil
+}
+
+// canonicalListenerAddresses keeps the explicit credentialless development
+// escape hatch loopback-only. Authenticated deployments retain wildcard binds
+// so containers and orchestrators can publish the configured ports.
+func canonicalListenerAddresses(httpPort, grpcPort int, insecureDevelopment bool) (string, string) {
+	host := ""
+	if insecureDevelopment {
+		host = "127.0.0.1"
+	}
+	httpAddr := net.JoinHostPort(host, strconv.Itoa(httpPort))
+	grpcAddr := ""
+	if grpcPort > 0 {
+		grpcAddr = net.JoinHostPort(host, strconv.Itoa(grpcPort))
+	}
+	return httpAddr, grpcAddr
 }
 
 func envInt(key string, def int) int {
@@ -2734,12 +3820,17 @@ func validateEnvConfig(logger *logging.Logger) []string {
 
 	// Integer config vars
 	checkPosInt("PORT")
+	checkNonNegInt("GRPC_PORT")
 	checkNonNegInt("VECTOR_CAPACITY")
 	checkPosInt64("WAL_MAX_BYTES")
 	checkPosInt("WAL_MAX_OPS")
 	checkPosInt("HNSW_M")
 	checkPosFloat("HNSW_ML")
 	checkPosInt("HNSW_EFSEARCH")
+	checkPosInt("API_RPS")
+	checkPosInt("MAX_RATE_LIMIT_KEYS")
+	checkPosInt("AUTH_FAILURE_RPS")
+	checkPosInt("AUTH_FAILURE_BURST")
 	checkPosInt("TENANT_RPS")
 	checkPosInt("TENANT_BURST")
 	checkPosInt("MAX_TENANTS")
@@ -2769,11 +3860,62 @@ func fileSize(path string) int64 {
 	return info.Size()
 }
 
+func validateCanonicalAuthEnvironment() error {
+	apiToken := os.Getenv("API_TOKEN")
+	jwtSecret := os.Getenv("JWT_SECRET")
+	hasStaticToken := apiToken != ""
+	hasJWTSecret := jwtSecret != ""
+	if hasStaticToken && hasJWTSecret {
+		return errors.New("configure exactly one of API_TOKEN or JWT_SECRET; combined credential modes are unsupported")
+	}
+	if hasStaticToken {
+		if err := validateCanonicalCredential("API_TOKEN", apiToken); err != nil {
+			return err
+		}
+	}
+	if hasJWTSecret {
+		if err := validateCanonicalCredential("JWT_SECRET", jwtSecret); err != nil {
+			return err
+		}
+	}
+	if !hasStaticToken && !hasJWTSecret && os.Getenv("DEEPDATA_INSECURE_DEV_MODE") != "1" {
+		return errors.New("API_TOKEN or JWT_SECRET is required; set DEEPDATA_INSECURE_DEV_MODE=1 only for isolated development")
+	}
+	return nil
+}
+
+const canonicalCredentialMinBytes = 32
+
+func validateCanonicalCredential(name, value string) error {
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%s must not contain leading or trailing whitespace", name)
+	}
+	if len([]byte(value)) < canonicalCredentialMinBytes {
+		return fmt.Errorf("%s must be at least %d bytes", name, canonicalCredentialMinBytes)
+	}
+	return nil
+}
+
 // grpcAuthInterceptor returns a gRPC unary interceptor that mirrors the HTTP
 // guard middleware: JWT validation, legacy API-token checking, and requireAuth
 // enforcement. On success it injects a *security.TenantContext into the
 // context so downstream handlers can inspect tenant identity and permissions.
 func grpcAuthInterceptor(jwtMgr *security.JWTManager, apiToken string, requireAuth bool, logger *logging.Logger) grpc.UnaryServerInterceptor {
+	return grpcAuthInterceptorWithRateLimiters(jwtMgr, apiToken, requireAuth, logger, nil, nil)
+}
+
+func grpcAuthInterceptorWithTenantLimiter(jwtMgr *security.JWTManager, apiToken string, requireAuth bool, logger *logging.Logger, tenantLimiter *rateLimiter) grpc.UnaryServerInterceptor {
+	return grpcAuthInterceptorWithRateLimiters(jwtMgr, apiToken, requireAuth, logger, tenantLimiter, nil)
+}
+
+func grpcAuthInterceptorWithRateLimiters(
+	jwtMgr *security.JWTManager,
+	apiToken string,
+	requireAuth bool,
+	logger *logging.Logger,
+	tenantLimiter *rateLimiter,
+	authFailureLimiter *authFailureLimiter,
+) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		// Panic recovery — same as before, prevents crashes from taking down the process
 		defer func() {
@@ -2790,12 +3932,25 @@ func grpcAuthInterceptor(jwtMgr *security.JWTManager, apiToken string, requireAu
 				token = strings.TrimPrefix(vals[0], "Bearer ")
 			}
 		}
+		authPeerKey := grpcAuthPeerKey(ctx)
+		authAttempt, allowed := authFailureLimiter.begin(authPeerKey)
+		if !allowed {
+			return nil, status.Error(codes.ResourceExhausted, "authentication rate limited")
+		}
+		finishAuthAttempt := func(failed bool) {
+			if authAttempt != nil {
+				authAttempt.finish(failed)
+				authAttempt = nil
+			}
+		}
+		defer func() { finishAuthAttempt(false) }()
 
 		var tenantCtx *security.TenantContext
 
 		if jwtMgr != nil {
 			if token == "" {
 				if requireAuth {
+					finishAuthAttempt(true)
 					return nil, status.Error(codes.Unauthenticated, "missing authentication token")
 				}
 				tenantCtx = &security.TenantContext{
@@ -2808,26 +3963,45 @@ func grpcAuthInterceptor(jwtMgr *security.JWTManager, apiToken string, requireAu
 				tenantCtx, valErr = jwtMgr.ValidateTenantToken(token)
 				if valErr != nil {
 					logging.Default().Error("gRPC JWT validation failed", "error", valErr)
+					finishAuthAttempt(true)
 					return nil, status.Error(codes.Unauthenticated, "invalid token")
 				}
 			}
 		} else {
 			authenticated := false
 			if apiToken != "" {
-				if token == apiToken {
+				if security.SecureCompare(token, apiToken) {
 					authenticated = true
 				} else if token != "" {
+					finishAuthAttempt(true)
 					return nil, status.Error(codes.Unauthenticated, "unauthorized")
 				}
 			}
 			if requireAuth && !authenticated {
+				finishAuthAttempt(true)
 				return nil, status.Error(codes.Unauthenticated, "unauthorized")
 			}
+			serverAdmin := authenticated || (jwtMgr == nil && apiToken == "")
 			tenantCtx = &security.TenantContext{
 				TenantID:    "default",
 				Permissions: map[string]bool{"read": true, "write": true},
 				Collections: make(map[string]bool),
-				IsAdmin:     jwtMgr == nil && apiToken == "",
+				// A configured static server token is intentionally full control;
+				// JWT claims provide scoped tenant/collection roles.
+				IsAdmin:       serverAdmin,
+				IsServerAdmin: serverAdmin,
+			}
+		}
+		finishAuthAttempt(false)
+
+		if tenantLimiter != nil {
+			targetTenant := ""
+			if request, ok := req.(interface{ GetTenantId() string }); ok {
+				targetTenant = request.GetTenantId()
+			}
+			tenantKey := canonicalRateLimitTenant(tenantCtx, targetTenant)
+			if !tenantLimiter.allow(tenantKey) {
+				return nil, status.Error(codes.ResourceExhausted, "tenant rate limited")
 			}
 		}
 

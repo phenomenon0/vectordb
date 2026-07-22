@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -254,10 +255,93 @@ type TenantClaims struct {
 
 // TenantContext holds tenant information for a request
 type TenantContext struct {
-	TenantID    string
-	Permissions map[string]bool // permission -> true
-	Collections map[string]bool // collection -> true (empty = all allowed)
-	IsAdmin     bool
+	TenantID      string
+	Permissions   map[string]bool // permission -> true
+	Collections   map[string]bool // collection -> true (empty = all allowed)
+	IsAdmin       bool            // tenant admin; tenant and collection scope still apply
+	IsServerAdmin bool            // global control; set only by a static server credential
+}
+
+// AuthorizationFailure identifies the transport-neutral outcome of a tenant
+// authorization decision. HTTP and gRPC adapters map these outcomes to their
+// own status codes without duplicating the underlying tenant/scope policy.
+type AuthorizationFailure uint8
+
+const (
+	AuthorizationUnauthenticated AuthorizationFailure = iota + 1
+	AuthorizationPermissionDenied
+)
+
+// AuthorizationError is returned when a tenant request cannot be authorized.
+type AuthorizationError struct {
+	Failure AuthorizationFailure
+	Message string
+}
+
+func (e *AuthorizationError) Error() string {
+	return e.Message
+}
+
+// IsAuthorizationFailure reports whether err represents the requested
+// authorization outcome.
+func IsAuthorizationFailure(err error, failure AuthorizationFailure) bool {
+	var authorizationErr *AuthorizationError
+	return errors.As(err, &authorizationErr) && authorizationErr.Failure == failure
+}
+
+func authorizationError(failure AuthorizationFailure, format string, args ...interface{}) error {
+	return &AuthorizationError{Failure: failure, Message: fmt.Sprintf(format, args...)}
+}
+
+// AuthorizeTenantPermission evaluates authentication, tenant identity, and
+// permission without applying collection scope. It is intended for preflight
+// checks that must happen before a collection name can be decoded safely.
+func AuthorizeTenantPermission(tenantCtx *TenantContext, tenantID, permission string) error {
+	if tenantCtx == nil {
+		return authorizationError(AuthorizationUnauthenticated, "authenticated tenant context required")
+	}
+	if tenantCtx.IsServerAdmin {
+		return nil
+	}
+	if tenantCtx.TenantID != tenantID {
+		return authorizationError(
+			AuthorizationPermissionDenied,
+			"token for tenant %q cannot access tenant %q",
+			tenantCtx.TenantID,
+			tenantID,
+		)
+	}
+	if !tenantCtx.Permissions[permission] && !tenantCtx.IsAdmin {
+		return authorizationError(AuthorizationPermissionDenied, "%s permission required", permission)
+	}
+	return nil
+}
+
+// AuthorizeTenantAccess is the canonical tenant authorization evaluator. A
+// server administrator can cross tenant and collection boundaries. Tenant
+// administrators still remain bound to their tenant and optional collection
+// allowlist.
+func AuthorizeTenantAccess(tenantCtx *TenantContext, tenantID, collection, permission string) error {
+	if err := AuthorizeTenantPermission(tenantCtx, tenantID, permission); err != nil {
+		return err
+	}
+	if tenantCtx.IsServerAdmin {
+		return nil
+	}
+	if collection == "" && len(tenantCtx.Collections) > 0 {
+		return authorizationError(
+			AuthorizationPermissionDenied,
+			"collection-scoped token cannot perform tenant-wide operation",
+		)
+	}
+	if collection != "" && len(tenantCtx.Collections) > 0 && !tenantCtx.Collections[collection] {
+		return authorizationError(
+			AuthorizationPermissionDenied,
+			"token cannot access collection %q",
+			collection,
+		)
+	}
+	return nil
 }
 
 // JWTManager manages JWT tokens
@@ -309,21 +393,21 @@ func (jm *JWTManager) GenerateTenantToken(tenantID string, permissions []string,
 // ValidateToken validates a JWT token
 func (jm *JWTManager) ValidateToken(tokenString string) (*jwt.Token, error) {
 	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		if token.Method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return jm.secretKey, nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 }
 
 // ValidateTenantToken validates a JWT token and returns tenant context
 func (jm *JWTManager) ValidateTenantToken(tokenString string) (*TenantContext, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &TenantClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		if token.Method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return jm.secretKey, nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %w", err)
@@ -558,7 +642,7 @@ func (am *AuthMiddleware) Middleware(requiredPermissions ...string) func(http.Ha
 				return
 			}
 
-			// Extract token from header or query parameter
+			// Extract token from the Authorization header.
 			token := extractToken(r)
 			if token == "" {
 				http.Error(w, "missing authentication token", http.StatusUnauthorized)
@@ -618,9 +702,10 @@ func (am *AuthMiddleware) Middleware(requiredPermissions ...string) func(http.Ha
 	}
 }
 
-// extractToken extracts authentication token from request
+// extractToken extracts an authentication token from the Authorization header.
+// Query-string credentials are deliberately unsupported because URLs are
+// routinely persisted in browser history, reverse-proxy logs, and referrers.
 func extractToken(r *http.Request) string {
-	// Check Authorization header
 	auth := r.Header.Get("Authorization")
 	if auth != "" {
 		// Handle "Bearer <token>" format
@@ -629,9 +714,7 @@ func extractToken(r *http.Request) string {
 		}
 		return auth
 	}
-
-	// Check query parameter
-	return r.URL.Query().Get("token")
+	return ""
 }
 
 // hasPermissions checks if user has required permissions

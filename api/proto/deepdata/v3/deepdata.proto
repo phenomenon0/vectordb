@@ -1,0 +1,193 @@
+syntax = "proto3";
+
+package deepdata.v3;
+
+option go_package = "github.com/phenomenon0/vectordb/api/gen/deepdata/v3;deepdatav3";
+
+import "google/protobuf/struct.proto";
+
+// The v3 service is the tenant-aware single-node RC contract. The historical
+// deepdata.v1 schema remains frozen for wire compatibility and is not
+// registered by the canonical runtime.
+
+// ── Collection Management ────────────────────────────────────────────
+
+message VectorFieldConfig {
+  string name = 1;
+  int32 type = 2;  // 0=dense, 1=sparse
+  int32 dim = 3;
+  string index_type = 4;  // RC: "hnsw", "flat", or "inverted"
+  google.protobuf.Struct index_params = 5;
+}
+
+message CollectionInfo {
+  string name = 1;
+  repeated VectorFieldConfig fields = 2;
+  string description = 3;
+  google.protobuf.Struct metadata = 4;
+  uint64 document_count = 5;
+}
+
+message CollectionStats {
+  string name = 1;
+  uint64 document_count = 2;
+  int32 field_count = 3;
+}
+
+message GetTenantInfoRequest {
+  string tenant_id = 1;
+}
+
+message GetTenantInfoResponse {
+  string tenant_id = 1;
+  uint64 collection_count = 2;
+  uint64 total_documents = 3;
+  repeated CollectionStats collections = 4;
+}
+
+message ListCollectionsRequest {
+  string tenant_id = 1;
+}
+
+message ListCollectionsResponse {
+  repeated CollectionInfo collections = 1;
+}
+
+message GetCollectionRequest {
+  string tenant_id = 1;
+  string name = 2;
+}
+
+message GetCollectionResponse {
+  CollectionInfo collection = 1;
+}
+
+message CreateCollectionRequest {
+  string name = 1;
+  repeated VectorFieldConfig fields = 2;
+  string tenant_id = 3;
+  google.protobuf.Struct metadata = 4;
+  string description = 5;
+}
+
+message CreateCollectionResponse {
+  string name = 1;
+}
+
+message DeleteCollectionRequest {
+  string name = 1;
+  string tenant_id = 2;
+}
+
+message DeleteCollectionResponse {}
+
+// ── Vectors ──────────────────────────────────────────────────────────
+
+message DenseVector {
+  repeated float values = 1 [packed = true];
+}
+
+message SparseVector {
+  repeated uint32 indices = 1 [packed = true];
+  repeated float values = 2 [packed = true];
+  int32 dim = 3;
+}
+
+message VectorData {
+  oneof data {
+    DenseVector dense = 1;
+    SparseVector sparse = 2;
+  }
+}
+
+// ── Insert ───────────────────────────────────────────────────────────
+
+message InsertRequest {
+  string collection = 1;
+  map<string, VectorData> vectors = 2;
+  google.protobuf.Struct metadata = 3;
+  reserved 4;
+  reserved "text";
+  string tenant_id = 5;
+  uint64 id = 6;  // optional caller-supplied id; zero assigns one
+}
+
+message InsertResponse {
+  uint64 id = 1;
+}
+
+// ── Batch Insert ─────────────────────────────────────────────────────
+
+message BatchDoc {
+  map<string, VectorData> vectors = 1;
+  google.protobuf.Struct metadata = 2;
+  reserved 3;
+  reserved "text";
+  uint64 id = 4;  // optional caller-supplied id; zero assigns one
+}
+
+message BatchInsertRequest {
+  string collection = 1;
+  repeated BatchDoc docs = 2;
+  string tenant_id = 3;
+}
+
+message BatchInsertResponse {
+  repeated uint64 ids = 1;
+  int32 inserted = 2;
+}
+
+// ── Search ───────────────────────────────────────────────────────────
+
+message HybridSearchParams {
+  string strategy = 1;  // "rrf", "weighted", or "linear"
+  map<string, float> weights = 2;
+  float rrf_constant = 3;
+}
+
+message SearchRequest {
+  string collection = 1;
+  map<string, VectorData> queries = 2;
+  int32 top_k = 3;
+  int32 ef_search = 4;
+  bool include_vectors = 5;
+  google.protobuf.Struct filters = 6;
+  string tenant_id = 7;
+  HybridSearchParams hybrid_params = 8;
+}
+
+message SearchHit {
+  uint64 id = 1;
+  float score = 2;
+  google.protobuf.Struct metadata = 3;
+  map<string, VectorData> vectors = 4;
+}
+
+message SearchResponse {
+  repeated SearchHit results = 1;
+  int32 candidates_examined = 2;
+}
+
+// ── Delete ───────────────────────────────────────────────────────────
+
+message DeleteDocRequest {
+  string collection = 1;
+  uint64 doc_id = 2;
+  string tenant_id = 3;
+}
+
+message DeleteDocResponse {}
+
+// ── Service ──────────────────────────────────────────────────────────
+
+service DeepData {
+  rpc GetTenantInfo   (GetTenantInfoRequest)   returns (GetTenantInfoResponse);
+  rpc ListCollections (ListCollectionsRequest) returns (ListCollectionsResponse);
+  rpc GetCollection   (GetCollectionRequest)   returns (GetCollectionResponse);
+  rpc CreateCollection (CreateCollectionRequest) returns (CreateCollectionResponse);
+  rpc DeleteCollection (DeleteCollectionRequest) returns (DeleteCollectionResponse);
+  rpc Insert           (InsertRequest)           returns (InsertResponse);
+  rpc BatchInsert      (BatchInsertRequest)      returns (BatchInsertResponse);
+  rpc Search           (SearchRequest)           returns (SearchResponse);
+  rpc DeleteDoc        (DeleteDocRequest)        returns (DeleteDocResponse);
+}

@@ -1,186 +1,304 @@
-"""Pydantic models for DeepData request/response types.
-
-Mirrors the Go client structs (client/client.go) and server request schemas.
-"""
+"""Pydantic models for DeepData's canonical tenant-aware V3 API."""
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
-# ── Insert ──────────────────────────────────────────────────────────────────
+# ── Canonical multi-tenant API (v3) ────────────────────────────────────────
 
 
-class InsertRequest(BaseModel):
-    doc: str
-    id: str | None = None
-    meta: dict[str, str] | None = None
-    upsert: bool = False
-    collection: str | None = None
+class _TenantRequestModel(BaseModel):
+    """Strict request model for the canonical tenant API."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class InsertResponse(BaseModel):
-    id: str
+class _TenantResponseModel(BaseModel):
+    """Typed response model which remains tolerant of additive server fields."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
-# ── Batch Insert ────────────────────────────────────────────────────────────
+class TenantIndexConfig(_TenantRequestModel):
+    """Index configuration for a canonical vector field."""
+
+    type: Literal["hnsw", "flat", "inverted"]
+    params: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_canonical_params(self) -> TenantIndexConfig:
+        """Exclude advanced/ignored index knobs from the supported SDK."""
+
+        params = self.params or {}
+        allowed = {
+            "hnsw": {"m", "ml", "ef_search", "ef_construction", "prenormalize"},
+            "flat": {"metric"},
+            "inverted": {"k1", "b"},
+        }[self.type]
+        unknown = params.keys() - allowed
+        if unknown:
+            raise ValueError(
+                "index parameters are outside the canonical release contract: "
+                + ", ".join(sorted(unknown))
+            )
+
+        def finite_number(key: str) -> float | None:
+            if key not in params:
+                return None
+            value = params[key]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+            ):
+                raise ValueError(f"index parameter {key} must be a finite number")
+            return float(value)
+
+        if self.type == "hnsw":
+            for key, minimum, maximum in (
+                ("m", 2, 100),
+                ("ef_search", 1, 1_000_000),
+                ("ef_construction", 1, 1_000_000),
+            ):
+                value = finite_number(key)
+                if value is not None and (
+                    not value.is_integer() or value < minimum or value > maximum
+                ):
+                    raise ValueError(
+                        f"index parameter {key} must be an integer in "
+                        f"[{minimum}, {maximum}]"
+                    )
+            ml = finite_number("ml")
+            if ml is not None and not 0 < ml <= 10:
+                raise ValueError("index parameter ml must be in (0, 10]")
+            if "prenormalize" in params and not isinstance(
+                params["prenormalize"], bool
+            ):
+                raise ValueError("index parameter prenormalize must be a boolean")
+        elif self.type == "flat" and "metric" in params:
+            if params["metric"] not in {"cosine", "euclidean"}:
+                raise ValueError("index parameter metric must be cosine or euclidean")
+        elif self.type == "inverted":
+            k1 = finite_number("k1")
+            if k1 is not None and not 0 < k1 <= 100:
+                raise ValueError("index parameter k1 must be in (0, 100]")
+            b = finite_number("b")
+            if b is not None and not 0 <= b <= 1:
+                raise ValueError("index parameter b must be in [0, 1]")
+        return self
 
 
-class BatchDoc(BaseModel):
-    doc: str
-    id: str | None = None
-    meta: dict[str, str] | None = None
-    collection: str | None = None
+class TenantVectorField(_TenantRequestModel):
+    """Vector field accepted by ``POST /v3/.../collections``."""
 
-
-class BatchInsertRequest(BaseModel):
-    docs: list[BatchDoc]
-    upsert: bool = False
-
-
-class BatchInsertResponse(BaseModel):
-    ids: list[str]
-    errors: list[str] | None = None
-
-
-# ── Search / Query ──────────────────────────────────────────────────────────
-
-
-class RangeFilter(BaseModel):
-    key: str
-    min: float | None = None
-    max: float | None = None
-    time_min: str | None = None
-    time_max: str | None = None
-
-
-class SearchRequest(BaseModel):
-    query: str
-    top_k: int = 10
-    mode: Literal["ann", "scan", "lex"] | None = None
-    collection: str | None = None
-    meta: dict[str, str] | None = None
-    meta_any: list[dict[str, str]] | None = None
-    meta_not: dict[str, str] | None = None
-    meta_ranges: list[RangeFilter] | None = None
-    include_meta: bool = False
-    hybrid_alpha: float | None = None
-    score_mode: str | None = None
-    ef_search: int | None = None
-    offset: int | None = None
-    limit: int | None = None
-    page_token: str | None = None
-    page_size: int | None = None
-
-
-class SearchResult(BaseModel):
-    ids: list[str] = Field(default_factory=list)
-    docs: list[str] = Field(default_factory=list)
-    scores: list[float] = Field(default_factory=list)
-    stats: str | None = None
-    meta: list[dict[str, str]] | None = None
-    next: str | None = None
-
-
-# ── Delete ──────────────────────────────────────────────────────────────────
-
-
-class DeleteRequest(BaseModel):
-    id: str
-
-
-class DeleteResponse(BaseModel):
-    deleted: str
-
-
-# ── Scroll ──────────────────────────────────────────────────────────────────
-
-
-class ScrollRequest(BaseModel):
-    collection: str | None = None
-    limit: int | None = None
-    offset: int | None = None
-
-
-class ScrollResponse(BaseModel):
-    ids: list[str] = Field(default_factory=list)
-    docs: list[str] = Field(default_factory=list)
-    meta: list[dict[str, str]] | None = None
-    total: int = 0
-    next_offset: int = 0
-
-
-# ── Health ──────────────────────────────────────────────────────────────────
-
-
-class HealthResponse(BaseModel):
-    ok: bool = True
-    total: int = 0
-    active: int = 0
-    deleted: int = 0
-    hnsw_ids: int = 0
-    checksum: str = ""
-    wal_bytes: int = 0
-    index_bytes: int | None = None
-    snapshot_age_ms: int | None = None
-    wal_age_ms: int | None = None
-
-
-# ── Collections (v1 admin) ──────────────────────────────────────────────────
-
-
-class CollectionListResponse(BaseModel):
-    status: str = ""
-    count: int = 0
-    collections: list[dict[str, Any]] = Field(default_factory=list)
-
-
-# ── Collections (v2) ────────────────────────────────────────────────────────
-
-
-class FieldSchema(BaseModel):
     name: str
-    type: str  # "dense", "sparse", etc.
-    dim: int | None = None
-    index_type: str | None = None
+    type: Literal["dense", "sparse"]
+    dim: int = Field(gt=0, le=65_536)
+    index: TenantIndexConfig
+
+    @model_validator(mode="after")
+    def validate_canonical_index(self) -> TenantVectorField:
+        """Enforce the frozen canonical release's vector/index matrix."""
+
+        if self.type == "dense" and self.index.type not in {"hnsw", "flat"}:
+            raise ValueError("dense fields require an hnsw or flat index")
+        if self.type == "sparse" and self.index.type != "inverted":
+            raise ValueError("sparse fields require an inverted index")
+        return self
 
 
-class CollectionSchema(BaseModel):
+class TenantCollectionSchema(_TenantRequestModel):
+    """Canonical collection creation payload."""
+
     name: str
-    fields: list[FieldSchema] | None = None
+    fields: list[TenantVectorField] = Field(min_length=1, max_length=8)
+    metadata: dict[str, Any] | None = None
+    description: str | None = None
 
 
-class CollectionInfo(BaseModel):
-    name: str = ""
-    fields: list[dict[str, Any]] | None = None
-    doc_count: int | None = None
+class TenantCollectionInfo(_TenantResponseModel):
+    """Information returned for a tenant collection.
+
+    Current servers serialize the Go ``CollectionInfo`` fields with title-case
+    names. The aliases also accept the intended snake-case wire spelling so the
+    SDK remains compatible when the server normalizes those keys.
+    """
+
+    name: str = Field(validation_alias=AliasChoices("name", "Name"))
+    fields: list[TenantVectorField] = Field(
+        validation_alias=AliasChoices("fields", "Fields")
+    )
+    description: str = Field(
+        default="", validation_alias=AliasChoices("description", "Description")
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None, validation_alias=AliasChoices("metadata", "Metadata")
+    )
+    doc_count: int = Field(
+        default=0, validation_alias=AliasChoices("doc_count", "DocCount"), ge=0
+    )
 
 
-class CollectionStatsResponse(BaseModel):
-    status: str = ""
-    name: str = ""
-    doc_count: int | None = None
-    manager_stats: dict[str, Any] | None = None
+class TenantCollectionMutationResponse(_TenantResponseModel):
+    """Response from creating or deleting a tenant collection."""
+
+    status: Literal["success"]
+    tenant_id: str
+    message: str
 
 
-# ── Compact ─────────────────────────────────────────────────────────────────
+class TenantCollectionListResponse(_TenantResponseModel):
+    """Response from listing a tenant's collections."""
+
+    status: Literal["success"]
+    tenant_id: str
+    count: int = Field(ge=0)
+    collections: list[TenantCollectionInfo]
 
 
-class CompactResponse(BaseModel):
-    ok: bool = False
+class TenantGetCollectionResponse(_TenantResponseModel):
+    """Response from fetching one tenant collection."""
+
+    status: Literal["success"]
+    tenant_id: str
+    collection: TenantCollectionInfo
 
 
-# ── Sparse Insert ───────────────────────────────────────────────────────────
+class TenantDocumentInput(_TenantRequestModel):
+    """One document accepted by canonical insert endpoints."""
+
+    id: int | None = Field(default=None, gt=0)
+    vectors: dict[str, Any] = Field(min_length=1)
+    metadata: dict[str, Any] | None = None
 
 
-class SparseInsertRequest(BaseModel):
-    doc: str
-    id: str | None = None
-    indices: list[int]
-    values: list[float]
-    dimension: int | None = None
-    meta: dict[str, str] | None = None
-    upsert: bool = False
-    collection: str | None = None
+class TenantBatchInsertRequest(_TenantRequestModel):
+    """All-or-nothing canonical batch insert payload."""
+
+    documents: list[TenantDocumentInput] = Field(min_length=1, max_length=10_000)
+
+
+class TenantDeleteDocumentRequest(_TenantRequestModel):
+    """Canonical document deletion payload."""
+
+    doc_id: int = Field(gt=0)
+
+
+class TenantDocument(_TenantResponseModel):
+    """A canonical document returned by tenant search."""
+
+    id: int = Field(gt=0)
+    vectors: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class TenantInsertResponse(_TenantResponseModel):
+    """Response from inserting one canonical document."""
+
+    status: Literal["success"]
+    tenant_id: str
+    id: int = Field(gt=0)
+    message: str
+
+
+class TenantBatchInsertResponse(_TenantResponseModel):
+    """Response from an all-or-nothing canonical batch insert."""
+
+    status: Literal["success"]
+    tenant_id: str
+    ids: list[int]
+    inserted: int = Field(ge=0)
+
+
+class TenantDeleteDocumentResponse(_TenantResponseModel):
+    """Response from deleting one canonical document."""
+
+    status: Literal["success"]
+    tenant_id: str
+    message: str
+
+
+class TenantHybridParams(_TenantRequestModel):
+    """Fusion settings for a multi-field tenant search."""
+
+    strategy: Literal["rrf", "weighted", "linear"]
+    weights: dict[str, float] | None = None
+    rrf_constant: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_numeric_params(self) -> TenantHybridParams:
+        """Reject values that the canonical server cannot fuse safely."""
+
+        if self.rrf_constant is not None and not math.isfinite(self.rrf_constant):
+            raise ValueError("rrf_constant must be finite")
+        if self.weights is not None:
+            if any(
+                not math.isfinite(weight) or weight < 0
+                for weight in self.weights.values()
+            ):
+                raise ValueError("hybrid weights must be finite and non-negative")
+            if not any(weight > 0 for weight in self.weights.values()):
+                raise ValueError("hybrid weights must contain a positive value")
+        return self
+
+
+class TenantSearchRequest(_TenantRequestModel):
+    """Canonical tenant search payload."""
+
+    queries: dict[str, Any] = Field(min_length=1, max_length=2)
+    top_k: int = Field(default=10, gt=0, le=1000)
+    ef_search: int | None = Field(default=None, ge=0)
+    include_vectors: bool | None = None
+    filters: dict[str, Any] | None = None
+    hybrid_params: TenantHybridParams | None = None
+
+    @model_validator(mode="after")
+    def validate_hybrid_contract(self) -> TenantSearchRequest:
+        """Keep SDK admission aligned with the server's two-field contract."""
+
+        if len(self.queries) > 1 and self.hybrid_params is None:
+            raise ValueError("multiple query fields require hybrid_params")
+        if self.hybrid_params is not None and self.hybrid_params.weights is not None:
+            unknown = self.hybrid_params.weights.keys() - self.queries.keys()
+            if unknown:
+                raise ValueError(
+                    "hybrid weights reference unknown query fields: "
+                    + ", ".join(sorted(unknown))
+                )
+        return self
+
+
+class TenantSearchResponse(_TenantResponseModel):
+    """Typed canonical tenant search result."""
+
+    status: Literal["success"]
+    tenant_id: str
+    documents: list[TenantDocument]
+    scores: list[float]
+    candidates_examined: int = Field(ge=0)
+
+
+class TenantCollectionStats(_TenantResponseModel):
+    """Per-collection counters embedded in tenant info."""
+
+    name: str = Field(validation_alias=AliasChoices("name", "Name"))
+    doc_count: int = Field(
+        validation_alias=AliasChoices("doc_count", "DocCount"), ge=0
+    )
+    field_count: int = Field(
+        validation_alias=AliasChoices("field_count", "FieldCount"), ge=0
+    )
+
+
+class TenantInfoResponse(_TenantResponseModel):
+    """Tenant-level collection and document counters."""
+
+    status: Literal["success"]
+    tenant_id: str
+    collection_count: int = Field(ge=0)
+    total_documents: int = Field(ge=0)
+    collections: dict[str, TenantCollectionStats] | None = None

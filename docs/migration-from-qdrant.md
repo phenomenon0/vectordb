@@ -1,146 +1,159 @@
-# Migrating from Qdrant to VectorDB
+# Migrating from Qdrant to DeepData V3
 
-## Overview
+The release candidate accepts caller-supplied vectors through tenant-aware HTTP
+V3 or the matching unary gRPC service. Migration therefore reads points from
+Qdrant and writes their vectors and payloads into an explicitly created
+DeepData collection.
 
-Qdrant is a Rust-based vector database with gRPC and REST APIs. VectorDB offers similar features with a Go-native stack, Cowrie codec integration, and built-in agent tooling.
+## Mapping
 
-## Concept Mapping
+| Qdrant | DeepData RC |
+|---|---|
+| Collection | Tenant collection |
+| Point vector or named vectors | Dense vector fields |
+| Sparse vector | Sparse field with inverted index |
+| Payload | Document metadata |
+| Integer or UUID point ID | Positive `uint64` document ID |
+| Search | Dense, sparse, or two-field hybrid search |
 
-| Qdrant | VectorDB | Notes |
-|--------|----------|-------|
-| Collection | Collection | Same concept |
-| Point | Document/Vector | VectorDB uses string IDs |
-| Named vectors | v2 multi-vector fields | Via `/v2/collections` API |
-| Payload | Metadata (`meta`) | String key-value pairs |
-| Payload index | Metadata bitmap index | Auto-indexed |
-| Scroll API | `mode: "scan"` with pagination | Use `page_token` |
-| Snapshot | `/export` + `/import` | Binary snapshot |
-| API key | JWT token | Multi-tenant by default |
-| gRPC API | HTTP REST | No gRPC yet |
+DeepData document IDs are positive `uint64` values. The example below assigns
+new sequential IDs and stores the original Qdrant ID in metadata, so integer,
+UUID, and string source IDs are handled without collisions.
 
-## Step-by-Step Migration
+Run the example against a newly created, empty target collection. If it stops
+after committing earlier batches, delete and recreate that target before
+retrying so the sequential ID mapping remains deterministic.
 
-### 1. Export from Qdrant
+## 1. Create the target schema
 
-```python
-from qdrant_client import QdrantClient
-import json
-
-qdrant = QdrantClient("http://localhost:6333")
-
-for collection in qdrant.get_collections().collections:
-    name = collection.name
-
-    # Scroll through all points
-    points = []
-    offset = None
-    while True:
-        result = qdrant.scroll(
-            collection_name=name,
-            limit=1000,
-            offset=offset,
-            with_payload=True,
-            with_vectors=False  # We'll re-embed in VectorDB
-        )
-        batch, next_offset = result
-
-        for point in batch:
-            record = {
-                "id": str(point.id),
-                "doc": point.payload.get("text", point.payload.get("content", "")),
-                "meta": {k: str(v) for k, v in point.payload.items()
-                         if k not in ("text", "content")},
-                "collection": name,
-            }
-            if record["doc"]:  # skip empty docs
-                points.append(record)
-
-        if next_offset is None:
-            break
-        offset = next_offset
-
-    with open(f"{name}.jsonl", "w") as f:
-        for p in points:
-            f.write(json.dumps(p) + "\n")
-
-    print(f"Exported {len(points)} points from '{name}'")
-```
-
-### 2. Import into VectorDB
+Choose a tenant and create fields that match the source vector names and
+dimensions. Dense fields support `hnsw` or `flat`; sparse fields use
+`inverted`.
 
 ```bash
-./vectordb-server &
+DEEPDATA_URL=http://localhost:8080
+DEEPDATA_TENANT=migration
+DEEPDATA_TOKEN=replace-with-token
 
-for file in *.jsonl; do
-    vectordb-cli import --file "$file" --batch-size 500
-done
+curl -fsS -X POST \
+  "$DEEPDATA_URL/v3/tenants/$DEEPDATA_TENANT/collections" \
+  -H "Authorization: Bearer $DEEPDATA_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name":"docs",
+    "fields":[
+      {"name":"embedding","type":"dense","dim":384,"index":{"type":"hnsw"}}
+    ]
+  }'
 ```
 
-### 3. Update Application Code
+Do not change a vector dimension during transfer. If a new vector model is
+required, generate the replacement vectors in the migration client and create
+a separate collection with the new dimension.
 
-**Qdrant (before):**
+## 2. Stream points into atomic batches
+
+This example uses the Qdrant Python client and the DeepData HTTP contract. It
+preserves payload values as metadata and sends source vectors unchanged.
+
 ```python
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import requests
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 
-client = QdrantClient("http://localhost:6333")
+QDRANT_URL = os.environ["QDRANT_URL"]
+QDRANT_COLLECTION = os.environ["QDRANT_COLLECTION"]
+DEEPDATA_URL = os.environ.get("DEEPDATA_URL", "http://localhost:8080")
+DEEPDATA_TENANT = os.environ["DEEPDATA_TENANT"]
+DEEPDATA_COLLECTION = os.environ["DEEPDATA_COLLECTION"]
+DEEPDATA_TOKEN = os.environ["DEEPDATA_TOKEN"]
+BATCH_SIZE = 500
 
-# Insert
-client.upsert(
-    collection_name="docs",
-    points=[PointStruct(
-        id=1,
-        vector=[0.1, 0.2, ...],  # pre-computed embedding
-        payload={"text": "Hello world", "source": "web"}
-    )]
+qdrant = QdrantClient(url=QDRANT_URL)
+session = requests.Session()
+session.headers.update({
+    "Authorization": f"Bearer {DEEPDATA_TOKEN}",
+    "Content-Type": "application/json",
+})
+batch_url = (
+    f"{DEEPDATA_URL}/v3/tenants/{DEEPDATA_TENANT}"
+    f"/collections/{DEEPDATA_COLLECTION}/docs/batch"
 )
 
-# Search
-results = client.search(
-    collection_name="docs",
-    query_vector=[0.1, 0.2, ...],
-    query_filter=Filter(must=[
-        FieldCondition(key="source", match=MatchValue(value="web"))
-    ]),
-    limit=5,
-)
+
+def canonical_vectors(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return {name: list(values) for name, values in raw.items()}
+    return {"embedding": list(raw)}
+
+
+def send(documents: list[dict[str, Any]]) -> None:
+    response = session.post(
+        batch_url,
+        json={"documents": documents},
+        timeout=60,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if body.get("inserted") != len(documents):
+        raise RuntimeError(f"unexpected batch acknowledgement: {body}")
+
+
+offset = None
+next_id = 1
+pending: list[dict[str, Any]] = []
+
+while True:
+    points, offset = qdrant.scroll(
+        collection_name=QDRANT_COLLECTION,
+        limit=BATCH_SIZE,
+        offset=offset,
+        with_payload=True,
+        with_vectors=True,
+    )
+    for point in points:
+        if point.vector is None:
+            raise RuntimeError(f"point {point.id} has no vector")
+        metadata = dict(point.payload or {})
+        metadata["qdrant_id"] = str(point.id)
+        pending.append({
+            "id": next_id,
+            "vectors": canonical_vectors(point.vector),
+            "metadata": metadata,
+        })
+        next_id += 1
+
+        if len(pending) == BATCH_SIZE:
+            send(pending)
+            pending = []
+
+    if offset is None:
+        break
+
+if pending:
+    send(pending)
+
+print(f"migrated {next_id - 1} points")
 ```
 
-**VectorDB (after):**
-```python
-from vectordb import VectorDBClient
+For named vectors, every Qdrant name must match a DeepData field. If the source
+contains a vector type the target schema does not declare, stop rather than
+silently dropping it.
 
-client = VectorDBClient("http://localhost:8080")
+## 3. Verify before cutover
 
-# Insert (auto-embeds text)
-client.insert(
-    doc="Hello world",
-    meta={"source": "web"},
-    collection="docs"
-)
+Run verification against both systems before moving traffic:
 
-# Search (auto-embeds query)
-results = client.search(
-    query="Hello world",
-    top_k=5,
-    collection="docs",
-    meta={"source": "web"}
-)
-```
+1. Compare source point count with DeepData tenant and collection counts.
+2. Sample original IDs from the `qdrant_id` metadata mapping.
+3. Run representative query vectors and inspect expected neighbors.
+4. Restart DeepData and repeat the count and query checks.
+5. Exercise the same collection through gRPC if that client surface will be
+   used in production.
 
-### 4. Filter Translation
-
-| Qdrant Filter | VectorDB equivalent |
-|---------------|---------------------|
-| `must: [FieldCondition(key, match)]` | `"meta": {"key": "value"}` |
-| `should: [...]` | `"meta_any": [{"k": "v1"}, {"k": "v2"}]` |
-| `must_not: [...]` | `"meta_not": {"key": "value"}` |
-| `Range(gte=5, lte=10)` | `"meta_ranges": [{"key": "field", "min": 5, "max": 10}]` |
-
-## Key Differences
-
-1. **No pre-computed vectors needed**: VectorDB embeds text server-side (ONNX bge-small-en or external). No need to manage embedding pipelines.
-2. **String IDs**: VectorDB uses string IDs (auto-generated UUIDs if omitted). Qdrant uses integer or UUID point IDs.
-3. **Metadata types**: VectorDB metadata values are strings. For numeric filtering, use `meta_ranges`.
-4. **No gRPC**: VectorDB is HTTP-only. For high-throughput, use batch endpoints and Cowrie encoding.
-5. **Multi-tenancy**: VectorDB has built-in JWT-based multi-tenancy with per-tenant rate limiting and quotas.
+Keep Qdrant read-only and available for rollback until the migrated collection
+passes these checks under the exact DeepData candidate build.

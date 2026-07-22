@@ -573,3 +573,154 @@ Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/
 [09:11:06]   Failure mode [grpc_empty_collection_search]: PASS — got 0 results
 [09:11:06]   Failure mode [very_high_ef_search]: PASS — ef_search=10000, status=200
 [09:12:10] Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[21:39:41] Invalidated 18 cached rows for: milvus
+[21:39:41] VDBs: milvus
+[21:39:41] Datasets: sift-100k, glove-100d, code-562
+[21:39:41] ef_search: [16, 32, 64, 128, 256, 512]
+[21:39:41] n_search: 100
+[21:39:41] Total combos: 18
+[21:39:41]
+[21:39:41] Starting competitor containers: etcd, minio, milvus
+[21:40:38] Requested containers ready: {'milvus': True}
+[21:40:38] Loading sift-100k...
+[21:40:38]   100,000 base, 10,000 queries
+[21:40:38] Loading glove-100d...
+[21:40:39]   10,000 base, 1,000 queries
+[21:40:39] Loading code-562...
+[21:40:39]   562 base, 50 queries
+[21:40:39] RUN: milvus|sift-100k|ef=16
+[21:40:51]   R@10=0.9978  QPS=207  P50=3.2ms
+[21:40:51] RUN: milvus|sift-100k|ef=32
+[21:41:02]   R@10=0.9978  QPS=233  P50=3.5ms
+[21:41:02] RUN: milvus|sift-100k|ef=64
+[21:41:18]   R@10=0.9978  QPS=531  P50=3.5ms
+[21:41:18] RUN: milvus|sift-100k|ef=128
+[21:41:30]   R@10=0.9978  QPS=196  P50=3.2ms
+[21:41:30] RUN: milvus|sift-100k|ef=256
+[21:41:42]   R@10=0.9978  QPS=202  P50=3.8ms
+[21:41:42] RUN: milvus|sift-100k|ef=512
+[21:41:54]   R@10=0.9978  QPS=212  P50=3.7ms
+[21:41:54] RUN: milvus|glove-100d|ef=16
+[21:42:04]   R@10=1.0000  QPS=172  P50=6.8ms
+[21:42:04] RUN: milvus|glove-100d|ef=32
+[21:42:14]   R@10=0.9356  QPS=722  P50=1.1ms
+[21:42:14] RUN: milvus|glove-100d|ef=64
+[21:42:25]   R@10=1.0000  QPS=154  P50=6.6ms
+[21:42:25] RUN: milvus|glove-100d|ef=128
+[21:42:35]   R@10=1.0000  QPS=166  P50=6.9ms
+[21:42:35] RUN: milvus|glove-100d|ef=256
+[21:42:45]   R@10=1.0000  QPS=149  P50=6.7ms
+[21:42:45] RUN: milvus|glove-100d|ef=512
+[21:42:56]   R@10=0.9356  QPS=725  P50=1.2ms
+[21:42:56] RUN: milvus|code-562|ef=16
+[21:43:05]   R@10=1.0000  QPS=549  P50=2.1ms
+[21:43:05] RUN: milvus|code-562|ef=32
+[21:43:15]   R@10=1.0000  QPS=554  P50=1.4ms
+[21:43:15] RUN: milvus|code-562|ef=64
+[21:43:25]   R@10=1.0000  QPS=544  P50=1.3ms
+[21:43:25] RUN: milvus|code-562|ef=128
+[21:43:36]   R@10=1.0000  QPS=698  P50=1.1ms
+[21:43:36] RUN: milvus|code-562|ef=256
+[21:43:45]   R@10=1.0000  QPS=555  P50=1.4ms
+[21:43:45] RUN: milvus|code-562|ef=512
+[21:43:55]   R@10=1.0000  QPS=475  P50=1.7ms
+[21:43:55]
+Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[21:43:55] Checkpoint at /home/omen/Documents/Project/DeepData/benchmarks/results/mega/checkpoint.json
+[21:43:55] Total results: 108, failures: 0
+[21:54:20] Invalidated 18 cached rows for: milvus
+[21:54:20] VDBs: milvus
+[21:54:20] Datasets: sift-100k, glove-100d, code-562
+[21:54:20] ef_search: [16, 32, 64, 128, 256, 512]
+[21:54:20] n_search: 100
+[21:54:20] Total combos: 18
+[21:54:20]
+[21:54:20] Loading sift-100k...
+[21:54:20]   100,000 base, 10,000 queries
+[21:54:20] Loading glove-100d...
+[21:54:20]   10,000 base, 1,000 queries
+[21:54:20] Loading code-562...
+[21:54:20]   562 base, 50 queries
+[21:54:20] RUN: milvus|sift-100k|ef=16
+[21:54:34]   [milvus|sift-100k|ef=16] attempt 1/2 failed: <MilvusException: (code=65535, message=fail to search on QueryNode 4: worker(4) query failed: Operator::GetOutput failed for [Operator:, plan node id: 73503] :  => failed to search: config={{"ef":16,"k":100,"metric_type":"COSINE","span_id":"e77ba7ce25e55330","trace_flags":0,"trace_id":"a2c7410d09d3379d208f667187e879eb"}} out of range in json: ef(16) should be larger than k(100) at /workspace/source/internal/core/src/index/VectorMemIndex.cpp:412
+)>
+[21:54:49]   [milvus|sift-100k|ef=16] attempt 2/2 failed: <MilvusException: (code=65535, message=fail to search on QueryNode 4: worker(4) query failed: Operator::GetOutput failed for [Operator:, plan node id: 73507] :  => failed to search: config={{"ef":16,"k":100,"metric_type":"COSINE","span_id":"7941c618022570d0","trace_flags":0,"trace_id":"55ed7e262c3685799f6b2951c5c937cd"}} out of range in json: ef(16) should be larger than k(100) at /workspace/source/internal/core/src/index/VectorMemIndex.cpp:412
+)>
+[21:54:49] RUN: milvus|sift-100k|ef=32
+[21:58:40] Invalidated 0 cached rows for: milvus
+[21:58:40] VDBs: milvus
+[21:58:40] Datasets: sift-100k, glove-100d, code-562
+[21:58:40] ef_search: [16, 32, 64, 128, 256, 512]
+[21:58:40] n_search: 100
+[21:58:40] Total combos: 18
+[21:58:40]
+[21:58:40] Loading sift-100k...
+[21:58:41]   100,000 base, 10,000 queries
+[21:58:41] Loading glove-100d...
+[21:58:41]   10,000 base, 1,000 queries
+[21:58:41] Loading code-562...
+[21:58:41]   562 base, 50 queries
+[21:58:41] RUN: milvus|sift-100k|ef=16
+[21:58:58]   R@10=0.9967  QPS=839  P50=1.2ms
+[21:58:58] RUN: milvus|sift-100k|ef=32
+[21:59:14]   R@10=0.9978  QPS=1732  P50=0.8ms
+[21:59:14] RUN: milvus|sift-100k|ef=64
+[21:59:29]   R@10=0.9956  QPS=1677  P50=0.8ms
+[21:59:29] RUN: milvus|sift-100k|ef=128
+[21:59:44]   R@10=0.9978  QPS=1561  P50=0.8ms
+[21:59:44] RUN: milvus|sift-100k|ef=256
+[21:59:59]   R@10=1.0000  QPS=1365  P50=1.0ms
+[21:59:59] RUN: milvus|sift-100k|ef=512
+[22:00:14]   R@10=1.0000  QPS=1134  P50=1.2ms
+[22:00:14] RUN: milvus|glove-100d|ef=16
+[22:00:26]   R@10=0.9878  QPS=1730  P50=0.7ms
+[22:00:26] RUN: milvus|glove-100d|ef=32
+[22:00:37]   R@10=0.9911  QPS=1542  P50=0.8ms
+[22:00:37] RUN: milvus|glove-100d|ef=64
+[22:00:48]   R@10=0.9889  QPS=1727  P50=0.9ms
+[22:00:48] RUN: milvus|glove-100d|ef=128
+[22:01:00]   R@10=0.9967  QPS=1577  P50=0.8ms
+[22:01:00] RUN: milvus|glove-100d|ef=256
+[22:01:12]   R@10=0.9967  QPS=1476  P50=0.8ms
+[22:01:12] RUN: milvus|glove-100d|ef=512
+[22:01:24]   R@10=1.0000  QPS=1265  P50=0.9ms
+[22:01:24] RUN: milvus|code-562|ef=16
+[22:01:35]   R@10=1.0000  QPS=1481  P50=0.8ms
+[22:01:35] RUN: milvus|code-562|ef=32
+[22:01:47]   R@10=1.0000  QPS=1491  P50=0.7ms
+[22:01:47] RUN: milvus|code-562|ef=64
+[22:01:59]   R@10=1.0000  QPS=1452  P50=0.8ms
+[22:01:59] RUN: milvus|code-562|ef=128
+[22:02:11]   R@10=1.0000  QPS=1495  P50=0.8ms
+[22:02:11] RUN: milvus|code-562|ef=256
+[22:02:23]   R@10=1.0000  QPS=1490  P50=0.8ms
+[22:02:23] RUN: milvus|code-562|ef=512
+[22:02:35]   R@10=1.0000  QPS=1435  P50=0.8ms
+[22:02:35]
+[22:02:35] Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[22:02:35] Checkpoint at /home/omen/Documents/Project/DeepData/benchmarks/results/mega/checkpoint.json
+[22:02:35] Total results: 108, failures: 0
+[22:04:15] VDBs: milvus
+[22:04:15] Datasets: sift-100k, glove-100d, code-562
+[22:04:15] ef_search: [16, 32, 64, 128, 256, 512]
+[22:04:15] n_search: 100
+[22:04:15] Total combos: 18
+[22:04:15]
+[22:04:15]
+[22:04:15] Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[22:04:15] Checkpoint at /home/omen/Documents/Project/DeepData/benchmarks/results/mega/checkpoint.json
+[22:04:15] Total results: 108, failures: 0
+[22:05:15] VDBs: milvus
+[22:05:15] Datasets: sift-100k, glove-100d, code-562
+[22:05:15] ef_search: [16, 32, 64, 128, 256, 512]
+[22:05:15] n_search: 100
+[22:05:15] Total combos: 18
+[22:05:15]
+[22:05:15]
+[22:05:15] Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[22:05:15] Checkpoint at /home/omen/Documents/Project/DeepData/benchmarks/results/mega/checkpoint.json
+[22:05:15] Total results: 108, failures: 0
+[22:10:19] Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[22:12:41] Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[22:27:19] Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md
+[22:43:34] Report written to /home/omen/Documents/Project/DeepData/benchmarks/results/mega/REPORT.md

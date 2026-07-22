@@ -3,11 +3,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "deepdata"
-version = "0.1.0"
+name = "deepdata-client"
+version = "0.2.0rc1"
 description = "Python SDK for the DeepData vector database"
 readme = "README.md"
-license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "Neumenon" },
@@ -16,7 +15,6 @@ keywords = ["vector", "database", "embeddings", "search", "deepdata"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -40,12 +38,29 @@ dev = [
     "mypy>=1.0",
 ]
 
+[tool.hatch.build]
+# This SDK is nested below a repository-level `/deepdata` binary ignore rule.
+# Do not let that root VCS pattern silently exclude this Python package.
+ignore-vcs = true
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/deepdata",
+    "/tests",
+    "/README.md",
+    "/pyproject.toml",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["deepdata"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration_seed: populate and exercise a live canonical server",
+    "integration_verify: verify the seed fixture after a server restart",
+]
 
 [tool.mypy]
 python_version = "3.10"

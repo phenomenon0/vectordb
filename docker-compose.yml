@@ -1,35 +1,48 @@
 services:
   deepdata:
+    platform: linux/amd64
+    image: "${DEEPDATA_IMAGE:-deepdata:local}"
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${DEEPDATA_PORT:-8080}:8080"
+      - "${DEEPDATA_BIND_HOST:-127.0.0.1}:${DEEPDATA_PORT-8080}:8080"
+      - "${DEEPDATA_BIND_HOST:-127.0.0.1}:${DEEPDATA_GRPC_PORT-50051}:50051"
     volumes:
       - deepdata-data:/data
     environment:
       - PORT=8080
+      - GRPC_PORT=50051
       - VECTORDB_BASE_DIR=/data
+      - VECTORDB_DATA_DIR=local
       - VECTORDB_MODE=local
       - LOG_FORMAT=json
-      - USE_HASH_EMBEDDER=1
-      - VECTOR_CAPACITY=1000
-      - HYDRATION_COUNT=0
+      - API_TOKEN=${DEEPDATA_API_TOKEN:?set DEEPDATA_API_TOKEN to a long random token}
+      - REQUIRE_AUTH=1
       # HNSW tuning (defaults are fine for most cases)
       # - HNSW_M=16
       # - HNSW_EFSEARCH=200
-      # Rate limiting
-      - API_RPS=100
-      # Authentication (uncomment to enable)
-      # - API_TOKEN=your-token-here
-      # - JWT_SECRET=your-jwt-secret
-      # - REQUIRE_AUTH=1
+      # Canonical tenant and failed-auth rate limiting
+      - TENANT_RPS=100
+      - TENANT_BURST=100
+      - AUTH_FAILURE_RPS=1
+      - AUTH_FAILURE_BURST=5
+      - MAX_RATE_LIMIT_KEYS=100000
       # OpenTelemetry (uncomment to enable tracing)
       # - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
       # - OTEL_SERVICE_NAME=deepdata
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
+    stop_grace_period: 90s
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/livez"]
       interval: 15s
       timeout: 3s
       start_period: 10s

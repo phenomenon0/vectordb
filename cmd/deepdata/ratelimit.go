@@ -54,7 +54,16 @@ func (rl *rateLimiter) allow(key string) bool {
 		return true
 	}
 
-	// refill
+	rl.refillLocked(b, now)
+
+	if b.tokens <= 0 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+func (rl *rateLimiter) refillLocked(b *bucket, now time.Time) {
 	elapsed := now.Sub(b.lastFill)
 	if elapsed >= rl.intvl {
 		// Prevent overflow with large elapsed times
@@ -69,12 +78,50 @@ func (rl *rateLimiter) allow(key string) bool {
 		}
 		b.lastFill = now
 	}
+}
 
-	if b.tokens <= 0 {
+// failureBlocked checks whether a peer has exhausted its failed-auth budget
+// without consuming a token. Unseen peers are admitted unless the bounded key
+// map is full, in which case authentication fails closed without allocating.
+func (rl *rateLimiter) failureBlocked(key string) bool {
+	if rl == nil {
 		return false
 	}
-	b.tokens--
-	return true
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	b, ok := rl.buckets[key]
+	if !ok {
+		return len(rl.buckets) >= rl.maxBuckets
+	}
+	rl.refillLocked(b, time.Now())
+	return b.tokens <= 0
+}
+
+// recordFailure consumes one token only after credential verification fails.
+// Successful authentication never calls this method and therefore never
+// consumes the failed-auth budget.
+func (rl *rateLimiter) recordFailure(key string) {
+	if rl == nil {
+		return
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	b, ok := rl.buckets[key]
+	if !ok {
+		if len(rl.buckets) >= rl.maxBuckets {
+			return
+		}
+		b = &bucket{tokens: rl.burst, lastFill: now}
+		rl.buckets[key] = b
+	} else {
+		rl.refillLocked(b, now)
+	}
+	if b.tokens > 0 {
+		b.tokens--
+	}
 }
 
 // cleanupLoop periodically removes stale buckets

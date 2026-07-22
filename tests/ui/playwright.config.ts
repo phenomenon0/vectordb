@@ -1,7 +1,19 @@
 import { defineConfig } from '@playwright/test'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const PORT = process.env.DEEPDATA_PORT || '18080'
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`
+const CONFIG_DIR = path.dirname(fileURLToPath(import.meta.url))
+const DEEPDATA_BIN = path.resolve(CONFIG_DIR, process.env.DEEPDATA_BIN || '../../deepdata-server')
+const DATA_ROOT = path.resolve(
+  CONFIG_DIR,
+  process.env.DEEPDATA_DATA_DIR || '.deepdata-test-data',
+)
+
+if (!/^\d+$/.test(PORT) || Number(PORT) < 1 || Number(PORT) > 65535) {
+  throw new Error(`invalid DEEPDATA_PORT: ${PORT}`)
+}
 
 export default defineConfig({
   testDir: './specs',
@@ -22,14 +34,18 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `../../deepdata-server serve --port ${PORT}`,
-    url: `${BASE_URL}/health`,
+    command: `${JSON.stringify(DEEPDATA_BIN)} serve --port ${PORT}`,
+    url: `${BASE_URL}/readyz`,
     reuseExistingServer: !process.env.CI,
     timeout: 30000,
     env: {
-      VECTORDB_MODE: 'hash',
+      VECTORDB_MODE: 'local',
       EMBEDDER_TYPE: 'hash',
-      DATA_DIR: '.deepdata-test-data',
+      VECTORDB_BASE_DIR: DATA_ROOT,
+      VECTORDB_DATA_DIR: path.join(DATA_ROOT, 'local'),
+      HYDRATION_COUNT: '0',
+      DISABLE_WARMUP: '1',
+      GRPC_PORT: '0',
     },
   },
 })

@@ -1,107 +1,84 @@
-# Why DeepData
+# Why DeepData RC
 
-DeepData is a pure-Go vector database built for teams that want fast, self-hosted similarity search without managed service lock-in or Python runtimes.
+DeepData's release candidate is a focused, self-hosted retrieval server for
+teams that can operate one persistent Linux node and want a small contract they
+can test end to end.
 
-## Design Goals
+## What the RC is
 
-**1. Single binary, zero dependencies**
+- A Linux-only, single-node persistent service with one process holding the
+  data-directory lock.
+- A tenant-aware V3 HTTP API and exactly nine equivalent unary gRPC methods.
+- Caller-supplied vectors: embedding generation remains in the application or
+  a separately operated pipeline.
+- Dense search with HNSW or exact Flat indexes.
+- Sparse Inverted/BM25 search and explicit two-field hybrid fusion.
+- Five durable mutations: create/delete collection, insert, atomic batch
+  insert, and delete document.
+- Static bearer-token or tenant-scoped JWT authentication.
+- Readiness that fails closed when the checksummed snapshot, mutation journal,
+  or lifetime lock is unhealthy.
 
-No Python, no Docker required, no external model APIs. Download one binary, run it. Embedding happens in-process via Ollama or OpenAI, with a hash embedder for zero-dependency benchmarking. The server is a single Go process that handles HTTP, gRPC, indexing, persistence, and search.
+The deliberate constraint is the product: HTTP and gRPC share one tenant
+manager, authorization model, and append-before-apply durability boundary.
 
-**2. CPU-first performance**
+## When it is a good fit
 
-Designed for CPU-bound workloads on commodity hardware. SIMD-accelerated distance functions (AVX2+FMA), HNSW with tunable ef_search, and Product Quantization (PQ4/PQ-ADC) for memory-constrained deployments. Sub-10ms P50 query latency at 1M vectors.
+| Need | Fit |
+|---|---|
+| Self-hosted vector retrieval on one Linux node | Good |
+| Application already owns embedding generation | Good |
+| Dense, sparse, or two-field hybrid retrieval | Good |
+| Tenant and collection isolation with static/JWT auth | Good |
+| A narrow API that can be crash-tested and restored as a unit | Good |
 
-**3. Batteries included**
+## When it is not a good fit
 
-Out of the box: five index types (HNSW, DiskANN, IVF, Flat, Sparse/BM25), hybrid search with RRF fusion, multi-tenancy with JWT/RBAC, WAL persistence, streaming replication, encryption at rest, audit logging, gRPC and HTTP APIs, Prometheus metrics, OpenTelemetry tracing, Grafana dashboards, and a CLI. No assembly required.
+- A managed service or a control plane that hides infrastructure operations.
+- Built-in replication, automatic failover, clustering, or multi-node scale.
+- Persistent Windows or macOS deployment.
+- Server-managed OpenAI/local embedding providers or runtime model switching.
+- GraphRAG, extraction, recommendations, discovery, or feedback loops.
+- DiskANN, IVF, binary/PQ quantization, or CUDA acceleration.
+- Upsert/update, document fetch/scan, rename, metadata mutation, or “drop all.”
+- A supported web dashboard, desktop wrapper, or broad multi-language SDK
+  surface.
 
-**4. Embeddable**
+## Architecture at a glance
 
-Import as a Go library. No HTTP overhead, no serialization tax. Use `VectorStore` directly in your application for in-process search with the same HNSW/PQ indices the server uses.
-
-## When to Use DeepData
-
-| Scenario | DeepData | Alternatives |
-|----------|----------|-------------|
-| Self-hosted RAG on a single node | Best fit — single binary, built-in embedders | Chroma (Python), Qdrant (Rust) |
-| Go application needing vector search | Native Go library, no FFI/CGO | pgvector (requires Postgres) |
-| Multi-tenant SaaS with collection isolation | Built-in JWT + RBAC + per-tenant rate limits | Pinecone (managed), Weaviate |
-| Edge/IoT with memory constraints | PQ4 compression: 16 bytes/vector vs 512 raw | Faiss (C++, needs Python bindings) |
-| Hybrid keyword + semantic search | Dense + sparse + RRF fusion in one engine | Vespa (Java, heavy), Elasticsearch |
-| Billion-scale on commodity hardware | DiskANN memory-maps graphs to disk | Milvus (distributed), Pinecone |
-
-## When NOT to Use DeepData
-
-- **Managed service**: If you don't want to run infrastructure, use Pinecone or similar.
-- **GPU-accelerated training**: DeepData is an inference/search engine, not a training framework.
-
-## Comparison
-
-| Feature | DeepData | Chroma | Qdrant | Pinecone |
-|---------|----------|--------|--------|----------|
-| Language | Go | Python | Rust | Managed |
-| Self-hosted | Yes | Yes | Yes | No |
-| Embeddable | Yes (Go lib) | Yes (Python) | No (server only) | No |
-| HNSW | Yes | Yes | Yes | Yes |
-| DiskANN | Yes | No | No | No |
-| PQ Compression | PQ4 + PQ-ADC | No | Scalar | Yes |
-| Sparse/BM25 | Yes | No | Yes | Yes |
-| Hybrid Search | RRF fusion | No | RRF fusion | Yes |
-| gRPC API | Yes | No | Yes | No |
-| Multi-tenancy | JWT + RBAC | No | API keys | Namespaces |
-| Encryption at Rest | AES-256-GCM | No | No | Managed |
-| Audit Logging | Yes | No | No | Managed |
-| WAL Persistence | Yes | Yes | Yes | Managed |
-| Binary Size | ~15MB | ~200MB+ | ~30MB | N/A |
-| Dependencies | None | Python, pip | None | API key |
-
-## Architecture at a Glance
-
-```
-Client (Go / Python / curl / gRPC)
-    │
-    ▼
-┌─────────────────────────────────┐
-│  HTTP (:8080) + gRPC (:50051)   │
-│  JWT auth · RBAC · rate limiting│
-│  Prometheus · OpenTelemetry     │
-├─────────────────────────────────┤
-│  Embedder (Ollama / OpenAI)     │
-│  Hash embedder (benchmarks)     │
-├─────────────────────────────────┤
-│  Index Layer                    │
-│  HNSW · DiskANN · IVF · Flat   │
-│  Sparse/BM25 · PQ4 · PQ-ADC    │
-├─────────────────────────────────┤
-│  VectorStore                    │
-│  Collections · Tenant maps      │
-│  Metadata · Tombstones          │
-├─────────────────────────────────┤
-│  Persistence + Security         │
-│  WAL · Snapshots · Replication  │
-│  Encryption at rest · Audit log │
-└─────────────────────────────────┘
+```text
+caller embedding / sparse pipeline
+              |
+              v
+   V3 HTTP :8080   gRPC :50051
+              \     /
+       tenant authorization
+              |
+       canonical collection engine
+       HNSW / Flat / Inverted
+              |
+   checksummed snapshot + strict journal
+              |
+       one locked Linux data directory
 ```
 
-## Getting Started
+TLS termination and disk encryption belong outside the process, at the reverse
+proxy/service-mesh and filesystem/volume layers. That boundary keeps transport
+and key management explicit instead of implying unqualified built-in security
+features.
 
-```bash
-# Build from source
-go build -o deepdata ./cmd/deepdata && ./deepdata serve
+## Release proof
 
-# Or Docker
-docker compose up
+A credible deployment should prove more than a successful query:
 
-# Insert
-curl -X POST http://localhost:8080/insert \
-  -H "Content-Type: application/json" \
-  -d '{"doc": "DeepData is fast", "collection": "docs"}'
+1. HTTP and gRPC enforce the same tenant and collection scopes.
+2. An acknowledged insert survives process termination and restart.
+3. Corrupt or incompatible persistence causes startup/readiness failure rather
+   than silent reinitialization.
+4. A stopped backup can be restored and passes application-specific semantic
+   queries before traffic is admitted.
+5. Unsupported routes and index types remain unavailable.
 
-# Search
-curl -X POST http://localhost:8080/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "speed", "top_k": 5, "collection": "docs"}'
-```
-
-See [README.md](../README.md) for full documentation links.
+See the [installation guide](installation.md), [security guide](security.md),
+and [canonical collection API](../internal/collection/API.md) for the bounded
+operational contract.
