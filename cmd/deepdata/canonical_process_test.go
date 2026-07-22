@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -1012,5 +1013,62 @@ func TestCanonicalStartupRefusesRawLegacyV2StateWithoutMutation(t *testing.T) {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("canonical raw legacy refusal created %s: %v", path, err)
 		}
+	}
+}
+
+func TestCanonicalStartupRefusesLegacyRootStateWithoutMutation(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The root guard refuses on artifact existence alone; content is opaque
+	// legacy gob/WAL data that must never be read, rewritten, or removed.
+	rawPaths := []string{
+		filepath.Join(dataDir, "index.gob"),
+		filepath.Join(dataDir, "index.gob.wal"),
+		filepath.Join(dataDir, "index.gob.wal.frozen"),
+	}
+	for i, path := range rawPaths {
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("legacy-root-artifact-%d", i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := make(map[string][32]byte, len(rawPaths))
+	for _, path := range rawPaths {
+		before[path] = testFileSHA256(t, path)
+	}
+
+	// Root preflight happens before either API listener is bound, so fixed
+	// unused test ports are sufficient here as well.
+	process := startCanonicalTestProcess(t, dataDir, "127.0.0.1:1", "127.0.0.1:2")
+	defer process.stopIfRunning()
+	select {
+	case <-process.done:
+		if err := process.waitError(); err == nil {
+			t.Fatalf("legacy root helper exited successfully\n%s", process.output.String())
+		}
+	case <-time.After(10 * time.Second):
+		_ = process.cmd.Process.Kill()
+		_ = process.waitError()
+		t.Fatalf("legacy root helper did not exit\n%s", process.output.String())
+	}
+	if !strings.Contains(process.output.String(), "legacy root persistence") {
+		t.Fatalf("helper failed for an unexpected reason:\n%s", process.output.String())
+	}
+	for _, path := range rawPaths {
+		if got := testFileSHA256(t, path); got != before[path] {
+			t.Fatalf("canonical startup changed legacy root artifact %s", path)
+		}
+	}
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(rawPaths) {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("canonical legacy root refusal created new artifacts: %v", names)
 	}
 }

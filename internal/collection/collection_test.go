@@ -512,6 +512,24 @@ func TestCollectionSearchEnforcesCanonicalRequestBounds(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "top_k") {
 		t.Fatalf("oversized top_k error = %v", err)
 	}
+	// An unbounded caller ef_search would degrade HNSW into a full-graph scan;
+	// the canonical surface must reject it, not clamp silently.
+	if _, err := coll.Search(context.Background(), SearchRequest{
+		CollectionName: "docs",
+		Queries:        map[string]interface{}{"dense": []float32{1}},
+		TopK:           1,
+		EfSearch:       CanonicalMaxSearchEf + 1,
+	}); err == nil || !strings.Contains(err.Error(), "ef_search") {
+		t.Fatalf("oversized ef_search error = %v", err)
+	}
+	if _, err := coll.Search(context.Background(), SearchRequest{
+		CollectionName: "docs",
+		Queries:        map[string]interface{}{"dense": []float32{1}},
+		TopK:           1,
+		EfSearch:       -1,
+	}); err == nil || !strings.Contains(err.Error(), "ef_search") {
+		t.Fatalf("negative ef_search error = %v", err)
+	}
 	if _, err := coll.Search(context.Background(), SearchRequest{
 		CollectionName: "docs",
 		Queries: map[string]interface{}{

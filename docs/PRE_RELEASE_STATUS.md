@@ -73,8 +73,11 @@ after some earlier passes.
 - Failed authentication uses a bounded shared HTTP/gRPC peer limiter. Tenant rate limiting,
   tenant/collection caps, schema/dimension/payload bounds, and response budgets are shared
   across the canonical surface.
-- Unsupported legacy and advanced handlers are unregistered. Health, liveness, and readiness
-  remain usable when authentication is enabled.
+- Unsupported legacy and advanced handlers are unreachable in RC startup: feedback,
+  extraction, and V2 collection registration are gated off, and every remaining
+  non-canonical route is rejected by the outermost canonical-surface allowlist before
+  any other middleware runs (negative tests cover root, V2, and advanced paths).
+  Health, liveness, and readiness remain usable when authentication is enabled.
 - Secret scanning passed on a candidate source copy; static-analysis findings were reviewed
   for the supported surface. Both scans require final-tree reruns.
 

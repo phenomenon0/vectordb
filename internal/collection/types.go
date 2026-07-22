@@ -351,6 +351,10 @@ const (
 	CanonicalMaxSearchFields = 2
 	// CanonicalMaxSearchTopK bounds result allocation and response size.
 	CanonicalMaxSearchTopK = 1000
+	// CanonicalMaxSearchEf bounds the caller ef_search override so one request
+	// cannot force a full-graph HNSW scan; large recall needs stay below the
+	// cost of an unbounded beam.
+	CanonicalMaxSearchEf = 4096
 	// CanonicalMaxBatchDocuments bounds one atomic journaled batch.
 	CanonicalMaxBatchDocuments = 10_000
 )

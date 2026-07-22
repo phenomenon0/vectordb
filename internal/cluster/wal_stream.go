@@ -162,11 +162,10 @@ func (s *ShardServer) HandleWALStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // AuthorizeWALStream protects the WAL stream endpoint to prevent unauthenticated replication.
+// Credentials are accepted only from the Authorization header; URL query
+// parameters leak into logs and proxies and are never a token channel.
 func AuthorizeWALStream(store Store, r *http.Request) error {
 	token := r.Header.Get("Authorization")
-	if token == "" {
-		token = r.URL.Query().Get("token")
-	}
 
 	// If auth is required or tokens are configured, enforce them
 	if store.StoreRequireAuth() || store.StoreAPIToken() != "" || store.StoreJWTMgr() != nil {

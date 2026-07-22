@@ -404,6 +404,9 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 	if req.TopK <= 0 || req.TopK > CanonicalMaxSearchTopK {
 		return nil, fmt.Errorf("top_k must be in [1, %d]", CanonicalMaxSearchTopK)
 	}
+	if req.EfSearch < 0 || req.EfSearch > CanonicalMaxSearchEf {
+		return nil, fmt.Errorf("ef_search must be in [0, %d]", CanonicalMaxSearchEf)
+	}
 	if req.HybridParams != nil {
 		if err := validateHybridSearchParams(req.Queries, req.HybridParams); err != nil {
 			return nil, err
