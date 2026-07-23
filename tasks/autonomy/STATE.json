@@ -22,17 +22,45 @@
     "external_publication": "requires-separate-explicit-authority"
   },
   "started_at": "2026-07-17T22:51:42-05:00",
-  "updated_at": "2026-07-22T13:20:00-05:00",
+  "updated_at": "2026-07-22T20:45:00-05:00",
   "resumed_at": "2026-07-22T12:45:00-05:00",
   "current_phase": "phase-8-pre-exact-sha-validation",
-  "current_step": "run the required post-dependency evidence matrix on the checkpointed branch and correct findings before the authorized push",
+  "current_step": "exact-SHA local evidence matrix complete at d5b2d3a; one open correctness finding (memory-drift) requires an owner ship/no-ship decision before tagging",
   "candidate_worktree": {
     "branch": "gnhf/i-want-you-to-mnake-26a28a",
-    "implementation_checkpoint_head": "ece6f23 (grpc GHSA-hrxh-6v49-42gf patch on top of 16acda0 toolchain pin)",
-    "state": "post-toolchain-evidence-rerun-in-progress",
-    "exact_candidate_sha": null,
-    "final_validation": "pending"
+    "implementation_checkpoint_head": "d5b2d3a (four adversarial-review findings closed on top of the grpc patch + toolchain pin; product code frozen)",
+    "state": "code-frozen; full local exact-SHA evidence matrix run; one open correctness finding (memory-drift)",
+    "exact_candidate_sha": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
+    "final_validation": "local matrix complete; blocked on memory-drift disposition + external CI/LICENSE"
   },
+  "exact_sha_evidence_2026_07_22": [
+    "evidence report EVIDENCE-d5b2d3a.md generated against tree 982daf0 with a clean worktree; sha256 sidecar written",
+    "all 10 check-runner receipts (go vet/storage/short/race, benchmark-unit, python unit/mypy/build, state-json, ui-build) PASS bound to d5b2d3a",
+    "Stage A: offline whole-root backup/restore + process-level disk-full and permission-denied rehearsal PASS (backup-restore-d5b2d3a)",
+    "Stage B: explicit legacy export/import semantic migration rehearsal PASS (legacy-migration-d5b2d3a)",
+    "Stage C soak: hnsw-recall 0.9815, flat-exact 100/100, 5x SIGKILL restart-under-load clean, count-parity clean; memory-drift FAILS (see open_findings)",
+    "Stage D: live kind/Helm lifecycle PASS (install, authenticated HTTP+gRPC, PVC persistence across pod replacement, upgrade, rollback, graceful uninstall) with digest-pinned image",
+    "Stage E: all promised Linux amd64 artifacts built, smoked (version 0.2.0-rc.1, mutate+search+graceful stop), checksummed, with source+image SPDX SBOMs",
+    "Stage F: independent adversarial review confirmed the memory-drift finding (and escalated it) and cleared all four kind/Helm harness fixes as legitimate, not masking product/chart bugs"
+  ],
+  "kind_helm_harness_corrections_2026_07_22": [
+    "digest computed from the oci-archive manifest via skopeo (containerd-resolvable) instead of podman .Digest (docker-v2s2), which mismatches after kind load and caused ImagePullBackOff",
+    "loaded image aliased under repo@digest via ctr images tag --force so the registry-less kind node resolves the chart's mandatory digest pin locally",
+    "resource references corrected deploy/deepdata -> deploy/deepdata-deepdata and svc/deepdata -> svc/deepdata-deepdata to match the chart's {{ .Release.Name }}-deepdata naming",
+    "added the missing Authorization: Bearer header to the positive-path collection-list check (test typo; server-side REQUIRE_AUTH enforcement independently verified)",
+    "all four were verified test-harness/kind-local corrections; none change or mask product or chart behavior"
+  ],
+  "open_findings": [
+    {
+      "id": "memory-drift-canonical-hnsw-no-reclamation",
+      "gate": "long-running-correctness / memory-drift",
+      "verdict": "FAIL (real, root-caused, adversarially verified)",
+      "summary": "Canonical HNSW Delete() is soft-only (hnsw.go:629); no online compaction is reachable in canonical mode (main.go:3458 close(compactDone)); and restart does NOT reclaim because Export serializes tombstones (hnsw.go:748-763) and Import re-adds them unconditionally (hnsw.go:880). RSS and the on-disk snapshot grow ~linearly with cumulative deletes (~1.9 KB/delete, +14 MB/min under churn) with no online or restart remedy; only drop+recreate of the collection reclaims.",
+      "evidence": ".deepdata-run/rehearsals/memdrift-d5b2d3a/FINDING.md + receipt.json; soak memory-drift phase ok=false",
+      "disposition": "OWNER ship/no-ship: (1) ship RC with a hard documented limitation (no delete reclamation; drop+recreate to reclaim), or (2) unfreeze d5b2d3a to add reclamation (small Import-skip-deleted fix restores restart-reclaim, or full online canonical compaction). Either code change forces a new candidate SHA and a full evidence-matrix re-run.",
+      "reviewer_recommendation": "option (2) Import-skip is small and low-risk and restores a genuine reclamation path; timing vs freeze is the owner's call"
+    }
+  ],
   "post_toolchain_rerun_evidence_2026_07_22": [
     "go vet/storage/short/race suites, proto freshness, and version parity green at ece6f23 with pinned Go 1.25.12 (receipts in .deepdata-run/checks)",
     "focused crash/journal/replay/subprocess matrices rerun verbosely: 170 pass, 0 skip, 0 fail at ece6f23",
@@ -53,11 +81,11 @@
   ],
   "validation_caveat": "The Go toolchain and security-sensitive dependencies changed after some preliminary passes. No preliminary result is an exact-SHA release attestation; all required final gates must be rerun after the candidate commit is frozen.",
   "known_module_hygiene": "go mod tidy traverses Cowrie's dormant agentgo build tag and reaches retired private Agent-GO imports; the default graph intentionally contains no Agent-GO dependency and must be validated with readonly module resolution until the unused converter is isolated or Cowrie is fixed upstream",
-  "pending_local_gates": [
-    "rerun the Helm/kind live lifecycle contract (helm lint and manifest contracts already green today; kind not installed on this host)",
-    "rehearse offline whole-root backup/restore and process-level disk-full and permission-denied behavior",
-    "run deliberate VDB correctness, mixed-load soak, restart-under-load, memory-drift, and chaos gates",
-    "build and smoke the promised Linux amd64 artifacts and generate the exact-tree evidence report"
+  "pending_local_gates_completed_2026_07_22": [
+    "DONE: live kind/Helm lifecycle contract passed at d5b2d3a (Stage D) after four test-harness corrections",
+    "DONE: offline whole-root backup/restore + process-level disk-full and permission-denied rehearsal passed (Stage A)",
+    "DONE: VDB correctness, mixed-load soak, restart-under-load, and memory-drift gates run (Stage C) — memory-drift FAILS, see open_findings",
+    "DONE: Linux amd64 artifacts built, smoked, checksummed, SBOMed, and exact-tree evidence report generated (Stage E)"
   ],
   "post_toolchain_rerun_evidence_2026_07_22_late": [
     "actionlint clean on ci.yml and release.yml (shellcheck/pyflakes sub-rules unavailable on this host)",
@@ -76,7 +104,7 @@
     "private_credentials": "not-authorized",
     "license_choice": "pending-external-decision"
   },
-  "next_action": "Complete the post-dependency local gates on the checkpointed branch, correct any concrete finding, and push only the reviewed commits; the full exact-SHA release attestation remains open.",
+  "next_action": "Owner decides memory-drift ship/no-ship (open_findings). If ship-with-limitation: document it, keep d5b2d3a, obtain green external CI, add LICENSE, then tag/publish under separate authority. If fix: unfreeze d5b2d3a, apply the Import-skip or online-compaction change, and re-run the full exact-SHA evidence matrix on the new SHA. The ledger commit and branch push are authorized; tag/publish are not.",
   "offline_queue": [
     "verify remote CI on the future exact candidate SHA when an authorized trigger is available",
     "prepare but do not execute signing, registry upload, tag creation, or external publication"
