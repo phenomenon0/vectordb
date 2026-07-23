@@ -25,14 +25,14 @@
   "updated_at": "2026-07-22T22:24:00-05:00",
   "resumed_at": "2026-07-22T12:45:00-05:00",
   "current_phase": "phase-8-pre-exact-sha-validation",
-  "current_step": "memory-drift finding RESOLVED by the Import-skip-deleted fix; new candidate SHA 14d1442; Go gates re-run green at the new SHA and the drift is proven reclaimed by an A/B control. Remaining before tag: fresh external CI on 14d1442, network-isolation gate, and LICENSE (owner-gated).",
+  "current_step": "memory-drift finding RESOLVED by the Import-skip-deleted fix; new candidate SHA 14d1442; Go gates re-run green and drift proven reclaimed by an A/B control; external CI green on the new SHA (run 29977008196). Remaining before tag, both owner-gated: network-isolation gate and LICENSE.",
   "candidate_worktree": {
     "branch": "gnhf/i-want-you-to-mnake-26a28a",
     "implementation_checkpoint_head": "14d1442 (memory-drift reclamation fix on top of the d5b2d3a-equivalent ledger tree; supersedes the frozen d5b2d3a)",
     "state": "memory-drift fix applied and verified; Go exact-SHA gates re-run green at 14d1442; deployment/soak-non-drift gates carry forward from d5b2d3a (product change is confined to the HNSW Import loop)",
     "exact_candidate_sha": "14d1442e61eb4d2e13b112539f3ef9459c7e165d",
     "superseded_sha": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
-    "final_validation": "local matrix green at 14d1442 (Go gates re-run; drift resolved by A/B); blocked on fresh external CI at 14d1442 + network-isolation gate + LICENSE"
+    "final_validation": "local matrix green at 14d1442 (Go gates re-run; drift resolved by A/B) AND external CI green on the new SHA (run 29977008196); remaining before tag: network-isolation gate + LICENSE (both owner-gated)"
   },
   "exact_sha_evidence_2026_07_22": [
     "evidence report EVIDENCE-d5b2d3a.md generated against tree 982daf0 with a clean worktree; sha256 sidecar written",
@@ -105,7 +105,7 @@
   ],
   "external_gates": [
     "legal owner must choose the license and copyright holder before a root LICENSE can be added",
-    "external CI must run green on the new candidate SHA 14d1442. The prior green run 29972603987 was over bd198bf (product == d5b2d3a) and does NOT cover the 14d1442 HNSW Import fix; a fresh run on 14d1442 is required before tag",
+    "SATISFIED 2026-07-22: all 10 required CI checks green on PR #4 (run 29977008196, conclusion=success) over branch head f5d4582 whose product code == 14d1442 (f5d4582 is docs/ledger only) — Linux RC Go + race + container/Compose/Helm contracts, canonical Python client, 5-platform compile proofs, experimental source. Supersedes the earlier 29972603987 run (over bd198bf/d5b2d3a, pre-fix)",
     "Python distribution ownership, trusted publishing, signing, registry credentials, tag creation, and publication require separate confirmation and authority"
   ],
   "authority": {
@@ -114,7 +114,7 @@
     "private_credentials": "not-authorized",
     "license_choice": "pending-external-decision"
   },
-  "next_action": "Memory-drift RESOLVED via the Import-skip fix at 14d1442 (verified by A/B control + re-run Go gates). Remaining before tag, all owner-gated: (1) fresh external CI green on 14d1442, (2) chart NetworkPolicy / operator network-isolation gate, (3) root LICENSE + copyright decision. Branch push of 14d1442 is authorized; tag/publish are not; PR #4 must NOT be merged (owner-gated).",
+  "next_action": "Memory-drift RESOLVED via the Import-skip fix at 14d1442 (verified by A/B control + re-run Go gates) and external CI is green on the new SHA (run 29977008196). Remaining before tag, both owner-gated: (1) chart NetworkPolicy / operator network-isolation gate, (2) root LICENSE + copyright decision. Branch is pushed; tag/publish are not authorized; PR #4 must NOT be merged (owner-gated).",
   "offline_queue": [
     "verify remote CI on the future exact candidate SHA when an authorized trigger is available",
     "prepare but do not execute signing, registry upload, tag creation, or external publication"

@@ -13,9 +13,10 @@ green at `14d1442`.
 The narrow single-node RC implementation is complete and the local matrix is green,
 **including** the long-running memory-drift gate, which previously failed and is now
 **resolved by a code fix that restores restart-reclaim** (see **Resolved Finding:
-memory-drift** below). What remains before a tag is not a correctness failure but three
-owner-gated items: a fresh external CI run on `14d1442`, the chart NetworkPolicy /
-operator network-isolation gate, and the root `LICENSE` / copyright decision.
+memory-drift** below). External CI is green on the new SHA (PR #4 run
+`29977008196`, all 10 required checks). What remains before a tag is not a correctness
+failure but two owner-gated items: the chart NetworkPolicy / operator network-isolation
+gate, and the root `LICENSE` / copyright decision.
 
 **Publication verdict:** **Not authorized and legally gated.** No root `LICENSE` exists
 because the copyright holder and license choice require an external decision. Publication,
@@ -116,7 +117,7 @@ after some earlier passes.
 | P1 | Operational fault and migration rehearsal | **Carried forward from `d5b2d3a`.** Whole-root backup/restore + process-level disk-full and permission-denied behavior PASS; explicit legacy export/import semantic rehearsal PASS. |
 | P1 | Long-running correctness | **PASS.** Soak recall (0.9815), flat-exact (100/100), restart-under-load (5× SIGKILL clean), and count-parity carry forward from `d5b2d3a`; **memory-drift is now RESOLVED** at `14d1442` and proven reclaimed by an A/B control — see Resolved Finding below. |
 | P1 | Network isolation contract | Open (owner-gated). Add and validate a chart NetworkPolicy or document and test a precise operator-managed isolation requirement. |
-| External | Remote CI | Open. Obtain a green required workflow run on the exact candidate SHA `14d1442`. The prior green run (over `bd198bf`, product == `d5b2d3a`) does not cover the Import fix. A branch push alone does not trigger the current main-push-or-PR workflow. |
+| External | Remote CI | **Done.** All 10 required checks green on PR #4 (run `29977008196`) over branch head `f5d4582` (product == `14d1442`) — Linux RC Go + race + container/Compose/Helm contracts, canonical Python client, 5-platform compile proofs, experimental source. |
 
 The local matrix is green at `14d1442`: the Go gates were re-run against the fix, the
 memory-drift finding is resolved, and the remaining gates (deployment, artifact/SBOM,
@@ -210,8 +211,9 @@ The dry-run workflow being present is not publication authorization.
       legitimate (not masking product/chart bugs), against a clean worktree.
 - [x] Resolve the memory-drift finding — fixed at `14d1442` (Import skips deleted entries;
       restart-reclaim proven by A/B control).
+- [x] Obtain green remote CI on the exact candidate SHA `14d1442` — PR #4 run `29977008196`,
+      all 10 required checks green.
 - [ ] Add and validate the chart NetworkPolicy / operator isolation contract.
-- [ ] Obtain green remote CI on the exact candidate SHA `14d1442`.
 
 ## Current Decision
 
