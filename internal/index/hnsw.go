@@ -861,6 +861,16 @@ func (h *HNSWIndex) Import(data []byte) error {
 
 	// Rebuild index — vectors in export are already normalized if prenormalized was true
 	for _, entry := range imp.Vectors {
+		// Reclaim tombstones on load. Version-2 snapshots persist deleted
+		// entries with their full vectors; re-adding them would carry the dead
+		// weight across every restart, so cumulative deletes grow RSS and the
+		// on-disk snapshot without bound (memory-drift). Skipping them rebuilds
+		// a clean graph on restart — the same reclamation Compact() performs.
+		// The durable store reconciles on Active count (Count-Deleted), which is
+		// unchanged by dropping tombstones, so this is a pure reclamation.
+		if imp.Version == 2 && entry.Deleted {
+			continue
+		}
 		rawVector := entry.Vector
 		if len(rawVector) == 0 && len(entry.Quantized) > 0 {
 			if h.quantizer == nil {
@@ -893,10 +903,6 @@ func (h *HNSWIndex) Import(data []byte) error {
 		// Update mappings
 		h.idToIdx[entry.ID] = h.count
 		h.count++
-
-		if imp.Version == 2 && entry.Deleted {
-			h.deleted[entry.ID] = true
-		}
 	}
 
 	if imp.Version == 1 {

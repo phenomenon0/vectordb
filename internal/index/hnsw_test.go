@@ -159,18 +159,23 @@ func TestHNSWExportImport(t *testing.T) {
 		t.Fatalf("import failed: %v", err)
 	}
 
-	// Verify stats match
+	// Verify stats match.
 	stats1 := idx1.Stats()
 	stats2 := idx2.Stats()
 
-	if stats1.Count != stats2.Count {
-		t.Errorf("count mismatch: %d vs %d", stats1.Count, stats2.Count)
-	}
-	if stats1.Deleted != stats2.Deleted {
-		t.Errorf("deleted mismatch: %d vs %d", stats1.Deleted, stats2.Deleted)
-	}
+	// Import reclaims tombstones: a deleted vector must NOT survive an
+	// export/import round-trip (i.e. a process restart), otherwise dead weight
+	// accumulates unbounded across restarts under delete churn (memory-drift).
+	// The invariant that must hold is the *active* set — restart must preserve
+	// exactly the live vectors and drop the deleted ones entirely.
 	if stats1.Active != stats2.Active {
 		t.Errorf("active mismatch: %d vs %d", stats1.Active, stats2.Active)
+	}
+	if stats2.Deleted != 0 {
+		t.Errorf("expected tombstones reclaimed on import, got deleted=%d", stats2.Deleted)
+	}
+	if stats2.Count != stats1.Active {
+		t.Errorf("expected import to drop the tombstone (count==active), got count=%d active=%d", stats2.Count, stats1.Active)
 	}
 
 	// Verify search results are reasonable
