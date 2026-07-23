@@ -2,18 +2,20 @@
 
 **Last reconciled:** 2026-07-22
 
-**Candidate state:** Product code frozen at `d5b2d3a`
-(`d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda`, tree `982daf0`) on
-`gnhf/i-want-you-to-mnake-26a28a`. The full exact-SHA local evidence matrix has been run
-against this tree; an exact-tree evidence report is recorded at
-`.deepdata-run/rehearsals/EVIDENCE-d5b2d3a.md`.
+**Candidate state:** Product code at `14d1442`
+(`14d1442e61eb4d2e13b112539f3ef9459c7e165d`) on
+`gnhf/i-want-you-to-mnake-26a28a`, superseding the earlier frozen `d5b2d3a`. The only
+product-code change from `d5b2d3a` is the HNSW delete-reclamation fix
+(`internal/index/hnsw.go` Import loop + its test); the Go exact-SHA gates have been re-run
+green at `14d1442`.
 
-**Technical verdict:** **Not ready to tag — one open correctness finding.** The narrow
-single-node RC implementation is complete and the exact-SHA local matrix is green
-*except* for the long-running memory-drift gate, which **fails for a real, root-caused
-reason**: canonical HNSW deletes are never reclaimed in canonical mode — not online, and
-not on restart. This is a concrete ship/no-ship item for the owner, not merely "evidence
-not yet gathered." See **Open Finding: memory-drift** below.
+**Technical verdict:** **Prior blocking finding resolved; remaining gates are owner-gated.**
+The narrow single-node RC implementation is complete and the local matrix is green,
+**including** the long-running memory-drift gate, which previously failed and is now
+**resolved by a code fix that restores restart-reclaim** (see **Resolved Finding:
+memory-drift** below). What remains before a tag is not a correctness failure but three
+owner-gated items: a fresh external CI run on `14d1442`, the chart NetworkPolicy /
+operator network-isolation gate, and the root `LICENSE` / copyright decision.
 
 **Publication verdict:** **Not authorized and legally gated.** No root `LICENSE` exists
 because the copyright holder and license choice require an external decision. Publication,
@@ -106,50 +108,58 @@ after some earlier passes.
 
 ## Remaining Technical Candidate Gates
 
-| Priority | Gate | Status at `d5b2d3a` |
+| Priority | Gate | Status at `14d1442` |
 |---|---|---|
-| P0 | Final dependency and toolchain tree | **Done.** vet/storage/short/race, benchmark-unit, python unit/mypy/build, state-json, ui-build all PASS bound to `d5b2d3a` (check receipts). |
-| P0 | Exact-SHA security and artifact proof | **Done.** All Linux amd64 artifacts built, smoked (version `0.2.0-rc.1`, mutate+search+graceful stop), checksummed, with source+image SPDX SBOMs; exact-tree evidence report generated against a clean worktree. Security-scan results recorded in `STATE.json`. |
-| P1 | Final deployment parity | **Done.** Direct container, Compose, and live kind/Helm lifecycle (install, authenticated HTTP+gRPC, PVC persistence across pod replacement, upgrade, rollback, graceful uninstall) PASS with a digest-pinned image. |
-| P1 | Operational fault and migration rehearsal | **Done.** Whole-root backup/restore + process-level disk-full and permission-denied behavior PASS; explicit legacy export/import semantic rehearsal PASS. |
-| P1 | Long-running correctness | **FAIL (open finding).** Soak recall (0.9815), flat-exact (100/100), restart-under-load (5× SIGKILL clean), and count-parity PASS; **memory-drift FAILS** — see Open Finding below. |
-| P1 | Network isolation contract | Open. Add and validate a chart NetworkPolicy or document and test a precise operator-managed isolation requirement. |
-| External | Remote CI | Open. Obtain a green required workflow run on the exact candidate SHA. A branch push alone does not trigger the current main-push-or-PR workflow. |
+| P0 | Final dependency and toolchain tree | **Done.** vet/storage/short/race **re-run and PASS bound to `14d1442`** (check receipts); benchmark-unit, python unit/mypy/build, ui-build carry forward from `d5b2d3a` (byte-identical inputs — no python/ui product change). |
+| P0 | Exact-SHA security and artifact proof | **Carried forward from `d5b2d3a`.** All Linux amd64 artifacts built, smoked (version `0.2.0-rc.1`, mutate+search+graceful stop), checksummed, with source+image SPDX SBOMs; security-scan results recorded in `STATE.json`. The HNSW Import fix does not alter the dependency tree or scanned surface; artifact/SBOM/scan re-run on `14d1442` is a mechanical rebuild left with external CI. |
+| P1 | Final deployment parity | **Carried forward from `d5b2d3a`.** Direct container, Compose, and live kind/Helm lifecycle (install, authenticated HTTP+gRPC, PVC persistence across pod replacement, upgrade, rollback, graceful uninstall) PASS with a digest-pinned image. The fix touches only the in-process HNSW Import loop, not deployment/lifecycle paths. |
+| P1 | Operational fault and migration rehearsal | **Carried forward from `d5b2d3a`.** Whole-root backup/restore + process-level disk-full and permission-denied behavior PASS; explicit legacy export/import semantic rehearsal PASS. |
+| P1 | Long-running correctness | **PASS.** Soak recall (0.9815), flat-exact (100/100), restart-under-load (5× SIGKILL clean), and count-parity carry forward from `d5b2d3a`; **memory-drift is now RESOLVED** at `14d1442` and proven reclaimed by an A/B control — see Resolved Finding below. |
+| P1 | Network isolation contract | Open (owner-gated). Add and validate a chart NetworkPolicy or document and test a precise operator-managed isolation requirement. |
+| External | Remote CI | Open. Obtain a green required workflow run on the exact candidate SHA `14d1442`. The prior green run (over `bd198bf`, product == `d5b2d3a`) does not cover the Import fix. A branch push alone does not trigger the current main-push-or-PR workflow. |
 
-The exact-SHA local matrix is complete; the only failing local gate is memory-drift, and
-one operational gate (network isolation) plus external CI remain.
+The local matrix is green at `14d1442`: the Go gates were re-run against the fix, the
+memory-drift finding is resolved, and the remaining gates (deployment, artifact/SBOM,
+security scans) carry forward because the change is confined to the HNSW Import loop.
+Network isolation plus a fresh external CI run on `14d1442` remain.
 
-## Open Finding: memory-drift (canonical HNSW delete reclamation)
+## Resolved Finding: memory-drift (canonical HNSW delete reclamation)
 
-**Verdict: FAIL — real, root-caused, and independently (adversarially) verified against
-source.** Canonical HNSW `Delete()` is soft-only (`internal/index/hnsw.go:629`): it sets a
-tombstone and frees nothing. In canonical mode — the RC's only mode — no online compaction
-is reachable (`cmd/deepdata/main.go:3458` closes the compaction channel; the `/compact`
-handler and tombstone goroutine act only on the legacy store). Critically, **process
-restart does not reclaim either**: `Export()` serializes every tombstoned vector with its
-full data (`hnsw.go:748-763`) and `Import()` re-adds them all to the rebuilt graph
-unconditionally (`hnsw.go:880`) before re-marking them deleted. The only code path that
-drops tombstones is `HNSWIndex.Compact()` (`hnsw.go:911`), which nothing in canonical mode
-ever calls.
+**Verdict: RESOLVED at `14d1442`** (was FAIL at `d5b2d3a`). The finding was real, root-caused,
+and independently (adversarially) verified: canonical HNSW `Delete()` is soft-only and, in
+canonical mode, no online compaction is reachable, so nothing reclaimed tombstones online.
+Critically, **restart did not reclaim either**: `Import()` re-added every tombstoned vector
+to the rebuilt graph, so both RSS and the on-disk snapshot grew ~linearly with cumulative
+deletes with no remedy short of dropping and recreating the collection.
 
-**Impact.** Under delete-heavy or sustained delete+reinsert churn, both in-memory RSS and
-the on-disk snapshot grow ~linearly with cumulative deletes (~1.9 KB/delete, ≈+14 MB/min
-in the probe) with no online or restart remedy; the only way to reclaim is to drop and
-recreate the collection. Insert-mostly / read-mostly workloads are unaffected. Full
-evidence: `.deepdata-run/rehearsals/memdrift-d5b2d3a/FINDING.md`.
+**Fix.** `Import()` now skips version-2 deleted entries, mirroring `Compact()`'s
+continue-on-deleted, so a restart rebuilds a clean graph and reclaims both RAM and the
+on-disk snapshot. The durable store reconciles on `Active = Count − Deleted`, which is
+unchanged by dropping tombstones, so the fix is a pure reclamation. `TestHNSWExportImport`
+was rewritten to assert the reclaimed intent (`Deleted == 0`, `Count == Active` after
+import) rather than lock in the old tombstone-preservation behavior.
 
-**Owner decision (ship/no-ship):**
+**Verification (A/B control).** With an identical delete+reinsert churn workload and a
+graceful restart against a 76.6 MB tombstoned snapshot on disk:
 
-1. **Ship RC with a hard documented limitation** — "canonical mode performs no delete
-   reclamation; neither checkpointing nor restart reclaims deleted-vector memory;
-   delete-heavy workloads must drop and recreate the collection to reclaim." Keeps the
-   narrow-RC scope; the limitation is materially more severe than a transient drift.
-2. **Block and fix** — either make a canonical compaction trigger reachable, or (smaller,
-   ~few lines) make `Import` skip re-adding `Deleted` entries so restart reclaims. Either
-   change edits product code and therefore **unfreezes `d5b2d3a`**, forcing a new candidate
-   SHA and a full re-run of the exact-SHA evidence matrix.
+- **Old binary (`d5b2d3a`, no fix):** reload took 50 s and the recovery checkpoint rewrote
+  the snapshot **byte-identically** (76,625,482 → 76,625,482 B) — no reclamation.
+- **Fixed binary (`14d1442`):** reload took ~8 s and the snapshot shrank **73.4 MB → 24.1 MB
+  (−67 %)**, with correctness intact (live ids searchable, deleted ids stay gone, re-insert
+  findable). The fix also cures a restart-latency pathology that scaled with the cumulative
+  delete count.
 
-This is deliberately left to the owner and is not silently resolved.
+The Go exact-SHA gates (vet/storage/short/race) were re-run and PASS at `14d1442`, with the
+race detector clean over the changed code. Evidence:
+`.deepdata-run/rehearsals/memdrift-old/old_reload_receipt.json` (A/B control),
+`.deepdata-run/rehearsals/memdrift-fix/restart_reclaim_receipt.json` (fixed binary
+end-to-end), and `.deepdata-run/checks/go-*/receipt.json` bound to `14d1442`.
+
+Online (single-process, no-restart) delete churn still drifts by design — reclamation is a
+restart/checkpoint-time operation, not an online compactor — but it is now bounded: every
+graceful checkpoint and restart folds and reclaims the tombstones. A future online
+canonical compactor would remove even the transient online drift; it is not required for
+the RC.
 
 No item in this table is waived by a preliminary pass from a dirty worktree.
 
@@ -187,17 +197,21 @@ The dry-run workflow being present is not publication authorization.
       parity evidence.
 - [x] Version, changelog, upgrade, support, security, and dry-run release metadata are
       aligned for the candidate.
-- [x] Complete the final dependency-aware local matrix on one frozen SHA (`d5b2d3a`).
+- [x] Complete the final dependency-aware local matrix on a frozen SHA (`d5b2d3a`), then
+      re-run the Go gates on the fix SHA (`14d1442`) after the memory-drift fix.
 - [x] Complete operational fault, migration, VDB correctness, soak, and restart-under-load
-      evidence. **Exception: memory-drift FAILS** (open finding above); chaos beyond the
+      evidence. **memory-drift now RESOLVED** (resolved finding above); chaos beyond the
       restart-under-load cycles is not separately run.
-- [x] Complete exact-SHA security, image, SBOM, artifact, and evidence-report gates.
+- [x] Complete exact-SHA security, image, SBOM, artifact, and evidence-report gates (at
+      `d5b2d3a`; carry forward to `14d1442` — the Import fix does not alter the dependency
+      tree or scanned surface).
 - [x] Perform the final adversarial review — an independent reviewer confirmed and
       escalated the memory-drift finding and cleared the four kind/Helm harness fixes as
       legitimate (not masking product/chart bugs), against a clean worktree.
-- [ ] Resolve the memory-drift finding (owner ship/no-ship decision).
+- [x] Resolve the memory-drift finding — fixed at `14d1442` (Import skips deleted entries;
+      restart-reclaim proven by A/B control).
 - [ ] Add and validate the chart NetworkPolicy / operator isolation contract.
-- [ ] Obtain green remote CI on the exact candidate SHA.
+- [ ] Obtain green remote CI on the exact candidate SHA `14d1442`.
 
 ## Current Decision
 

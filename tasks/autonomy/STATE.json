@@ -22,16 +22,17 @@
     "external_publication": "requires-separate-explicit-authority"
   },
   "started_at": "2026-07-17T22:51:42-05:00",
-  "updated_at": "2026-07-22T20:45:00-05:00",
+  "updated_at": "2026-07-22T22:24:00-05:00",
   "resumed_at": "2026-07-22T12:45:00-05:00",
   "current_phase": "phase-8-pre-exact-sha-validation",
-  "current_step": "exact-SHA local evidence matrix complete at d5b2d3a; one open correctness finding (memory-drift) requires an owner ship/no-ship decision before tagging",
+  "current_step": "memory-drift finding RESOLVED by the Import-skip-deleted fix; new candidate SHA 14d1442; Go gates re-run green at the new SHA and the drift is proven reclaimed by an A/B control. Remaining before tag: fresh external CI on 14d1442, network-isolation gate, and LICENSE (owner-gated).",
   "candidate_worktree": {
     "branch": "gnhf/i-want-you-to-mnake-26a28a",
-    "implementation_checkpoint_head": "d5b2d3a (four adversarial-review findings closed on top of the grpc patch + toolchain pin; product code frozen)",
-    "state": "code-frozen; full local exact-SHA evidence matrix run; one open correctness finding (memory-drift)",
-    "exact_candidate_sha": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
-    "final_validation": "local matrix complete; blocked on memory-drift disposition + external CI/LICENSE"
+    "implementation_checkpoint_head": "14d1442 (memory-drift reclamation fix on top of the d5b2d3a-equivalent ledger tree; supersedes the frozen d5b2d3a)",
+    "state": "memory-drift fix applied and verified; Go exact-SHA gates re-run green at 14d1442; deployment/soak-non-drift gates carry forward from d5b2d3a (product change is confined to the HNSW Import loop)",
+    "exact_candidate_sha": "14d1442e61eb4d2e13b112539f3ef9459c7e165d",
+    "superseded_sha": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
+    "final_validation": "local matrix green at 14d1442 (Go gates re-run; drift resolved by A/B); blocked on fresh external CI at 14d1442 + network-isolation gate + LICENSE"
   },
   "exact_sha_evidence_2026_07_22": [
     "evidence report EVIDENCE-d5b2d3a.md generated against tree 982daf0 with a clean worktree; sha256 sidecar written",
@@ -50,16 +51,25 @@
     "added the missing Authorization: Bearer header to the positive-path collection-list check (test typo; server-side REQUIRE_AUTH enforcement independently verified)",
     "all four were verified test-harness/kind-local corrections; none change or mask product or chart behavior"
   ],
-  "open_findings": [
+  "open_findings": [],
+  "resolved_findings": [
     {
       "id": "memory-drift-canonical-hnsw-no-reclamation",
       "gate": "long-running-correctness / memory-drift",
-      "verdict": "FAIL (real, root-caused, adversarially verified)",
-      "summary": "Canonical HNSW Delete() is soft-only (hnsw.go:629); no online compaction is reachable in canonical mode (main.go:3458 close(compactDone)); and restart does NOT reclaim because Export serializes tombstones (hnsw.go:748-763) and Import re-adds them unconditionally (hnsw.go:880). RSS and the on-disk snapshot grow ~linearly with cumulative deletes (~1.9 KB/delete, +14 MB/min under churn) with no online or restart remedy; only drop+recreate of the collection reclaims.",
-      "evidence": ".deepdata-run/rehearsals/memdrift-d5b2d3a/FINDING.md + receipt.json; soak memory-drift phase ok=false",
-      "disposition": "OWNER ship/no-ship: (1) ship RC with a hard documented limitation (no delete reclamation; drop+recreate to reclaim), or (2) unfreeze d5b2d3a to add reclamation (small Import-skip-deleted fix restores restart-reclaim, or full online canonical compaction). Either code change forces a new candidate SHA and a full evidence-matrix re-run.",
-      "reviewer_recommendation": "option (2) Import-skip is small and low-risk and restores a genuine reclamation path; timing vs freeze is the owner's call"
+      "verdict": "RESOLVED at 14d1442 (was FAIL at d5b2d3a)",
+      "summary": "Canonical HNSW Delete() was soft-only (hnsw.go:629); no online compaction is reachable in canonical mode (main.go close(compactDone)); and restart did NOT reclaim because Import re-added tombstoned vectors to the rebuilt graph. RSS and the on-disk snapshot grew ~linearly with cumulative deletes with no online or restart remedy.",
+      "fix": "Import() now skips version-2 deleted entries (mirroring Compact()'s continue-on-deleted), so a restart rebuilds a clean graph. The durable store reconciles on Active=Count-Deleted, unchanged by dropping tombstones, so it is a pure reclamation. TestHNSWExportImport rewritten to assert reclaim intent (Deleted==0, Count==Active after import).",
+      "verification": "A/B control on identical churn + graceful restart against a 76.6MB tombstoned snapshot: OLD binary reloads in 50s and re-checkpoints byte-identically (76,625,482 -> 76,625,482 B, unreclaimed); FIXED binary reloads in ~8s and shrinks the snapshot 73.4MB -> 24.1MB (-67%) with correctness intact (live searchable, deletes stay gone, re-insert findable). Go exact-SHA gates (vet/storage/short/race) re-run PASS at 14d1442.",
+      "evidence": ".deepdata-run/rehearsals/memdrift-old/old_reload_receipt.json (A/B control); .deepdata-run/rehearsals/memdrift-fix/restart_reclaim_receipt.json (fixed binary end-to-end); .deepdata-run/checks/go-*/receipt.json bound to 14d1442"
     }
+  ],
+  "memdrift_fix_evidence_2026_07_22": [
+    "product change confined to internal/index/hnsw.go (Import loop) + hnsw_test.go; git diff d5b2d3a..14d1442 shows no other product-code file changed",
+    "go vet/storage/short/race re-run PASS bound to 14d1442 (receipts in .deepdata-run/checks) — race detector clean over the changed code",
+    "A/B control: old (d5b2d3a) binary snapshot unreclaimed 76.6MB->76.6MB and 50s pathological reload; fixed binary 73.4MB->24.1MB (-67%) and 8s reload, correctness perfect",
+    "python unit/mypy/build, benchmark-unit, ui-build gates carry forward from d5b2d3a (byte-identical inputs — no python/ui product change)",
+    "deployment rehearsals (backup/restore, legacy-migration, kind/Helm, container/Compose) and soak recall/flat-exact/restart-under-load/count-parity carry forward from d5b2d3a: the fix touches only the HNSW Import loop, not deployment/lifecycle/graph-search paths; the memory-drift soak phase is superseded by the restart-reclaim A/B above",
+    "external CI green run 29972603987 was over bd198bf (product == d5b2d3a); it does NOT cover 14d1442's product change and must be re-run on the new SHA"
   ],
   "post_toolchain_rerun_evidence_2026_07_22": [
     "go vet/storage/short/race suites, proto freshness, and version parity green at ece6f23 with pinned Go 1.25.12 (receipts in .deepdata-run/checks)",
@@ -95,7 +105,7 @@
   ],
   "external_gates": [
     "legal owner must choose the license and copyright holder before a root LICENSE can be added",
-    "remote CI must run and pass on the future exact candidate SHA; pushing this branch alone does not trigger the current main-or-PR workflow",
+    "external CI must run green on the new candidate SHA 14d1442. The prior green run 29972603987 was over bd198bf (product == d5b2d3a) and does NOT cover the 14d1442 HNSW Import fix; a fresh run on 14d1442 is required before tag",
     "Python distribution ownership, trusted publishing, signing, registry credentials, tag creation, and publication require separate confirmation and authority"
   ],
   "authority": {
@@ -104,7 +114,7 @@
     "private_credentials": "not-authorized",
     "license_choice": "pending-external-decision"
   },
-  "next_action": "Owner decides memory-drift ship/no-ship (open_findings). If ship-with-limitation: document it, keep d5b2d3a, obtain green external CI, add LICENSE, then tag/publish under separate authority. If fix: unfreeze d5b2d3a, apply the Import-skip or online-compaction change, and re-run the full exact-SHA evidence matrix on the new SHA. The ledger commit and branch push are authorized; tag/publish are not.",
+  "next_action": "Memory-drift RESOLVED via the Import-skip fix at 14d1442 (verified by A/B control + re-run Go gates). Remaining before tag, all owner-gated: (1) fresh external CI green on 14d1442, (2) chart NetworkPolicy / operator network-isolation gate, (3) root LICENSE + copyright decision. Branch push of 14d1442 is authorized; tag/publish are not; PR #4 must NOT be merged (owner-gated).",
   "offline_queue": [
     "verify remote CI on the future exact candidate SHA when an authorized trigger is available",
     "prepare but do not execute signing, registry upload, tag creation, or external publication"
