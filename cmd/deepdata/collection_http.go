@@ -67,8 +67,29 @@ func decodeDenseVectorFast(raw json.RawMessage) ([]float32, error) {
 		if err := dec.Decode(&f); err != nil {
 			return nil, fmt.Errorf("invalid dense vector element: %w", err)
 		}
-		result = append(result, float32(f))
+		f32 := float32(f)
+		// A finite-but-out-of-float32-range element would silently become
+		// +Inf/-Inf and poison distance/similarity; reject it explicitly.
+		if math.IsNaN(float64(f32)) || math.IsInf(float64(f32), 0) {
+			return nil, fmt.Errorf("dense vector element %d out of float32 range", len(result))
+		}
+		result = append(result, f32)
 	}
+
+	// Consume the closing ']' and require the document to end there. Without
+	// this, a trailing second array (or bracketed garbage) after the vector is
+	// silently ignored even though it cannot be part of the vector.
+	end, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("dense vector array missing closing ']': %w", err)
+	}
+	if d, ok := end.(json.Delim); !ok || d != ']' {
+		return nil, fmt.Errorf("expected ']' at end of dense vector, got %v", end)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("unexpected trailing data after dense vector array: %v", err)
+	}
+
 	return result, nil
 }
 

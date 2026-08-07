@@ -93,6 +93,12 @@ func (flat *FLATIndex) Add(ctx context.Context, id uint64, vector []float32) err
 	flat.mu.Lock()
 	defer flat.mu.Unlock()
 
+	// Determine existence before storing: an overwrite (including a tombstone
+	// resurrection) must replace the vector but must not inflate the count.
+	_, existsUnquantized := flat.vectors[id]
+	_, existsQuantized := flat.quantizedData[id]
+	exists := existsUnquantized || existsQuantized
+
 	vecCopy := make([]float32, flat.dim)
 	copy(vecCopy, vector)
 
@@ -101,7 +107,9 @@ func (flat *FLATIndex) Add(ctx context.Context, id uint64, vector []float32) err
 	}
 
 	delete(flat.deleted, id)
-	flat.count++
+	if !exists {
+		flat.count++
+	}
 
 	return nil
 }

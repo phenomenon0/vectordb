@@ -278,6 +278,11 @@ func (h *HNSWIndex) SetMetadata(id uint64, metadata map[string]interface{}) erro
 //
 // Graph insertion is parallelized across GOMAXPROCS workers (capped at 8)
 // using AddConcurrent for fine-grained locking within the graph.
+//
+// The batch is atomic at the index level: if any step fails after a mutation
+// began (cancelled graph insertion or a storage failure), resurrected
+// tombstones and partially registered nodes are rolled back so a failed batch
+// leaves no visible or re-addable partial state.
 func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) error {
 	// Pre-validation
 	for id, vec := range vectors {
@@ -289,8 +294,11 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	originalCount := h.count
+
 	// 1. Sequential: validate duplicates, handle resurrections, collect new nodes.
 	newNodes := make([]hnsw.Node[uint64], 0, len(vectors))
+	var resurrected []uint64
 	for id, vec := range vectors {
 		if _, exists := h.idToIdx[id]; exists {
 			if !h.deleted[id] {
@@ -303,8 +311,11 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 			h.maybeNormalize(vecCopy)
 			h.graph.Update(id, vecCopy)
 			if err := h.storeVectorLocked(id, vecCopy); err != nil {
+				// Roll back the resurrection so the batch leaves no trace.
+				h.deleted[id] = true
 				return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
 			}
+			resurrected = append(resurrected, id)
 			continue
 		}
 
@@ -318,18 +329,40 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 		return h.maybeTrainQuantizerLocked()
 	}
 
-	// 2. Sequential: pre-register metadata (idToIdx, vectors) so lookups work.
+	// rollback undoes every mutation the batch made so far. It is only called
+	// on failure; the batch must be atomic, so nothing is left half-applied.
+	// Every step is idempotent: graph.Delete and the map deletions are no-ops
+	// for nodes that were never reached, and count is restored to its original
+	// value.
+	rollback := func() {
+		for _, id := range resurrected {
+			h.deleted[id] = true
+		}
+		for _, node := range newNodes {
+			delete(h.idToIdx, node.Key)
+			h.graph.Delete(node.Key)
+			h.removeVectorLocked(node.Key)
+		}
+		h.count = originalCount
+	}
+
+	// 2. Graph insertion. The graph uses each node's own vector, so the index
+	// metadata maps are not needed during insertion; deferring registration
+	// until after the graph is fully built keeps a failed batch rollback-clean.
+	if err := h.parallelGraphInsert(ctx, newNodes); err != nil {
+		rollback()
+		return err
+	}
+
+	// 3. Sequential: register metadata only after graph insertion succeeded.
+	// Node at index i is visible only once its registration completes.
 	for _, node := range newNodes {
 		if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
+			rollback()
 			return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
 		}
 		h.idToIdx[node.Key] = h.count
 		h.count++
-	}
-
-	// 3. Parallel graph insertion via AddConcurrent.
-	if err := h.parallelGraphInsert(ctx, newNodes); err != nil {
-		return err
 	}
 
 	return h.maybeTrainQuantizerLocked()
@@ -342,6 +375,10 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 //
 // Graph insertion is parallelized across GOMAXPROCS workers (capped at 8)
 // using AddConcurrent for fine-grained locking within the graph.
+//
+// Like BatchAdd, a failed batch is rolled back atomically: it leaves no
+// resurrected tombstones, no partially registered nodes, and the original
+// count.
 func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]float32) error {
 	for id, vec := range vectors {
 		if len(vec) != h.dim {
@@ -352,8 +389,11 @@ func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]flo
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	originalCount := h.count
+
 	// 1. Sequential: validate duplicates, handle resurrections, collect new IDs.
 	newNodes := make([]hnsw.Node[uint64], 0, len(vectors))
+	var resurrected []uint64
 	for id, vec := range vectors {
 		h.maybeNormalize(vec) // NB: mutates caller's slice (NoCopy contract)
 		if _, exists := h.idToIdx[id]; exists {
@@ -364,8 +404,11 @@ func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]flo
 			delete(h.deleted, id)
 			h.graph.Update(id, vec)
 			if err := h.storeVectorLocked(id, vec); err != nil {
+				// Roll back the resurrection so the batch leaves no trace.
+				h.deleted[id] = true
 				return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
 			}
+			resurrected = append(resurrected, id)
 			continue
 		}
 		newNodes = append(newNodes, hnsw.MakeNode(id, vec))
@@ -375,18 +418,33 @@ func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]flo
 		return h.maybeTrainQuantizerLocked()
 	}
 
-	// 2. Sequential: pre-register metadata (idToIdx, vectors) so lookups work.
+	rollback := func() {
+		for _, id := range resurrected {
+			h.deleted[id] = true
+		}
+		for _, node := range newNodes {
+			delete(h.idToIdx, node.Key)
+			h.graph.Delete(node.Key)
+			h.removeVectorLocked(node.Key)
+		}
+		h.count = originalCount
+	}
+
+	// 2. Graph insertion before any metadata registration, so a failure cannot
+	// expose half-registered nodes or a count that does not match the graph.
+	if err := h.parallelGraphInsert(ctx, newNodes); err != nil {
+		rollback()
+		return err
+	}
+
+	// 3. Sequential: register metadata after the graph is fully built.
 	for _, node := range newNodes {
 		if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
+			rollback()
 			return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
 		}
 		h.idToIdx[node.Key] = h.count
 		h.count++
-	}
-
-	// 3. Parallel graph insertion via AddConcurrent.
-	if err := h.parallelGraphInsert(ctx, newNodes); err != nil {
-		return err
 	}
 
 	return h.maybeTrainQuantizerLocked()
@@ -1001,6 +1059,15 @@ func (h *HNSWIndex) storeVectorLocked(id uint64, vec []float32) error {
 	h.quantizedData[id] = quantized
 	delete(h.vectors, id)
 	return nil
+}
+
+// removeVectorLocked deletes any stored representation of a vector for the
+// given ID. It is idempotent and used by batch rollback: the vector may have
+// been kept in fully-precision storage, moved to quantized storage, or never
+// stored at all.
+func (h *HNSWIndex) removeVectorLocked(id uint64) {
+	delete(h.vectors, id)
+	delete(h.quantizedData, id)
 }
 
 func (h *HNSWIndex) maybeTrainQuantizerLocked() error {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +110,48 @@ func TestEmbedEndpointsRequireAuthWhenEnabled(t *testing.T) {
 	handler.ServeHTTP(wAuth, reqAuth)
 	if wAuth.Code != http.StatusOK {
 		t.Fatalf("expected 200 with valid auth, got %d: %s", wAuth.Code, wAuth.Body.String())
+	}
+}
+
+func TestMetricsEndpointRequiresAuthWhenEnabled(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	store.requireAuth = true
+	store.apiToken = "secret-token"
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
+
+	reqNoAuth := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	wNoAuth := httptest.NewRecorder()
+	handler.ServeHTTP(wNoAuth, reqNoAuth)
+	if wNoAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for /metrics without auth when REQUIRE_AUTH is on, got %d", wNoAuth.Code)
+	}
+
+	reqAuth := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	reqAuth.Header.Set("Authorization", "Bearer secret-token")
+	globalMetrics.RecordOperation("insert", 0, 0, nil)
+	wAuth := httptest.NewRecorder()
+	handler.ServeHTTP(wAuth, reqAuth)
+	if wAuth.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /metrics with valid auth, got %d: %s", wAuth.Code, wAuth.Body.String())
+	}
+	if !strings.Contains(wAuth.Body.String(), "vectordb_operations_total") {
+		t.Error("authenticated /metrics did not expose the custom metrics surface")
+	}
+}
+
+func TestMetricsEndpointOpenWhenAuthDisabled(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /metrics without auth when requireAuth is off, got %d", w.Code)
 	}
 }
 

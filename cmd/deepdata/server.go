@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Neumenon/cowrie/go/codec"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
@@ -52,6 +53,20 @@ func requestIDFromContext(ctx context.Context) string {
 		return id
 	}
 	return ""
+}
+
+// truncateRequestID caps id to maxBytes without splitting a multi-byte UTF-8
+// rune, so the echoed header and the logged request_id remain valid UTF-8 even
+// after an arbitrary-length client-supplied ID is trimmed.
+func truncateRequestID(id string, maxBytes int) string {
+	if len(id) <= maxBytes {
+		return id
+	}
+	cut := id[:maxBytes]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 // ===========================================================================================
@@ -1485,7 +1500,11 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		sendResponse(w, r, response)
 	})))
 
-	mux.Handle("/metrics", globalMetrics.Handler())
+	// Prometheus metrics are an operational surface like the health probes,
+	// but unlike probes they can leak request-volume/operation detail, so they
+	// are gated behind the same guard used for API routes when REQUIRE_AUTH is
+	// on. In credentialless dev mode the guard authorizes anonymous access.
+	mux.Handle("/metrics", guard(globalMetrics.Handler().ServeHTTP))
 
 	// Kubernetes-style health probes
 	// /healthz - Liveness probe: Is the process alive and not deadlocked?
@@ -3351,7 +3370,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			// Cap client-supplied IDs to prevent log inflation and strip
 			// non-printable characters to avoid log injection.
 			if len(id) > 128 {
-				id = id[:128]
+				id = truncateRequestID(id, 128)
 			}
 			w.Header().Set("X-Request-ID", id)
 			ctx := context.WithValue(r.Context(), logging.RequestIDKey, id)
