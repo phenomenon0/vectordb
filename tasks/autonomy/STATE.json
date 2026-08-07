@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generation": 7,
+  "generation": 8,
   "workflow": "deepdata-single-node-production-hardening",
   "status": "active",
   "execution_preapproved": true,
@@ -25,14 +25,14 @@
   "updated_at": "2026-07-22T22:24:00-05:00",
   "resumed_at": "2026-07-22T12:45:00-05:00",
   "current_phase": "phase-8-pre-exact-sha-validation",
-  "current_step": "memory-drift finding RESOLVED by the Import-skip-deleted fix; new candidate SHA 14d1442; Go gates re-run green and drift proven reclaimed by an A/B control; external CI green on the new SHA (run 29977008196). Remaining before tag, both owner-gated: network-isolation gate and LICENSE.",
-  "candidate_worktree": {
+  "current_step": "NETWORK-ISOLATION gate CLOSED at 2e82859: default-deny chart NetworkPolicy (ingress to advertised ports only, deny-all egress with operator egressTo CIDR and opt-out), validated by helm lint --strict + tests/deployment_manifests_test.sh; documented in docs/kubernetes.md. Also committed b73a184 (FLAT metadata/filtered parity + hybrid dense fusion scoring to similarity). Only remaining before tag is LICENSE/copyright (owner-gated). External CI on the new candidate and any further evidence regeneration remain offline-queue.",
+"candidate_worktree": {
     "branch": "gnhf/i-want-you-to-mnake-26a28a",
-    "implementation_checkpoint_head": "14d1442 (memory-drift reclamation fix on top of the d5b2d3a-equivalent ledger tree; supersedes the frozen d5b2d3a)",
-    "state": "memory-drift fix applied and verified; Go exact-SHA gates re-run green at 14d1442; deployment/soak-non-drift gates carry forward from d5b2d3a (product change is confined to the HNSW Import loop)",
-    "exact_candidate_sha": "14d1442e61eb4d2e13b112539f3ef9459c7e165d",
-    "superseded_sha": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
-    "final_validation": "local matrix green at 14d1442 (Go gates re-run; drift resolved by A/B) AND external CI green on the new SHA (run 29977008196); remaining before tag: network-isolation gate + LICENSE (both owner-gated)"
+    "implementation_checkpoint_head": "2e82859 (network-isolation gate + FLAT/hybrid parity on top of the memory-drift fix tree; supersedes the earlier d5b2d3a/14d1442 ledger trees)",
+    "state": "network-isolation implemented and locally validated at 2e82859; product/Go evidence carries forward from 14d1442 except the two index/collection corrections in b73a184, which were re-verified (build, vet, internal/collection, internal/hybrid, internal/index HNSW/FLAT/IVF, cmd hybrid/metrics/canonical/grpc surfaces)",
+    "exact_candidate_sha": "2e8285901d2761f7bce87bce96f50c4fa1c43a93",
+    "superseded_sha": "14d1442e61eb4d2e13b112539f3ef9459c7e165d",
+    "final_validation": "local Go + deployment-manifest matrix green at 2e82859; network-isolation gate closed; remaining before tag: LICENSE/copyright (owner-gated) and a fresh external CI run on the new SHA (offline queue)"
   },
   "exact_sha_evidence_2026_07_22": [
     "evidence report EVIDENCE-d5b2d3a.md generated against tree 982daf0 with a clean worktree; sha256 sidecar written",
@@ -114,9 +114,9 @@
     "private_credentials": "not-authorized",
     "license_choice": "pending-external-decision"
   },
-  "next_action": "Memory-drift RESOLVED via the Import-skip fix at 14d1442 (verified by A/B control + re-run Go gates) and external CI is green on the new SHA (run 29977008196). Remaining before tag, both owner-gated: (1) chart NetworkPolicy / operator network-isolation gate, (2) root LICENSE + copyright decision. Branch is pushed; tag/publish are not authorized; PR #4 must NOT be merged (owner-gated).",
+  "next_action": "Network-isolation gate CLOSED at 2e82859 (default-deny chart NetworkPolicy, helm-lint + deployment-manifest validated). Also committed b73a184 (FLAT metadata/filtered parity + hybrid dense fusion similarity scoring). No technical gates remain in-repo: the only requirement before tag is the LICENSE/copyright decision (owner-gated), then tag/publish (separate authority). Deferred/offline: re-run external CI on the exact candidate SHA 2e82859 whenever an authorized trigger exists; rebuild/doc re-regen; PR #4 must NOT be merged (owner-gated).",
   "offline_queue": [
-    "verify remote CI on the future exact candidate SHA when an authorized trigger is available",
+    "verify remote CI on the future exact candidate SHA (2e82859) when an authorized trigger is available",
     "prepare but do not execute signing, registry upload, tag creation, or external publication"
   ],
   "deferred_but_required": [
