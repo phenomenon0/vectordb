@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generation": 8,
+  "generation": 9,
   "workflow": "deepdata-single-node-production-hardening",
   "status": "active",
   "execution_preapproved": true,
@@ -22,19 +22,19 @@
     "external_publication": "requires-separate-explicit-authority"
   },
   "started_at": "2026-07-17T22:51:42-05:00",
-  "updated_at": "2026-07-22T22:24:00-05:00",
-  "resumed_at": "2026-07-22T12:45:00-05:00",
+  "updated_at": "2026-08-07T18:30:00-05:00",
+  "resumed_at": "2026-08-07T17:50:00-05:00",
   "current_phase": "phase-8-pre-exact-sha-validation",
-  "current_step": "NETWORK-ISOLATION gate CLOSED at 2e82859: default-deny chart NetworkPolicy (ingress to advertised ports only, deny-all egress with operator egressTo CIDR and opt-out), validated by helm lint --strict + tests/deployment_manifests_test.sh; documented in docs/kubernetes.md. Also committed b73a184 (FLAT metadata/filtered parity + hybrid dense fusion scoring to similarity). Only remaining before tag is LICENSE/copyright (owner-gated). External CI on the new candidate and any further evidence regeneration remain offline-queue.",
+  "current_step": "HARDENING batch committed and re-verified at 043ad5d: strict dense-vector decode (float32-range, trailing-garbage, closed-array), UTF-8-safe X-Request-ID truncation, auth-gated /metrics, FLAT Add count-inflation fix, atomic HNSW BatchAdd rollback, sparse norm/postings overwrite correctness. All Go gates (vet/storage/short/race) PASS bound to 043ad5d.",
 "candidate_worktree": {
     "branch": "gnhf/i-want-you-to-mnake-26a28a",
-    "implementation_checkpoint_head": "2e82859 (network-isolation gate + FLAT/hybrid parity on top of the memory-drift fix tree; supersedes the earlier d5b2d3a/14d1442 ledger trees)",
-    "state": "network-isolation implemented and locally validated at 2e82859; product/Go evidence carries forward from 14d1442 except the two index/collection corrections in b73a184, which were re-verified (build, vet, internal/collection, internal/hybrid, internal/index HNSW/FLAT/IVF, cmd hybrid/metrics/canonical/grpc surfaces)",
-    "exact_candidate_sha": "2e8285901d2761f7bce87bce96f50c4fa1c43a93",
-    "superseded_sha": "14d1442e61eb4d2e13b112539f3ef9459c7e165d",
-    "final_validation": "local Go + deployment-manifest matrix green at 2e82859; network-isolation gate closed; remaining before tag: LICENSE/copyright (owner-gated) and a fresh external CI run on the new SHA (offline queue)"
+    "implementation_checkpoint_head": "043ad5d (hardening batch: strict vector decode, UTF-8-safe ID truncation, auth-gated metrics, FLAT counter + HNSW batch atomicity + sparse overwrite correctness; stacks on 2e82859 network-isolation gate + b73a184 FLAT/hybrid parity + 14d1442 memory-drift fix tree)",
+    "state": "product/Go evidence re-verified at 043ad5d: go vet/storage/short/race PASS bound to 043ad5d (check receipts); go-short had one controlled flaky rerun of the testdata-noise-sensitive benchmarks/review TestDevOpsSREReview (P99/P50 ratio 67% then 100% 6/6 pass) with both logs retained; artifact/SBOM/scan/deployment/python evidence carries forward from d5b2d3a (no python/ui/helm/deps change in 043ad5d — product files only in cmd/deepdata and internal/index)",
+    "exact_candidate_sha": "043ad5d22f4ca75fbfd71c5cbf8cb33020a382d4",
+    "superseded_sha": "2e8285901d2761f7bce87bce96f50c4fa1c43a93",
+    "final_validation": "local Go + deployment-manifest matrix green at 043ad5d; network-isolation gate closed at 2e82859; remaining before tag: LICENSE/copyright (owner-gated) and a fresh external CI run on the new SHA (offline queue)"
   },
-  "exact_sha_evidence_2026_07_22": [
+"exact_sha_evidence_2026_07_22": [
     "evidence report EVIDENCE-d5b2d3a.md generated against tree 982daf0 with a clean worktree; sha256 sidecar written",
     "all 10 check-runner receipts (go vet/storage/short/race, benchmark-unit, python unit/mypy/build, state-json, ui-build) PASS bound to d5b2d3a",
     "Stage A: offline whole-root backup/restore + process-level disk-full and permission-denied rehearsal PASS (backup-restore-d5b2d3a)",
@@ -43,6 +43,13 @@
     "Stage D: live kind/Helm lifecycle PASS (install, authenticated HTTP+gRPC, PVC persistence across pod replacement, upgrade, rollback, graceful uninstall) with digest-pinned image",
     "Stage E: all promised Linux amd64 artifacts built, smoked (version 0.2.0-rc.1, mutate+search+graceful stop), checksummed, with source+image SPDX SBOMs",
     "Stage F: independent adversarial review confirmed the memory-drift finding (and escalated it) and cleared all four kind/Helm harness fixes as legitimate, not masking product/chart bugs"
+  ],
+  "hardening_batch_2026_08_07": [
+    "uncommitted hardening batch found in worktree on resume, audited line-by-line, verified, and committed as one semantic checkpoint 043ad5d",
+    "go build ./..., go vet, focused new tests, full go test -short ./..., and -race over internal/index + cmd/deepdata + internal/collection all PASS pre-commit",
+    "official check-runner receipts regenerated and PASS bound to 043ad5d: go-storage, go-vet-cgo0, go-short, go-race",
+    "go-short flake note: benchmarks/review TestDevOpsSREReview first run 67% (P99/P50 ratio 10.3x on testdata-noise), one controlled rerun PASS 100% (6/6); both logs retained and the receipt records the passing rerun",
+    "scope note: 043ad5d touches only cmd/deepdata and internal/index product files; python/helm/deps/artifact evidence carries forward from d5b2d3a (unchanged inputs)"
   ],
   "kind_helm_harness_corrections_2026_07_22": [
     "digest computed from the oci-archive manifest via skopeo (containerd-resolvable) instead of podman .Digest (docker-v2s2), which mismatches after kind load and caused ImagePullBackOff",
@@ -114,10 +121,11 @@
     "private_credentials": "not-authorized",
     "license_choice": "pending-external-decision"
   },
-  "next_action": "Network-isolation gate CLOSED at 2e82859 (default-deny chart NetworkPolicy, helm-lint + deployment-manifest validated). Also committed b73a184 (FLAT metadata/filtered parity + hybrid dense fusion similarity scoring). No technical gates remain in-repo: the only requirement before tag is the LICENSE/copyright decision (owner-gated), then tag/publish (separate authority). Deferred/offline: re-run external CI on the exact candidate SHA 2e82859 whenever an authorized trigger exists; rebuild/doc re-regen; PR #4 must NOT be merged (owner-gated).",
+  "next_action": "HARDENING batch committed and fully re-verified at 043ad5d (strict vector decode, UTF-8-safe ID truncation, auth-gated /metrics, FLAT counter fix, atomic HNSW batch rollback, sparse overwrite correctness); go vet/storage/short/race receipts PASS bound to 043ad5d. No technical gates remain in-repo: the only requirement before tag is the LICENSE/copyright decision (owner-gated), then tag/publish (separate authority). Deferred/offline: re-run external CI on the exact candidate SHA 043ad5d whenever an authorized trigger exists; PR #4 must NOT be merged (owner-gated).",
   "offline_queue": [
-    "verify remote CI on the future exact candidate SHA (2e82859) when an authorized trigger is available",
-    "prepare but do not execute signing, registry upload, tag creation, or external publication"
+    "verify remote CI on the future exact candidate SHA (043ad5d) when an authorized trigger is available",
+    "prepare but do not execute signing, registry upload, tag creation, or external publication",
+    "re-run external CI after 043ad5d product changes (decode/metrics/index paths) supersede the f5d4582-certified 14d1442 product SHA"
   ],
   "deferred_but_required": [
     "offline backup/restore plus disk-full and permission-denied process rehearsal",

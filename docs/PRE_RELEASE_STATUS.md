@@ -1,20 +1,23 @@
 # DeepData Pre-Release Status
 
-**Last reconciled:** 2026-07-22
+**Last reconciled:** 2026-08-07
 
-**Candidate state:** Product code at `14d1442`
-(`14d1442e61eb4d2e13b112539f3ef9459c7e165d`) on
-`gnhf/i-want-you-to-mnake-26a28a`, superseding the earlier frozen `d5b2d3a`. The only
-product-code change from `d5b2d3a` is the HNSW delete-reclamation fix
-(`internal/index/hnsw.go` Import loop + its test); the Go exact-SHA gates have been re-run
-green at `14d1442`.
+**Candidate state:** Product code at `043ad5d`
+(`043ad5d22f4ca75fbfd71c5cbf8cb33020a382d4`) on
+`gnhf/i-want-you-to-mnake-26a28a`, superseding the earlier frozen `2e82859` /
+`14d1442` / `d5b2d3a`. The newest product changes are a hardening batch (strict
+dense-vector decode, UTF-8-safe request-ID truncation, auth-gated `/metrics`,
+FLAT count-inflation fix, atomic HNSW batch rollback, sparse overwrite
+correctness) — see **Hardening Batch** below; the Go exact-SHA gates have been
+re-run green at `043ad5d`.
 
 **Technical verdict:** **Prior blocking finding resolved; remaining gates are owner-gated.**
 The narrow single-node RC implementation is complete and the local matrix is green,
 **including** the long-running memory-drift gate, which previously failed and is now
 **resolved by a code fix that restores restart-reclaim** (see **Resolved Finding:
-memory-drift** below). External CI is green on the new SHA (PR #4 run
-`29977008196`, all 10 required checks). The chart network-isolation gate is now
+memory-drift** below). External CI is green on the pre-hardening SHA (PR #4 run
+`29977008196`, all 10 required checks); the 043ad5d hardening batch needs a fresh
+external CI run. The chart network-isolation gate is now
 **implemented and validated** (default-deny `NetworkPolicy`). What remains before a
 tag is not a correctness failure but the owner-gated item: the root `LICENSE` /
 copyright decision.
@@ -110,21 +113,56 @@ after some earlier passes.
 
 ## Remaining Technical Candidate Gates
 
-| Priority | Gate | Status at `14d1442` |
+| Priority | Gate | Status at `043ad5d` |
 |---|---|---|
-| P0 | Final dependency and toolchain tree | **Done.** vet/storage/short/race **re-run and PASS bound to `14d1442`** (check receipts); benchmark-unit, python unit/mypy/build, ui-build carry forward from `d5b2d3a` (byte-identical inputs — no python/ui product change). |
-| P0 | Exact-SHA security and artifact proof | **Carried forward from `d5b2d3a`.** All Linux amd64 artifacts built, smoked (version `0.2.0-rc.1`, mutate+search+graceful stop), checksummed, with source+image SPDX SBOMs; security-scan results recorded in `STATE.json`. The HNSW Import fix does not alter the dependency tree or scanned surface; artifact/SBOM/scan re-run on `14d1442` is a mechanical rebuild left with external CI. |
-| P1 | Final deployment parity | **Carried forward from `d5b2d3a`.** Direct container, Compose, and live kind/Helm lifecycle (install, authenticated HTTP+gRPC, PVC persistence across pod replacement, upgrade, rollback, graceful uninstall) PASS with a digest-pinned image. The fix touches only the in-process HNSW Import loop, not deployment/lifecycle paths. |
+| P0 | Final dependency and toolchain tree | **Done.** vet/storage/short/race **re-run and PASS bound to `043ad5d`** (check receipts); benchmark-unit, python unit/mypy/build, ui-build carry forward from `d5b2d3a` (byte-identical inputs — no python/ui product change). |
+| P0 | Exact-SHA security and artifact proof | **Carried forward from `d5b2d3a`.** All Linux amd64 artifacts built, smoked (version `0.2.0-rc.1`, mutate+search+graceful stop), checksummed, with source+image SPDX SBOMs; security-scan results recorded in `STATE.json`. The 043ad5d hardening batch does not alter the dependency tree or scanned surface; artifact/SBOM/scan re-run is a mechanical rebuild left with external CI. |
+| P1 | Final deployment parity | **Carried forward from `d5b2d3a`.** Direct container, Compose, and live kind/Helm lifecycle (install, authenticated HTTP+gRPC, PVC persistence across pod replacement, upgrade, rollback, graceful uninstall) PASS with a digest-pinned image. The hardening batch touches only in-process index authorization/decode paths, not deployment/lifecycle paths. |
 | P1 | Operational fault and migration rehearsal | **Carried forward from `d5b2d3a`.** Whole-root backup/restore + process-level disk-full and permission-denied behavior PASS; explicit legacy export/import semantic rehearsal PASS. |
 | P1 | Long-running correctness | **PASS.** Soak recall (0.9815), flat-exact (100/100), restart-under-load (5× SIGKILL clean), and count-parity carry forward from `d5b2d3a`; **memory-drift is now RESOLVED** at `14d1442` and proven reclaimed by an A/B control — see Resolved Finding below. |
 | P1 | Network isolation contract | **Done.** The chart renders a default-deny `NetworkPolicy` (ingress only on the advertised HTTP/gRPC ports, egress deny-all with an explicit telemetry CIDR or render-refusal, operator opt-out). Validated by `helm lint --strict` and the `test-deployment-manifests` contract; non-enforcing CNIs are documented as an operator-managed requirement. The chart change is confined to `deploy/helm/**` and needs a fresh external CI run on a new candidate SHA. |
-| External | Remote CI | **Done.** All 10 required checks green on PR #4 (run `29977008196`) over branch head `f5d4582` (product == `14d1442`) — Linux RC Go + race + container/Compose/Helm contracts, canonical Python client, 5-platform compile proofs, experimental source. |
+| External | Remote CI | **Pending on `043ad5d`.** All 10 required checks were green on PR #4 (run `29977008196`) over branch head `f5d4582` (product == `14d1442`) — Linux RC Go + race + container/Compose/Helm contracts, canonical Python client, 5-platform compile proofs, experimental source. A fresh run over `043ad5d` is queued offline because the security/decode/index product surfaces changed. |
 
-The local matrix is green at `14d1442`: the Go gates were re-run against the fix, the
-memory-drift finding is resolved, and the remaining gates (deployment, artifact/SBOM,
-security scans) carry forward because the change is confined to the HNSW Import loop.
-The chart NetworkPolicy / operator network-isolation gate is now implemented and
-validated locally; a fresh external CI run on the resulting candidate SHA remains.
+The local matrix is green at `043ad5d`: the Go gates (vet/storage/short/race) were
+re-run against the hardening batch, the memory-drift finding is resolved, and the
+remaining gates (deployment, artifact/SBOM, security scans) carry forward because the
+product changes are confined to `cmd/deepdata` and `internal/index` (no
+python/ui/helm/dependency input changes). The chart NetworkPolicy / operator
+network-isolation gate is now implemented and validated locally; a fresh external CI
+run on `043ad5d` is queued offline.
+
+## Hardening Batch (043ad5d, 2026-08-07)
+
+A single-semantic-commit hardening pass on top of the network-isolation gate, from an
+adversarial re-review of the in-process surfaces:
+
+- **Strict dense-vector decode:** `decodeDenseVectorFast` now rejects elements whose value
+  is finite outside `float32` range (which previously became `+Inf`/`-Inf` and poisoned
+  distance/similarity), requires the closing `]`, and rejects trailing bytes after the
+  array (a second bracketed array or garbage could previously be silently ignored).
+- **UTF-8-safe request-ID truncation:** a client-supplied `X-Request-ID` longer than
+  128 bytes is truncated on a rune boundary, so the echoed header and structured log
+  field stay valid UTF-8 instead of a mid-rune cut.
+- **Auth-gated `/metrics`:** the Prometheus surface is now behind the same
+  `REQUIRE_AUTH` guard as the API routes (operation/volume detail no longer leaks when
+  auth is enabled); probes stay public.
+- **FLAT count correctness:** re-adding an existing ID (including a tombstone
+  resurrection) replaces the vector without inflating `Count`.
+- **Atomic HNSW batches:** `BatchAdd`/`BatchAddNoCopy` defer metadata registration and
+  graph insertion until after the graph is fully built, and roll back newly registered
+  nodes / resurrected tombstones / the count on a cancelled context or storage error —
+  a failed batch leaves no partial state and every ID in it is re-addable.
+- **Sparse overwrite correctness:** the cosine norm is recomputed from the stored vector
+  on every `Add` (an all-zero overwrite no longer keeps a stale norm), and
+  inverted-list postings emptied by an overwrite are dropped instead of lingering.
+
+All of these are covered by new focused unit tests. Verification for this batch:
+`go build ./...`, `go vet`, full `go test -short ./...`, and `-race` over
+`internal/index`, `cmd/deepdata`, `internal/collection` all pass; official
+check-runner receipts (`go-storage`, `go-vet-cgo0`, `go-short`, `go-race`) are bound
+to `043ad5d`. One test-noise flake
+(`benchmarks/review/TestDevOpsSREReview`, P99/P50 latency-ratio) was observed once and
+passes on the controlled rerun (100%, 6/6); both logs are retained.
 
 ## Resolved Finding: memory-drift (canonical HNSW delete reclamation)
 
@@ -216,6 +254,13 @@ The dry-run workflow being present is not publication authorization.
 - [x] Obtain green remote CI on the exact candidate SHA `14d1442` — PR #4 run `29977008196`,
       all 10 required checks green.
 - [x] Add and validate the chart NetworkPolicy / operator isolation contract.
+- [x] Land and locally re-verify the adversarial hardening batch (`043ad5d`) — strict
+      vector decode, UTF-8-safe ID truncation, auth-gated `/metrics`, FLAT counter fix,
+      atomic HNSW batch rollback, sparse overwrite correctness — with `go build`, `go vet`,
+      `go test -short ./...`, and `-race` PASS bound to `043ad5d` (check receipts).
+- [ ] Re-obtain green remote CI on the exact candidate SHA `043ad5d` — the previously
+      green run `29977008196` covered `14d1442`; the hardening batch needs a fresh external run
+      (offline queue until an authorized trigger exists).
 
 ## Current Decision
 
