@@ -374,7 +374,8 @@ func (c *Collection) setIndexMetadata(field VectorField, docID uint64, metadata 
 			return setter.SetMetadata(docID, metadata)
 		}
 
-		// Index doesn't support metadata (e.g., FLAT index), silently skip
+		// Index doesn't support metadata (e.g., legacy binary-backed indexes),
+		// silently skip.
 		return nil
 
 	case VectorTypeSparse:
@@ -627,9 +628,12 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 
 		denseResults = make([]hybrid.SearchResult, len(idxResults))
 		for i, r := range idxResults {
+			// Use similarity (higher is better) so weighted/linear fusion ranks
+			// dense hits correctly alongside sparse similarity scores. RRF is
+			// rank-only and unaffected.
 			denseResults[i] = hybrid.SearchResult{
 				DocID: r.ID,
-				Score: r.Distance,
+				Score: r.Score,
 			}
 		}
 	}

@@ -8,6 +8,8 @@ import (
 	"math"
 	"sort"
 	"sync"
+
+	"github.com/phenomenon0/vectordb/internal/filter"
 )
 
 // FLATIndex implements exact (brute-force) vector search
@@ -25,6 +27,9 @@ type FLATIndex struct {
 	// Optional quantization
 	quantizer     Quantizer         // Quantizer for compression
 	quantizedData map[uint64][]byte // ID -> quantized vector storage
+
+	// Metadata for filtered search (same contract as HNSWIndex)
+	metadata map[uint64]map[string]interface{}
 }
 
 // NewFLATIndex creates a new FLAT index
@@ -36,10 +41,11 @@ func NewFLATIndex(dim int, config map[string]interface{}) (Index, error) {
 	metric := GetConfigString(config, "metric", "cosine")
 
 	flat := &FLATIndex{
-		dim:     dim,
-		vectors: make(map[uint64][]float32),
-		deleted: make(map[uint64]bool),
-		metric:  metric,
+		dim:      dim,
+		vectors:  make(map[uint64][]float32),
+		deleted:  make(map[uint64]bool),
+		metric:   metric,
+		metadata: make(map[uint64]map[string]interface{}),
 	}
 
 	// Check for quantization config
@@ -100,6 +106,34 @@ func (flat *FLATIndex) Add(ctx context.Context, id uint64, vector []float32) err
 	return nil
 }
 
+// SetMetadata sets or updates the metadata for a vector.
+// This is used for filtered search. Metadata can be set after vector insertion.
+func (flat *FLATIndex) SetMetadata(id uint64, metadata map[string]interface{}) error {
+	flat.mu.Lock()
+	defer flat.mu.Unlock()
+
+	// Check if vector exists
+	_, existsUnquantized := flat.vectors[id]
+	_, existsQuantized := flat.quantizedData[id]
+	if !existsUnquantized && !existsQuantized {
+		return fmt.Errorf("vector with ID %d does not exist", id)
+	}
+
+	// Store metadata (make a copy to avoid external mutations)
+	if metadata != nil {
+		metaCopy := make(map[string]interface{}, len(metadata))
+		for k, v := range metadata {
+			metaCopy[k] = v
+		}
+		flat.metadata[id] = metaCopy
+	} else {
+		// Allow nil to clear metadata
+		delete(flat.metadata, id)
+	}
+
+	return nil
+}
+
 // Search performs exact brute-force search
 func (flat *FLATIndex) Search(ctx context.Context, query []float32, k int, params SearchParams) ([]Result, error) {
 	if len(query) != flat.dim {
@@ -109,21 +143,51 @@ func (flat *FLATIndex) Search(ctx context.Context, query []float32, k int, param
 	flat.mu.RLock()
 	defer flat.mu.RUnlock()
 
+	// Extract filter parameter (same contract as HNSWIndex)
+	var f filter.Filter
+	switch p := params.(type) {
+	case HNSWSearchParams:
+		f = p.Filter
+	case *HNSWSearchParams:
+		if p != nil {
+			f = p.Filter
+		}
+	}
+
 	// Collect non-deleted vectors
 	activeVectors := make([][]float32, 0, len(flat.vectors)+len(flat.quantizedData))
 	activeIDs := make([]uint64, 0, len(flat.vectors)+len(flat.quantizedData))
+	activeMetadata := make([]map[string]interface{}, 0, len(flat.vectors)+len(flat.quantizedData))
+
+	matchesFilter := func(id uint64) bool {
+		if f == nil {
+			return true
+		}
+		meta := flat.metadata[id]
+		if meta == nil {
+			return false
+		}
+		return f.Evaluate(meta)
+	}
 
 	for id, vec := range flat.vectors {
 		if flat.deleted[id] {
 			continue
 		}
+		if !matchesFilter(id) {
+			continue
+		}
 		activeVectors = append(activeVectors, vec)
 		activeIDs = append(activeIDs, id)
+		activeMetadata = append(activeMetadata, flat.metadata[id])
 	}
 
 	if flat.quantizer != nil {
 		for id, quantized := range flat.quantizedData {
 			if flat.deleted[id] {
+				continue
+			}
+			if !matchesFilter(id) {
 				continue
 			}
 
@@ -134,6 +198,7 @@ func (flat *FLATIndex) Search(ctx context.Context, query []float32, k int, param
 
 			activeVectors = append(activeVectors, vec)
 			activeIDs = append(activeIDs, id)
+			activeMetadata = append(activeMetadata, flat.metadata[id])
 		}
 	}
 
@@ -163,6 +228,7 @@ func (flat *FLATIndex) Search(ctx context.Context, query []float32, k int, param
 			ID:       activeIDs[i],
 			Distance: dist,
 			Score:    1.0 / (1.0 + dist),
+			Metadata: activeMetadata[i],
 		}
 	}
 
@@ -245,10 +311,11 @@ func (flat *FLATIndex) Export() ([]byte, error) {
 	defer flat.mu.RUnlock()
 
 	type vectorEntry struct {
-		ID        uint64    `json:"id"`
-		Vector    []float32 `json:"vector,omitempty"`
-		Quantized []byte    `json:"quantized,omitempty"`
-		Deleted   bool      `json:"deleted,omitempty"`
+		ID        uint64                 `json:"id"`
+		Vector    []float32              `json:"vector,omitempty"`
+		Quantized []byte                 `json:"quantized,omitempty"`
+		Deleted   bool                   `json:"deleted,omitempty"`
+		Metadata  map[string]interface{} `json:"metadata,omitempty"`
 	}
 
 	type exportFormat struct {
@@ -278,6 +345,13 @@ func (flat *FLATIndex) Export() ([]byte, error) {
 		if quantized, ok := flat.quantizedData[id]; ok {
 			entry.Quantized = append([]byte(nil), quantized...)
 		}
+		if meta, ok := flat.metadata[id]; ok {
+			metaCopy := make(map[string]interface{}, len(meta))
+			for mk, mv := range meta {
+				metaCopy[mk] = mv
+			}
+			entry.Metadata = metaCopy
+		}
 		vectors = append(vectors, entry)
 	}
 
@@ -301,10 +375,11 @@ func (flat *FLATIndex) Import(data []byte) error {
 
 func (flat *FLATIndex) importJSON(data []byte) error {
 	type vectorEntry struct {
-		ID        uint64    `json:"id"`
-		Vector    []float32 `json:"vector,omitempty"`
-		Quantized []byte    `json:"quantized,omitempty"`
-		Deleted   bool      `json:"deleted,omitempty"`
+		ID        uint64                 `json:"id"`
+		Vector    []float32              `json:"vector,omitempty"`
+		Quantized []byte                 `json:"quantized,omitempty"`
+		Deleted   bool                   `json:"deleted,omitempty"`
+		Metadata  map[string]interface{} `json:"metadata,omitempty"`
 	}
 
 	type importFormat struct {
@@ -338,6 +413,7 @@ func (flat *FLATIndex) importJSON(data []byte) error {
 	flat.quantizer = quantizer
 	flat.vectors = make(map[uint64][]float32, len(imp.Vectors))
 	flat.deleted = make(map[uint64]bool, len(imp.Vectors))
+	flat.metadata = make(map[uint64]map[string]interface{}, len(imp.Vectors))
 	if quantizer != nil {
 		flat.quantizedData = make(map[uint64][]byte, len(imp.Vectors))
 	} else {
@@ -356,6 +432,13 @@ func (flat *FLATIndex) importJSON(data []byte) error {
 		}
 		if entry.Deleted {
 			flat.deleted[entry.ID] = true
+		}
+		if len(entry.Metadata) > 0 {
+			metaCopy := make(map[string]interface{}, len(entry.Metadata))
+			for mk, mv := range entry.Metadata {
+				metaCopy[mk] = mv
+			}
+			flat.metadata[entry.ID] = metaCopy
 		}
 	}
 
@@ -391,6 +474,7 @@ func (flat *FLATIndex) importLegacyBinary(data []byte) error {
 	numVectors := int(readUint32())
 	flat.vectors = make(map[uint64][]float32, numVectors)
 	flat.deleted = make(map[uint64]bool)
+	flat.metadata = make(map[uint64]map[string]interface{})
 	flat.quantizer = nil
 	flat.quantizedData = nil
 
@@ -440,7 +524,13 @@ func (flat *FLATIndex) estimateMemory() int {
 	// Deleted map: ID (8 bytes) + bool (1 byte) overhead
 	deletedMem := len(flat.deleted) * 9
 
-	return vectorMem + deletedMem
+	// Metadata maps: key (8 bytes) + value map overhead
+	var metadataMem int
+	for _, meta := range flat.metadata {
+		metadataMem += 8 + len(meta)*16
+	}
+
+	return vectorMem + deletedMem + metadataMem
 }
 
 func (flat *FLATIndex) storeVectorLocked(id uint64, vec []float32) error {
