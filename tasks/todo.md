@@ -175,8 +175,12 @@ green on the exact candidate SHA when network execution becomes available.
       material in Helm values or release records.
 - [x] Add security contexts, capability drops, termination grace, persistent volumes,
       resource defaults, a single-node Recreate strategy, and ClusterIP-only defaults.
-- [ ] Provide and validate the intended network-isolation contract, either as a chart
-      NetworkPolicy or as an explicit operator-managed requirement.
+- [x] Provide and validate the intended network-isolation contract, either as a chart
+      NetworkPolicy or as an explicit operator-managed requirement. Implemented a
+      default-deny chart NetworkPolicy (ingress to the advertised ports only, egress
+      denied with an operator `egressTo` CIDR option and explicit opt-out), validated
+      with `helm lint` strict and `tests/deployment_manifests_test.sh`, and documented
+      the non-enforcing-CNI operator-managed fallback in `docs/kubernetes.md`.
 - [x] Prove direct-container and Compose first boot, authenticated HTTP/gRPC, replacement
       persistence, cleanup, and graceful SIGTERM locally.
 - [x] Complete a local Kubernetes/Helm install, authenticated HTTP/gRPC, PVC replacement,

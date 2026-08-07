@@ -234,6 +234,28 @@ restrict network access to intended clients. HTTP and gRPC require separate
 ingress routing rules unless the selected ingress supports both protocols on a
 shared listener.
 
+### Network isolation
+
+The Helm chart renders a default-deny `NetworkPolicy` for the DeepData pod
+(`networkPolicy.enabled=true`): ingress is limited to the advertised HTTP and
+gRPC ports, and all pod egress is denied. The RC pod makes no outbound
+connections; if `telemetry.enabled=true`, you must also set
+`networkPolicy.egressTo` to the OTLP exporter's CIDR or the chart refuses to
+render.
+
+Policy enforcement requires a CNI with NetworkPolicy support (Calico, Cilium,
+OVN-Kubernetes, etc.). Non-enforcing CNIs such as kindnet accept the manifest
+but apply no traffic policy, so the operator must provide equivalent isolation
+externally; `networkPolicy.enabled=false` suppresses the chart policy when a
+cluster-level mechanism is used. Inspect the rendered contract with:
+
+```bash
+helm template <release> deploy/helm/deepdata \
+  --set persistence.verifiedPOSIXSemantics=true \
+  --set-string image.digest=sha256:REPLACE_WITH_YOUR_DIGEST \
+  | grep -A 40 'kind: NetworkPolicy'
+```
+
 ## Offline backup
 
 Stop the only pod before capturing the whole PVC:

@@ -47,6 +47,21 @@ telemetry:
   endpoint: ""
   serviceName: deepdata
 
+# Network isolation for the DeepData pod. When enabled, a default-deny
+# NetworkPolicy confines the pod to deny-all egress and allows ingress only on
+# the advertised HTTP and gRPC ports. It requires a CNI with NetworkPolicy
+# support (Calico, Cilium, OVN-Kubernetes, etc.); kindnet and other
+# non-enforcing CNIs accept the manifest but apply no policy — under those
+# clusters the operator must implement this isolation externally.
+networkPolicy:
+  # Set to false when the operator delegates isolation to a cluster-level
+  # mechanism; the chart then renders no NetworkPolicy.
+  enabled: true
+  # CIDR blocks the pod may reach. Keep empty for the RC default (no outbound
+  # connections). Required when telemetry.enabled=true because the OTLP
+  # exporter must be reachable.
+  egressTo: []
+
 # The numeric identity matches the official image. fsGroup lets kubelet make a
 # fresh supported PVC writable without starting DeepData as root. Custom images
 # must either retain UID/GID 10001 or override all three IDs together.

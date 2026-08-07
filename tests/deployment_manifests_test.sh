@@ -50,7 +50,8 @@ assert_template_fails() {
 rendered="$(mktemp)"
 existing_claim_rendered="$(mktemp)"
 jwt_rendered="$(mktemp)"
-trap 'rm -f "$rendered" "$existing_claim_rendered" "$jwt_rendered"' EXIT
+egress_rendered="$(mktemp)"
+trap 'rm -f "$rendered" "$existing_claim_rendered" "$jwt_rendered" "$egress_rendered"' EXIT
 
 digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 rc_args=(
@@ -66,6 +67,9 @@ helm template deepdata-contract "$chart" "${rc_args[@]}" \
   --set auth.existingSecret=deepdata-jwt \
   --set auth.existingSecretType=jwtSecret \
   --set auth.existingSecretKey=jwt-secret >"$jwt_rendered"
+helm template deepdata-contract "$chart" "${rc_args[@]}" \
+  --set telemetry.enabled=true \
+  --set-string networkPolicy.egressTo[0]=10.0.0.0/8 >"$egress_rendered"
 
 assert_template_fails missing-digest \
   --set persistence.verifiedPOSIXSemantics=true
@@ -80,6 +84,7 @@ assert_template_fails missing-secret-name "${rc_args[@]}" --set auth.existingSec
 assert_template_fails missing-secret-key "${rc_args[@]}" --set auth.existingSecretKey=
 assert_template_fails non-linux "${rc_args[@]}" --set nodeSelector.kubernetes\\.io/os=windows
 assert_template_fails non-amd64 "${rc_args[@]}" --set nodeSelector.kubernetes\\.io/arch=arm64
+assert_template_fails telemetry-without-egress "${rc_args[@]}" --set telemetry.enabled=true
 
 for expected in \
   "runAsNonRoot: true" \
@@ -138,6 +143,29 @@ fi
 assert_contains "$jwt_rendered" "name: JWT_SECRET"
 if grep -Fq -- "name: API_TOKEN" "$jwt_rendered"; then
   echo "JWT rendering unexpectedly configures API_TOKEN" >&2
+  exit 1
+fi
+
+# Network-isolation contract: default-deny egress, ingress limited to the
+# advertised ports, and an explicit operator opt-out.
+assert_contains "$rendered" "kind: NetworkPolicy"
+assert_contains "$rendered" "name: deepdata-contract-deepdata"
+assert_contains "$rendered" "    - Ingress"
+assert_contains "$rendered" "    - Egress"
+assert_contains "$rendered" "          port: 8080"
+assert_contains "$rendered" "          port: 50051"
+if grep -Fq -- "ipBlock:" "$rendered"; then
+  echo "default rendering unexpectedly includes an egress allowance" >&2
+  exit 1
+fi
+assert_contains "$egress_rendered" 'cidr: "10.0.0.0/8"'
+
+policy_disabled_rendered="$(mktemp)"
+trap 'rm -f "$rendered" "$existing_claim_rendered" "$jwt_rendered" "$egress_rendered" "$policy_disabled_rendered"' EXIT
+helm template deepdata-contract "$chart" "${rc_args[@]}" \
+  --set networkPolicy.enabled=false >"$policy_disabled_rendered"
+if grep -Fq -- "kind: NetworkPolicy" "$policy_disabled_rendered"; then
+  echo "networkPolicy.enabled=false unexpectedly renders a NetworkPolicy" >&2
   exit 1
 fi
 

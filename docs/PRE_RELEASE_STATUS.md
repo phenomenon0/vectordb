@@ -14,9 +14,10 @@ The narrow single-node RC implementation is complete and the local matrix is gre
 **including** the long-running memory-drift gate, which previously failed and is now
 **resolved by a code fix that restores restart-reclaim** (see **Resolved Finding:
 memory-drift** below). External CI is green on the new SHA (PR #4 run
-`29977008196`, all 10 required checks). What remains before a tag is not a correctness
-failure but two owner-gated items: the chart NetworkPolicy / operator network-isolation
-gate, and the root `LICENSE` / copyright decision.
+`29977008196`, all 10 required checks). The chart network-isolation gate is now
+**implemented and validated** (default-deny `NetworkPolicy`). What remains before a
+tag is not a correctness failure but the owner-gated item: the root `LICENSE` /
+copyright decision.
 
 **Publication verdict:** **Not authorized and legally gated.** No root `LICENSE` exists
 because the copyright holder and license choice require an external decision. Publication,
@@ -116,13 +117,14 @@ after some earlier passes.
 | P1 | Final deployment parity | **Carried forward from `d5b2d3a`.** Direct container, Compose, and live kind/Helm lifecycle (install, authenticated HTTP+gRPC, PVC persistence across pod replacement, upgrade, rollback, graceful uninstall) PASS with a digest-pinned image. The fix touches only the in-process HNSW Import loop, not deployment/lifecycle paths. |
 | P1 | Operational fault and migration rehearsal | **Carried forward from `d5b2d3a`.** Whole-root backup/restore + process-level disk-full and permission-denied behavior PASS; explicit legacy export/import semantic rehearsal PASS. |
 | P1 | Long-running correctness | **PASS.** Soak recall (0.9815), flat-exact (100/100), restart-under-load (5× SIGKILL clean), and count-parity carry forward from `d5b2d3a`; **memory-drift is now RESOLVED** at `14d1442` and proven reclaimed by an A/B control — see Resolved Finding below. |
-| P1 | Network isolation contract | Open (owner-gated). Add and validate a chart NetworkPolicy or document and test a precise operator-managed isolation requirement. |
+| P1 | Network isolation contract | **Done.** The chart renders a default-deny `NetworkPolicy` (ingress only on the advertised HTTP/gRPC ports, egress deny-all with an explicit telemetry CIDR or render-refusal, operator opt-out). Validated by `helm lint --strict` and the `test-deployment-manifests` contract; non-enforcing CNIs are documented as an operator-managed requirement. The chart change is confined to `deploy/helm/**` and needs a fresh external CI run on a new candidate SHA. |
 | External | Remote CI | **Done.** All 10 required checks green on PR #4 (run `29977008196`) over branch head `f5d4582` (product == `14d1442`) — Linux RC Go + race + container/Compose/Helm contracts, canonical Python client, 5-platform compile proofs, experimental source. |
 
 The local matrix is green at `14d1442`: the Go gates were re-run against the fix, the
 memory-drift finding is resolved, and the remaining gates (deployment, artifact/SBOM,
 security scans) carry forward because the change is confined to the HNSW Import loop.
-Network isolation plus a fresh external CI run on `14d1442` remain.
+The chart NetworkPolicy / operator network-isolation gate is now implemented and
+validated locally; a fresh external CI run on the resulting candidate SHA remains.
 
 ## Resolved Finding: memory-drift (canonical HNSW delete reclamation)
 
@@ -213,7 +215,7 @@ The dry-run workflow being present is not publication authorization.
       restart-reclaim proven by A/B control).
 - [x] Obtain green remote CI on the exact candidate SHA `14d1442` — PR #4 run `29977008196`,
       all 10 required checks green.
-- [ ] Add and validate the chart NetworkPolicy / operator isolation contract.
+- [x] Add and validate the chart NetworkPolicy / operator isolation contract.
 
 ## Current Decision
 
