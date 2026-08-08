@@ -5,9 +5,10 @@ DeepData process on Linux, tenant-aware HTTP V3, and the matching unary gRPC
 service. Clients provide every dense and sparse vector.
 
 Supported mutations are create collection, delete collection, insert one,
-batch insert, and delete document. Supported reads are tenant information,
-collection get/list, and dense, sparse, or hybrid search. Dense fields use
-HNSW or Flat; sparse fields use the inverted index.
+batch insert, upsert one, and delete document. Supported reads are tenant
+information, collection get/list, document get-by-ID, and dense, sparse, or
+hybrid search. Dense fields use HNSW or Flat; sparse fields use the inverted
+index.
 
 ## Canonical Python client
 
@@ -65,6 +66,13 @@ with DeepDataClient(
         queries={"embedding": [0.1, 0.2, 0.3]},
         top_k=5,
     )
+    tenant.upsert(
+        "docs",
+        id=1002,
+        vectors={"embedding": [0.2, 0.3, 0.1]},
+        metadata={"source": "example", "state": "revised"},
+    )
+    one = tenant.get_document("docs", 1002)
     tenant.delete_document("docs", first.id)
 ```
 
@@ -129,8 +137,17 @@ curl -fsS "$BASE_URL/v3/tenants/$TENANT/collections/docs" \
   -H "Authorization: Bearer $TOKEN"
 curl -fsS -X POST "$BASE_URL/v3/tenants/$TENANT/collections/docs/search" \
   -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
   -d '{"queries":{"embedding":[1,0,0]},"top_k":5}'
+
+# Upsert creates-or-replaces a caller-addressed document.
+curl -fsS -X PUT "$BASE_URL/v3/tenants/$TENANT/collections/docs/docs/103" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"vectors":{"embedding":[1,0,0]},"metadata":{"kind":"revised"}}'
+
+# Get a single document by ID.
+curl -fsS "$BASE_URL/v3/tenants/$TENANT/collections/docs/docs/103" \
+  -H "Authorization: Bearer $TOKEN"
 
 # Delete one document, then delete the collection.
 curl -fsS -X DELETE "$BASE_URL/v3/tenants/$TENANT/collections/docs/docs" \
@@ -159,9 +176,9 @@ For hybrid search, send exactly two query fields and an explicit fusion policy:
 
 ## gRPC contract
 
-The gRPC service mirrors the tenant and operation model. It exposes nine unary
-methods; there are no streaming RPCs and server reflection is not part of the
-RC contract.
+The gRPC service mirrors the tenant and operation model. It exposes eleven
+unary methods; there are no streaming RPCs and server reflection is not part of
+the RC contract.
 
 | Method | Operation |
 |---|---|
@@ -173,6 +190,8 @@ RC contract.
 | `Insert` | Insert one document |
 | `BatchInsert` | Atomic batch insert |
 | `Search` | Dense, sparse, or hybrid search |
+| `Upsert` | Insert-or-replace one caller-addressed document |
+| `GetDoc` | Read one document by ID |
 | `DeleteDoc` | Delete one document |
 
 Use the checked-in schema at `api/proto/deepdata/v3/deepdata.proto`. A minimal

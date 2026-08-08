@@ -178,6 +178,38 @@ message DeleteDocRequest {
 
 message DeleteDocResponse {}
 
+// ── Upsert ───────────────────────────────────────────────────────────
+
+message UpsertRequest {
+  string collection = 1;
+  map<string, VectorData> vectors = 2;
+  google.protobuf.Struct metadata = 3;
+  reserved 4;
+  reserved "text";
+  string tenant_id = 5;
+  // Upsert is caller-addressed: id is required and, unlike Insert's optional
+  // id, zero is rejected rather than auto-assigned.
+  uint64 id = 6;
+}
+
+message UpsertResponse {
+  uint64 id = 1;
+}
+
+// ── GetDoc ───────────────────────────────────────────────────────────
+
+message GetDocRequest {
+  string tenant_id = 1;
+  string collection = 2;
+  uint64 doc_id = 3;
+}
+
+message GetDocResponse {
+  uint64 id = 1;
+  map<string, VectorData> vectors = 2;
+  google.protobuf.Struct metadata = 3;
+}
+
 // ── Service ──────────────────────────────────────────────────────────
 
 service DeepData {
@@ -190,4 +222,6 @@ service DeepData {
   rpc BatchInsert      (BatchInsertRequest)      returns (BatchInsertResponse);
   rpc Search           (SearchRequest)           returns (SearchResponse);
   rpc DeleteDoc        (DeleteDocRequest)        returns (DeleteDocResponse);
+  rpc Upsert           (UpsertRequest)           returns (UpsertResponse);
+  rpc GetDoc           (GetDocRequest)           returns (GetDocResponse);
 }

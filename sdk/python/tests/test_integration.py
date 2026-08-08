@@ -99,13 +99,31 @@ def test_sync_canonical_lifecycle_seeds_restart_fixture() -> None:
 
         deleted = tenant.delete_document(RESTART_COLLECTION, 103)
         assert deleted.tenant_id == TENANT
+
+        upserted = tenant.upsert(
+            RESTART_COLLECTION,
+            id=104,
+            vectors={"embedding": [0.5, 0.5, 0.0]},
+            metadata={"source": "upsert"},
+        )
+        assert upserted.id == 104
+        # Replacing an existing ID keeps document count stable and wins.
+        tenant.upsert(
+            RESTART_COLLECTION,
+            id=104,
+            vectors={"embedding": [1.0, 0.5, 0.0]},
+            metadata={"source": "revised"},
+        )
+        fetched = tenant.get_document(RESTART_COLLECTION, 104)
+        assert fetched.id == 104
+        assert fetched.metadata == {"source": "revised"}
         result = tenant.search(
             RESTART_COLLECTION,
             queries={"embedding": [1.0, 0.0, 0.0]},
             top_k=10,
             include_vectors=True,
         )
-        assert {document.id for document in result.documents} == {101, 102}
+        assert {document.id for document in result.documents} == {101, 102, 104}
         assert all(document.vectors is not None for document in result.documents)
 
         collection = tenant.get_collection(RESTART_COLLECTION)
@@ -114,7 +132,7 @@ def test_sync_canonical_lifecycle_seeds_restart_fixture() -> None:
         assert collection.collection.name == RESTART_COLLECTION
         assert [item.name for item in listing.collections] == [RESTART_COLLECTION]
         assert info.collection_count == 1
-        assert info.total_documents == 2
+        assert info.total_documents == 3
 
 
 @pytest.mark.integration_seed
@@ -129,6 +147,15 @@ async def test_async_canonical_lifecycle_and_cleanup() -> None:
             vectors={"embedding": [0.0, 1.0, 0.0]},
             metadata={"source": "async"},
         )
+        upserted = await tenant.upsert(
+            ASYNC_COLLECTION,
+            id=202,
+            vectors={"embedding": [1.0, 1.0, 0.0]},
+            metadata={"source": "upsert-async"},
+        )
+        fetched = await tenant.get_document(ASYNC_COLLECTION, 202)
+        assert fetched.id == 202
+        assert fetched.metadata == {"source": "upsert-async"}
         result = await tenant.search(
             ASYNC_COLLECTION,
             queries={"embedding": [0.0, 1.0, 0.0]},
@@ -136,9 +163,11 @@ async def test_async_canonical_lifecycle_and_cleanup() -> None:
             include_vectors=False,
         )
         assert inserted.id == 201
+        assert upserted.id == 202
         assert [document.id for document in result.documents] == [201]
         assert result.documents[0].vectors is None
         await tenant.delete_document(ASYNC_COLLECTION, 201)
+        await tenant.delete_document(ASYNC_COLLECTION, 202)
         await tenant.delete_collection(ASYNC_COLLECTION)
 
 
@@ -147,7 +176,7 @@ def test_restart_persistence_and_cleanup() -> None:
     with _sync_client() as client:
         tenant = client.tenant(TENANT)
         collection = tenant.get_collection(RESTART_COLLECTION)
-        assert collection.collection.doc_count == 2
+        assert collection.collection.doc_count == 3
 
         result = tenant.search(
             RESTART_COLLECTION,
@@ -155,11 +184,15 @@ def test_restart_persistence_and_cleanup() -> None:
             top_k=10,
             include_vectors=False,
         )
-        assert {document.id for document in result.documents} == {101, 102}
+        assert {document.id for document in result.documents} == {101, 102, 104}
         assert all(document.vectors is None for document in result.documents)
+
+        restored = tenant.get_document(RESTART_COLLECTION, 104)
+        assert restored.metadata == {"source": "revised"}
 
         tenant.delete_document(RESTART_COLLECTION, 101)
         tenant.delete_document(RESTART_COLLECTION, 102)
+        tenant.delete_document(RESTART_COLLECTION, 104)
         deleted = tenant.delete_collection(RESTART_COLLECTION)
         assert deleted.tenant_id == TENANT
         assert tenant.list_collections().count == 0

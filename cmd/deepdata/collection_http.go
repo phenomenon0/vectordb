@@ -1315,14 +1315,35 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 	operation := parts[3]
 	switch operation {
 	case "docs":
+		// A fifth path segment addresses a single document: PUT upserts the
+		// body under that numeric id, GET reads it back. The literal "batch"
+		// keeps its collection-level route.
+		if len(parts) == 5 && parts[4] != "" && parts[4] != "batch" {
+			docID, err := parseDocIDPathPart(parts[4])
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			switch r.Method {
+			case http.MethodPut:
+				if !authorizeCanonicalHTTP(w, r, tenantID, collectionName, "write") {
+					return
+				}
+				s.handleTenantUpsertDoc(w, r, tenantID, collectionName, docID)
+			case http.MethodGet:
+				if !authorizeCanonicalHTTP(w, r, tenantID, collectionName, "read") {
+					return
+				}
+				s.handleTenantGetDoc(w, r, tenantID, collectionName, docID)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+			return
+		}
 		if !authorizeCanonicalHTTP(w, r, tenantID, collectionName, "write") {
 			return
 		}
-		if len(parts) == 5 {
-			if parts[4] != "batch" {
-				http.Error(w, fmt.Sprintf("unknown document operation: %s", parts[4]), http.StatusNotFound)
-				return
-			}
+		if len(parts) == 5 && parts[4] == "batch" {
 			s.handleTenantBatchDocs(w, r, tenantID, collectionName)
 			return
 		}
@@ -1668,6 +1689,91 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// parseDocIDPathPart resolves the final /docs/{doc_id} path segment. The
+// literal "batch" is already routed before this helper runs, so any remaining
+// value must be a numeric document id.
+func parseDocIDPathPart(value string) (uint64, error) {
+	docID, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("document id must be numeric, got %q", value)
+	}
+	if docID == 0 {
+		return 0, fmt.Errorf("document id must be non-zero")
+	}
+	return docID, nil
+}
+
+// handleTenantUpsertDoc upserts a document under a caller-supplied path ID.
+// PUT /v3/tenants/{t}/collections/{c}/docs/{id} — the ID is taken from the
+// path, never from the body, so an acknowledgement always matches the address
+// the caller used.
+func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *http.Request, tenantID, collectionName string, docID uint64) {
+	r.Body = http.MaxBytesReader(w, r.Body, limitInsertBody)
+	var req struct {
+		Vectors  map[string]interface{} `json:"vectors"`
+		Metadata map[string]interface{} `json:"metadata,omitempty"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	if err := ensureJSONEOF(dec); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	if len(req.Vectors) == 0 {
+		http.Error(w, "at least one vector required", http.StatusBadRequest)
+		return
+	}
+
+	vectors := make(map[string]interface{}, len(req.Vectors))
+	for fieldName, vectorData := range req.Vectors {
+		vector, err := decodeCanonicalVector(fieldName, vectorData)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		vectors[fieldName] = vector
+	}
+
+	doc := vcollection.Document{
+		ID:       docID,
+		Vectors:  vectors,
+		Metadata: req.Metadata,
+	}
+	if err := s.tenantManager.UpsertDocument(r.Context(), tenantID, collectionName, &doc); err != nil {
+		writeCanonicalOperationError(w, "failed to upsert document", err, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"tenant_id": tenantID,
+		"id":        docID,
+		"message":   "document upserted",
+	})
+}
+
+// handleTenantGetDoc serves a single document by caller-supplied ID.
+func (s *CollectionHTTPServer) handleTenantGetDoc(w http.ResponseWriter, r *http.Request, tenantID, collectionName string, docID uint64) {
+	doc, ok := s.tenantManager.GetDocument(tenantID, collectionName, docID)
+	if !ok {
+		http.Error(w, fmt.Sprintf("document %d not found", docID), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"tenant_id": tenantID,
+		"id":        doc.ID,
+		"vectors":   doc.Vectors,
+		"metadata":  doc.Metadata,
+	})
 }
 
 // handleTenantBatchDocs atomically validates a bounded canonical batch before

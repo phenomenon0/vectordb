@@ -121,6 +121,84 @@ func TestCanonicalRCSurfaceTenantBatchContract(t *testing.T) {
 	}
 }
 
+func TestCanonicalHTTPUpsertAndGetDocContract(t *testing.T) {
+	handler := newCanonicalSurfaceTestHandler(t)
+	schema := vcollection.CollectionSchema{
+		Name: "docs",
+		Fields: []vcollection.VectorField{{
+			Name:  "embedding",
+			Type:  vcollection.VectorTypeDense,
+			Dim:   2,
+			Index: vcollection.IndexConfig{Type: vcollection.IndexTypeFLAT},
+		}},
+	}
+	createBody, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v3/tenants/acme/collections", bytes.NewReader(createBody))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create collection returned %d: %s", response.Code, response.Body.String())
+	}
+
+	// PUT upserts a document under the path ID.
+	putBody := []byte(`{"vectors":{"embedding":[1,0]},"metadata":{"kind":"replaced"}}`)
+	request = httptest.NewRequest(http.MethodPut, "/v3/tenants/acme/collections/docs/docs/55", bytes.NewReader(putBody))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("upsert returned %d: %s", response.Code, response.Body.String())
+	}
+
+	// Replacing the same ID must not duplicate storage.
+	putBody = []byte(`{"vectors":{"embedding":[0,1]},"metadata":{"kind":"replaced-again"}}`)
+	request = httptest.NewRequest(http.MethodPut, "/v3/tenants/acme/collections/docs/docs/55", bytes.NewReader(putBody))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("second upsert returned %d: %s", response.Code, response.Body.String())
+	}
+
+	// GET reads the replacement back.
+	request = httptest.NewRequest(http.MethodGet, "/v3/tenants/acme/collections/docs/docs/55", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("get doc returned %d: %s", response.Code, response.Body.String())
+	}
+	var doc struct {
+		ID       uint64                 `json:"id"`
+		Metadata map[string]interface{} `json:"metadata"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.ID != 55 || doc.Metadata["kind"] != "replaced-again" {
+		t.Fatalf("get after upsert returned %+v", doc)
+	}
+
+	// GET of a never-written ID is 404.
+	request = httptest.NewRequest(http.MethodGet, "/v3/tenants/acme/collections/docs/docs/57", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("get of missing doc returned %d, want 404", response.Code)
+	}
+
+	// A non-numeric document id segment is routed as 404, not parsed.
+	request = httptest.NewRequest(http.MethodGet, "/v3/tenants/acme/collections/docs/docs/not-a-number", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("non-numeric doc id returned %d, want 404", response.Code)
+	}
+}
+
 func TestCanonicalHTTPRejectsUnaddressableCollectionName(t *testing.T) {
 	handler := newCanonicalSurfaceTestHandler(t)
 	request := httptest.NewRequest(
@@ -449,6 +527,8 @@ func TestCanonicalGRPCDescriptorExcludesAdvancedMethods(t *testing.T) {
 		"BatchInsert":      true,
 		"Search":           true,
 		"DeleteDoc":        true,
+		"Upsert":           true,
+		"GetDoc":           true,
 	}
 	for _, method := range deepdatav3.DeepData_ServiceDesc.Methods {
 		if !want[method.MethodName] {

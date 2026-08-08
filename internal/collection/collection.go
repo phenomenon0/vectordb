@@ -773,6 +773,10 @@ func (c *Collection) prepareCanonicalDocuments(docs []Document) ([]Document, uin
 }
 
 func (c *Collection) prepareDocumentsLocked(docs []Document, canonicalJSON bool) ([]Document, uint64, error) {
+	return c.prepareDocumentsLockedVariant(docs, canonicalJSON, false)
+}
+
+func (c *Collection) prepareDocumentsLockedVariant(docs []Document, canonicalJSON, allowReplacement bool) ([]Document, uint64, error) {
 	if len(docs) == 0 {
 		return nil, c.nextID, fmt.Errorf("documents cannot be empty")
 	}
@@ -805,7 +809,7 @@ func (c *Collection) prepareDocumentsLocked(docs []Document, canonicalJSON bool)
 			if _, exists := reserved[clone.ID]; exists {
 				return nil, c.nextID, fmt.Errorf("document %d duplicates ID %d in batch", i, clone.ID)
 			}
-			if _, exists := c.documents[clone.ID]; exists {
+			if _, exists := c.documents[clone.ID]; exists && !allowReplacement {
 				return nil, c.nextID, fmt.Errorf("document %d ID %d already exists", i, clone.ID)
 			}
 			if clone.ID >= nextID {
@@ -822,6 +826,23 @@ func (c *Collection) prepareDocumentsLocked(docs []Document, canonicalJSON bool)
 		normalized[i] = clone
 	}
 	return normalized, nextID, nil
+}
+
+// prepareCanonicalUpsert validates and deep-clones a single upsert document
+// without changing collection or caller-owned state. In contrast with insert
+// preparation, an existing live ID is accepted: the caller explicitly chose
+// it for replacement. IDs are not auto-assigned here; upsert requires a
+// caller-supplied nonzero ID.
+func (c *Collection) prepareCanonicalUpsert(docs []Document) ([]Document, uint64, error) {
+	if len(docs) != 1 {
+		return nil, c.nextID, fmt.Errorf("upsert requires exactly one document")
+	}
+	if docs[0].ID == 0 {
+		return nil, c.nextID, fmt.Errorf("upsert requires a caller-supplied document ID")
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.prepareDocumentsLockedVariant(docs, true, true)
 }
 
 func cloneDocumentPreservingTypes(doc Document) Document {
@@ -1000,7 +1021,63 @@ func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Docu
 	return nil
 }
 
-// BulkAddDense inserts raw dense vectors into a single field without full Document overhead.
+// Upsert inserts or replaces a single caller-addressed document. The new
+// document is applied under the same write lock as an overwrite of any vector
+// set the ID already owns: the old dense/sparse postings for the ID are
+// removed first so the re-add cannot hit an index's live-ID rejection, then
+// the new document is added through the normal prepared-add path. Unlike
+// delete+insert, the ID counter placement is driven only by
+// prepareCanonicalUpsert, so journal replay of an upsert is deterministic.
+func (c *Collection) Upsert(ctx context.Context, doc *Document) error {
+	if c.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
+	if doc == nil {
+		return fmt.Errorf("document cannot be nil")
+	}
+	normalized, nextID, err := c.prepareCanonicalUpsert([]Document{*doc})
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.upsertPreparedLocked(ctx, normalized, nextID)
+}
+
+// upsertPreparedLocked applies one or more prepared (canonicalized) documents
+// as upserts. The caller must hold the write lock. Documents that already own
+// live dense/sparse entries are first evicted from those indexes before the
+// prepared add path reinserts them, which keeps index counts stable and lets
+// HNSW resurrect instead of rejecting a duplicate live ID. nextID is the
+// position prepareCanonicalUpsert finished its ID placement at and becomes the
+// collection's new cursor.
+func (c *Collection) upsertPreparedLocked(ctx context.Context, docs []Document, nextID uint64) error {
+	// Evict existing live postings for any ID being replaced, then let
+	// addPreparedDocumentsLocked reinsert and re-register metadata in one pass.
+	for i := range docs {
+		docID := docs[i].ID
+		if _, exists := c.documents[docID]; !exists {
+			continue
+		}
+		for fieldName := range c.indexes {
+			if err := c.indexes[fieldName].Delete(ctx, docID); err != nil {
+				return fmt.Errorf("failed to delete from index %s: %w", fieldName, err)
+			}
+		}
+		for fieldName := range c.sparse {
+			if err := c.sparse[fieldName].Delete(ctx, docID); err != nil {
+				return fmt.Errorf("failed to delete from sparse index %s: %w", fieldName, err)
+			}
+		}
+	}
+	preparedNextID := nextID
+	if nextID == 0 {
+		preparedNextID = c.nextID
+	}
+	return c.addPreparedDocumentsLocked(ctx, docs, preparedNextID)
+}
+
+// BulkAddDense inserts raw dense documents into a single field without full Document overhead.
 // IDs and vectors must be the same length. Minimal Document records are created (ID only).
 func (c *Collection) BulkAddDense(ctx context.Context, fieldName string, ids []uint64, vectors [][]float32) error {
 	if c.isDurableReadOnly() {

@@ -196,6 +196,29 @@ class TenantDocument(_TenantResponseModel):
     metadata: dict[str, Any] | None = None
 
 
+class TenantGetDocumentRequest(_TenantRequestModel):
+    """Canonical document read-by-ID path payload (empty today, reserved)."""
+
+    pass
+
+
+class TenantUpsertDocumentRequest(_TenantRequestModel):
+    """One document upserted under a caller-supplied ID. Unlike insert, the ID
+    is required and never auto-assigned by the server."""
+
+    vectors: dict[str, Any] = Field(min_length=1)
+    metadata: dict[str, Any] | None = None
+
+
+class TenantUpsertResponse(_TenantResponseModel):
+    """Response from upserting one canonical document."""
+
+    status: Literal["success"]
+    tenant_id: str
+    id: int = Field(gt=0)
+    message: str
+
+
 class TenantInsertResponse(_TenantResponseModel):
     """Response from inserting one canonical document."""
 

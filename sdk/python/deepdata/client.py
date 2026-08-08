@@ -16,6 +16,7 @@ from .models import (
     TenantCollectionSchema,
     TenantDeleteDocumentRequest,
     TenantDeleteDocumentResponse,
+    TenantDocument,
     TenantDocumentInput,
     TenantGetCollectionResponse,
     TenantHybridParams,
@@ -23,6 +24,8 @@ from .models import (
     TenantInsertResponse,
     TenantSearchRequest,
     TenantSearchResponse,
+    TenantUpsertDocumentRequest,
+    TenantUpsertResponse,
     TenantVectorField,
 )
 from ._tenant import (
@@ -286,6 +289,42 @@ class TenantClient:
             json=request_payload(request),
         )
         return response_model(TenantDeleteDocumentResponse, data)
+
+    def upsert(
+        self,
+        collection: str,
+        *,
+        id: int,
+        vectors: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+    ) -> TenantUpsertResponse:
+        """Insert or replace a document under a caller-supplied ID.
+
+        Upsert is caller-addressed: ``id`` is required and the server never
+        auto-assigns it. Replacing a live ID overwrites its vectors and
+        metadata atomically.
+        """
+        segment = collection_segment(collection)
+        request = TenantUpsertDocumentRequest(vectors=vectors, metadata=metadata)
+        data = self._request(
+            "PUT",
+            f"/collections/{segment}/docs/{id}",
+            json=request_payload(request),
+        )
+        return response_model(TenantUpsertResponse, data)
+
+    def get_document(
+        self,
+        collection: str,
+        doc_id: int,
+    ) -> TenantDocument:
+        """Fetch one document by caller-supplied ID."""
+        segment = collection_segment(collection)
+        data = self._request(
+            "GET",
+            f"/collections/{segment}/docs/{doc_id}",
+        )
+        return response_model(TenantDocument, data)
 
     def search(
         self,

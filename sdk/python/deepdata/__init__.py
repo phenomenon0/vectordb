@@ -49,6 +49,8 @@ from .models import (
     TenantInsertResponse,
     TenantSearchRequest,
     TenantSearchResponse,
+    TenantUpsertDocumentRequest,
+    TenantUpsertResponse,
     TenantVectorField,
 )
 from ._utils import RetryConfig
@@ -81,6 +83,8 @@ __all__ = [
     "TenantInsertResponse",
     "TenantSearchRequest",
     "TenantSearchResponse",
+    "TenantUpsertDocumentRequest",
+    "TenantUpsertResponse",
     "TenantVectorField",
     # Errors
     "APIError",

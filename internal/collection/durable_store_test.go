@@ -190,6 +190,102 @@ func TestDurableStoreReplayAndRecoveredCheckpoint(t *testing.T) {
 	}
 }
 
+func TestDurableStoreUpsertReplacesAndReplays(t *testing.T) {
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenants := store.Tenants()
+	if _, err := tenants.CreateCollection(ctx, "tenant-a", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new caller-supplied ID behaves like an insert.
+	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &Document{
+		ID:       42,
+		Vectors:  map[string]interface{}{"embedding": []float64{1, 0, 0, 0}},
+		Metadata: map[string]interface{}{"source": "first"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := durableTestStoredDocument(t, store, "tenant-a", "docs", 42); !ok || got.Metadata["source"] != "first" {
+		t.Fatalf("upsert insert not stored: ok=%v doc=%+v", ok, got)
+	}
+
+	// Replacing an existing live ID keeps exactly one storage entry.
+	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &Document{
+		ID:       42,
+		Vectors:  map[string]interface{}{"embedding": []float32{4, 0, 0, 0}},
+		Metadata: map[string]interface{}{"source": "replaced"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info := durableTestCollectionInfo(t, store, "tenant-a", "docs")
+	if info.DocCount != 1 {
+		t.Fatalf("doc count = %d after upsert-replace, want 1", info.DocCount)
+	}
+	wantLSN := store.Metadata().AppliedLSN
+	abandonDurableStoreForTest(t, store)
+
+	reopened, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("reopen after upsert: %v", err)
+	}
+	defer reopened.Close()
+	if got := reopened.Metadata().AppliedLSN; got != wantLSN {
+		t.Fatalf("recovered LSN = %d, want %d", got, wantLSN)
+	}
+	info = durableTestCollectionInfo(t, reopened, "tenant-a", "docs")
+	if info.DocCount != 1 {
+		t.Fatalf("recovered doc count = %d after upsert replay, want 1", info.DocCount)
+	}
+	got, ok := durableTestStoredDocument(t, reopened, "tenant-a", "docs", 42)
+	if !ok {
+		t.Fatal("upserted document missing after replay")
+	}
+	if got.Metadata["source"] != "replaced" {
+		t.Fatalf("replay applied first upsert instead of replacement: %+v", got.Metadata)
+	}
+}
+
+func TestDurableStoreUpsertContractAndReadNotFound(t *testing.T) {
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	tenants := store.Tenants()
+	if _, err := tenants.CreateCollection(ctx, "tenant-a", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Automatically-assigned (zero) IDs are refused: upsert is caller-addressed.
+	zero := durableTestDocument(1)
+	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &zero); err == nil {
+		t.Fatal("upsert with zero ID should fail")
+	}
+
+	// GetDocument is the canonical single-doc read.
+	if doc, ok := tenants.GetDocument("tenant-a", "docs", 99); ok || doc != nil {
+		t.Fatal("read of never-written ID must be not-found")
+	}
+	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &Document{
+		ID:       7,
+		Vectors:  map[string]interface{}{"embedding": []float32{7, 0, 0, 0}},
+		Metadata: map[string]interface{}{"value": float64(7)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := tenants.GetDocument("tenant-a", "docs", 7)
+	if !ok || got.ID != 7 {
+		t.Fatalf("GetDocument after read-write = ok=%v id=%d", ok, got.ID)
+	}
+}
+
 func TestDurableStoreRepairsPartialMutationTailThroughRecoveryCheckpointExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	base := filepath.Join(t.TempDir(), "collections")

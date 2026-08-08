@@ -357,6 +357,62 @@ func (s *CollectionGRPCServer) DeleteDoc(ctx context.Context, req *deepdatav3.De
 	return &deepdatav3.DeleteDocResponse{}, nil
 }
 
+func (s *CollectionGRPCServer) Upsert(ctx context.Context, req *deepdatav3.UpsertRequest) (*deepdatav3.UpsertResponse, error) {
+	if err := s.requirePersistenceHealthy(); err != nil {
+		return nil, err
+	}
+	if req == nil || req.Collection == "" {
+		return nil, status.Error(codes.InvalidArgument, "collection required")
+	}
+	if req.Id == 0 {
+		return nil, status.Error(codes.InvalidArgument, "upsert requires a caller-supplied non-zero id")
+	}
+	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Collection, "write"); err != nil {
+		return nil, err
+	}
+	if err := requireCanonicalGRPCMutationSize(req); err != nil {
+		return nil, err
+	}
+	if len(req.Vectors) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one vector required")
+	}
+
+	vectors, err := protoVectorsToInterface(req.Vectors)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	doc := &vcollection.Document{ID: req.Id, Vectors: vectors, Metadata: structToMap(req.Metadata)}
+	if err := s.tenants.UpsertDocument(ctx, req.TenantId, req.Collection, doc); err != nil {
+		return nil, canonicalGRPCError(err, codes.Internal)
+	}
+	return &deepdatav3.UpsertResponse{Id: req.Id}, nil
+}
+
+func (s *CollectionGRPCServer) GetDoc(ctx context.Context, req *deepdatav3.GetDocRequest) (*deepdatav3.GetDocResponse, error) {
+	if err := s.requirePersistenceHealthy(); err != nil {
+		return nil, err
+	}
+	if req == nil || req.Collection == "" || req.DocId == 0 {
+		return nil, status.Error(codes.InvalidArgument, "collection and non-zero doc_id required")
+	}
+	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Collection, "read"); err != nil {
+		return nil, err
+	}
+	doc, ok := s.tenants.GetDocument(req.TenantId, req.Collection, req.DocId)
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "document %d not found in collection %s", req.DocId, req.Collection)
+	}
+	vectors, err := interfaceVectorsToProto(doc.Vectors)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "encode document vectors: %v", err)
+	}
+	metadata, err := mapToStruct(doc.Metadata)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "encode document metadata: %v", err)
+	}
+	return &deepdatav3.GetDocResponse{Id: doc.ID, Vectors: vectors, Metadata: metadata}, nil
+}
+
 func (s *CollectionGRPCServer) requirePersistenceHealthy() error {
 	if s == nil || s.tenants == nil || s.persistenceHealth == nil {
 		return status.Error(codes.Unavailable, "collection persistence unavailable")

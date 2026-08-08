@@ -278,6 +278,44 @@ func (tm *TenantManager) DeleteDocument(ctx context.Context, tenantID, collectio
 	return mgr.DeleteDocument(ctx, collectionName, docID)
 }
 
+// UpsertDocument inserts or replaces a caller-addressed document in a tenant's
+// collection. In a DurableStore the upsert is journaled so a replace survives
+// crash and replay; the caller's ID is preserved verbatim.
+func (tm *TenantManager) UpsertDocument(ctx context.Context, tenantID, collectionName string, doc *Document) error {
+	if store := tm.durableStore(); store != nil {
+		return store.upsertDocument(ctx, tenantID, collectionName, doc)
+	}
+	if tenantID == "" {
+		return fmt.Errorf("tenant ID cannot be empty")
+	}
+	mgr := tm.getManager(tenantID)
+	if mgr == nil {
+		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+	}
+	return mgr.UpsertDocument(ctx, collectionName, doc)
+}
+
+// GetDocument returns a single document by caller-supplied ID. Shared-barrier
+// durable stores serve the read under an RLock so it cannot observe a
+// partially-applied mutation or a store fault.
+func (tm *TenantManager) GetDocument(tenantID, collectionName string, docID uint64) (*Document, bool) {
+	if store := tm.durableStore(); store != nil {
+		return store.getDocument(tenantID, collectionName, docID)
+	}
+	if tenantID == "" {
+		return nil, false
+	}
+	mgr := tm.getManager(tenantID)
+	if mgr == nil {
+		return nil, false
+	}
+	doc, err := mgr.GetDocument(collectionName, docID)
+	if err != nil {
+		return nil, false
+	}
+	return doc, true
+}
+
 // ListTenants is the compatibility no-error form. Canonical callers must use
 // ListTenantsChecked so a fault cannot be mistaken for an empty tenant set.
 func (tm *TenantManager) ListTenants() []string {
@@ -416,6 +454,23 @@ func (tm *TenantManager) addPreparedDocumentsDirect(ctx context.Context, tenantI
 		return err
 	}
 	return coll.addPreparedDocuments(ctx, docs, nextID)
+}
+
+// upsertPreparedDocumentsDirect applies a prepared canonical upsert mutation
+// (already validated and ID-placed by prepareCanonicalUpsert) to the live
+// collection. It is the durable-store apply seam for the upsert journal op.
+func (tm *TenantManager) upsertPreparedDocumentsDirect(ctx context.Context, tenantID, collectionName string, docs []Document, nextID uint64) error {
+	manager := tm.getManager(tenantID)
+	if manager == nil {
+		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+	}
+	coll, err := manager.GetCollection(collectionName)
+	if err != nil {
+		return err
+	}
+	coll.mu.Lock()
+	defer coll.mu.Unlock()
+	return coll.upsertPreparedLocked(ctx, docs, nextID)
 }
 
 func (tm *TenantManager) deleteDocumentDirect(ctx context.Context, tenantID, collectionName string, docID uint64) error {

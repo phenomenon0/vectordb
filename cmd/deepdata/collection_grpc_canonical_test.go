@@ -226,6 +226,97 @@ func TestCanonicalGRPCMirrorsTenantCollectionMutationAndHybridSearchContract(t *
 	}
 }
 
+func TestCanonicalGRPCUpsertAndGetDocReplaceAndReplay(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close durable store: %v", err)
+		}
+	})
+
+	server := &CollectionGRPCServer{tenants: store.Tenants(), persistenceHealth: store.Err}
+	ctx := canonicalGRPCAdminContext("acme")
+	if _, err := server.CreateCollection(ctx, &deepdatav3.CreateCollectionRequest{
+		TenantId:    "acme",
+		Name:        "docs",
+		Description: "upsert documents",
+		Fields: []*deepdatav3.VectorFieldConfig{
+			{Name: "embedding", Type: int32(vcollection.VectorTypeDense), Dim: 2, IndexType: "hnsw"},
+		},
+	}); err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	upserted, err := server.Upsert(ctx, &deepdatav3.UpsertRequest{
+		TenantId:   "acme",
+		Collection: "docs",
+		Id:         22,
+		Vectors: map[string]*deepdatav3.VectorData{
+			"embedding": denseProtoVector(1, 0),
+		},
+		Metadata: mustProtoStruct(t, map[string]interface{}{"kind": "first"}),
+	})
+	if err != nil || upserted.Id != 22 {
+		t.Fatalf("first upsert: response=%+v err=%v", upserted, err)
+	}
+
+	// Replacement keeps a single live document and resolves the new vector.
+	upserted, err = server.Upsert(ctx, &deepdatav3.UpsertRequest{
+		TenantId:   "acme",
+		Collection: "docs",
+		Id:         22,
+		Vectors: map[string]*deepdatav3.VectorData{
+			"embedding": denseProtoVector(1, 1),
+		},
+		Metadata: mustProtoStruct(t, map[string]interface{}{"kind": "second"}),
+	})
+	if err != nil || upserted.Id != 22 {
+		t.Fatalf("replacement upsert: response=%+v err=%v", upserted, err)
+	}
+
+	got, err := server.GetDoc(ctx, &deepdatav3.GetDocRequest{TenantId: "acme", Collection: "docs", DocId: 22})
+	if err != nil {
+		t.Fatalf("get doc: %v", err)
+	}
+	if got.Id != 22 || got.Metadata.AsMap()["kind"] != "second" {
+		t.Fatalf("get after upsert returned %+v", got)
+	}
+	if dense := got.Vectors["embedding"].GetDense(); dense == nil || len(dense.Values) != 2 || dense.Values[0] != 1 || dense.Values[1] != 1 {
+		t.Fatalf("get lost replaced vector: %+v", got.Vectors)
+	}
+
+	if _, err := server.GetDoc(ctx, &deepdatav3.GetDocRequest{TenantId: "acme", Collection: "docs", DocId: 99}); err == nil {
+		t.Fatal("get of missing doc should fail")
+	}
+
+	// Abort models a crash; replay must surface the upsert document, not the
+	// original vector.
+	if err := store.Abort(); err != nil {
+		t.Fatalf("abort durable store: %v", err)
+	}
+	reopened, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("reopen durable store after upsert: %v", err)
+	}
+	store = reopened
+	server = &CollectionGRPCServer{tenants: store.Tenants(), persistenceHealth: store.Err}
+	got, err = server.GetDoc(ctx, &deepdatav3.GetDocRequest{TenantId: "acme", Collection: "docs", DocId: 22})
+	if err != nil {
+		t.Fatalf("get doc after replay: %v", err)
+	}
+	if got.Metadata.AsMap()["kind"] != "second" {
+		t.Fatalf("upsert did not replay as replacement: %+v", got)
+	}
+	tenantInfo, err := server.GetTenantInfo(ctx, &deepdatav3.GetTenantInfoRequest{TenantId: "acme"})
+	if err != nil || tenantInfo.TotalDocuments != 1 {
+		t.Fatalf("tenant info after upsert replay: response=%+v err=%v", tenantInfo, err)
+	}
+}
+
 func TestCanonicalGRPCPersistenceHealthGatesEveryRPC(t *testing.T) {
 	fault := errors.New("journal append state is indeterminate")
 	healthCalls := 0
@@ -250,6 +341,8 @@ func TestCanonicalGRPCPersistenceHealthGatesEveryRPC(t *testing.T) {
 		{"batch insert", func() error { _, err := server.BatchInsert(ctx, nil); return err }},
 		{"search", func() error { _, err := server.Search(ctx, nil); return err }},
 		{"delete doc", func() error { _, err := server.DeleteDoc(ctx, nil); return err }},
+		{"upsert", func() error { _, err := server.Upsert(ctx, nil); return err }},
+		{"get doc", func() error { _, err := server.GetDoc(ctx, nil); return err }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

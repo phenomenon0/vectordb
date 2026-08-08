@@ -215,6 +215,18 @@ func (cm *CollectionManager) BatchAddDocuments(ctx context.Context, collectionNa
 	return coll.BatchAdd(ctx, docs)
 }
 
+// UpsertDocument inserts or replaces a caller-addressed document.
+func (cm *CollectionManager) UpsertDocument(ctx context.Context, collectionName string, doc *Document) error {
+	if cm.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
+	coll, err := cm.GetCollection(collectionName)
+	if err != nil {
+		return err
+	}
+	return coll.Upsert(ctx, doc)
+}
+
 // BulkAddDense inserts raw dense vectors into a single field of a collection.
 func (cm *CollectionManager) BulkAddDense(ctx context.Context, collectionName, fieldName string, ids []uint64, vectors [][]float32) error {
 	if cm.isDurableReadOnly() {

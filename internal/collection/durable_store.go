@@ -20,6 +20,7 @@ const (
 	mutationInsertDocument   = "insert_document"
 	mutationBatchInsert      = "batch_insert_documents"
 	mutationDeleteDocument   = "delete_document"
+	mutationUpsertDocument   = "upsert_document"
 )
 
 var (
@@ -62,6 +63,12 @@ type durableDeleteDocument struct {
 	TenantID       string `json:"tenant_id"`
 	CollectionName string `json:"collection_name"`
 	DocumentID     uint64 `json:"document_id"`
+}
+
+type durableUpsertDocument struct {
+	TenantID       string   `json:"tenant_id"`
+	CollectionName string   `json:"collection_name"`
+	Document       Document `json:"document"`
 }
 
 type canonicalMutation struct {
@@ -310,6 +317,21 @@ func (s *DurableStore) getTenantStats(tenantID string) (*TenantStats, error) {
 	return s.tenants.getTenantStatsDirect(tenantID)
 }
 
+// getDocument serves a canonical single-document read under the store's shared
+// barrier, so it cannot observe a partially applied mutation or a store fault.
+func (s *DurableStore) getDocument(tenantID, collectionName string, docID uint64) (*Document, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.stateErrorLocked() != nil {
+		return nil, false
+	}
+	coll, err := s.tenants.getCollectionDirect(tenantID, collectionName)
+	if err != nil {
+		return nil, false
+	}
+	return coll.GetDocument(docID)
+}
+
 func (s *DurableStore) createCollection(ctx context.Context, tenantID string, schema CollectionSchema) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -387,6 +409,40 @@ func (s *DurableStore) batchAddDocuments(ctx context.Context, tenantID, collecti
 		docs[i].ID = mutation.documents[i].ID
 	}
 	return nil
+}
+
+func (s *DurableStore) upsertDocument(ctx context.Context, tenantID, collectionName string, doc *Document) error {
+	if doc == nil {
+		return errors.New("document cannot be nil")
+	}
+	if doc.ID == 0 {
+		return errors.New("upsert requires a caller-supplied document ID")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return err
+	}
+	mutation, err := s.prepareUpsertMutation(tenantID, collectionName, *doc)
+	if err != nil {
+		return err
+	}
+	return s.appendApplyLocked(ctx, mutation)
+}
+
+func (s *DurableStore) prepareUpsertMutation(tenantID, collectionName string, doc Document) (canonicalMutation, error) {
+	mutation := canonicalMutation{typeName: mutationUpsertDocument, tenantID: tenantID, collectionName: collectionName}
+	if err := s.prepareCollectionTarget(mutation); err != nil {
+		return mutation, err
+	}
+	coll, _ := s.tenants.getCollectionDirect(tenantID, collectionName)
+	normalized, nextID, err := coll.prepareCanonicalUpsert([]Document{doc})
+	if err != nil {
+		return mutation, err
+	}
+	mutation.documents = normalized
+	mutation.nextID = nextID
+	return mutation, nil
 }
 
 func (s *DurableStore) deleteCollection(ctx context.Context, tenantID, collectionName string) error {
@@ -732,6 +788,17 @@ func (s *DurableStore) prepareReplayMutation(m *canonicalMutation) error {
 		return nil
 	case mutationDeleteDocument:
 		return s.prepareDeleteDocument(*m)
+	case mutationUpsertDocument:
+		if len(m.documents) != 1 {
+			return errors.New("upsert mutation must contain exactly one document")
+		}
+		prepared, err := s.prepareUpsertMutation(m.tenantID, m.collectionName, m.documents[0])
+		if err != nil {
+			return err
+		}
+		prepared.version = m.version
+		*m = prepared
+		return nil
 	default:
 		return fmt.Errorf("unknown mutation type %q", m.typeName)
 	}
@@ -750,6 +817,8 @@ func (s *DurableStore) applyMutationDirect(ctx context.Context, m canonicalMutat
 		return nil
 	case mutationInsertDocument, mutationBatchInsert:
 		return s.tenants.addPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID)
+	case mutationUpsertDocument:
+		return s.tenants.upsertPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID)
 	case mutationDeleteDocument:
 		return s.tenants.deleteDocumentDirect(ctx, m.tenantID, m.collectionName, m.documentID)
 	default:
@@ -866,6 +935,11 @@ func encodeDurableMutationVersion(m canonicalMutation, version uint16) ([]byte, 
 		payload = durableInsertDocument{TenantID: m.tenantID, CollectionName: m.collectionName, Document: m.documents[0]}
 	case mutationBatchInsert:
 		payload = durableBatchInsert{TenantID: m.tenantID, CollectionName: m.collectionName, Documents: m.documents}
+	case mutationUpsertDocument:
+		if len(m.documents) != 1 {
+			return nil, errors.New("upsert mutation must contain exactly one document")
+		}
+		payload = durableUpsertDocument{TenantID: m.tenantID, CollectionName: m.collectionName, Document: m.documents[0]}
 	case mutationDeleteDocument:
 		payload = durableDeleteDocument{TenantID: m.tenantID, CollectionName: m.collectionName, DocumentID: m.documentID}
 	default:
@@ -922,6 +996,12 @@ func decodeDurableMutation(data []byte) (canonicalMutation, error) {
 			return m, err
 		}
 		m.tenantID, m.collectionName, m.documents = payload.TenantID, payload.CollectionName, payload.Documents
+	case mutationUpsertDocument:
+		var payload durableUpsertDocument
+		if err := decodeCollectionJSON(envelope.Payload, &payload); err != nil {
+			return m, err
+		}
+		m.tenantID, m.collectionName, m.documents = payload.TenantID, payload.CollectionName, []Document{payload.Document}
 	case mutationDeleteDocument:
 		var payload durableDeleteDocument
 		if err := decodeCollectionJSON(envelope.Payload, &payload); err != nil {
@@ -934,10 +1014,10 @@ func decodeDurableMutation(data []byte) (canonicalMutation, error) {
 	if m.tenantID == "" || m.collectionName == "" {
 		return m, errors.New("durable mutation tenant and collection names cannot be empty")
 	}
-	if (m.typeName == mutationInsertDocument || m.typeName == mutationBatchInsert) && len(m.documents) == 0 {
+	if (m.typeName == mutationInsertDocument || m.typeName == mutationBatchInsert || m.typeName == mutationUpsertDocument) && len(m.documents) == 0 {
 		return m, errors.New("durable insert mutation has no documents")
 	}
-	if m.typeName == mutationInsertDocument || m.typeName == mutationBatchInsert {
+	if m.typeName == mutationInsertDocument || m.typeName == mutationBatchInsert || m.typeName == mutationUpsertDocument {
 		for i := range m.documents {
 			if m.documents[i].ID == 0 {
 				return m, fmt.Errorf("durable insert mutation document %d has an unassigned ID", i)

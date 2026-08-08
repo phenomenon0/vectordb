@@ -18,12 +18,14 @@ from deepdata import (
     TenantCollectionMutationResponse,
     TenantCollectionSchema,
     TenantDeleteDocumentResponse,
+    TenantDocument,
     TenantDocumentInput,
     TenantGetCollectionResponse,
     TenantInfoResponse,
     TenantInsertResponse,
     TenantSearchRequest,
     TenantSearchResponse,
+    TenantUpsertResponse,
     TenantVectorField,
 )
 from deepdata.errors import (
@@ -350,6 +352,52 @@ class TestTenantV3Sync:
                 ]
             }
             assert _body(delete) == {"doc_id": 41}
+
+    def test_upsert_and_get_document_exact_contract(self) -> None:
+        with respx.mock:
+            upsert = respx.put(f"{ROOT}/collections/papers/docs/41").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "id": 41,
+                        "message": "document upserted",
+                    },
+                )
+            )
+            get_doc = respx.get(f"{ROOT}/collections/papers/docs/41").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "id": 41,
+                        "vectors": {"embedding": [0.9, 0.8]},
+                        "metadata": {"topic": "upsert"},
+                    },
+                )
+            )
+            with DeepDataClient(BASE, retry=None) as client:
+                tenant = client.tenant(TENANT)
+                upserted = tenant.upsert(
+                    "papers",
+                    id=41,
+                    vectors={"embedding": [0.9, 0.8]},
+                    metadata={"topic": "upsert"},
+                )
+                fetched = tenant.get_document("papers", 41)
+
+            assert isinstance(upserted, TenantUpsertResponse)
+            assert upserted.id == 41
+            assert isinstance(fetched, TenantDocument)
+            assert fetched.id == 41
+            assert fetched.metadata == {"topic": "upsert"}
+            assert fetched.vectors == {"embedding": [0.9, 0.8]}
+            assert _body(upsert) == {
+                "vectors": {"embedding": [0.9, 0.8]},
+                "metadata": {"topic": "upsert"},
+            }
 
     def test_search_and_info_exact_contract(self) -> None:
         with respx.mock:
