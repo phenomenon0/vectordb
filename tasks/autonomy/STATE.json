@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generation": 9,
+  "generation": 10,
   "workflow": "deepdata-single-node-production-hardening",
   "status": "active",
   "execution_preapproved": true,
@@ -8,7 +8,7 @@
     "release_target": "headless-single-node-server-rc",
     "persistent_runtime": "linux-amd64-only",
     "canonical_api": "tenant-aware-http-v3-and-mirrored-grpc",
-    "supported_mutations": "create-delete-collection-insert-batch-delete-document",
+    "supported_mutations": "create-delete-collection-insert-batch-upsert-delete-get-document",
     "supported_indexes": "hnsw-flat-inverted-sparse-bm25-hybrid",
     "vectors": "caller-supplied",
     "legacy_root_v2_writes": "disabled-out-of-scope",
@@ -22,17 +22,17 @@
     "external_publication": "requires-separate-explicit-authority"
   },
   "started_at": "2026-07-17T22:51:42-05:00",
-  "updated_at": "2026-08-07T18:30:00-05:00",
-  "resumed_at": "2026-08-07T17:50:00-05:00",
+"updated_at": "2026-08-07T21:00:00-05:00",
+  "resumed_at": "2026-08-07T21:00:00-05:00",
   "current_phase": "phase-8-pre-exact-sha-validation",
-  "current_step": "HARDENING batch committed and re-verified at 043ad5d: strict dense-vector decode (float32-range, trailing-garbage, closed-array), UTF-8-safe X-Request-ID truncation, auth-gated /metrics, FLAT Add count-inflation fix, atomic HNSW BatchAdd rollback, sparse norm/postings overwrite correctness. All Go gates (vet/storage/short/race) PASS bound to 043ad5d.",
+  "current_step": "Upsert/get-document feature batch committed and re-verified at a99fe53 (caller-supplied-ID upsert + get-document across durable engine, V3 gRPC/HTTP, and Python SDK). All Go gates (vet/storage/short/race) + python gates PASS bound to a99fe53.",
 "candidate_worktree": {
     "branch": "gnhf/i-want-you-to-mnake-26a28a",
-    "implementation_checkpoint_head": "043ad5d (hardening batch: strict vector decode, UTF-8-safe ID truncation, auth-gated metrics, FLAT counter + HNSW batch atomicity + sparse overwrite correctness; stacks on 2e82859 network-isolation gate + b73a184 FLAT/hybrid parity + 14d1442 memory-drift fix tree)",
-    "state": "product/Go evidence re-verified at 043ad5d: go vet/storage/short/race PASS bound to 043ad5d (check receipts); go-short had one controlled flaky rerun of the testdata-noise-sensitive benchmarks/review TestDevOpsSREReview (P99/P50 ratio 67% then 100% 6/6 pass) with both logs retained; artifact/SBOM/scan/deployment/python evidence carries forward from d5b2d3a (no python/ui/helm/deps change in 043ad5d — product files only in cmd/deepdata and internal/index)",
-    "exact_candidate_sha": "043ad5d22f4ca75fbfd71c5cbf8cb33020a382d4",
-    "superseded_sha": "2e8285901d2761f7bce87bce96f50c4fa1c43a93",
-    "final_validation": "local Go + deployment-manifest matrix green at 043ad5d; network-isolation gate closed at 2e82859; remaining before tag: LICENSE/copyright (owner-gated) and a fresh external CI run on the new SHA (offline queue)"
+    "implementation_checkpoint_head": "a99fe53 (upsert/get-document feature: caller-supplied-ID upsert with no count inflation, live-postings eviction, HNSW tombstone resurrection, cursor preservation; new durable upsert_document journal mutation with encode/decode/replay; GetDocument shared-barrier read; proto v3 regenerated 9->11 RPCs; HTTP PUT/GET /v3/tenants/{t}/collections/{c}/docs/{id}; Python sync/async upsert/get_document; stacks on 043ad5d hardening batch)",
+    "state": "product/Go evidence re-verified at a99fe53: go vet/storage/short/race PASS bound to a99fe53 (check receipts); python unit/mypy/build PASS bound to a99fe53; full cmd/deepdata suite, go build ./..., go vet clean. Artifact/SBOM/scan/deployment evidence carries forward from d5b2d3a (no helm/deps change; product files only in api/proto, cmd/deepdata, internal/collection, sdk/python)",
+    "exact_candidate_sha": "a99fe539cee6ecb6a6a75731382fec91f2f61a86",
+    "superseded_sha": "043ad5d22f4ca75fbfd71c5cbf8cb33020a382d4",
+    "final_validation": "local Go + python matrix green at a99fe53; deferred: fresh external CI on the new SHA (offline queue) and the owner-gated LICENSE/copyright decision before tag"
   },
 "exact_sha_evidence_2026_07_22": [
     "evidence report EVIDENCE-d5b2d3a.md generated against tree 982daf0 with a clean worktree; sha256 sidecar written",
@@ -50,6 +50,14 @@
     "official check-runner receipts regenerated and PASS bound to 043ad5d: go-storage, go-vet-cgo0, go-short, go-race",
     "go-short flake note: benchmarks/review TestDevOpsSREReview first run 67% (P99/P50 ratio 10.3x on testdata-noise), one controlled rerun PASS 100% (6/6); both logs retained and the receipt records the passing rerun",
     "scope note: 043ad5d touches only cmd/deepdata and internal/index product files; python/helm/deps/artifact evidence carries forward from d5b2d3a (unchanged inputs)"
+  ],
+  "upsert_getdoc_feature_2026_08_07": [
+    "caller-supplied-ID upsert replaces an existing document atomically under the collection write lock: no count inflation, live dense/sparse postings evicted and re-added, HNSW tombstone resurrected, cursor preserved via prepared nextID",
+    "upsert_document added as a durable journal mutation with encode/decode, replay prepare/apply, and shared-barrier getDocument read; crash/replay + restart-persistence tests PASS",
+    "proto deepdata.v3 regenerated (9 -> 11 unary RPCs: Upsert, GetDoc); gRPC handlers health-gated, 404 on missing; HTTP PUT/GET /v3/tenants/{t}/collections/{c}/docs/{id}",
+    "canonical surface test updated; batch + legacy routes untouched",
+    "Python sync/async tenants add upsert(id=...) and get_document(...) with models + strict typing; live integration tests cover upsert/get/restart persistence",
+    "verification: go build ./..., go vet, full cmd/deepdata suite, -race over internal/collection, python unit (57 pass) + mypy + build all PASS; official check-runner receipts bound to a99fe53"
   ],
   "kind_helm_harness_corrections_2026_07_22": [
     "digest computed from the oci-archive manifest via skopeo (containerd-resolvable) instead of podman .Digest (docker-v2s2), which mismatches after kind load and caused ImagePullBackOff",
@@ -121,11 +129,11 @@
     "private_credentials": "not-authorized",
     "license_choice": "pending-external-decision"
   },
-  "next_action": "HARDENING batch committed and fully re-verified at 043ad5d (strict vector decode, UTF-8-safe ID truncation, auth-gated /metrics, FLAT counter fix, atomic HNSW batch rollback, sparse overwrite correctness); go vet/storage/short/race receipts PASS bound to 043ad5d. No technical gates remain in-repo: the only requirement before tag is the LICENSE/copyright decision (owner-gated), then tag/publish (separate authority). Deferred/offline: re-run external CI on the exact candidate SHA 043ad5d whenever an authorized trigger exists; PR #4 must NOT be merged (owner-gated).",
+  "next_action": "Upsert/get-document feature committed and fully re-verified at a99fe53 (caller-supplied-ID upsert + get-document across durable engine, V3 gRPC/HTTP, and Python SDK); go vet/storage/short/race + python unit/mypy/build receipts PASS bound to a99fe53. The canonical supported mutation surface is now create/delete collection, insert, batch, upsert, delete, and get document. No technical gates remain in-repo: the only requirement before tag is the LICENSE/copyright decision (owner-gated), then tag/publish (separate authority). Deferred/offline: re-run external CI on the exact candidate SHA a99fe53 whenever an authorized trigger exists; PR #4 must NOT be merged (owner-gated).",
   "offline_queue": [
-    "verify remote CI on the future exact candidate SHA (043ad5d) when an authorized trigger is available",
+    "verify remote CI on the future exact candidate SHA (a99fe53) when an authorized trigger is available",
     "prepare but do not execute signing, registry upload, tag creation, or external publication",
-    "re-run external CI after 043ad5d product changes (decode/metrics/index paths) supersede the f5d4582-certified 14d1442 product SHA"
+    "re-run external CI after a99fe53 product changes (proto, collection engine, gRPC/HTTP, Python SDK) supersede the f5d4582-certified 14d1442 product SHA"
   ],
   "deferred_but_required": [
     "offline backup/restore plus disk-full and permission-denied process rehearsal",

@@ -2,25 +2,25 @@
 
 **Last reconciled:** 2026-08-07
 
-**Candidate state:** Product code at `043ad5d`
-(`043ad5d22f4ca75fbfd71c5cbf8cb33020a382d4`) on
-`gnhf/i-want-you-to-mnake-26a28a`, superseding the earlier frozen `2e82859` /
-`14d1442` / `d5b2d3a`. The newest product changes are a hardening batch (strict
-dense-vector decode, UTF-8-safe request-ID truncation, auth-gated `/metrics`,
-FLAT count-inflation fix, atomic HNSW batch rollback, sparse overwrite
-correctness) — see **Hardening Batch** below; the Go exact-SHA gates have been
-re-run green at `043ad5d`.
+**Candidate state:** Product code at `a99fe53`
+(`a99fe539cee6ecb6a6a75731382fec91f2f61a86`) on
+`gnhf/i-want-you-to-mnake-26a28a`, superseding the earlier frozen `043ad5d` /
+`2e82859` / `14d1442` / `d5b2d3a`.
+The newest product changes add **caller-supplied-ID upsert and get-document** across the
+durable engine, mirrored V3 gRPC, canonical HTTP, and the Python SDK (see **Upsert /
+Get-Document Batch** below); the Go and Python exact-SHA gates have been re-run green at
+`a99fe53`.
 
 **Technical verdict:** **Prior blocking finding resolved; remaining gates are owner-gated.**
 The narrow single-node RC implementation is complete and the local matrix is green,
 **including** the long-running memory-drift gate, which previously failed and is now
 **resolved by a code fix that restores restart-reclaim** (see **Resolved Finding:
 memory-drift** below). External CI is green on the pre-hardening SHA (PR #4 run
-`29977008196`, all 10 required checks); the 043ad5d hardening batch needs a fresh
-external CI run. The chart network-isolation gate is now
-**implemented and validated** (default-deny `NetworkPolicy`). What remains before a
-tag is not a correctness failure but the owner-gated item: the root `LICENSE` /
-copyright decision.
+`29977008196`, all 10 required checks); the `a99fe53` feature batch is additionally
+supersedes-the-hardening changes and needs a fresh external CI run. The chart
+network-isolation gate is now **implemented and validated** (default-deny
+`NetworkPolicy`). What remains before a tag is not a correctness failure but the
+owner-gated item: the root `LICENSE` / copyright decision.
 
 **Publication verdict:** **Not authorized and legally gated.** No root `LICENSE` exists
 because the copyright holder and license choice require an external decision. Publication,
@@ -37,7 +37,8 @@ it is not a substitute for final candidate correctness or soak results.
 The candidate is a persistent Linux amd64, headless, single-node server with:
 
 - tenant-aware HTTP V3 and mirrored `deepdata.v3.DeepData` gRPC;
-- create/delete collection, insert, batch insert, and delete-document mutations;
+- create/delete collection, insert, batch insert, upsert-by-ID, delete-document, and
+  get-document mutations;
 - collection get/list plus dense, sparse/BM25, and hybrid search;
 - caller-provided vectors with HNSW, Flat, and inverted sparse indexes;
 - static bearer or HS256 JWT authentication with read, write, collection-admin, and
@@ -113,23 +114,48 @@ after some earlier passes.
 
 ## Remaining Technical Candidate Gates
 
-| Priority | Gate | Status at `043ad5d` |
+| Priority | Gate | Status at `a99fe53` |
 |---|---|---|
-| P0 | Final dependency and toolchain tree | **Done.** vet/storage/short/race **re-run and PASS bound to `043ad5d`** (check receipts); benchmark-unit, python unit/mypy/build, ui-build carry forward from `d5b2d3a` (byte-identical inputs — no python/ui product change). |
-| P0 | Exact-SHA security and artifact proof | **Carried forward from `d5b2d3a`.** All Linux amd64 artifacts built, smoked (version `0.2.0-rc.1`, mutate+search+graceful stop), checksummed, with source+image SPDX SBOMs; security-scan results recorded in `STATE.json`. The 043ad5d hardening batch does not alter the dependency tree or scanned surface; artifact/SBOM/scan re-run is a mechanical rebuild left with external CI. |
-| P1 | Final deployment parity | **Carried forward from `d5b2d3a`.** Direct container, Compose, and live kind/Helm lifecycle (install, authenticated HTTP+gRPC, PVC persistence across pod replacement, upgrade, rollback, graceful uninstall) PASS with a digest-pinned image. The hardening batch touches only in-process index authorization/decode paths, not deployment/lifecycle paths. |
+| P0 | Final dependency and toolchain tree | **Done.** vet/storage/short/race **re-run and PASS bound to `a99fe53`** (check receipts); python unit/mypy/build **re-run and PASS bound to `a99fe53`**; benchmark-unit, ui-build carry forward from `d5b2d3a` (byte-identical inputs — no ui product change; python product did change, hence python re-run). |
+| P0 | Exact-SHA security and artifact proof | **Carried forward from `d5b2d3a`.** All Linux amd64 artifacts built, smoked (version `0.2.0-rc.1`, mutate+search+graceful stop), checksummed, with source+image SPDX SBOMs; security-scan results recorded in `STATE.json`. The `a99fe53` feature batch does not alter the dependency tree or scanned surface; artifact/SBOM/scan re-run is a mechanical rebuild left with external CI. |
+| P1 | Final deployment parity | **Carried forward from `d5b2d3a`.** Direct container, Compose, and live kind/Helm lifecycle (install, authenticated HTTP+gRPC, PVC persistence across pod replacement, upgrade, rollback, graceful uninstall) PASS with a digest-pinned image. The feature batch touches in-process collection/auth/search paths, not deployment/lifecycle paths. |
 | P1 | Operational fault and migration rehearsal | **Carried forward from `d5b2d3a`.** Whole-root backup/restore + process-level disk-full and permission-denied behavior PASS; explicit legacy export/import semantic rehearsal PASS. |
 | P1 | Long-running correctness | **PASS.** Soak recall (0.9815), flat-exact (100/100), restart-under-load (5× SIGKILL clean), and count-parity carry forward from `d5b2d3a`; **memory-drift is now RESOLVED** at `14d1442` and proven reclaimed by an A/B control — see Resolved Finding below. |
 | P1 | Network isolation contract | **Done.** The chart renders a default-deny `NetworkPolicy` (ingress only on the advertised HTTP/gRPC ports, egress deny-all with an explicit telemetry CIDR or render-refusal, operator opt-out). Validated by `helm lint --strict` and the `test-deployment-manifests` contract; non-enforcing CNIs are documented as an operator-managed requirement. The chart change is confined to `deploy/helm/**` and needs a fresh external CI run on a new candidate SHA. |
-| External | Remote CI | **Pending on `043ad5d`.** All 10 required checks were green on PR #4 (run `29977008196`) over branch head `f5d4582` (product == `14d1442`) — Linux RC Go + race + container/Compose/Helm contracts, canonical Python client, 5-platform compile proofs, experimental source. A fresh run over `043ad5d` is queued offline because the security/decode/index product surfaces changed. |
+| External | Remote CI | **Pending on `a99fe53`.** All 10 required checks were green on PR #4 (run `29977008196`) over branch head `f5d4582` (product == `14d1442`) — Linux RC Go + race + container/Compose/Helm contracts, canonical Python client, 5-platform compile proofs, experimental source. A fresh run over `a99fe53` is queued offline because the proto/collection/gRPC/HTTP/Python surfaces changed. |
 
-The local matrix is green at `043ad5d`: the Go gates (vet/storage/short/race) were
-re-run against the hardening batch, the memory-drift finding is resolved, and the
-remaining gates (deployment, artifact/SBOM, security scans) carry forward because the
-product changes are confined to `cmd/deepdata` and `internal/index` (no
-python/ui/helm/dependency input changes). The chart NetworkPolicy / operator
-network-isolation gate is now implemented and validated locally; a fresh external CI
-run on `043ad5d` is queued offline.
+The local matrix is green at `a99fe53`: the Go gates (vet/storage/short/race) and the
+python gates (unit/mypy/build) were re-run against the feature batch, the memory-drift
+finding is resolved, and the remaining gates (deployment, artifact/SBOM, security scans)
+carry forward because the product changes are confined to `api/proto`, `cmd/deepdata`,
+`internal/collection`, and `sdk/python` (no ui/helm/dependency input changes). The chart
+NetworkPolicy / operator network-isolation gate is now implemented and validated locally; a
+fresh external CI run on `a99fe53` is queued offline.
+
+## Upsert / Get-Document Batch (a99fe53, 2026-08-07)
+
+A single-semantic-commit feature pass on top of the 043ad5d hardening batch, adding the
+two missing document operations to the canonical surface:
+
+- **Caller-supplied-ID upsert (`PUT /docs/{id}` / gRPC `Upsert`):** replaces an existing
+  document atomically under the collection write lock — no count inflation, live dense and
+  sparse postings evicted then re-added, HNSW tombstones resurrected, and the scan cursor
+  preserved by threading the prepared `nextID` through the replace path.
+- **Durable journaling:** `upsert_document` is a new journal mutation with encode/decode,
+  replay prepare/apply, and a shared-barrier `getDocument` read, so upserts survive
+  restart with exactly-once replay (focused crash/replay + restart-persistence tests).
+- **Get-document (`GET /docs/{id}` / gRPC `GetDoc`):** a shared-barrier single-document
+  read; 404 when the id does not exist. Batch and legacy routes are untouched.
+- **Surface:** `deepdata.v3` proto regenerated (9 -> 11 unary RPCs), canonical surface test
+  updated, HTTP adds numeric-id PUT/GET with 404 on non-numeric segments.
+- **Python SDK:** sync/async tenants gain `upsert(id=..., vectors=..., metadata=...)` and
+  `get_document(...)` with strict typing and live integration coverage (upsert, get,
+  restart persistence).
+
+Verification for this batch: `go build ./...`, `go vet`, the full `cmd/deepdata` suite,
+`-race` over `internal/collection`, and python unit (57 pass) + mypy + build all pass;
+official check-runner receipts (`go-storage`, `go-vet-cgo0`, `go-short`, `go-race`,
+`python-unit`, `python-mypy`, `python-build`) are bound to `a99fe53`.
 
 ## Hardening Batch (043ad5d, 2026-08-07)
 
