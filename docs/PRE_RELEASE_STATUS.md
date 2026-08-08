@@ -230,6 +230,15 @@ the RC.
 
 No item in this table is waived by a preliminary pass from a dirty worktree.
 
+### Go toolchain pin
+
+`go.mod` requires `go >= 1.25.12`, but the host `/usr/lib/golang/bin/go` is a custom build
+whose default `GOTOOLCHAIN=local` is 1.25.5, which made plain check-runner invocations fail
+with `go.mod requires go >= 1.25.12 (running go 1.25.5; GOTOOLCHAIN=local)`.
+`scripts/hardening_check.sh` now defaults `GOTOOLCHAIN` to `go1.25.12` (overridable via
+`DEEPDATA_GO_TOOLCHAIN`), so the go gates auto-select the cached toolchain with no manual
+env. All receipts at the post-pin HEAD were re-ran and PASS under the pinned toolchain.
+
 One upstream module-hygiene limitation is also recorded: `go mod tidy` follows every build
 tag and therefore reaches Cowrie's dormant `agentgo` file, which imports the retired private
 `Agent-GO` module. The default graph contains no `Agent-GO` dependency and passes readonly

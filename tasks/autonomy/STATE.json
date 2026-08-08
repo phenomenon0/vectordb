@@ -59,6 +59,11 @@
     "Python sync/async tenants add upsert(id=...) and get_document(...) with models + strict typing; live integration tests cover upsert/get/restart persistence",
     "verification: go build ./..., go vet, full cmd/deepdata suite, -race over internal/collection, python unit (57 pass) + mypy + build all PASS; official check-runner receipts bound to a99fe53"
   ],
+  "toolchain_pin_2026_08_07": [
+    "go.mod requires go >= 1.25.12, but the host /usr/lib/golang bin is a custom build whose default GOTOOLCHAIN=local is 1.25.5, so a plain go gate run refused: 'go.mod requires go >= 1.25.12 (running go 1.25.5; GOTOOLCHAIN=local)'",
+    "fix: scripts/hardening_check.sh now defaults GO_TOOLCHAIN to go1.25.12 (overridable via DEEPDATA_GO_TOOLCHAIN) and exports GOTOOLCHAIN, so the go-storage/short/race/vet gates auto-select the cached 1.25.12 toolchain with no manual env",
+    "all Go + python receipts re-run and PASS bound to the post-pin HEAD with the pinned toolchain (receipts in .deepdata-run/checks)"
+  ],
   "kind_helm_harness_corrections_2026_07_22": [
     "digest computed from the oci-archive manifest via skopeo (containerd-resolvable) instead of podman .Digest (docker-v2s2), which mismatches after kind load and caused ImagePullBackOff",
     "loaded image aliased under repo@digest via ctr images tag --force so the registry-less kind node resolves the chart's mandatory digest pin locally",
