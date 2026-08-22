@@ -108,7 +108,7 @@ func main() {
 	client := &http.Client{Timeout: 120 * time.Second}
 
 	// Create collection with HNSW matching the Python harness schema.
-	schema := fmt.Sprintf(`{"name":%q,"fields":[{"name":"embedding","type":"dense","dim":%d,"index":{"type":"hnsw","params":{"m":16,"ef_construction":200}}}]}`,
+	schema := fmt.Sprintf(`{"name":%q,"fields":[{"name":"embedding","type":"dense","dim":%d,"index":{"type":"hnsw","params":{"m":16,"ef_construction":300}}}]}`,
 		coll, len(vectors[0]))
 	createResp, err := authReq("POST", "/v3/tenants/"+tenant+"/collections", []byte(schema))
 	must(err)
