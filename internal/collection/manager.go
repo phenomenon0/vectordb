@@ -179,11 +179,11 @@ func (cm *CollectionManager) ListCollectionInfos() []CollectionInfo {
 
 // CollectionInfo contains metadata about a collection.
 type CollectionInfo struct {
-	Name        string
-	Fields      []VectorField
-	Description string
-	Metadata    map[string]interface{}
-	DocCount    int
+	Name        string                 `json:"name"`
+	Fields      []VectorField          `json:"fields"`
+	Description string                 `json:"description,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	DocCount    int                    `json:"doc_count"`
 }
 
 // AddDocument adds a document to a collection.

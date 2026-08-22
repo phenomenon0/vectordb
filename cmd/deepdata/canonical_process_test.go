@@ -410,7 +410,7 @@ func assertCanonicalHTTPMutationState(
 	}
 	var collectionResult struct {
 		Collection struct {
-			DocCount int
+			DocCount int `json:"doc_count"`
 		} `json:"collection"`
 	}
 	if err := json.Unmarshal(body, &collectionResult); err != nil {
