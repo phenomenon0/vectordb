@@ -76,3 +76,53 @@ func abandonDurableStoreForTestB(b *testing.B, store *DurableStore) {
 		}
 	})
 }
+
+// BenchmarkDurableInsertBatch100HNSW measures the acknowledged batch path
+// against a realistic production schema: HNSW m=16 ef_construction=300 at
+// 128 dimensions (matches the recall-benchmark configuration).
+func BenchmarkDurableInsertBatch100HNSW(b *testing.B) {
+	ctx := context.Background()
+	base := filepath.Join(b.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		b.Fatal(err)
+	}
+	abandonDurableStoreForTestB(b, store)
+
+	tenants := store.Tenants()
+	if _, err := tenants.CreateCollection(ctx, "bench", CollectionSchema{
+		Name: "docs",
+		Fields: []VectorField{{
+			Name: "embedding",
+			Type: VectorTypeDense,
+			Dim:  128,
+			Index: IndexConfig{Type: IndexTypeHNSW, Params: map[string]interface{}{
+				"m": 16, "ef_construction": 300,
+			}},
+		}},
+	}); err != nil {
+		b.Fatal(err)
+	}
+	makeBatch := func() []Document {
+		batch := make([]Document, 100)
+		for i := range batch {
+			vec := make([]float32, 128)
+			for j := range vec {
+				vec[j] = float32((i*31+j)%97) / 97
+			}
+			batch[i] = Document{Vectors: map[string]interface{}{"embedding": vec}}
+		}
+		return batch
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		batch := makeBatch()
+		b.StartTimer()
+		if err := tenants.BatchAddDocuments(ctx, "bench", "docs", batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
