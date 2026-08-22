@@ -22,9 +22,10 @@ network-isolation gate is now **implemented and validated** (default-deny
 `NetworkPolicy`). What remains before a tag is not a correctness failure but the
 owner-gated item: the root `LICENSE` / copyright decision.
 
-**Publication verdict:** **Not authorized and legally gated.** No root `LICENSE` exists
-because the copyright holder and license choice require an external decision. Publication,
-tag creation, registry uploads, signing, and use of private credentials are separate from
+**Publication verdict:** **Authorization-gated, no longer license-blocked.** The owner
+confirmed Apache-2.0 and the root `LICENSE` file has been added (unpublished working
+state; bind to a SHA via external CI before tagging). Publication, tag creation,
+registry uploads, signing, and use of private credentials remain separate from
 technical candidate preparation and from the authorized branch push.
 
 This report covers the single-node candidate defined in
@@ -251,8 +252,8 @@ claiming a tidy-clean module.
 These do not prevent committing and pushing the reviewed candidate branch, but they prevent
 tagging or publishing an RC:
 
-- [ ] The owner confirms the copyright holder and approved license, then adds the root
-      `LICENSE`.
+- [x] The owner confirms the copyright holder and approved license, then adds the root
+      `LICENSE`. (Done: Apache-2.0 confirmed by owner; root `LICENSE` committed.)
 - [ ] The owner rechecks and secures the `deepdata-client` distribution name and configures
       trusted publishing.
 - [ ] The exact DeepData tag is created only after technical evidence and remote CI are

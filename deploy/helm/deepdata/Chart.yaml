@@ -4,6 +4,7 @@ description: Persistent single-node DeepData vector search server
 type: application
 version: 0.2.0-rc.1
 appVersion: "0.2.0-rc.1"
+license: Apache-2.0
 keywords:
   - vectordb
   - vector-search
