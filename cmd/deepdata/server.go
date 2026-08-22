@@ -2089,11 +2089,9 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
 		}
 	}
-	if canonicalOnly {
-		collectionHTTP.RegisterCanonicalHandlers(mux, guard)
-	} else {
-		collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
-	}
+	// Only the canonical tenant-aware V3 surface is served. Legacy V2/root
+	// collection routes were removed; unsupported paths cannot be registered.
+	collectionHTTP.RegisterCanonicalHandlers(mux, guard)
 
 	// ==========================================================================
 	// FEEDBACK API ENDPOINTS (v2)
