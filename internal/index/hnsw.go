@@ -2,6 +2,8 @@ package index
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -14,6 +16,18 @@ import (
 	"github.com/phenomenon0/vectordb/internal/filter"
 	"github.com/phenomenon0/vectordb/internal/index/simd"
 )
+
+// workerSeed draws an independent 63-bit seed per parallel-insert worker.
+// crypto/rand is the source; time-based fallback keeps inserts working in
+// exotic environments where the entropy pool is unavailable, and the worker
+// index decorrelates that degraded path at least.
+func workerSeed(worker int) int64 {
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err == nil {
+		return int64(binary.LittleEndian.Uint64(b[:]) & (1<<63 - 1))
+	}
+	return time.Now().UnixNano() + int64(worker)<<32
+}
 
 // simdCosineDistance wraps simd.CosineDistanceF32 as an hnsw.DistanceFunc.
 // Uses AVX2+FMA assembly on amd64 for single-pass dot+norms computation,
@@ -478,9 +492,13 @@ func (h *HNSWIndex) parallelGraphInsert(ctx context.Context, nodes []hnsw.Node[u
 
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
-		go func() {
+		go func(worker int) {
 			defer wg.Done()
-			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(rand.Intn(1<<30))))
+			// Each worker gets an independently drawn 63-bit seed from
+			// crypto/rand. Identical or correlated streams across workers
+			// would produce degenerate graphs, so time-based seeding is not
+			// acceptable here.
+			rng := rand.New(rand.NewSource(workerSeed(worker)))
 			for node := range ch {
 				if ctx.Err() != nil {
 					errCh <- ctx.Err()
@@ -489,7 +507,7 @@ func (h *HNSWIndex) parallelGraphInsert(ctx context.Context, nodes []hnsw.Node[u
 				g := h.graph
 				g.AddConcurrent(node, rng)
 			}
-		}()
+		}(w)
 	}
 
 	wg.Wait()
