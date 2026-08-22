@@ -141,9 +141,18 @@ func fuseWeighted(resultSets []ResultSet, topK int) []SearchResult {
 			continue
 		}
 
-		// Normalize scores in this result set to [0, 1]
-		minScore := rs.Results[len(rs.Results)-1].Score
+		// Normalize scores in this result set to [0, 1]. Scan explicitly
+		// rather than assuming callers pass results sorted by score.
+		minScore := rs.Results[0].Score
 		maxScore := rs.Results[0].Score
+		for _, result := range rs.Results {
+			if result.Score < minScore {
+				minScore = result.Score
+			}
+			if result.Score > maxScore {
+				maxScore = result.Score
+			}
+		}
 		scoreRange := maxScore - minScore
 
 		// Add weighted normalized scores
