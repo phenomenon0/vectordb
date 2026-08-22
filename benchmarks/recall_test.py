@@ -45,6 +45,8 @@ from download_datasets import (
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SERVER_BINARY = PROJECT_ROOT / "deepdata-server"
+BENCH_API_TOKEN = __import__("secrets").token_hex(32)
+AUTH_HEADERS = {"Authorization": f"Bearer {BENCH_API_TOKEN}"}
 BENCH_DATA_DIR = Path("/tmp/deepdata-bench")
 DEFAULT_PORT = 8080
 
@@ -238,6 +240,9 @@ def start_server(ds: Dataset, cfg: RunConfig) -> ServerHandle | None:
         "HNSW_M": str(ds.m),
         "HNSW_EF_CONSTRUCTION": str(ds.ef_construction),
         "HNSW_EFSEARCH": str(ds.ef_search),
+        "API_TOKEN": BENCH_API_TOKEN,
+        "PORT": str(cfg.port),
+        "GRPC_PORT": "0",
     }
 
     stderr_path = BENCH_DATA_DIR / "server.stderr"
@@ -262,7 +267,7 @@ def start_server(ds: Dataset, cfg: RunConfig) -> ServerHandle | None:
                     if proc.poll() is not None:
                         break
                     try:
-                        resp = client.get("/health")
+                        resp = client.get("/livez")
                         if resp.status_code == 200:
                             ready = True
                             break
@@ -344,32 +349,44 @@ def bench_deepdata(ds: Dataset, base: np.ndarray, queries: np.ndarray,
     warmup = min(cfg.warmup, n_search)
     query_lists = [q.tolist() for q in queries[:n_search]]
 
+    tenant = "bench"
+    base_url_t = f"/v3/tenants/{tenant}/collections/{coll}"
+
+    # Canonical IDs are caller-supplied and 0 means auto-assign, so vectors
+    # get 1-based IDs. Ground-truth neighbor indices stay 0-based; shift them
+    # once so recall compares like-for-like.
+    gt = np.asarray(gt) + 1
+
     with httpx.Client(base_url=base_url, timeout=120.0) as client:
         try:
             with contextlib.suppress(Exception):
-                client.delete(f"/v2/collections/{coll}")
+                client.delete(base_url_t, headers=AUTH_HEADERS)
 
-            client.post("/v2/collections", json={
-                "Name": coll,
-                "Fields": [{"Name": "embedding", "Type": 0, "Dim": ds.dim}],
+            client.post(f"/v3/tenants/{tenant}/collections", headers=AUTH_HEADERS, json={
+                "name": coll,
+                "fields": [{
+                    "name": "embedding", "type": "dense", "dim": ds.dim,
+                    "index": {"type": "hnsw",
+                              "params": {"m": ds.m, "ef_construction": ds.ef_construction}},
+                }],
             }).raise_for_status()
 
-            # ── INSERT via binary import ──
-            print(f"    Inserting {len(base):,} vectors via binary import...")
+            # ── INSERT via canonical tenant batch (JSON) ──
+            print(f"    Inserting {len(base):,} vectors via V3 batch insert...")
             t_insert = time.perf_counter()
-            bs = cfg.deepdata_batch_size
+            bs = min(cfg.deepdata_batch_size, 2000)
             for off in range(0, len(base), bs):
                 end = min(off + bs, len(base))
-                payload = build_binary_import_payload(
-                    ids=np.arange(off, end, dtype=np.uint64),
-                    vecs=base[off:end],
-                )
+                docs = [
+                    {"id": int(i) + 1, "vectors": {"embedding": base[i].tolist()}}
+                    for i in range(off, end)
+                ]
                 for attempt in range(5):
                     resp = client.post(
-                        f"/v2/import?collection={coll}&field=embedding",
-                        content=payload,
-                        headers={"Content-Type": "application/octet-stream"},
-                        timeout=120.0,
+                        f"{base_url_t}/docs/batch",
+                        json={"documents": docs},
+                        headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+                        timeout=300.0,
                     )
                     if resp.status_code == 429:
                         time.sleep(0.25 * (2 ** attempt))
@@ -389,10 +406,10 @@ def bench_deepdata(ds: Dataset, base: np.ndarray, queries: np.ndarray,
             latencies_ms: list[float] = []
 
             def do_search(q_list: list[float], top_k: int = 100) -> list[int]:
-                p = {"collection": coll, "queries": {"embedding": q_list},
+                p = {"queries": {"embedding": q_list},
                      "top_k": top_k, "ef_search": ds.ef_search}
                 for attempt in range(5):
-                    resp = client.post("/v2/search", json=p)
+                    resp = client.post(f"{base_url_t}/search", json=p, headers=AUTH_HEADERS)
                     if resp.status_code == 429:
                         time.sleep(0.1 * (2 ** attempt))
                         continue
@@ -430,10 +447,9 @@ def bench_deepdata(ds: Dataset, base: np.ndarray, queries: np.ndarray,
                 with httpx.Client(base_url=base_url, timeout=30.0) as wc:
                     q_idx = worker_id % max(1, n_search)
                     while time.perf_counter() < deadline:
-                        p = {"collection": coll,
-                             "queries": {"embedding": query_lists[q_idx]},
+                        p = {"queries": {"embedding": query_lists[q_idx]},
                              "top_k": 10, "ef_search": ds.ef_search}
-                        resp = wc.post("/v2/search", json=p)
+                        resp = wc.post(f"{base_url_t}/search", json=p, headers=AUTH_HEADERS)
                         if resp.status_code == 429:
                             time.sleep(0.01)
                             continue
@@ -449,7 +465,7 @@ def bench_deepdata(ds: Dataset, base: np.ndarray, queries: np.ndarray,
             print(f"    ERROR: {e}")
         finally:
             with contextlib.suppress(Exception):
-                client.delete(f"/v2/collections/{coll}")
+                client.delete(base_url_t, headers=AUTH_HEADERS)
 
     return r
 
