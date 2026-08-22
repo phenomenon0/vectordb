@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"sync"
 )
 
@@ -487,8 +488,10 @@ func (idx *InvertedIndex) Import(data []byte) error {
 
 	// Re-add each vector to rebuild posting lists and stats
 	for idStr, doc := range state.Docs {
-		var docID uint64
-		fmt.Sscanf(idStr, "%d", &docID)
+		docID, err := strconv.ParseUint(idStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("restore sparse index: invalid document key %q: %w", idStr, err)
+		}
 
 		vec, err := NewSparseVector(doc.Indices, doc.Values, state.Dim)
 		if err != nil {
