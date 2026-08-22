@@ -291,8 +291,14 @@ func (s *CollectionGRPCServer) Search(ctx context.Context, req *deepdatav3.Searc
 	if len(req.Queries) > vcollection.CanonicalMaxSearchFields {
 		return nil, status.Errorf(codes.InvalidArgument, "at most %d query fields are supported", vcollection.CanonicalMaxSearchFields)
 	}
-	if len(req.Queries) > 1 && req.HybridParams == nil {
-		return nil, status.Error(codes.InvalidArgument, "multiple query fields require hybrid_params")
+	if len(req.Queries) > 1 && req.HybridParams == nil && req.Fallback == nil {
+		return nil, status.Error(codes.InvalidArgument, "multiple query fields require hybrid_params or fallback")
+	}
+	if req.Fallback != nil && len(req.Queries) != 2 {
+		return nil, status.Error(codes.InvalidArgument, "fallback requires exactly two query fields")
+	}
+	if req.Fallback != nil && req.HybridParams != nil {
+		return nil, status.Error(codes.InvalidArgument, "fallback and hybrid_params are mutually exclusive")
 	}
 
 	queries, err := protoVectorsToInterface(req.Queries)
@@ -317,6 +323,15 @@ func (s *CollectionGRPCServer) Search(ctx context.Context, req *deepdatav3.Searc
 			RRFConstant: req.HybridParams.RrfConstant,
 		}
 	}
+	searchReq.ScoreFloor = req.ScoreFloor
+	searchReq.UsageBoost = req.UsageBoost
+	if req.Fallback != nil {
+		searchReq.Fallback = &vcollection.FallbackParams{
+			Primary:   req.Fallback.Primary,
+			Secondary: req.Fallback.Secondary,
+			Threshold: req.Fallback.Threshold,
+		}
+	}
 
 	resp, err := s.tenants.SearchCollection(ctx, req.TenantId, searchReq)
 	if err != nil {
@@ -338,7 +353,13 @@ func (s *CollectionGRPCServer) Search(ctx context.Context, req *deepdatav3.Searc
 		}
 		hits[i] = hit
 	}
-	return &deepdatav3.SearchResponse{Results: hits, CandidatesExamined: int32(resp.CandidatesExamined)}, nil
+	return &deepdatav3.SearchResponse{
+		Results:            hits,
+		CandidatesExamined: int32(resp.CandidatesExamined),
+		BestScore:          resp.BestScore,
+		WeakMatch:          resp.WeakMatch,
+		FellBackTo:         resp.FellBackTo,
+	}, nil
 }
 
 func (s *CollectionGRPCServer) DeleteDoc(ctx context.Context, req *deepdatav3.DeleteDocRequest) (*deepdatav3.DeleteDocResponse, error) {
@@ -448,6 +469,8 @@ func canonicalGRPCError(err error, fallback codes.Code) error {
 		errors.Is(err, vcollection.ErrCollectionLimitExceeded),
 		errors.Is(err, vcollection.ErrSearchResponseBudgetExceeded):
 		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, vcollection.ErrInvalidSearchArgument):
+		return status.Error(codes.InvalidArgument, err.Error())
 	default:
 		return status.Error(fallback, err.Error())
 	}

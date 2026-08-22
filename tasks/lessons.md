@@ -73,3 +73,33 @@
   a crash could replay old database mutations into the imported snapshot.
 - Rule: if an administrative feature cannot cross the durability boundary transactionally,
   disable it explicitly in the RC and document an offline procedure instead of exposing it.
+
+## Caller-Validation Errors Must Be Typed at the Engine Boundary
+
+- Correction: score_floor/usage_boost/fallback contract violations surfaced as
+  HTTP 500 / gRPC Internal because the engine returned plain fmt.Errorf
+  values that transports could not classify.
+- Rule: validate caller-supplied search parameters and wrap the error in a
+  typed sentinel (ErrInvalidSearchArgument); transports map it to HTTP 400 /
+  codes.InvalidArgument. Transport tests must cover the violation paths,
+  not only the happy path through a mocked upstream.
+
+## Fallback and Confidence Floor Share One Weakness Predicate
+
+- Correction: the FallbackParams doc comment claimed the fallback decision was
+  "independent of ScoreFloor" while the code applied the floor to the primary
+  answer before deciding. The floor-aware behavior is the correct one: "no
+  confident result" (zero hits, or wiped out by the floor) must route to the
+  secondary field, so both mechanisms must compose, not bypass each other.
+- Rule: when two post-processing stages (filter + route) consume the same
+  answer, state explicitly which stage runs first in the doc comment and keep
+  the decision a uniform predicate over the post-filter answer.
+
+## Package-Wide gofmt -w Pollutes a Minimal RC Diff
+
+- Correction: running `gofmt -w internal/collection/` reformatted three
+  pre-existing unformatted files unrelated to the change, bloating the RC diff
+  with pure whitespace noise.
+- Rule: format only the files you touched (list them explicitly); if you must
+  format a whole package, check `git status` afterwards and revert unrelated
+  reformatting before committing.

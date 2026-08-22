@@ -1276,6 +1276,70 @@ func (x *HybridSearchParams) GetRrfConstant() float32 {
 	return 0
 }
 
+// FallbackParams configures the auto-fallback ladder: the primary field is
+// searched first; if it is weak (zero hits, or best score worse than
+// threshold in the field's score direction) the secondary field answers.
+// Mutually exclusive with hybrid_params.
+type FallbackParams struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Primary       string                 `protobuf:"bytes,1,opt,name=primary,proto3" json:"primary,omitempty"`
+	Secondary     string                 `protobuf:"bytes,2,opt,name=secondary,proto3" json:"secondary,omitempty"`
+	Threshold     float64                `protobuf:"fixed64,3,opt,name=threshold,proto3" json:"threshold,omitempty"` // 0 = only fall back on zero hits
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FallbackParams) Reset() {
+	*x = FallbackParams{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FallbackParams) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FallbackParams) ProtoMessage() {}
+
+func (x *FallbackParams) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FallbackParams.ProtoReflect.Descriptor instead.
+func (*FallbackParams) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *FallbackParams) GetPrimary() string {
+	if x != nil {
+		return x.Primary
+	}
+	return ""
+}
+
+func (x *FallbackParams) GetSecondary() string {
+	if x != nil {
+		return x.Secondary
+	}
+	return ""
+}
+
+func (x *FallbackParams) GetThreshold() float64 {
+	if x != nil {
+		return x.Threshold
+	}
+	return 0
+}
+
 type SearchRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Collection     string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
@@ -1286,13 +1350,22 @@ type SearchRequest struct {
 	Filters        *structpb.Struct       `protobuf:"bytes,6,opt,name=filters,proto3" json:"filters,omitempty"`
 	TenantId       string                 `protobuf:"bytes,7,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	HybridParams   *HybridSearchParams    `protobuf:"bytes,8,opt,name=hybrid_params,json=hybridParams,proto3" json:"hybrid_params,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// score_floor: confidence filter on returned raw scores. On dense
+	// (distance) fields keep score <= floor; on sparse (BM25) and hybrid
+	// scores keep score >= floor. 0 disables; when set and nothing survives,
+	// weak_match is reported.
+	ScoreFloor float64         `protobuf:"fixed64,9,opt,name=score_floor,json=scoreFloor,proto3" json:"score_floor,omitempty"`
+	Fallback   *FallbackParams `protobuf:"bytes,10,opt,name=fallback,proto3" json:"fallback,omitempty"`
+	// usage_boost: blend non-durable tenant usage (frecency) into ranking,
+	// 0 disables, [0, 1) enforced; reported scores stay raw.
+	UsageBoost    float64 `protobuf:"fixed64,11,opt,name=usage_boost,json=usageBoost,proto3" json:"usage_boost,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SearchRequest) Reset() {
 	*x = SearchRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[22]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1304,7 +1377,7 @@ func (x *SearchRequest) String() string {
 func (*SearchRequest) ProtoMessage() {}
 
 func (x *SearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[22]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1317,7 +1390,7 @@ func (x *SearchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchRequest.ProtoReflect.Descriptor instead.
 func (*SearchRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{22}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SearchRequest) GetCollection() string {
@@ -1376,6 +1449,27 @@ func (x *SearchRequest) GetHybridParams() *HybridSearchParams {
 	return nil
 }
 
+func (x *SearchRequest) GetScoreFloor() float64 {
+	if x != nil {
+		return x.ScoreFloor
+	}
+	return 0
+}
+
+func (x *SearchRequest) GetFallback() *FallbackParams {
+	if x != nil {
+		return x.Fallback
+	}
+	return nil
+}
+
+func (x *SearchRequest) GetUsageBoost() float64 {
+	if x != nil {
+		return x.UsageBoost
+	}
+	return 0
+}
+
 type SearchHit struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1388,7 +1482,7 @@ type SearchHit struct {
 
 func (x *SearchHit) Reset() {
 	*x = SearchHit{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[23]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1400,7 +1494,7 @@ func (x *SearchHit) String() string {
 func (*SearchHit) ProtoMessage() {}
 
 func (x *SearchHit) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[23]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1413,7 +1507,7 @@ func (x *SearchHit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchHit.ProtoReflect.Descriptor instead.
 func (*SearchHit) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{23}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *SearchHit) GetId() uint64 {
@@ -1448,13 +1542,19 @@ type SearchResponse struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Results            []*SearchHit           `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
 	CandidatesExamined int32                  `protobuf:"varint,2,opt,name=candidates_examined,json=candidatesExamined,proto3" json:"candidates_examined,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// best raw score among returned hits (0 when none); calibrates score_floor
+	BestScore float32 `protobuf:"fixed32,3,opt,name=best_score,json=bestScore,proto3" json:"best_score,omitempty"`
+	// true when score_floor > 0 and no hit survived it
+	WeakMatch bool `protobuf:"varint,4,opt,name=weak_match,json=weakMatch,proto3" json:"weak_match,omitempty"`
+	// secondary field name when the fallback ladder fired ("" otherwise)
+	FellBackTo    string `protobuf:"bytes,5,opt,name=fell_back_to,json=fellBackTo,proto3" json:"fell_back_to,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SearchResponse) Reset() {
 	*x = SearchResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[24]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1466,7 +1566,7 @@ func (x *SearchResponse) String() string {
 func (*SearchResponse) ProtoMessage() {}
 
 func (x *SearchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[24]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1479,7 +1579,7 @@ func (x *SearchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchResponse.ProtoReflect.Descriptor instead.
 func (*SearchResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{24}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *SearchResponse) GetResults() []*SearchHit {
@@ -1496,6 +1596,27 @@ func (x *SearchResponse) GetCandidatesExamined() int32 {
 	return 0
 }
 
+func (x *SearchResponse) GetBestScore() float32 {
+	if x != nil {
+		return x.BestScore
+	}
+	return 0
+}
+
+func (x *SearchResponse) GetWeakMatch() bool {
+	if x != nil {
+		return x.WeakMatch
+	}
+	return false
+}
+
+func (x *SearchResponse) GetFellBackTo() string {
+	if x != nil {
+		return x.FellBackTo
+	}
+	return ""
+}
+
 type DeleteDocRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Collection    string                 `protobuf:"bytes,1,opt,name=collection,proto3" json:"collection,omitempty"`
@@ -1507,7 +1628,7 @@ type DeleteDocRequest struct {
 
 func (x *DeleteDocRequest) Reset() {
 	*x = DeleteDocRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[25]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1519,7 +1640,7 @@ func (x *DeleteDocRequest) String() string {
 func (*DeleteDocRequest) ProtoMessage() {}
 
 func (x *DeleteDocRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[25]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1532,7 +1653,7 @@ func (x *DeleteDocRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDocRequest.ProtoReflect.Descriptor instead.
 func (*DeleteDocRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{25}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *DeleteDocRequest) GetCollection() string {
@@ -1564,7 +1685,7 @@ type DeleteDocResponse struct {
 
 func (x *DeleteDocResponse) Reset() {
 	*x = DeleteDocResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[26]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1576,7 +1697,7 @@ func (x *DeleteDocResponse) String() string {
 func (*DeleteDocResponse) ProtoMessage() {}
 
 func (x *DeleteDocResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[26]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1589,7 +1710,7 @@ func (x *DeleteDocResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDocResponse.ProtoReflect.Descriptor instead.
 func (*DeleteDocResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{26}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{27}
 }
 
 type UpsertRequest struct {
@@ -1607,7 +1728,7 @@ type UpsertRequest struct {
 
 func (x *UpsertRequest) Reset() {
 	*x = UpsertRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[27]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1619,7 +1740,7 @@ func (x *UpsertRequest) String() string {
 func (*UpsertRequest) ProtoMessage() {}
 
 func (x *UpsertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[27]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1632,7 +1753,7 @@ func (x *UpsertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertRequest.ProtoReflect.Descriptor instead.
 func (*UpsertRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{27}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *UpsertRequest) GetCollection() string {
@@ -1679,7 +1800,7 @@ type UpsertResponse struct {
 
 func (x *UpsertResponse) Reset() {
 	*x = UpsertResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[28]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1691,7 +1812,7 @@ func (x *UpsertResponse) String() string {
 func (*UpsertResponse) ProtoMessage() {}
 
 func (x *UpsertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[28]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1704,7 +1825,7 @@ func (x *UpsertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertResponse.ProtoReflect.Descriptor instead.
 func (*UpsertResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{28}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *UpsertResponse) GetId() uint64 {
@@ -1725,7 +1846,7 @@ type GetDocRequest struct {
 
 func (x *GetDocRequest) Reset() {
 	*x = GetDocRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[29]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1737,7 +1858,7 @@ func (x *GetDocRequest) String() string {
 func (*GetDocRequest) ProtoMessage() {}
 
 func (x *GetDocRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[29]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1750,7 +1871,7 @@ func (x *GetDocRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDocRequest.ProtoReflect.Descriptor instead.
 func (*GetDocRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{29}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetDocRequest) GetTenantId() string {
@@ -1785,7 +1906,7 @@ type GetDocResponse struct {
 
 func (x *GetDocResponse) Reset() {
 	*x = GetDocResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[30]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1797,7 +1918,7 @@ func (x *GetDocResponse) String() string {
 func (*GetDocResponse) ProtoMessage() {}
 
 func (x *GetDocResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[30]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1810,7 +1931,7 @@ func (x *GetDocResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDocResponse.ProtoReflect.Descriptor instead.
 func (*GetDocResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{30}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetDocResponse) GetId() uint64 {
@@ -1933,7 +2054,11 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\frrf_constant\x18\x03 \x01(\x02R\vrrfConstant\x1a:\n" +
 	"\fWeightsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x02R\x05value:\x028\x01\"\xb8\x03\n" +
+	"\x05value\x18\x02 \x01(\x02R\x05value:\x028\x01\"f\n" +
+	"\x0eFallbackParams\x12\x18\n" +
+	"\aprimary\x18\x01 \x01(\tR\aprimary\x12\x1c\n" +
+	"\tsecondary\x18\x02 \x01(\tR\tsecondary\x12\x1c\n" +
+	"\tthreshold\x18\x03 \x01(\x01R\tthreshold\"\xb3\x04\n" +
 	"\rSearchRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
@@ -1944,7 +2069,13 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\x0finclude_vectors\x18\x05 \x01(\bR\x0eincludeVectors\x121\n" +
 	"\afilters\x18\x06 \x01(\v2\x17.google.protobuf.StructR\afilters\x12\x1b\n" +
 	"\ttenant_id\x18\a \x01(\tR\btenantId\x12D\n" +
-	"\rhybrid_params\x18\b \x01(\v2\x1f.deepdata.v3.HybridSearchParamsR\fhybridParams\x1aS\n" +
+	"\rhybrid_params\x18\b \x01(\v2\x1f.deepdata.v3.HybridSearchParamsR\fhybridParams\x12\x1f\n" +
+	"\vscore_floor\x18\t \x01(\x01R\n" +
+	"scoreFloor\x127\n" +
+	"\bfallback\x18\n" +
+	" \x01(\v2\x1b.deepdata.v3.FallbackParamsR\bfallback\x12\x1f\n" +
+	"\vusage_boost\x18\v \x01(\x01R\n" +
+	"usageBoost\x1aS\n" +
 	"\fQueriesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
 	"\x05value\x18\x02 \x01(\v2\x17.deepdata.v3.VectorDataR\x05value:\x028\x01\"\xfa\x01\n" +
@@ -1955,10 +2086,16 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\avectors\x18\x04 \x03(\v2#.deepdata.v3.SearchHit.VectorsEntryR\avectors\x1aS\n" +
 	"\fVectorsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
-	"\x05value\x18\x02 \x01(\v2\x17.deepdata.v3.VectorDataR\x05value:\x028\x01\"s\n" +
+	"\x05value\x18\x02 \x01(\v2\x17.deepdata.v3.VectorDataR\x05value:\x028\x01\"\xd3\x01\n" +
 	"\x0eSearchResponse\x120\n" +
 	"\aresults\x18\x01 \x03(\v2\x16.deepdata.v3.SearchHitR\aresults\x12/\n" +
-	"\x13candidates_examined\x18\x02 \x01(\x05R\x12candidatesExamined\"f\n" +
+	"\x13candidates_examined\x18\x02 \x01(\x05R\x12candidatesExamined\x12\x1d\n" +
+	"\n" +
+	"best_score\x18\x03 \x01(\x02R\tbestScore\x12\x1d\n" +
+	"\n" +
+	"weak_match\x18\x04 \x01(\bR\tweakMatch\x12 \n" +
+	"\ffell_back_to\x18\x05 \x01(\tR\n" +
+	"fellBackTo\"f\n" +
 	"\x10DeleteDocRequest\x12\x1e\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\tR\n" +
@@ -2017,7 +2154,7 @@ func file_deepdata_v3_deepdata_proto_rawDescGZIP() []byte {
 	return file_deepdata_v3_deepdata_proto_rawDescData
 }
 
-var file_deepdata_v3_deepdata_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
+var file_deepdata_v3_deepdata_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
 var file_deepdata_v3_deepdata_proto_goTypes = []any{
 	(*VectorFieldConfig)(nil),        // 0: deepdata.v3.VectorFieldConfig
 	(*CollectionInfo)(nil),           // 1: deepdata.v3.CollectionInfo
@@ -2041,84 +2178,86 @@ var file_deepdata_v3_deepdata_proto_goTypes = []any{
 	(*BatchInsertRequest)(nil),       // 19: deepdata.v3.BatchInsertRequest
 	(*BatchInsertResponse)(nil),      // 20: deepdata.v3.BatchInsertResponse
 	(*HybridSearchParams)(nil),       // 21: deepdata.v3.HybridSearchParams
-	(*SearchRequest)(nil),            // 22: deepdata.v3.SearchRequest
-	(*SearchHit)(nil),                // 23: deepdata.v3.SearchHit
-	(*SearchResponse)(nil),           // 24: deepdata.v3.SearchResponse
-	(*DeleteDocRequest)(nil),         // 25: deepdata.v3.DeleteDocRequest
-	(*DeleteDocResponse)(nil),        // 26: deepdata.v3.DeleteDocResponse
-	(*UpsertRequest)(nil),            // 27: deepdata.v3.UpsertRequest
-	(*UpsertResponse)(nil),           // 28: deepdata.v3.UpsertResponse
-	(*GetDocRequest)(nil),            // 29: deepdata.v3.GetDocRequest
-	(*GetDocResponse)(nil),           // 30: deepdata.v3.GetDocResponse
-	nil,                              // 31: deepdata.v3.InsertRequest.VectorsEntry
-	nil,                              // 32: deepdata.v3.BatchDoc.VectorsEntry
-	nil,                              // 33: deepdata.v3.HybridSearchParams.WeightsEntry
-	nil,                              // 34: deepdata.v3.SearchRequest.QueriesEntry
-	nil,                              // 35: deepdata.v3.SearchHit.VectorsEntry
-	nil,                              // 36: deepdata.v3.UpsertRequest.VectorsEntry
-	nil,                              // 37: deepdata.v3.GetDocResponse.VectorsEntry
-	(*structpb.Struct)(nil),          // 38: google.protobuf.Struct
+	(*FallbackParams)(nil),           // 22: deepdata.v3.FallbackParams
+	(*SearchRequest)(nil),            // 23: deepdata.v3.SearchRequest
+	(*SearchHit)(nil),                // 24: deepdata.v3.SearchHit
+	(*SearchResponse)(nil),           // 25: deepdata.v3.SearchResponse
+	(*DeleteDocRequest)(nil),         // 26: deepdata.v3.DeleteDocRequest
+	(*DeleteDocResponse)(nil),        // 27: deepdata.v3.DeleteDocResponse
+	(*UpsertRequest)(nil),            // 28: deepdata.v3.UpsertRequest
+	(*UpsertResponse)(nil),           // 29: deepdata.v3.UpsertResponse
+	(*GetDocRequest)(nil),            // 30: deepdata.v3.GetDocRequest
+	(*GetDocResponse)(nil),           // 31: deepdata.v3.GetDocResponse
+	nil,                              // 32: deepdata.v3.InsertRequest.VectorsEntry
+	nil,                              // 33: deepdata.v3.BatchDoc.VectorsEntry
+	nil,                              // 34: deepdata.v3.HybridSearchParams.WeightsEntry
+	nil,                              // 35: deepdata.v3.SearchRequest.QueriesEntry
+	nil,                              // 36: deepdata.v3.SearchHit.VectorsEntry
+	nil,                              // 37: deepdata.v3.UpsertRequest.VectorsEntry
+	nil,                              // 38: deepdata.v3.GetDocResponse.VectorsEntry
+	(*structpb.Struct)(nil),          // 39: google.protobuf.Struct
 }
 var file_deepdata_v3_deepdata_proto_depIdxs = []int32{
-	38, // 0: deepdata.v3.VectorFieldConfig.index_params:type_name -> google.protobuf.Struct
+	39, // 0: deepdata.v3.VectorFieldConfig.index_params:type_name -> google.protobuf.Struct
 	0,  // 1: deepdata.v3.CollectionInfo.fields:type_name -> deepdata.v3.VectorFieldConfig
-	38, // 2: deepdata.v3.CollectionInfo.metadata:type_name -> google.protobuf.Struct
+	39, // 2: deepdata.v3.CollectionInfo.metadata:type_name -> google.protobuf.Struct
 	2,  // 3: deepdata.v3.GetTenantInfoResponse.collections:type_name -> deepdata.v3.CollectionStats
 	1,  // 4: deepdata.v3.ListCollectionsResponse.collections:type_name -> deepdata.v3.CollectionInfo
 	1,  // 5: deepdata.v3.GetCollectionResponse.collection:type_name -> deepdata.v3.CollectionInfo
 	0,  // 6: deepdata.v3.CreateCollectionRequest.fields:type_name -> deepdata.v3.VectorFieldConfig
-	38, // 7: deepdata.v3.CreateCollectionRequest.metadata:type_name -> google.protobuf.Struct
+	39, // 7: deepdata.v3.CreateCollectionRequest.metadata:type_name -> google.protobuf.Struct
 	13, // 8: deepdata.v3.VectorData.dense:type_name -> deepdata.v3.DenseVector
 	14, // 9: deepdata.v3.VectorData.sparse:type_name -> deepdata.v3.SparseVector
-	31, // 10: deepdata.v3.InsertRequest.vectors:type_name -> deepdata.v3.InsertRequest.VectorsEntry
-	38, // 11: deepdata.v3.InsertRequest.metadata:type_name -> google.protobuf.Struct
-	32, // 12: deepdata.v3.BatchDoc.vectors:type_name -> deepdata.v3.BatchDoc.VectorsEntry
-	38, // 13: deepdata.v3.BatchDoc.metadata:type_name -> google.protobuf.Struct
+	32, // 10: deepdata.v3.InsertRequest.vectors:type_name -> deepdata.v3.InsertRequest.VectorsEntry
+	39, // 11: deepdata.v3.InsertRequest.metadata:type_name -> google.protobuf.Struct
+	33, // 12: deepdata.v3.BatchDoc.vectors:type_name -> deepdata.v3.BatchDoc.VectorsEntry
+	39, // 13: deepdata.v3.BatchDoc.metadata:type_name -> google.protobuf.Struct
 	18, // 14: deepdata.v3.BatchInsertRequest.docs:type_name -> deepdata.v3.BatchDoc
-	33, // 15: deepdata.v3.HybridSearchParams.weights:type_name -> deepdata.v3.HybridSearchParams.WeightsEntry
-	34, // 16: deepdata.v3.SearchRequest.queries:type_name -> deepdata.v3.SearchRequest.QueriesEntry
-	38, // 17: deepdata.v3.SearchRequest.filters:type_name -> google.protobuf.Struct
+	34, // 15: deepdata.v3.HybridSearchParams.weights:type_name -> deepdata.v3.HybridSearchParams.WeightsEntry
+	35, // 16: deepdata.v3.SearchRequest.queries:type_name -> deepdata.v3.SearchRequest.QueriesEntry
+	39, // 17: deepdata.v3.SearchRequest.filters:type_name -> google.protobuf.Struct
 	21, // 18: deepdata.v3.SearchRequest.hybrid_params:type_name -> deepdata.v3.HybridSearchParams
-	38, // 19: deepdata.v3.SearchHit.metadata:type_name -> google.protobuf.Struct
-	35, // 20: deepdata.v3.SearchHit.vectors:type_name -> deepdata.v3.SearchHit.VectorsEntry
-	23, // 21: deepdata.v3.SearchResponse.results:type_name -> deepdata.v3.SearchHit
-	36, // 22: deepdata.v3.UpsertRequest.vectors:type_name -> deepdata.v3.UpsertRequest.VectorsEntry
-	38, // 23: deepdata.v3.UpsertRequest.metadata:type_name -> google.protobuf.Struct
-	37, // 24: deepdata.v3.GetDocResponse.vectors:type_name -> deepdata.v3.GetDocResponse.VectorsEntry
-	38, // 25: deepdata.v3.GetDocResponse.metadata:type_name -> google.protobuf.Struct
-	15, // 26: deepdata.v3.InsertRequest.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	15, // 27: deepdata.v3.BatchDoc.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	15, // 28: deepdata.v3.SearchRequest.QueriesEntry.value:type_name -> deepdata.v3.VectorData
-	15, // 29: deepdata.v3.SearchHit.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	15, // 30: deepdata.v3.UpsertRequest.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	15, // 31: deepdata.v3.GetDocResponse.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	3,  // 32: deepdata.v3.DeepData.GetTenantInfo:input_type -> deepdata.v3.GetTenantInfoRequest
-	5,  // 33: deepdata.v3.DeepData.ListCollections:input_type -> deepdata.v3.ListCollectionsRequest
-	7,  // 34: deepdata.v3.DeepData.GetCollection:input_type -> deepdata.v3.GetCollectionRequest
-	9,  // 35: deepdata.v3.DeepData.CreateCollection:input_type -> deepdata.v3.CreateCollectionRequest
-	11, // 36: deepdata.v3.DeepData.DeleteCollection:input_type -> deepdata.v3.DeleteCollectionRequest
-	16, // 37: deepdata.v3.DeepData.Insert:input_type -> deepdata.v3.InsertRequest
-	19, // 38: deepdata.v3.DeepData.BatchInsert:input_type -> deepdata.v3.BatchInsertRequest
-	22, // 39: deepdata.v3.DeepData.Search:input_type -> deepdata.v3.SearchRequest
-	25, // 40: deepdata.v3.DeepData.DeleteDoc:input_type -> deepdata.v3.DeleteDocRequest
-	27, // 41: deepdata.v3.DeepData.Upsert:input_type -> deepdata.v3.UpsertRequest
-	29, // 42: deepdata.v3.DeepData.GetDoc:input_type -> deepdata.v3.GetDocRequest
-	4,  // 43: deepdata.v3.DeepData.GetTenantInfo:output_type -> deepdata.v3.GetTenantInfoResponse
-	6,  // 44: deepdata.v3.DeepData.ListCollections:output_type -> deepdata.v3.ListCollectionsResponse
-	8,  // 45: deepdata.v3.DeepData.GetCollection:output_type -> deepdata.v3.GetCollectionResponse
-	10, // 46: deepdata.v3.DeepData.CreateCollection:output_type -> deepdata.v3.CreateCollectionResponse
-	12, // 47: deepdata.v3.DeepData.DeleteCollection:output_type -> deepdata.v3.DeleteCollectionResponse
-	17, // 48: deepdata.v3.DeepData.Insert:output_type -> deepdata.v3.InsertResponse
-	20, // 49: deepdata.v3.DeepData.BatchInsert:output_type -> deepdata.v3.BatchInsertResponse
-	24, // 50: deepdata.v3.DeepData.Search:output_type -> deepdata.v3.SearchResponse
-	26, // 51: deepdata.v3.DeepData.DeleteDoc:output_type -> deepdata.v3.DeleteDocResponse
-	28, // 52: deepdata.v3.DeepData.Upsert:output_type -> deepdata.v3.UpsertResponse
-	30, // 53: deepdata.v3.DeepData.GetDoc:output_type -> deepdata.v3.GetDocResponse
-	43, // [43:54] is the sub-list for method output_type
-	32, // [32:43] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	22, // 19: deepdata.v3.SearchRequest.fallback:type_name -> deepdata.v3.FallbackParams
+	39, // 20: deepdata.v3.SearchHit.metadata:type_name -> google.protobuf.Struct
+	36, // 21: deepdata.v3.SearchHit.vectors:type_name -> deepdata.v3.SearchHit.VectorsEntry
+	24, // 22: deepdata.v3.SearchResponse.results:type_name -> deepdata.v3.SearchHit
+	37, // 23: deepdata.v3.UpsertRequest.vectors:type_name -> deepdata.v3.UpsertRequest.VectorsEntry
+	39, // 24: deepdata.v3.UpsertRequest.metadata:type_name -> google.protobuf.Struct
+	38, // 25: deepdata.v3.GetDocResponse.vectors:type_name -> deepdata.v3.GetDocResponse.VectorsEntry
+	39, // 26: deepdata.v3.GetDocResponse.metadata:type_name -> google.protobuf.Struct
+	15, // 27: deepdata.v3.InsertRequest.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	15, // 28: deepdata.v3.BatchDoc.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	15, // 29: deepdata.v3.SearchRequest.QueriesEntry.value:type_name -> deepdata.v3.VectorData
+	15, // 30: deepdata.v3.SearchHit.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	15, // 31: deepdata.v3.UpsertRequest.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	15, // 32: deepdata.v3.GetDocResponse.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	3,  // 33: deepdata.v3.DeepData.GetTenantInfo:input_type -> deepdata.v3.GetTenantInfoRequest
+	5,  // 34: deepdata.v3.DeepData.ListCollections:input_type -> deepdata.v3.ListCollectionsRequest
+	7,  // 35: deepdata.v3.DeepData.GetCollection:input_type -> deepdata.v3.GetCollectionRequest
+	9,  // 36: deepdata.v3.DeepData.CreateCollection:input_type -> deepdata.v3.CreateCollectionRequest
+	11, // 37: deepdata.v3.DeepData.DeleteCollection:input_type -> deepdata.v3.DeleteCollectionRequest
+	16, // 38: deepdata.v3.DeepData.Insert:input_type -> deepdata.v3.InsertRequest
+	19, // 39: deepdata.v3.DeepData.BatchInsert:input_type -> deepdata.v3.BatchInsertRequest
+	23, // 40: deepdata.v3.DeepData.Search:input_type -> deepdata.v3.SearchRequest
+	26, // 41: deepdata.v3.DeepData.DeleteDoc:input_type -> deepdata.v3.DeleteDocRequest
+	28, // 42: deepdata.v3.DeepData.Upsert:input_type -> deepdata.v3.UpsertRequest
+	30, // 43: deepdata.v3.DeepData.GetDoc:input_type -> deepdata.v3.GetDocRequest
+	4,  // 44: deepdata.v3.DeepData.GetTenantInfo:output_type -> deepdata.v3.GetTenantInfoResponse
+	6,  // 45: deepdata.v3.DeepData.ListCollections:output_type -> deepdata.v3.ListCollectionsResponse
+	8,  // 46: deepdata.v3.DeepData.GetCollection:output_type -> deepdata.v3.GetCollectionResponse
+	10, // 47: deepdata.v3.DeepData.CreateCollection:output_type -> deepdata.v3.CreateCollectionResponse
+	12, // 48: deepdata.v3.DeepData.DeleteCollection:output_type -> deepdata.v3.DeleteCollectionResponse
+	17, // 49: deepdata.v3.DeepData.Insert:output_type -> deepdata.v3.InsertResponse
+	20, // 50: deepdata.v3.DeepData.BatchInsert:output_type -> deepdata.v3.BatchInsertResponse
+	25, // 51: deepdata.v3.DeepData.Search:output_type -> deepdata.v3.SearchResponse
+	27, // 52: deepdata.v3.DeepData.DeleteDoc:output_type -> deepdata.v3.DeleteDocResponse
+	29, // 53: deepdata.v3.DeepData.Upsert:output_type -> deepdata.v3.UpsertResponse
+	31, // 54: deepdata.v3.DeepData.GetDoc:output_type -> deepdata.v3.GetDocResponse
+	44, // [44:55] is the sub-list for method output_type
+	33, // [33:44] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_deepdata_v3_deepdata_proto_init() }
@@ -2136,7 +2275,7 @@ func file_deepdata_v3_deepdata_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_deepdata_v3_deepdata_proto_rawDesc), len(file_deepdata_v3_deepdata_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   38,
+			NumMessages:   39,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

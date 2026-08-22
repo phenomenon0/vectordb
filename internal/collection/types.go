@@ -381,6 +381,48 @@ type SearchRequest struct {
 
 	// Hybrid search parameters (optional)
 	HybridParams *HybridSearchParams `json:"hybrid_params,omitempty"`
+
+	// ScoreFloor is a confidence filter on the returned raw scores.
+	// Direction follows the field metric: on dense (distance) fields it is
+	// a maximum acceptable distance (keep score <= floor); on sparse (BM25)
+	// and fused hybrid scores it is a minimum acceptable score (keep score
+	// >= floor). 0 disables it. It is also the weak-match trigger:
+	// WeakMatch is reported when the floor is set and nothing survives.
+	// The floor is caller-relative and not transferable across fields with
+	// different metrics.
+	ScoreFloor float64 `json:"score_floor,omitempty"`
+
+	// Fallback configures the auto-fallback ladder (optional). Mutually
+	// exclusive with HybridParams. Requires exactly the two named query
+	// fields.
+	Fallback *FallbackParams `json:"fallback,omitempty"`
+
+	// UsageBoost blends frecency into ranking (0 = disabled, max 1).
+	// 1.0 is rejected: a pure usage ranking would discard the similarity
+	// signal entirely. The re-ordering only changes result order; reported
+	// scores remain the raw per-field scores.
+	UsageBoost float64 `json:"usage_boost,omitempty"`
+
+	// NProbe overrides the number of IVF clusters probed per search
+	// (0 = server default of 10). Higher values raise recall at the cost
+	// of latency; values above the index's cluster count are clamped.
+	NProbe int `json:"n_probe,omitempty"`
+}
+
+// FallbackParams configures the auto-fallback ladder for a two-field
+// request: the primary field is searched first; if it yields no results —
+// or, when Threshold > 0, if its best score is worse than the threshold in
+// the primary field's score direction (best distance > threshold on dense
+// fields, best score < threshold on sparse fields) — the secondary field
+// is searched and its results are returned with SearchResponse.FellBackTo
+// set. With Threshold == 0 the ladder degrades to "only fall back on zero
+// hits". The decision uses the primary answer after ScoreFloor has been
+// applied, so a primary that yields no confident result at all (zero hits,
+// or wiped out by the floor) is also treated as weak.
+type FallbackParams struct {
+	Primary   string  `json:"primary"`
+	Secondary string  `json:"secondary"`
+	Threshold float64 `json:"threshold,omitempty"`
 }
 
 // HybridSearchParams configures hybrid search across multiple vector fields.
@@ -420,6 +462,20 @@ type SearchResponse struct {
 
 	// Number of candidates examined
 	CandidatesExamined int `json:"candidates_examined"`
+
+	// BestScore is the best raw score among the returned documents (the
+	// minimum on distance fields, the maximum on score fields; 0 when
+	// there are none). It lets callers calibrate ScoreFloor.
+	BestScore float32 `json:"best_score,omitempty"`
+
+	// WeakMatch is true when ScoreFloor > 0 and no document survived it.
+	// Agents should treat a weak-match response as "no confident answer"
+	// rather than consuming the results.
+	WeakMatch bool `json:"weak_match"`
+
+	// FellBackTo names the secondary field used when the fallback ladder
+	// fired (empty when the primary field answered the query).
+	FellBackTo string `json:"fell_back_to,omitempty"`
 }
 
 // RecommendRequest represents a recommendation request using positive/negative examples.

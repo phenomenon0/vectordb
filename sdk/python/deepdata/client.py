@@ -18,6 +18,7 @@ from .models import (
     TenantDeleteDocumentResponse,
     TenantDocument,
     TenantDocumentInput,
+    TenantFallbackParams,
     TenantGetCollectionResponse,
     TenantHybridParams,
     TenantInfoResponse,
@@ -336,13 +337,28 @@ class TenantClient:
         filters: dict[str, Any] | None = None,
         hybrid_params: dict[str, Any] | TenantHybridParams | None = None,
         include_vectors: bool | None = None,
+        score_floor: float | None = None,
+        fallback: dict[str, Any] | TenantFallbackParams | None = None,
+        usage_boost: float | None = None,
     ) -> TenantSearchResponse:
-        """Search within a tenant collection."""
+        """Search within a tenant collection.
+
+        ``score_floor`` drops results worse than the floor (direction follows
+        the field metric) and reports ``weak_match=True`` when nothing
+        survives; ``fallback`` searches a secondary field when the primary is
+        weak; ``usage_boost`` (0 to 1) blends non-durable usage into ranking
+        while reported scores stay raw.
+        """
         segment = collection_segment(collection)
         normalized_hybrid = (
             hybrid_params
             if isinstance(hybrid_params, TenantHybridParams) or hybrid_params is None
             else TenantHybridParams.model_validate(hybrid_params)
+        )
+        normalized_fallback = (
+            fallback
+            if isinstance(fallback, TenantFallbackParams) or fallback is None
+            else TenantFallbackParams.model_validate(fallback)
         )
         request = TenantSearchRequest(
             queries=queries,
@@ -351,6 +367,9 @@ class TenantClient:
             filters=filters,
             hybrid_params=normalized_hybrid,
             include_vectors=include_vectors,
+            score_floor=score_floor,
+            fallback=normalized_fallback,
+            usage_boost=usage_boost,
         )
         data = self._client._request(
             "POST",

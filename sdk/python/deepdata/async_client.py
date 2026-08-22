@@ -18,6 +18,7 @@ from .models import (
     TenantDeleteDocumentResponse,
     TenantDocument,
     TenantDocumentInput,
+    TenantFallbackParams,
     TenantGetCollectionResponse,
     TenantHybridParams,
     TenantInfoResponse,
@@ -325,13 +326,27 @@ class AsyncTenantClient:
         filters: dict[str, Any] | None = None,
         hybrid_params: dict[str, Any] | TenantHybridParams | None = None,
         include_vectors: bool | None = None,
+        score_floor: float | None = None,
+        fallback: dict[str, Any] | TenantFallbackParams | None = None,
+        usage_boost: float | None = None,
     ) -> TenantSearchResponse:
-        """Search within a canonical tenant collection."""
+        """Search within a canonical tenant collection.
+
+        Mirrors the sync client: ``score_floor`` (confidence filter; reports
+        ``weak_match`` when nothing survives), ``fallback`` (auto-fallback
+        ladder to a secondary field), ``usage_boost`` (frecency blend, raw
+        scores unchanged).
+        """
         segment = collection_segment(collection)
         normalized_hybrid = (
             hybrid_params
             if isinstance(hybrid_params, TenantHybridParams) or hybrid_params is None
             else TenantHybridParams.model_validate(hybrid_params)
+        )
+        normalized_fallback = (
+            fallback
+            if isinstance(fallback, TenantFallbackParams) or fallback is None
+            else TenantFallbackParams.model_validate(fallback)
         )
         request = TenantSearchRequest(
             queries=queries,
@@ -340,6 +355,9 @@ class AsyncTenantClient:
             filters=filters,
             hybrid_params=normalized_hybrid,
             include_vectors=include_vectors,
+            score_floor=score_floor,
+            fallback=normalized_fallback,
+            usage_boost=usage_boost,
         )
         data = await self._client._request(
             "POST",

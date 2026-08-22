@@ -145,6 +145,16 @@ message HybridSearchParams {
   float rrf_constant = 3;
 }
 
+// FallbackParams configures the auto-fallback ladder: the primary field is
+// searched first; if it is weak (zero hits, or best score worse than
+// threshold in the field's score direction) the secondary field answers.
+// Mutually exclusive with hybrid_params.
+message FallbackParams {
+  string primary = 1;
+  string secondary = 2;
+  double threshold = 3;  // 0 = only fall back on zero hits
+}
+
 message SearchRequest {
   string collection = 1;
   map<string, VectorData> queries = 2;
@@ -154,6 +164,15 @@ message SearchRequest {
   google.protobuf.Struct filters = 6;
   string tenant_id = 7;
   HybridSearchParams hybrid_params = 8;
+  // score_floor: confidence filter on returned raw scores. On dense
+  // (distance) fields keep score <= floor; on sparse (BM25) and hybrid
+  // scores keep score >= floor. 0 disables; when set and nothing survives,
+  // weak_match is reported.
+  double score_floor = 9;
+  FallbackParams fallback = 10;
+  // usage_boost: blend non-durable tenant usage (frecency) into ranking,
+  // 0 disables, [0, 1) enforced; reported scores stay raw.
+  double usage_boost = 11;
 }
 
 message SearchHit {
@@ -166,6 +185,12 @@ message SearchHit {
 message SearchResponse {
   repeated SearchHit results = 1;
   int32 candidates_examined = 2;
+  // best raw score among returned hits (0 when none); calibrates score_floor
+  float best_score = 3;
+  // true when score_floor > 0 and no hit survived it
+  bool weak_match = 4;
+  // secondary field name when the fallback ladder fired ("" otherwise)
+  string fell_back_to = 5;
 }
 
 // ── Delete ───────────────────────────────────────────────────────────

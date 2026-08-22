@@ -269,8 +269,40 @@ class TenantHybridParams(_TenantRequestModel):
         return self
 
 
+class TenantFallbackParams(_TenantRequestModel):
+    """Auto-fallback ladder: primary field first, secondary if it is weak.
+
+    With ``threshold=None`` the ladder only falls back on zero hits; with a
+    threshold it also falls back when the primary's best score is worse than
+    the threshold in the field's score direction (best distance > threshold
+    on dense fields, best score < threshold on sparse fields).
+    """
+
+    primary: str = Field(min_length=1)
+    secondary: str = Field(min_length=1)
+    threshold: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_fallback_contract(self) -> TenantFallbackParams:
+        """Reject ladders the server cannot run."""
+
+        if self.primary == self.secondary:
+            raise ValueError("fallback primary and secondary must differ")
+        if self.threshold is not None and not math.isfinite(self.threshold):
+            raise ValueError("fallback threshold must be finite")
+        return self
+
+
 class TenantSearchRequest(_TenantRequestModel):
-    """Canonical tenant search payload."""
+    """Canonical tenant search payload.
+
+    ``score_floor`` is a confidence filter on the returned raw scores: on
+    dense (distance) fields it is a maximum acceptable distance (keep
+    ``score <= score_floor``), on sparse (BM25) and hybrid scores a minimum
+    acceptable score (keep ``score >= score_floor``). ``usage_boost`` blends
+    non-durable per-tenant usage (frecency) into ranking without altering
+    the reported raw scores.
+    """
 
     queries: dict[str, Any] = Field(min_length=1, max_length=2)
     top_k: int = Field(default=10, gt=0, le=1000)
@@ -278,13 +310,22 @@ class TenantSearchRequest(_TenantRequestModel):
     include_vectors: bool | None = None
     filters: dict[str, Any] | None = None
     hybrid_params: TenantHybridParams | None = None
+    score_floor: float | None = Field(default=None, ge=0)
+    fallback: TenantFallbackParams | None = None
+    usage_boost: float | None = Field(default=None, ge=0, lt=1)
 
     @model_validator(mode="after")
     def validate_hybrid_contract(self) -> TenantSearchRequest:
         """Keep SDK admission aligned with the server's two-field contract."""
 
-        if len(self.queries) > 1 and self.hybrid_params is None:
-            raise ValueError("multiple query fields require hybrid_params")
+        if (
+            len(self.queries) > 1
+            and self.hybrid_params is None
+            and self.fallback is None
+        ):
+            raise ValueError(
+                "multiple query fields require hybrid_params or fallback"
+            )
         if self.hybrid_params is not None and self.hybrid_params.weights is not None:
             unknown = self.hybrid_params.weights.keys() - self.queries.keys()
             if unknown:
@@ -292,17 +333,44 @@ class TenantSearchRequest(_TenantRequestModel):
                     "hybrid weights reference unknown query fields: "
                     + ", ".join(sorted(unknown))
                 )
+        if self.fallback is not None:
+            if self.hybrid_params is not None:
+                raise ValueError(
+                    "fallback and hybrid_params are mutually exclusive"
+                )
+            if len(self.queries) != 2:
+                raise ValueError("fallback requires exactly two query fields")
+            missing = {self.fallback.primary, self.fallback.secondary} - self.queries.keys()
+            if missing:
+                raise ValueError(
+                    "fallback fields must be query fields: "
+                    + ", ".join(sorted(missing))
+                )
+        for name, value in (("score_floor", self.score_floor), ("usage_boost", self.usage_boost)):
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{name} must be finite")
         return self
 
 
 class TenantSearchResponse(_TenantResponseModel):
-    """Typed canonical tenant search result."""
+    """Typed canonical tenant search result.
+
+    ``best_score`` is the best raw score among ``documents`` (0 when empty)
+    and calibrates ``score_floor``. ``weak_match`` is true when
+    ``score_floor`` is set and no document survived it — treat it as "no
+    confident answer" rather than consuming the (empty) results.
+    ``fell_back_to`` names the secondary field when the fallback ladder
+    fired.
+    """
 
     status: Literal["success"]
     tenant_id: str
     documents: list[TenantDocument]
     scores: list[float]
     candidates_examined: int = Field(ge=0)
+    best_score: float = 0.0
+    weak_match: bool = False
+    fell_back_to: str = ""
 
 
 class TenantCollectionStats(_TenantResponseModel):

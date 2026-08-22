@@ -129,6 +129,66 @@ curl --fail-with-body \
 A hybrid request supplies exactly two query fields plus `hybrid_params`. See
 the [cookbook](docs/cookbook.md) for the complete V3 examples.
 
+## Agent retrieval
+
+Search accepts three opt-in fields that make the API easier to call from
+agents. All are zero-value-identical to classic search: absent = current
+behavior.
+
+- `score_floor` — a confidence filter on the returned raw scores. On dense
+  (distance) fields it is a maximum acceptable distance (hits keep
+  `score <= score_floor`); on sparse (BM25) and hybrid scores it is a minimum
+  acceptable score (`score >= score_floor`). When the floor drops every hit,
+  the response reports `weak_match: true` so the caller can say "no confident
+  answer" instead of consuming the (empty) results. The same response carries
+  `best_score` — the best raw score among returned hits — for calibrating the
+  floor.
+- `fallback` — an auto-fallback ladder (`{primary, secondary, threshold?}`)
+  for two-field collections. The primary field is searched first; when it is
+  weak (zero hits, or best score worse than `threshold` in the field's score
+  direction) the secondary field answers and the response reports
+  `fell_back_to`. Mutually exclusive with `hybrid_params`.
+- `usage_boost` — in `[0, 1)`, blends non-durable per-tenant usage (frecency:
+  recency-decayed counts of prior searches/reads of the same documents) into
+  ranking. Boosts never exceed `1`× and cannot displace an unboosted result
+  whose score is more than 2× worse. Reported scores stay raw; usage is a
+  session signal only — it is not persisted and resets on restart.
+
+```json
+{
+  "queries": {"embedding": [0.1, 0.2, 0.3], "keywords": {"indices": [7], "values": [1.0], "dim": 10000}},
+  "top_k": 5,
+  "score_floor": 0.4,
+  "fallback": {"primary": "embedding", "secondary": "keywords", "threshold": 0.6},
+  "usage_boost": 0.25
+}
+```
+
+## MCP server
+
+`deepdata-mcp` exposes a running DeepData server as MCP (Model Context
+Protocol) tools over stdio for Claude Desktop, pi, and other MCP hosts. It is
+self-contained (no engine build, stdlib only) and wraps the canonical tenant
+HTTP protocol.
+
+```bash
+go build -o deepdata-mcp ./cmd/deepdata-mcp
+# Claude Desktop config:
+# {
+#   "mcpServers": {
+#     "deepdata": {
+#       "command": "./deepdata-mcp",
+#       "env": {"DEEPDATA_URL": "http://127.0.0.1:8080",
+#               "DEEPDATA_TENANT": "acme",
+#               "DEEPDATA_API_KEY": "replace-me"}
+#     }
+#   }
+# }
+```
+
+Tools: `search` (supports `score_floor` / `fallback` / `usage_boost`),
+`insert`, `upsert`, `get_document`, `list_collections`.
+
 ## gRPC contract
 
 The `deepdata.v3.DeepData` service exposes exactly:
@@ -200,6 +260,4 @@ See [tasks/todo.md](tasks/todo.md) for the production-hardening gates and
 
 ## License
 
-No project license has been selected yet. Do not describe or publish this
-release candidate as MIT-licensed until the legal owner and license text are
-confirmed and a root `LICENSE` file is committed.
+DeepData is licensed under the [Apache License 2.0](LICENSE).

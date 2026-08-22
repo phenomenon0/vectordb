@@ -1,0 +1,818 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepData Canonical District</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ground:#0e151d;
+    --map-ground:#111a24;
+    --panel:#151f2a;
+    --panel-edge:#233240;
+    --ink:#dce7ee;
+    --muted:#8aa0ae;
+    --faint:#5c7180;
+    --write:#e8a64b;
+    --read:#4fc9d6;
+    --life:#d77ba2;
+    --live-win:#f2dfae;
+    --grid:#1a2632;
+    --chipbg:#0b1117;
+    --mono:'JetBrains Mono',ui-monospace,'Cascadia Mono',Menlo,monospace;
+    --sans:'Archivo',system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--ground);color:var(--ink);font-family:var(--sans)}
+  body{min-height:100vh;display:flex;flex-direction:column}
+
+  header{padding:26px 30px 14px;border-bottom:1px solid var(--panel-edge);
+    display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 26px}
+  header h1{font-weight:800;font-size:clamp(22px,3vw,34px);letter-spacing:.04em}
+  header h1 .dd{color:var(--read)}
+  header .sub{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  header .sub b{color:var(--ink);font-weight:500}
+
+  .toolbar{display:flex;align-items:center;gap:10px;padding:12px 30px;flex-wrap:wrap;
+    border-bottom:1px solid var(--panel-edge);background:var(--ground)}
+  .toolbar .tlabel{font-family:var(--mono);font-size:11px;letter-spacing:.18em;color:var(--faint)}
+  .tracebtn{font-family:var(--mono);font-size:12.5px;padding:7px 14px;border-radius:3px;cursor:pointer;
+    background:var(--panel);color:var(--ink);border:1px solid var(--panel-edge);
+    display:inline-flex;align-items:center;gap:8px}
+  .tracebtn .swatch{width:10px;height:10px;border-radius:2px;display:inline-block}
+  .tracebtn:hover{border-color:var(--faint)}
+  .tracebtn.active{background:#1d2a37;border-color:var(--faint)}
+  .tracebtn.stop{color:var(--muted)}
+
+  main{display:flex;flex:1;min-height:0;align-items:stretch}
+  .mapwrap{flex:1;min-width:0;overflow:auto;background:var(--map-ground);position:relative;
+    display:flex;align-items:center}
+  .mapwrap svg{display:block;min-width:980px;width:100%;height:auto}
+
+  aside{width:360px;flex:none;border-left:1px solid var(--panel-edge);background:var(--ground);
+    overflow-y:auto;padding:18px 18px 30px;display:flex;flex-direction:column;gap:16px}
+  .card{background:var(--panel);border:1px solid var(--panel-edge);border-radius:4px;padding:14px 16px}
+  .card h2{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.22em;color:var(--faint);
+    text-transform:uppercase;margin-bottom:10px}
+  .card h3{font-size:16px;font-weight:700;letter-spacing:.02em;margin-bottom:2px}
+  .card .path{font-family:var(--mono);font-size:11px;color:var(--read);word-break:break-all}
+  .card p{font-size:13.5px;line-height:1.55;color:var(--ink);margin-top:8px}
+  .card p.dim{color:var(--muted)}
+  .statusline{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .chip{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:2px;background:var(--chipbg);
+    border:1px solid var(--panel-edge);color:var(--muted)}
+  .chip.live{color:#9fd8a8;border-color:#2b4636}
+  .chip.dark{color:#c9a35c;border-color:#4a3d22}
+  .chip.dead{color:#c96a6a;border-color:#4a2626}
+  .chip.warn{color:var(--write);border-color:#5a4322}
+
+  ul.cites{margin-top:10px;list-style:none;display:flex;flex-direction:column;gap:7px}
+  ul.cites li{font-size:12.5px;line-height:1.45;color:var(--muted);padding-left:12px;position:relative}
+  ul.cites li::before{content:'';position:absolute;left:0;top:7px;width:5px;height:5px;background:var(--faint)}
+  ul.cites code{font-family:var(--mono);font-size:11px;color:var(--ink);background:var(--chipbg);
+    padding:1px 5px;border-radius:2px;white-space:nowrap}
+
+  ol.hops{margin-top:8px;list-style:none;counter-reset:hop;display:flex;flex-direction:column}
+  ol.hops li{counter-increment:hop;font-size:12.5px;line-height:1.45;padding:7px 8px 7px 34px;position:relative;
+    border-left:2px solid var(--panel-edge);margin-left:10px;color:var(--muted)}
+  ol.hops li::before{content:counter(hop,decimal-leading-zero);font-family:var(--mono);font-size:10px;
+    position:absolute;left:-13px;top:9px;background:var(--panel);color:var(--faint);padding:1px 3px;
+    border:1px solid var(--panel-edge)}
+  ol.hops li b{color:var(--ink);font-weight:600}
+  ol.hops li .pay{font-family:var(--mono);font-size:11px;display:block;margin-top:2px}
+  ol.hops li .cite{font-family:var(--mono);font-size:10.5px;color:var(--faint);display:block;margin-top:1px}
+  ol.hops li.now{border-left-color:currentColor;background:#1b2733;color:var(--ink)}
+  ol.hops li.now::before{color:var(--ink)}
+
+  .legend .lrow{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);padding:3.5px 0}
+  .legend .lrow svg{flex:none}
+  .legend .lsec{font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:var(--faint);
+    text-transform:uppercase;margin:10px 0 4px}
+  .legend .lsec:first-of-type{margin-top:0}
+
+  footer{padding:12px 30px;border-top:1px solid var(--panel-edge);font-family:var(--mono);
+    font-size:11px;color:var(--faint);display:flex;gap:24px;flex-wrap:wrap}
+  footer b{color:var(--muted);font-weight:500}
+
+  /* svg interaction */
+  g.bld{cursor:pointer}
+  g.bld:hover .face,g.bld:focus-visible .face{filter:brightness(1.18)}
+  g.bld:focus-visible{outline:none}
+  g.bld.selected .face{filter:brightness(1.22)}
+  text{user-select:none}
+
+  @media (max-width:1080px){
+    main{flex-direction:column}
+    aside{width:auto;border-left:none;border-top:1px solid var(--panel-edge);
+      display:grid;grid-template-columns:1fr 1fr;align-items:start}
+    aside .card{min-width:0}
+  }
+  @media (max-width:700px){aside{grid-template-columns:1fr}}
+  @media (prefers-reduced-motion:reduce){.tracebtn .swatch{animation:none}}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>DEEP<span class="dd">DATA</span> — CANONICAL DISTRICT</h1>
+  <span class="sub">isometric survey of <b>github.com/phenomenon0/vectordb</b> · main @ <b>6684226</b> · 115,622 lines of Go · Go 1.25.12</span>
+</header>
+
+<div class="toolbar">
+  <span class="tlabel">RUN A TRACE</span>
+  <button class="tracebtn" data-trace="upsert"><span class="swatch" style="background:var(--write)"></span>Upsert</button>
+  <button class="tracebtn" data-trace="search"><span class="swatch" style="background:var(--read)"></span>Search</button>
+  <button class="tracebtn" data-trace="recovery"><span class="swatch" style="background:var(--life)"></span>Startup recovery</button>
+  <button class="tracebtn" data-trace="shutdown"><span class="swatch" style="background:var(--life)"></span>Shutdown checkpoint</button>
+  <button class="tracebtn stop" data-trace="">Clear</button>
+</div>
+
+<main>
+  <div class="mapwrap"><svg id="map" role="img" aria-label="Isometric map of the DeepData codebase: client buildings pass through an auth gatehouse and the canonical allowlist wall into the API towers, then the durable engine core, the HNSW index district, and disk storage. Legacy v1/v2 surfaces are drawn unlit; internal/cluster and internal/wal are condemned."></svg></div>
+
+  <aside>
+    <div class="card" id="explainer"></div>
+    <div class="card legend" id="legend">
+      <h2>Legend</h2>
+      <div class="lsec">Reading the map</div>
+      <div class="lrow"><svg width="26" height="18"><polygon points="4,9 13,4 22,9 13,14" fill="#c3cfd6"/><polygon points="4,9 13,14 13,17 4,12" fill="#5c6b77"/><polygon points="22,9 13,14 13,17 22,12" fill="#8494a0"/></svg>footprint &amp; height ∝ lines of code</div>
+      <div class="lrow"><svg width="26" height="18"><rect x="8" y="5" width="4" height="4" fill="#f2dfae"/><rect x="14" y="5" width="4" height="4" fill="#f2dfae"/><rect x="8" y="11" width="4" height="4" fill="#2a3742"/><rect x="14" y="11" width="4" height="4" fill="#f2dfae"/></svg>lit windows — reachable in the shipped binary</div>
+      <div class="lrow"><svg width="26" height="18"><polygon points="4,9 13,4 22,9 13,14" fill="#39434c" opacity=".7"/><polygon points="4,9 13,14 13,17 4,12" fill="#242d35" opacity=".7"/><polygon points="22,9 13,14 13,17 22,12" fill="#2c363f" opacity=".7"/></svg>unlit — in the source, 404'd by the allowlist wall</div>
+      <div class="lrow"><svg width="26" height="18"><polygon points="4,9 13,4 22,9 13,14" fill="none" stroke="#5c4444" stroke-dasharray="3 2"/></svg>condemned — zero importers anywhere</div>
+      <div class="lsec">Routes</div>
+      <div class="lrow"><svg width="26" height="10"><line x1="1" y1="5" x2="25" y2="5" stroke="var(--write)" stroke-width="2.5"/></svg>write path — journal-first durability</div>
+      <div class="lrow"><svg width="26" height="10"><line x1="1" y1="5" x2="25" y2="5" stroke="var(--read)" stroke-width="2.5"/></svg>read path — filtered graph search</div>
+      <div class="lrow"><svg width="26" height="10"><line x1="1" y1="5" x2="25" y2="5" stroke="var(--life)" stroke-width="2.5"/></svg>lifecycle — recovery &amp; checkpoint</div>
+      <div class="lrow"><svg width="26" height="14"><circle cx="13" cy="7" r="4" fill="var(--write)"/><circle cx="13" cy="7" r="6.5" fill="var(--write)" opacity=".25"/></svg>payload in flight — chip names what moves</div>
+      <div class="lsec">Districts</div>
+      <div id="legend-districts"></div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <span><b>survey date</b> 2026-08-14</span>
+  <span><b>ports</b> HTTP :8080 · gRPC :50051 (main.go:3372)</span>
+  <span><b>data dir</b> ~/.vectordb → index.gob.collections.* (mode.go:119, server.go:2056)</span>
+  <span>every hop cites file:line at commit 6684226</span>
+</footer>
+
+<script>
+'use strict';
+/* ---------------- isometric engine ---------------- */
+const TW=26, TH=13, ZH=22;
+const OX=560, OY=70;                       // world origin offset in viewBox units
+const P=(x,y,z=0)=>[OX+(x-y)*TW, OY+(x+y)*TH - z*ZH];
+const pts=a=>a.map(p=>p.join(',')).join(' ');
+const NS='http://www.w3.org/2000/svg';
+const svg=document.getElementById('map');
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+  for(const k in attrs)e.setAttribute(k,attrs[k]);(parent||svg).appendChild(e);return e;}
+function shade(hex,f){const n=parseInt(hex.slice(1),16);
+  const r=Math.min(255,Math.round((n>>16&255)*f)),g=Math.min(255,Math.round((n>>8&255)*f)),b=Math.min(255,Math.round((n&255)*f));
+  return `rgb(${r},${g},${b})`;}
+
+/* ---------------- palette ---------------- */
+const FACE='#b8c5cd';                       // live building base (top face)
+const DARKFACE='#39434c';
+const DISTRICTS={
+  clients :{name:'CLIENTS',       nice:'Clients',     tint:'#6fb1c4'},
+  gateway :{name:'GATEWAY',       nice:'Gateway',     tint:'#d78a8a'},
+  api     :{name:'API EDGE',      nice:'API edge',    tint:'#5ec4cf'},
+  control :{name:'CONTROL',       nice:'Control',     tint:'#d9b25e'},
+  engine  :{name:'ENGINE CORE',   nice:'Engine core', tint:'#c9b08f'},
+  index   :{name:'INDEX WORKS',   nice:'Index works', tint:'#8fc98f'},
+  storage :{name:'DISK',          nice:'Disk',        tint:'#9a8fc9'},
+  ops     :{name:'OPS YARD',      nice:'Ops yard',    tint:'#7f93a3'},
+  dead    :{name:'CONDEMNED',     nice:'Condemned',   tint:'#8a5c5c'},
+};
+const ROUTE={write:'#e8a64b',read:'#4fc9d6',life:'#d77ba2'};
+
+/* ---------------- layers ---------------- */
+const Lground=el('g',{}), Lplates=el('g',{}), Llanes=el('g',{}),
+      Lbld=el('g',{}), Llabels=el('g',{}), Ltrace=el('g',{}), Lchip=el('g',{});
+
+/* ---------------- ground grid ---------------- */
+for(let x=-1;x<=31;x++){el('polyline',{points:pts([P(x,-1),P(x,22)]),stroke:'#18232e','stroke-width':.7,fill:'none'},Lground);}
+for(let y=-1;y<=22;y++){el('polyline',{points:pts([P(-1,y),P(31,y)]),stroke:'#18232e','stroke-width':.7,fill:'none'},Lground);}
+
+/* ---------------- district plates ---------------- */
+const plates=[
+  ['clients',0.4,3.2,3.6,15.9],['gateway',3.8,4.6,7.4,16.4],['api',8.6,0.3,13.4,14.2],
+  ['control',14.2,0.2,21,4.6],['engine',12.8,4.9,20.9,15.4],['index',21.4,0.2,30,13.6],
+  ['storage',19.3,13.9,27.6,18.2],['ops',4.4,16.9,7.9,19.7],['dead',8.3,15.7,15.9,19.5],
+];
+const legendDistricts=document.getElementById('legend-districts');
+for(const[k,x0,y0,x1,y1]of plates){
+  const d=DISTRICTS[k];
+  el('polygon',{points:pts([P(x0,y0),P(x1,y0),P(x1,y1),P(x0,y1)]),fill:d.tint,opacity:.07,
+    stroke:d.tint,'stroke-opacity':k==='dead'?.5:.22,'stroke-width':1,
+    'stroke-dasharray':k==='dead'?'5 4':'none'},Lplates);
+  const lp=P(x0+0.35,y1-0.15);
+  el('text',{x:lp[0],y:lp[1],fill:d.tint,'fill-opacity':.75,'font-size':10,
+    'font-family':'JetBrains Mono,monospace','letter-spacing':'2.5'},Lplates).textContent=d.name;
+  const row=document.createElement('div');row.className='lrow';
+  row.innerHTML=`<svg width="26" height="12"><rect x="4" y="2" width="18" height="8" fill="${d.tint}" opacity=".35" stroke="${d.tint}" stroke-opacity=".7"/></svg>${d.nice}`;
+  legendDistricts.appendChild(row);
+}
+
+/* ---------------- shape builders ---------------- */
+function facePoly(parent,ptsArr,fill,extra){const a=Object.assign({points:pts(ptsArr),fill,class:'face'},extra||{});return el('polygon',a,parent);}
+function windows(parent,ox,oy,oz,ux,uy,cols,rows,zstep,lit){
+  // face origin grid pt (ox,oy,oz top of face), ux/uy = grid step per window column
+  for(let i=0;i<cols;i++)for(let j=0;j<rows;j++){
+    if((i*3+j*5+cols)%4===0)continue;
+    const gx=ox+ux*(i+0.28),gy=oy+uy*(i+0.28),z=oz-zstep*(j+0.35);
+    const a=P(gx,gy,z),b=P(gx+ux*0.44,gy+uy*0.44,z),c=P(gx+ux*0.44,gy+uy*0.44,z-zstep*0.42),d0=P(gx,gy,z-zstep*0.42);
+    el('polygon',{points:pts([a,b,c,d0]),fill:((i*7+j*3)%5<3)?'#f2dfae':'#26313c',
+      opacity:lit?0.92:0.25},parent);
+  }
+}
+function box(parent,x,y,w,d,h,z0,tint,o){
+  o=o||{};const dark=o.dark,dead=o.dead;
+  const base=dark||dead?DARKFACE:FACE;
+  const mix=(f)=>shade(base,f);
+  const top=[P(x,y,z0+h),P(x+w,y,z0+h),P(x+w,y+d,z0+h),P(x,y+d,z0+h)];
+  const right=[P(x+w,y,z0+h),P(x+w,y+d,z0+h),P(x+w,y+d,z0),P(x+w,y,z0)];
+  const left=[P(x,y+d,z0+h),P(x+w,y+d,z0+h),P(x+w,y+d,z0),P(x,y+d,z0)];
+  const op=dead?{opacity:.45,'stroke-dasharray':'4 3',stroke:'#6b4a4a','stroke-width':1}
+          :dark?{opacity:.62}:{ };
+  facePoly(parent,left,mix(.52),op);
+  facePoly(parent,right,mix(.74),op);
+  facePoly(parent,top,mix(dark||dead?0.9:1.04),op);
+  if(tint&&!dark&&!dead){ // district trim on the two front top edges
+    el('polyline',{points:pts([top[3],top[2],top[1]]),stroke:tint,'stroke-width':1.6,fill:'none',opacity:.85},parent);
+  }
+  if(o.win&&!dark&&!dead){
+    const cols=Math.max(1,Math.round(d/0.75)),rows=Math.max(1,Math.round(h/0.72));
+    windows(parent,x+w,y+0.12,z0+h-0.18,0,(d-0.24)/cols,cols,rows,(h-0.3)/rows,true);
+    const cols2=Math.max(1,Math.round(w/0.75));
+    windows(parent,x+0.12,y+d,z0+h-0.18,(w-0.24)/cols2,0,cols2,rows,(h-0.3)/rows,true);
+  }
+  return {cx:x+w/2,cy:y+d/2,topz:z0+h};
+}
+function cylinder(parent,cx,cy,r,h,tint,label){
+  const rx=r*1.414*TW,ry=r*1.414*TH;
+  const[tx,ty]=P(cx,cy,h),[bx,by]=P(cx,cy,0);
+  el('path',{d:`M ${tx-rx} ${ty} L ${bx-rx} ${by} A ${rx} ${ry} 0 0 0 ${bx+rx} ${by} L ${tx+rx} ${ty} Z`,
+    fill:shade('#a9b7bf',.62),class:'face'},parent);
+  el('ellipse',{cx:tx,cy:ty,rx,ry,fill:shade('#a9b7bf',1.02),stroke:tint||'none','stroke-width':tint?1.4:0,'stroke-opacity':.85,class:'face'},parent);
+  return {cx,cy,topz:h};
+}
+function ziggurat(parent,cx,cy,tiers,tint){
+  let z=0,info;
+  for(const[t,i]of tiers.map((t,i)=>[t,i])){
+    info=box(parent,cx-t.w/2,cy-t.d/2,t.w,t.d,t.h,z,i===0?tint:null,{win:t.h>0.9});
+    z+=t.h;
+  }
+  return {cx,cy,topz:z};
+}
+
+/* ---------------- buildings data ---------------- */
+const B={};   // id -> {anchor,label pos,...}
+const BUILDINGS=[
+ // id, district, geometry fn returns {cx,cy,topz}, label, loc, status, panel html
+ {id:'sdk',d:'clients',g:p=>box(p,1,4,2,2,2,0,DISTRICTS.clients.tint,{win:1}),
+  label:'Python SDK',loc:'1,302',status:'live',
+  title:'Python SDK',path:'sdk/python/deepdata/',
+  desc:'The blessed client. Speaks HTTP/JSON over httpx to :8080 — there are no Python gRPC stubs anywhere in the tree. Maps 1:1 onto /v3/tenants/… routes.',
+  cites:[['client.py:96','httpx.Client, default http://localhost:8080'],
+         ['client.py:167','TenantClient — create_collection / insert / search'],
+         ['async_client.py','async twin, 317 lines']]},
+ {id:'cli',d:'clients',g:p=>box(p,1,7.5,2,2,1.6,0,DISTRICTS.clients.tint,{win:1}),
+  label:'CLI',loc:'990',status:'live',
+  title:'Operator CLI',path:'cmd/cli/main.go',
+  desc:'health / insert / query / collections / import / export / gentoken subcommands over the Go HTTP client.',
+  cites:[['cmd/cli/main.go:55-77','subcommand table'],['cmd/cli/main.go:120','client construction']]},
+ {id:'gentoken',d:'clients',g:p=>box(p,1.2,10.8,1.4,1.4,1,0,DISTRICTS.clients.tint,{win:1}),
+  label:'gentoken',loc:'153',status:'live',
+  title:'gentoken',path:'cmd/gentoken/main.go',
+  desc:'Mints tenant JWTs for the gatehouse. Mirrored inside the server binary.',
+  cites:[['cmd/gentoken/main.go:15','preset mode'],['cmd/deepdata/cmd_gentoken.go:148','in-binary mirror']]},
+ {id:'goclient',d:'clients',g:p=>box(p,1,13.5,2,2,1.6,0,null,{dark:1}),
+  label:'Go client (v1)',loc:'719',status:'dark',
+  title:'Go client — stranded',path:'client/client.go',
+  desc:'Targets the legacy v1 surface: POST /insert, /batch_insert, /query. The canonical wall 404s all of it — this client cannot talk to the shipped binary.',
+  cites:[['client/client.go:229','Insert → POST /insert'],['client/client.go:247','Query → POST /query'],
+         ['cmd/deepdata/server.go:3397','canonicalRCSurface — the 404']]},
+ {id:'ratelimit',d:'gateway',g:p=>box(p,4.6,5.9,1.3,1.3,0.9,0,DISTRICTS.gateway.tint,{win:1}),
+  label:'Rate limits',loc:'375',status:'live',lab:[30,-10],
+  title:'Rate limiters',path:'cmd/deepdata/ratelimit.go · auth_throttle.go',
+  desc:'Three tiers: global per-IP/token (API_RPS=100), auth-failure throttle (1 rps, burst 5), per-tenant (TENANT_RPS=100).',
+  cites:[['server.go:156-175','three limiters constructed'],['ratelimit.go:154','tenantRateLimiter'],
+         ['auth_throttle.go:22','authFailureLimiter']]},
+ {id:'gate',d:'gateway',g:p=>box(p,4.2,8.2,2.2,2.2,2.4,0,DISTRICTS.gateway.tint,{win:1}),
+  label:'Auth gatehouse',loc:'7,459',status:'live',lab:[-30,6],
+  title:'Auth gatehouse',path:'cmd/deepdata/server.go:180 + internal/security/',
+  desc:'guard() checks JWT or static token (exactly one of API_TOKEN / JWT_SECRET, ≥32 bytes) and injects a TenantContext into ctx. gRPC has a mirror interceptor. Behind it: 7.5k lines of security — auth, rbac, audit, rotation, encryption, tls.',
+  cites:[['server.go:180-325','guard: JWT :201, static :232, TenantContext :317'],
+         ['main.go:3911','grpcAuthInterceptorWithRateLimiters'],
+         ['internal/security/auth.go:257','TenantContext'],
+         ['main.go:3863-3889','startup rejects ambiguous auth config']]},
+ {id:'http',d:'api',g:p=>box(p,9.3,3.6,2.4,2.4,3.6,0,DISTRICTS.api.tint,{win:1}),
+  label:'HTTP v3',loc:'1,916',status:'live',
+  title:'HTTP v3 tower',path:'cmd/deepdata/collection_http.go',
+  desc:'Port 8080. One router fans out /v3/tenants/{t}/collections/{c}/docs|search. Registered only when the durable store is healthy.',
+  cites:[['collection_http.go:1213-1216','handleTenantRoutes path parse'],
+         ['collection_http.go:1296','docs (insert/upsert)'],['collection_http.go:1309','search'],
+         ['collection_http.go:350-356','RegisterCanonicalHandlers, gated on IsDurable()']]},
+ {id:'grpc',d:'api',g:p=>{const i=box(p,9.3,7.6,2.4,2.4,3.2,0,DISTRICTS.api.tint,{win:1});
+    // dish on the roof
+    const[dx,dy]=P(10.9,8.4,3.2);
+    el('path',{d:`M ${dx} ${dy} l 10 -7 a 7 5 0 1 0 -6 -4 z`,fill:'#8fa2ae'},p);
+    return i;},
+  label:'gRPC v3',loc:'2,770',status:'live',
+  title:'gRPC tower',path:'cmd/deepdata/collection_grpc.go + api/proto/deepdata/v3/',
+  desc:'Port 50051, h2. Nine RPCs against proto v3; mutation payloads capped at 2 MiB proto bytes, 4 MiB receive.',
+  cites:[['collection_grpc.go:196','Insert'],['collection_grpc.go:269','Search'],
+         ['deepdata.proto:183-192','service DeepData, nine RPCs'],
+         ['collection_grpc.go:24-29','size caps'],['main.go:3413-3433','server + interceptor wiring']]},
+ {id:'legacy',d:'api',g:p=>box(p,9.3,11.6,3,2,1.4,0,null,{dark:1}),
+  label:'v1/v2 halls',loc:'~50 routes',status:'dark',
+  title:'v1 / v2 halls — dark',path:'cmd/deepdata/server.go + collection_http.go:325-341',
+  desc:'The whole legacy surface still compiles: /insert, /query, /v2/search, /v2/import (zero-copy binary), /recommend, /discover. None of it is reachable — RegisterHandlers is never called by the canonical binary.',
+  cites:[['server.go:327','/insert (v1)'],['collection_http.go:337','/v2/import → handleBinaryImport:1826'],
+         ['collection_http.go:340-341','recommend / discover'],
+         ['collection_http.go:350','canonical binary calls RegisterCanonicalHandlers instead']]},
+ {id:'webui',d:'api',g:p=>box(p,11.9,0.8,1.3,1.3,0.9,0,DISTRICTS.api.tint,{win:1}),
+  label:'Web UI',loc:'embed',status:'live',
+  title:'Embedded Web UI',path:'cmd/deepdata/web-ui/',
+  desc:'SPA compiled into the binary via go:embed.',
+  cites:[['server.go:85','//go:embed web-ui/dist'],['server.go:1646-1652','served']]},
+ {id:'hq',d:'control',g:p=>box(p,14.6,0.6,3,3,5,0,DISTRICTS.control.tint,{win:1}),
+  label:'main.go HQ',loc:'4,011',status:'live',
+  title:'main.go HQ',path:'cmd/deepdata/main.go',
+  desc:'Boot, config-by-env, both listeners, signal handling — and the canonicalOnly latch that turns the rest of the district dark. Health probes /healthz /livez /readyz live here too.',
+  cites:[['main.go:3126','func main'],['main.go:3198','const canonicalOnly = true'],
+         ['main.go:3372-3376','ports: PORT=8080, GRPC_PORT=50051'],
+         ['main.go:3580-3618','graceful shutdown, 30s drains'],
+         ['server.go:1518-1523','/healthz /livez /readyz']]},
+ {id:'vstore',d:'control',g:p=>box(p,18.4,0.7,2,1.6,1.2,0,null,{dark:1}),
+  label:'legacy VectorStore',loc:'~3,000',status:'dark',lab:[10,-10],
+  title:'Legacy VectorStore — dark annex',path:'cmd/deepdata/main.go:117…',
+  desc:'The pre-collection engine: flat arrays plus its own WAL, reachable only through dark v1 routes.',
+  cites:[['main.go:117','NewVectorStore'],['main.go:2816','replayWAL'],['main.go:837','Save']]},
+ {id:'telemetry',d:'control',g:p=>{const i=box(p,18.8,2.9,1.5,1.5,1.6,0,DISTRICTS.control.tint,{win:1});
+    const[mx,my]=P(19.55,3.65,1.6),[tx,ty]=P(19.55,3.65,3.4);
+    el('line',{x1:mx,y1:my,x2:tx,y2:ty,stroke:'#8fa2ae','stroke-width':2},p);
+    el('circle',{cx:tx,cy:ty,r:3,fill:DISTRICTS.control.tint},p);
+    return i;},
+  label:'Telemetry mast',loc:'843',status:'live',warn:'/metrics unauthenticated',lab:[16,14],
+  title:'Telemetry mast',path:'cmd/deepdata/metrics.go + internal/telemetry/',
+  desc:'OTel middleware in the chain; /metrics is registered without the guard wrapper yet allowlisted by the wall — the one unauthenticated data window in the district.',
+  cites:[['server.go:1488','/metrics registered, no guard'],['server.go:3400','allowlisted by canonicalRCSurface'],
+         ['metrics.go:262','HTTPMiddleware'],['main.go:3257','telemetry.SetupSimple()']]},
+ {id:'tenantmgr',d:'engine',g:p=>box(p,13.6,5.7,2,2,2,0,DISTRICTS.engine.tint,{win:1}),
+  label:'TenantManager',loc:'601',status:'live',
+  title:'TenantManager',path:'internal/collection/tenant.go',
+  desc:'Routes every request to one CollectionManager per tenant, and fans writes into the durable store.',
+  cites:[['tenant.go:18','TenantManager'],['tenant.go:216','AddDocument → store.addDocument'],
+         ['tenant.go:248','SearchCollection']]},
+ {id:'durable',d:'engine',g:p=>box(p,16.8,5.6,2.4,2.4,2.8,0,DISTRICTS.engine.tint,{win:1}),
+  label:'DurableStore',loc:'965',status:'live',
+  title:'DurableStore',path:'internal/collection/durable_store.go',
+  desc:'The persistence boundary. One mutex spans journal append → apply → snapshot → cleanup. After the append commit point the ctx switches to WithoutCancel: a client disconnect can never leave a journaled-but-unapplied mutation. Apply failures latch a fault instead of corrupting.',
+  cites:[['durable_store.go:78-80','the one-mutex design note'],
+         ['durable_store.go:427-457','appendApplyLocked; WithoutCancel :451'],
+         ['durable_store.go:441-443','post-append fault latch'],
+         ['durable_store.go:762-793','Checkpoint → verify coverage → cleanup']]},
+ {id:'journal',d:'engine',g:p=>{const i=box(p,16.4,9.8,4,1.8,1.1,0,DISTRICTS.engine.tint,{win:1});
+    for(let k=0;k<4;k++){const[ax,ay]=P(16.9+k,11.6,0.9);
+      el('rect',{x:ax-5,y:ay-4,width:10,height:9,fill:'#26313c'},p);}
+    return i;},
+  label:'Journal (WAL)',loc:'798',status:'live',
+  title:'Mutation journal',path:'internal/collection/journal.go',
+  desc:'The authority — the in-memory graph is derived from it. 72-byte frame header, magic DDCOLJNL, 16 MiB max payload. Every append fsyncs the file and the directory.',
+  cites:[['journal.go:16-30','format constants + magic'],['journal.go:163-208','append; fsync file :190, dir :199'],
+         ['journal.go:445,:484','partial-tail & interrupted-rotation repair'],['journal.go:519','rotate → .journal.frozen']]},
+ {id:'collection',d:'engine',g:p=>box(p,13.2,9.4,2.6,2.6,2.4,0,DISTRICTS.engine.tint,{win:1}),
+  label:'Collection hall',loc:'2,432',status:'live',
+  title:'Collection hall',path:'internal/collection/collection.go + manager.go',
+  desc:'A Collection = schema + dense indexes + sparse inverted indexes + documents map. Builds HNSW (m=16, efC=200) per dense field; assembles search results; hosts the dark Recommend/Discover machinery.',
+  cites:[['collection.go:29-45','what a Collection holds'],['collection.go:95-114','createDenseIndex → NewHNSWIndex'],
+         ['collection.go:325-356','addToIndex'],['collection.go:391-451','Search'],
+         ['manager.go:687','capturePersistedState → idx.Export() per field']]},
+ {id:'filter',d:'engine',g:p=>box(p,13.2,13,1.7,1.7,1.1,0,DISTRICTS.engine.tint,{win:1}),
+  label:'Filter lab',loc:'799',status:'live',
+  title:'Filter lab',path:'internal/filter/filter.go',
+  desc:'$and/$or/$not, 15 comparison ops incl. $geo_radius (haversine) and $geo_bbox, dotted metadata paths. Parsed once per query into an AST, then evaluated inside the graph traversal — not post-hoc.',
+  cites:[['filter.go:25-41','operator set'],['filter.go:680','FromMap parser'],
+         ['collection.go:417','parsed per query'],['hnsw.go:506-515','evaluated in-graph']]},
+ {id:'sparse',d:'engine',g:p=>box(p,15.9,13.3,2,1.7,1.3,0,DISTRICTS.engine.tint,{win:1}),
+  label:'Sparse · hybrid',loc:'1,203',status:'live',
+  title:'Sparse & hybrid lab',path:'internal/sparse/ + internal/hybrid/',
+  desc:'Inverted index for sparse vectors; fusion for hybrid dense+sparse scoring.',
+  cites:[['sparse/inverted_index.go','525 lines'],['hybrid/fusion.go','fusion, 306 lines'],
+         ['collection.go:560','searchHybrid']]},
+ {id:'snapshotw',d:'engine',g:p=>box(p,18.6,12.4,2,2,1.6,0,DISTRICTS.engine.tint,{win:1}),
+  label:'Snapshot works',loc:'479',status:'live',
+  title:'Snapshot works',path:'internal/collection/snapshot.go',
+  desc:'Serializes managers + collections + per-field index Export() blobs into one checksummed envelope, written atomically: temp file, fsync, rename.',
+  cites:[['snapshot.go:103','writeCollectionFileAtomic'],['snapshot.go:179-180','<base>.snapshot / .initialized'],
+         ['snapshot.go:182,:387','save / open']]},
+ {id:'hnsw',d:'index',g:p=>ziggurat(p,24.7,6.1,[
+    {w:3,d:3,h:1.5},{w:2.35,d:2.35,h:1.2},{w:1.75,d:1.75,h:1.0},{w:1.1,d:1.1,h:0.75}],DISTRICTS.index.tint),
+  label:'HNSW ziggurat',loc:'3,395',status:'live',lab:[34,-4],
+  title:'HNSW ziggurat',path:'internal/index/hnsw.go + internal/index/hnsw/ (forked module)',
+  desc:'The default index; the tiers are its layers. Wrapper owns filtering: payload-bitmap prefilter (<0.15 selectivity → membership check), adaptive 2×/4×/8× over-fetch, score 1/(1+d). The forked graph runs 256 sharded node locks for concurrent insert. Export() writes JSON vectors, not topology — Import rebuilds the graph.',
+  cites:[['hnsw.go:456-615','Search: bitmap :517, over-fetch :532, SearchWithEf :538'],
+         ['hnsw.go:184-242','Add; tombstone resurrection :207'],
+         ['hnsw/graph.go:517,:660,:794','Add / AddConcurrent / SearchWithEf'],
+         ['hnsw/locks.go:16-21','256-shard lock pool — 29 lines, outsized role'],
+         ['hnsw.go:719-914','Export JSON / Import rebuild']]},
+ {id:'payloadidx',d:'index',g:p=>box(p,22.4,8.6,1.5,1.5,1,0,DISTRICTS.index.tint,{win:1}),
+  label:'Payload index',loc:'402',status:'live',
+  title:'Payload index',path:'internal/index/payload_index.go',
+  desc:'O(1) string equality, O(log n) ranges → candidate bitmaps that make filtered HNSW cheap.',
+  cites:[['payload_index.go:166','QueryBitmap'],['hnsw.go:519-527','0.15 selectivity switch']]},
+ {id:'quant',d:'index',g:p=>box(p,27.2,3,2,2,1.6,0,DISTRICTS.index.tint,{win:1}),
+  label:'Quantization',loc:'1,184',status:'live',
+  title:'Quantization plant',path:'internal/index/quantization.go',
+  desc:'float16, uint8 and product quantization, selected per index at construction.',
+  cites:[['quantization.go:112','float32ToFloat16'],['quantization.go:313','ProductQuantizer'],
+         ['hnsw.go:136-156','selection per index']]},
+ {id:'ivf',d:'index',g:p=>{cylinder(p,22.9,1.6,0.6,1.8,DISTRICTS.index.tint);
+    cylinder(p,24.3,2.1,0.55,1.4,DISTRICTS.index.tint);
+    return cylinder(p,25.6,1.4,0.5,1.1,DISTRICTS.index.tint);},
+  label:'IVF · PQ silos',loc:'4,123',status:'live',lab:[0,-14],
+  title:'IVF / PQ silos',path:'internal/index/ivf.go · pq_adc.go · pq4.go · ivf_binary.go',
+  desc:'Alternate engines behind the same Index interface, registered in the factory: plain IVF, IVF-PQ with ADC tables, 4-bit fast-scan, binary IVF.',
+  cites:[['factory.go','registry via init()+Register'],['pq_adc.go:34','ComputeDistanceTable'],
+         ['ivf.go:45','NewIVFIndex'],['interface.go:25-82','the Index contract they all satisfy']]},
+ {id:'simd',d:'index',g:p=>{const i=box(p,27.4,6.4,2.2,2.2,0.55,0,DISTRICTS.index.tint,{});
+    for(let k=0;k<5;k++){const a=P(27.6+k*0.42,6.5,0.55),b=P(27.6+k*0.42,8.5,0.55);
+      el('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:'#7f93a3','stroke-width':1.5},p);}
+    return i;},
+  label:'SIMD foundry',loc:'~700',status:'live',
+  title:'SIMD foundry',path:'internal/index/simd/',
+  desc:'AVX2+FMA distance kernels in hand-written assembly, with scalar fallbacks. Every distance evaluation in the hot search loop lands here.',
+  cites:[['simd/distance.go:101','NormalizedCosineDistanceF32'],['simd/distance_amd64.s','261 lines of assembly'],
+         ['simd/pq_adc_amd64.s','PQ ADC kernels']]},
+ {id:'diskann',d:'index',g:p=>box(p,27.2,9.4,2.6,2.2,1.4,0,DISTRICTS.index.tint,{win:1}),
+  label:'DiskANN bunker',loc:'3,659',status:'live',
+  title:'DiskANN bunker',path:'internal/index/diskann*.go',
+  desc:'Mmap-backed graph for datasets bigger than RAM: incremental insert, parallel build, compaction.',
+  cites:[['diskann.go:209','initMmap'],['diskann.go:462','greedySearch'],
+         ['graph_store_mmap.go:50','NewMmapGraphStore']]},
+ {id:'flat',d:'index',g:p=>box(p,21.8,11.9,1.5,1.3,0.8,0,DISTRICTS.index.tint,{win:1}),
+  label:'Flat shed',loc:'572',status:'live',
+  title:'Flat shed',path:'internal/index/flat.go',
+  desc:'Brute-force exact search — the recall baseline.',
+  cites:[['flat.go:31','NewFLATIndex'],['flat.go:104','Search']]},
+ {id:'disk',d:'storage',g:p=>{
+    cylinder(p,20.6,15.2,0.9,1.7,DISTRICTS.storage.tint);
+    cylinder(p,23,15.5,0.75,1.35,DISTRICTS.storage.tint);
+    cylinder(p,24.9,15.9,0.6,1.05,DISTRICTS.storage.tint);
+    box(p,26.2,16,0.6,0.6,0.5,0,DISTRICTS.storage.tint,{});
+    return {cx:22.7,cy:15.8,topz:1.7};},
+  label:'~/.vectordb',loc:'5 files',status:'live',lab:[26,64],
+  title:'Disk — the whole estate',path:'VECTORDB_BASE_DIR → index.gob.collections.*',
+  desc:'Five artifacts: .snapshot (big tank), .journal, .journal.frozen, plus .lock (exclusive lifetime lock) and .initialized. Checkpoint discipline: rotate → snapshot → verify LSN coverage → only then delete journal evidence.',
+  cites:[['mode.go:119-156','base dir + paths'],['server.go:2056','collection base = indexPath+".collections"'],
+         ['durable_store.go:126','<base>.lock exclusive'],
+         ['durable_store.go:771-793','rotate :777, snapshot :784, verify :787, cleanup :790']]},
+ {id:'cluster',d:'dead',g:p=>box(p,9,16.5,3,2.6,2,0,null,{dead:1}),
+  label:'internal/cluster',loc:'5,395',status:'dead',
+  title:'internal/cluster — condemned',path:'internal/cluster/',
+  desc:'A full distributed system — quorum, election, rebalance, followers, shards — imported by nothing. 5,395 lines of scaffolding for a city that was never connected to the grid.',
+  cites:[['cluster/{quorum,election,rebalance}.go','713 + 513 + 784 lines'],
+         ['(no importers)','zero references outside the package']]},
+ {id:'deadwal',d:'dead',g:p=>box(p,13.1,17.2,2,1.5,1,0,null,{dead:1}),
+  label:'internal/wal',loc:'1,061',status:'dead',
+  title:'internal/wal — condemned',path:'internal/wal/',
+  desc:'A second WAL implementation whose only importer is the condemned cluster package. The live journal is internal/collection/journal.go.',
+  cites:[['cluster/wal_integration.go:9','sole importer'],['wal/wal.go','618 lines']]},
+ {id:'ops',d:'ops',g:p=>{box(p,5,17.3,1.2,1.2,0.8,0,DISTRICTS.ops.tint,{});
+    box(p,6.4,17.6,1,1,0.6,0,DISTRICTS.ops.tint,{});
+    return box(p,5.4,18.7,1,1,0.5,0,DISTRICTS.ops.tint,{});},
+  label:'Ops yard',loc:'—',status:'live',
+  title:'Ops yard',path:'Dockerfile · docker-compose.yml · deploy/helm/ · .github/workflows/',
+  desc:'Static binary in debian-slim, non-root 10001, /livez healthcheck, ports 8080+50051, /data volume. Six CI jobs: contract, race+SIMD-vs-C, Python SDK live tests, container/compose/Helm, compile matrix, experimental.',
+  cites:[['Dockerfile:55-65','env, EXPOSE, HEALTHCHECK'],['docker-compose.yml:8-10','loopback binds by default'],
+         ['.github/workflows/ci.yml:18…','six jobs']]},
+];
+
+/* ---------------- the allowlist wall ---------------- */
+function drawWall(){
+  const g=el('g',{class:'bld',tabindex:0,'data-id':'wall',role:'button','aria-label':'canonical allowlist wall'},Lbld);
+  g.dataset.depth=(6.4+9)*10;
+  box(g,6.4,2,0.5,6.2,1.4,0,DISTRICTS.gateway.tint,{});
+  box(g,6.4,9.4,0.5,6.4,1.4,0,DISTRICTS.gateway.tint,{});
+  // sealed arches on the south segment's left (front) face, labeled v1 / v2
+  for(const[yy,lab]of[[11.2,'v1'],[13.2,'v2']]){
+    const a=P(6.5,yy,1.0),b=P(6.5+0.35,yy+0.75,1.0),c=P(6.5+0.35,yy+0.75,0.05),d0=P(6.5,yy,0.05);
+    el('polygon',{points:pts([a,b,c,d0]),fill:'#1a232c',stroke:'#4a3d3d','stroke-width':1},g);
+    const t=P(6.6,yy+1.5,0.55);
+    el('text',{x:t[0],y:t[1],fill:'#8a6a5c','font-size':9,'font-family':'JetBrains Mono,monospace'},g).textContent=lab+' ✕';
+  }
+  const gt=P(6.8,9.0,0.05);
+  el('text',{x:gt[0],y:gt[1]+14,fill:DISTRICTS.gateway.tint,'font-size':9.5,
+    'font-family':'JetBrains Mono,monospace','text-anchor':'middle'},g).textContent='/v3 gate';
+  B.wall={cx:6.65,cy:8.8,topz:1.4,data:{
+    title:'The allowlist wall — canonicalRCSurface',path:'cmd/deepdata/server.go:3397-3406',status:'live',loc:'10',
+    label:'canonicalRCSurface',lab:[-10,-12],
+    desc:'The single most important structural fact of this codebase: const canonicalOnly = true plus this middleware 404 every path except /v3/tenants/*, /healthz, /readyz, /livez and /metrics. Roughly 50 v1/v2 routes still exist in source and are all bricked up. Everything drawn unlit on this map is behind these arches.',
+    cites:[['main.go:3198','const canonicalOnly = true'],
+           ['server.go:3397-3406','the allowlist'],
+           ['main.go:3200','validateCanonicalAuthEnvironment()'],
+           ['main.go:3204-3213','forces VECTORDB_MODE=local']]}};
+  return g;
+}
+
+/* ---------------- render buildings (painter order) ---------------- */
+const drawQueue=[];
+for(const b of BUILDINGS){
+  // depth key: use footprint far corner
+  drawQueue.push(b);
+}
+drawQueue.sort((a,b)=>depthOf(a)-depthOf(b));
+function depthOf(b){ // estimate from geometry data via a dry run marker — use declared order key
+  const k={sdk:5,cli:9,gentoken:12,goclient:15,ratelimit:7,gate:11,http:7,grpc:11,legacy:14,webui:2,
+    hq:3,vstore:2.5,telemetry:5.5,tenantmgr:8,durable:9,journal:12,collection:12.5,filter:15,sparse:15.5,
+    snapshotw:15,hnsw:8.5,payloadidx:10.5,quant:6,ivf:3,simd:9.5,diskann:12,flat:13.5,disk:17,
+    cluster:21,deadwal:21.5,ops:18.5}[b.id];
+  return k*10+({}[b.id]||0);
+}
+drawWall();
+for(const b of drawQueue){
+  const g=el('g',{class:'bld',tabindex:0,'data-id':b.id,role:'button','aria-label':b.label},Lbld);
+  const info=b.g(g);
+  B[b.id]={cx:info.cx,cy:info.cy,topz:info.topz,data:b};
+}
+/* re-sort DOM by depth incl. wall */
+{
+  const nodes=[...Lbld.children];
+  nodes.sort((a,b)=>{
+    const da=a.dataset.id==='wall'?154:depthOf({id:a.dataset.id});
+    const db=b.dataset.id==='wall'?154:depthOf({id:b.dataset.id});
+    return da-db;
+  });
+  nodes.forEach(n=>Lbld.appendChild(n));
+}
+
+/* ---------------- labels ---------------- */
+for(const id in B){
+  const b=B[id],d=b.data;
+  let[x,y]=P(b.cx,b.cy,b.topz+0.35);
+  if(d.lab){x+=d.lab[0];y+=d.lab[1];}
+  const dead=(d.status==='dead'),dark=(d.status==='dark');
+  const t=el('text',{x,y,'text-anchor':'middle','font-size':10.5,
+    'font-family':'JetBrains Mono,monospace','font-weight':500,
+    fill:dead?'#7d5f5f':dark?'#77828c':'#c8d5dd',
+    stroke:'#111a24','stroke-width':3,'paint-order':'stroke'},Llabels);
+  t.textContent=d.label||d.title;
+  if(d.loc&&d.loc!=='—'){
+    const t2=el('text',{x,y:y+11,'text-anchor':'middle','font-size':8.5,
+      'font-family':'JetBrains Mono,monospace',fill:'#5c7180',
+      stroke:'#111a24','stroke-width':3,'paint-order':'stroke'},Llabels);
+    t2.textContent=d.loc+(/^[\d,~]+$/.test(d.loc)?' loc':'');
+  }
+}
+/* stranded Go-client 404 marker */
+{
+  const a=P(3,14.5),bp=P(6.4,13.6,0.5);
+  el('line',{x1:a[0],y1:a[1],x2:bp[0],y2:bp[1],stroke:'#6b4a4a','stroke-width':1.5,'stroke-dasharray':'4 4'},Llanes);
+  const m=P(4.9,14.3);
+  el('text',{x:m[0],y:m[1]-4,fill:'#8a6a5c','font-size':9,'font-family':'JetBrains Mono,monospace','text-anchor':'middle'},Llanes).textContent='404';
+}
+
+/* ---------------- traces ---------------- */
+const anchor=id=>[B[id].cx,B[id].cy];
+const TRACES={
+ upsert:{color:ROUTE.write,name:'Upsert — journal-first write',
+  intro:'A document enters over HTTP, is authenticated, journaled to disk with two fsyncs, and only then applied to the in-memory graph. The journal is the authority; the graph is derived.',
+  hops:[
+   {from:'sdk',to:'gate',via:[[2,5],[2,8.8],[5.3,9.3]],pay:'POST /v3/…/docs · JSON + Bearer JWT',cite:'server.go:180',txt:'<b>SDK → gatehouse</b> — guard() validates the token'},
+   {from:'gate',to:'http',via:[[5.3,9.3],[6.65,8.8],[8.2,8.8],[8.2,4.8],[10.5,4.8]],pay:'request + TenantContext',cite:'server.go:317-321 · :3397',txt:'<b>gatehouse → HTTP v3</b> — through the /v3 gate in the wall'},
+   {from:'http',to:'tenantmgr',via:[[10.5,4.8],[12.9,4.8],[12.9,6.7],[14.6,6.7]],pay:'vcollection.Document',cite:'collection_http.go:1601',txt:'<b>HTTP v3 → TenantManager</b> — handleTenantDocs decodes strictly'},
+   {from:'tenantmgr',to:'durable',via:[[14.6,6.7],[18,6.8]],pay:'*Document',cite:'tenant.go:218',txt:'<b>TenantManager → DurableStore</b>'},
+   {from:'durable',to:'journal',via:[[18,6.8],[18,10.7],[18.4,10.7]],pay:'mutation envelope + LSN',cite:'durable_store.go:439',txt:'<b>DurableStore → journal</b> — appendApplyLocked'},
+   {from:'journal',to:'disk',via:[[18.4,10.7],[21.4,10.7],[21.4,15.5],[23,15.5]],pay:'72-byte frame · fsync file + dir',cite:'journal.go:187,190,199',txt:'<b>journal → disk</b> — durable before applied'},
+   {from:'disk',to:'durable',via:[[23,15.5],[21.4,15.5],[21.4,10.7],[18.4,10.7],[18,6.8]],pay:'LSN committed → apply (WithoutCancel)',cite:'durable_store.go:451-452',txt:'<b>disk → DurableStore</b> — client disconnects can no longer split journal from graph'},
+   {from:'durable',to:'collection',via:[[18,6.8],[17.5,8.8],[14.5,8.8],[14.5,10.7]],pay:'prepared docs',cite:'durable_store.go:753 · collection.go:930',txt:'<b>DurableStore → Collection</b> — applyMutationDirect'},
+   {from:'collection',to:'hnsw',via:[[14.5,10.7],[14.5,8.8],[20.9,8.8],[20.9,7.4],[24.7,7.4],[24.7,6.1]],pay:'[]float32 per field → MakeNode',cite:'collection.go:338 · hnsw.go:227 · graph.go:517',txt:'<b>Collection → HNSW</b> — node linked into the layers'},
+  ]},
+ search:{color:ROUTE.read,name:'Search — filtered graph descent',
+  intro:'A gRPC query crosses the same gatehouse, is parsed into a filter AST, prefiltered by payload bitmaps, then descends the HNSW layers with SIMD distance kernels. Filtering happens inside the traversal, not after it.',
+  hops:[
+   {from:null,to:'gate',via:[[0,9.6],[4.6,9.6],[5.3,9.3]],pay:'protobuf SearchRequest + metadata token',cite:'main.go:3911',txt:'<b>client → gatehouse</b> — gRPC auth interceptor'},
+   {from:'gate',to:'grpc',via:[[5.3,9.3],[6.65,8.8],[8.2,8.8],[10.5,8.8]],pay:'ctx + TenantContext · tenant RPS',cite:'main.go:3999-4008',txt:'<b>gatehouse → gRPC v3</b>'},
+   {from:'grpc',to:'tenantmgr',via:[[10.5,8.8],[12.9,8.8],[12.9,6.7],[14.6,6.7]],pay:'vcollection.SearchRequest',cite:'collection_grpc.go:321',txt:'<b>gRPC → TenantManager</b>'},
+   {from:'tenantmgr',to:'collection',via:[[14.6,6.7],[14.5,10.7]],pay:'SearchRequest',cite:'tenant.go:250 · collection.go:391',txt:'<b>TenantManager → Collection</b>'},
+   {from:'collection',to:'filter',via:[[14.5,10.7],[14.5,12.4],[14.05,13.85]],pay:'Filters map → AST',cite:'collection.go:417 · filter.go:680',txt:'<b>Collection → filter lab</b> — parsed once per query'},
+   {from:'filter',to:'payloadidx',via:[[14.05,13.85],[14.5,12.2],[21.2,12.2],[21.2,9.35],[23.15,9.35]],pay:'HNSWSearchParams{EfSearch, Filter}',cite:'collection.go:478 · hnsw.go:517',txt:'<b>filter → payload index</b> — QueryBitmap prefilter'},
+   {from:'payloadidx',to:'hnsw',via:[[23.15,9.35],[24.7,9.35],[24.7,6.1]],pay:'candidate bitmap (<0.15 → membership)',cite:'hnsw.go:519-527',txt:'<b>payload index → ziggurat</b> — adaptive 2×/4×/8× over-fetch'},
+   {from:'hnsw',to:'simd',via:[[24.7,6.1],[26.8,6.1],[26.8,7.5],[28.5,7.5]],pay:'vectors → AVX2 distance',cite:'hnsw.go:587 · simd/distance.go:101',txt:'<b>ziggurat → SIMD foundry</b> — every hop pays a distance'},
+   {from:'simd',to:'grpc',via:[[28.5,7.5],[26.8,7.5],[26.8,4.1],[12.9,4.1],[12.9,8.8],[10.5,8.8]],pay:'[]Result score=1/(1+d) → SearchResponse',cite:'hnsw.go:604 · collection.go:552 · collection_grpc.go:341',txt:'<b>results → gRPC → client</b> — Documents, Scores, CandidatesExamined'},
+  ]},
+ recovery:{color:ROUTE.life,name:'Startup recovery — replay the evidence',
+  intro:'Boot takes the exclusive lifetime lock, loads the snapshot, decodes every journal frame before applying any, replays, then immediately checkpoints and re-arms. Refusal paths Abort() without checkpointing — evidence is preserved.',
+  hops:[
+   {from:'disk',to:'journal',via:[[23,15.5],[21.4,15.5],[21.4,10.7],[18.4,10.7]],pay:'.lock → .snapshot → journal frames',cite:'durable_store.go:126,140,144',txt:'<b>disk → journal</b> — lock, snapshot envelope, frames after AppliedLSN'},
+   {from:'journal',to:'durable',via:[[18.4,10.7],[18,6.8]],pay:'all frames decoded before any applied',cite:'durable_store.go:152-159',txt:'<b>journal → DurableStore</b> — a torn tail is repaired, not applied'},
+   {from:'durable',to:'collection',via:[[18,6.8],[17.5,8.8],[14.5,8.8],[14.5,10.7]],pay:'replayed mutations',cite:'durable_store.go:171-179',txt:'<b>DurableStore → Collection</b> — applyMutationDirect per record'},
+   {from:'collection',to:'hnsw',via:[[14.5,10.7],[14.5,8.8],[20.9,8.8],[20.9,7.4],[24.7,7.4],[24.7,6.1]],pay:'index.Import(blob) → NewGraph rebuild',cite:'hnsw.go:792,846',txt:'<b>Collection → ziggurat</b> — the graph is reconstructed, not mmap\'d'},
+   {from:'hnsw',to:'snapshotw',via:[[24.7,6.1],[24.7,7.4],[20.9,7.4],[20.9,12.6],[19.6,13.4]],pay:'immediate post-replay Checkpoint',cite:'durable_store.go:185-189',txt:'<b>→ snapshot works</b> — replay debt is settled at once'},
+   {from:'snapshotw',to:'disk',via:[[19.6,13.4],[20.6,15.2]],pay:'atomic .snapshot · read-only until attach',cite:'snapshot.go:103 · durable_store.go:191-192',txt:'<b>snapshot → disk</b> — then setDurableReadOnly + attach'},
+  ]},
+ shutdown:{color:ROUTE.life,name:'Shutdown — checkpoint & burn the journals',
+  intro:'SIGTERM drains both servers for 30s, then Close() checkpoints: rotate the journal, write the snapshot atomically, prove LSN coverage by re-reading, and only then delete journal evidence. Abort() deliberately never does this.',
+  hops:[
+   {from:null,to:'hq',via:[[16.1,-0.9],[16.1,2.1]],pay:'SIGTERM / SIGINT',cite:'main.go:3580-3588',txt:'<b>OS → HQ</b> — graceful shutdown select'},
+   {from:'hq',to:'grpc',via:[[16.1,2.1],[16.1,4.3],[12.9,4.3],[12.9,8.8],[10.5,8.8]],pay:'GracefulStop · Shutdown (30s each)',cite:'main.go:3603,3618',txt:'<b>HQ → towers</b> — both listeners drained'},
+   {from:'grpc',to:'durable',via:[[10.5,8.8],[12.9,8.8],[12.9,6.7],[18,6.8]],pay:'CollectionHTTPServer.Close',cite:'main.go:3667 · collection_http.go:271',txt:'<b>→ DurableStore.Close</b> — only if no fault is latched'},
+   {from:'durable',to:'journal',via:[[18,6.8],[18,10.7],[18.4,10.7]],pay:'rotate → .journal.frozen',cite:'durable_store.go:777 · journal.go:519',txt:'<b>DurableStore → journal</b> — current journal frozen'},
+   {from:'journal',to:'snapshotw',via:[[18.4,10.7],[20.9,10.7],[20.9,12.6],[19.6,13.4]],pay:'state + idx.Export() blobs',cite:'durable_store.go:784 · manager.go:687',txt:'<b>journal → snapshot works</b> — saveUnifiedCollectionSnapshot'},
+   {from:'snapshotw',to:'disk',via:[[19.6,13.4],[20.6,15.2]],pay:'tmp + fsync + rename .snapshot',cite:'snapshot.go:103',txt:'<b>snapshot → disk</b> — atomic replace'},
+   {from:'disk',to:'disk',via:[[20.6,15.2],[23,15.5],[24.9,15.9]],pay:'verify LSN coverage → delete journals',cite:'durable_store.go:787-790',txt:'<b>coverage proof</b> — journals deleted only after re-read proves the snapshot covers them'},
+  ]},
+};
+
+/* ---------------- faint permanent lanes ---------------- */
+for(const k in TRACES){
+  for(const h of TRACES[k].hops){
+    el('polyline',{points:pts(h.via.map(v=>P(v[0],v[1],0.06))),fill:'none',
+      stroke:'#22303d','stroke-width':4,'stroke-linejoin':'round','stroke-linecap':'round'},Llanes);
+  }
+}
+
+/* ---------------- viewBox ---------------- */
+let VBR;
+{
+  const bb=svg.getBBox();
+  svg.setAttribute('viewBox',`${bb.x-16} ${bb.y-14} ${bb.width+32} ${bb.height+40}`);
+  VBR=bb.x+bb.width;
+}
+
+/* ---------------- explainer panel ---------------- */
+const EX=document.getElementById('explainer');
+const statusChip=s=>s==='live'?'<span class="chip live">LIVE</span>'
+  :s==='dark'?'<span class="chip dark">UNREACHABLE — 404\'d</span>'
+  :'<span class="chip dead">CONDEMNED — no importers</span>';
+function showDefault(){
+  EX.innerHTML=`<h2>Explainer</h2>
+  <h3>One district is lit. The rest is history.</h3>
+  <p>The shipped binary is a hard allowlist: <code style="font-family:var(--mono);font-size:11.5px">const canonicalOnly = true</code>
+  (main.go:3198) plus the wall middleware canonicalRCSurface (server.go:3397) 404 everything except
+  <b>/v3/tenants/*</b>, the health probes, and /metrics. About 50 v1/v2 routes, a second engine, a second WAL and an
+  entire cluster layer still compile — drawn here unlit or condemned.</p>
+  <p class="dim">Buildings scale with lines of code. Click any building for its role and file:line citations,
+  or run a trace above to watch a payload cross the district along the real code path.</p>`;
+}
+function showBuilding(id){
+  const d=B[id].data;
+  EX.innerHTML=`<h2>Building</h2><h3>${d.title}</h3>
+  <div class="path">${d.path}</div>
+  <div class="statusline">${statusChip(d.status)}<span class="chip">${d.loc} lines</span>
+  ${d.warn?`<span class="chip warn">⚠ ${d.warn}</span>`:''}</div>
+  <p>${d.desc}</p>
+  <ul class="cites">${d.cites.map(c=>`<li><code>${c[0]}</code> — ${c[1]}</li>`).join('')}</ul>`;
+}
+function showTrace(key){
+  const t=TRACES[key];
+  EX.innerHTML=`<h2>Trace</h2><h3 style="color:${t.color}">${t.name}</h3>
+  <p>${t.intro}</p>
+  <ol class="hops" style="color:${t.color}">${t.hops.map(h=>
+    `<li>${h.txt}<span class="pay" style="color:${t.color}">⟶ ${h.pay}</span><span class="cite">${h.cite}</span></li>`).join('')}</ol>`;
+}
+showDefault();
+
+/* ---------------- interactions ---------------- */
+let selected=null;
+svg.addEventListener('click',e=>{
+  const g=e.target.closest('g.bld');
+  if(!g)return;
+  if(selected)selected.classList.remove('selected');
+  selected=g;g.classList.add('selected');
+  stopTrace();showBuilding(g.dataset.id);
+});
+svg.addEventListener('keydown',e=>{
+  if((e.key==='Enter'||e.key===' ')&&e.target.classList.contains('bld')){
+    e.preventDefault();e.target.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+  }
+});
+
+/* ---------------- trace animation ---------------- */
+const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+let anim=null;
+function stopTrace(){
+  if(anim){cancelAnimationFrame(anim.raf);anim=null;}
+  Ltrace.innerHTML='';Lchip.innerHTML='';
+  document.querySelectorAll('.tracebtn').forEach(b=>b.classList.remove('active'));
+}
+function runTrace(key){
+  stopTrace();
+  if(selected){selected.classList.remove('selected');selected=null;}
+  if(!key){showDefault();return;}
+  document.querySelector(`.tracebtn[data-trace="${key}"]`).classList.add('active');
+  const t=TRACES[key];showTrace(key);
+  // build screen-space segments per hop
+  const hops=t.hops.map(h=>{
+    const p=h.via.map(v=>P(v[0],v[1],0.12));
+    let len=0;const seg=[];
+    for(let i=1;i<p.length;i++){const dx=p[i][0]-p[i-1][0],dy=p[i][1]-p[i-1][1];
+      const l=Math.hypot(dx,dy);seg.push({a:p[i-1],b:p[i],l});len+=l;}
+    return {pts:p,seg,len,h};
+  });
+  // static bright path
+  for(const hp of hops){
+    el('polyline',{points:pts(hp.pts),fill:'none',stroke:t.color,'stroke-width':2,
+      opacity:reduced?0.9:0.28,'stroke-linejoin':'round','stroke-linecap':'round'},Ltrace);
+  }
+  const rows=[...EX.querySelectorAll('ol.hops li')];
+  if(reduced){rows.forEach(r=>r.classList.add('now'));return;}
+  // moving payload
+  const glow=el('circle',{r:9,fill:t.color,opacity:.22},Lchip);
+  const dot=el('circle',{r:4.5,fill:t.color,stroke:'#0e151d','stroke-width':1.5},Lchip);
+  const chipG=el('g',{},Lchip);
+  const chipR=el('rect',{rx:2,fill:'#0b1117',stroke:t.color,'stroke-opacity':.6,'stroke-width':1},chipG);
+  const chipT=el('text',{'font-size':10,'font-family':'JetBrains Mono,monospace',fill:t.color},chipG);
+  const trail=el('polyline',{fill:'none',stroke:t.color,'stroke-width':3,
+    'stroke-linejoin':'round','stroke-linecap':'round',opacity:.95},Ltrace);
+  const SPEED=170; // px per second
+  const PAUSE=650; // ms at each hop start
+  let hi=0,dist=0,last=performance.now(),pause=PAUSE,trailPts=[];
+  function setChip(txt){
+    chipT.textContent=txt;
+    const w=chipT.getBBox().width;
+    chipR.setAttribute('width',w+12);chipR.setAttribute('height',16);
+  }
+  function place(x,y){
+    dot.setAttribute('cx',x);dot.setAttribute('cy',y);
+    glow.setAttribute('cx',x);glow.setAttribute('cy',y);
+    const w=+chipR.getAttribute('width')||60;
+    let cx=(x+16+w>VBR)?x-16-w:x+12, cy=y-22;
+    chipG.setAttribute('transform',`translate(${cx},${cy})`);
+    chipR.setAttribute('x',-4);chipR.setAttribute('y',-12);
+    chipT.setAttribute('x',2);chipT.setAttribute('y',0);
+  }
+  function enterHop(i){
+    rows.forEach((r,j)=>r.classList.toggle('now',j===i));
+    rows[i]?.scrollIntoView({block:'nearest',behavior:'smooth'});
+    setChip(hops[i].h.pay);
+    trailPts=[hops[i].pts[0]];
+  }
+  enterHop(0);place(...hops[0].pts[0]);
+  function frame(now){
+    const dt=Math.min(64,now-last);last=now;
+    if(pause>0){pause-=dt;anim.raf=requestAnimationFrame(frame);return;}
+    dist+=SPEED*dt/1000;
+    const hp=hops[hi];
+    if(dist>=hp.len){
+      trailPts.push(hp.pts[hp.pts.length-1]);trail.setAttribute('points',pts(trailPts));
+      hi++;dist=0;
+      if(hi>=hops.length){rows.forEach(r=>r.classList.add('now'));Lchip.innerHTML='';anim=null;return;}
+      enterHop(hi);pause=PAUSE;place(...hops[hi].pts[0]);
+      anim.raf=requestAnimationFrame(frame);return;
+    }
+    // locate point along hop
+    let d=dist,x=hp.pts[0][0],y=hp.pts[0][1];trailPts=[hp.pts[0]];
+    for(const s of hp.seg){
+      if(d<=s.l){const f=d/s.l;x=s.a[0]+(s.b[0]-s.a[0])*f;y=s.a[1]+(s.b[1]-s.a[1])*f;
+        trailPts.push([x,y]);break;}
+      d-=s.l;trailPts.push(s.b);
+    }
+    trail.setAttribute('points',pts(trailPts));
+    place(x,y);
+    anim.raf=requestAnimationFrame(frame);
+  }
+  anim={raf:requestAnimationFrame(frame)};
+}
+document.querySelectorAll('.tracebtn').forEach(b=>{
+  b.addEventListener('click',()=>runTrace(b.dataset.trace));
+});
+
+/* ---------------- ambient idle traffic ---------------- */
+if(!reduced){
+  const Lamb=svg.insertBefore(document.createElementNS(NS,'g'),Ltrace);
+  const flows=[['upsert',0],['search',9000],['recovery',4500]].map(([key,delay])=>{
+    const pl=[];
+    for(const h of TRACES[key].hops)for(const v of h.via)pl.push(P(v[0],v[1],0.12));
+    const seg=[];let len=0;
+    for(let i=1;i<pl.length;i++){const l=Math.hypot(pl[i][0]-pl[i-1][0],pl[i][1]-pl[i-1][1]);
+      if(l>0.5){seg.push({a:pl[i-1],b:pl[i],l,at:len});len+=l;}}
+    const dot=el('circle',{r:2.6,fill:TRACES[key].color,opacity:.4},Lamb);
+    return {seg,len,dot,delay,speed:80};
+  });
+  function amb(now){
+    const busy=!!anim;
+    for(const f of flows){
+      if(busy){f.dot.setAttribute('opacity',0);continue;}
+      f.dot.setAttribute('opacity',.4);
+      let d=((now-f.delay)*f.speed/1000)%f.len;if(d<0)d+=f.len;
+      for(const s of f.seg){
+        if(d>=s.at&&d<=s.at+s.l){const t=(d-s.at)/s.l;
+          f.dot.setAttribute('cx',s.a[0]+(s.b[0]-s.a[0])*t);
+          f.dot.setAttribute('cy',s.a[1]+(s.b[1]-s.a[1])*t);break;}
+      }
+    }
+    requestAnimationFrame(amb);
+  }
+  requestAnimationFrame(amb);
+}
+</script>
+</body>
+</html>

@@ -39,6 +39,11 @@ type Collection struct {
 	// Default ef_search for HNSW (from env HNSW_EFSEARCH or 64)
 	defaultEfSearch int
 
+	// usage is an in-memory, non-durable frecency signal over documents
+	// this collection has returned or fetched. Session signal only: it
+	// resets on restart and must only nudge ranking, never replace it.
+	usage *UsageTracker
+
 	// durableReadOnly prevents a Collection pointer obtained from a durable V2
 	// manager or tenant read API from bypassing the canonical tenant WAL.
 	durableReadOnly bool
@@ -65,6 +70,7 @@ func NewCollection(schema CollectionSchema) (*Collection, error) {
 		documents:       make(map[uint64]*Document),
 		nextID:          1,
 		defaultEfSearch: defaultEf,
+		usage:           NewUsageTracker(),
 	}
 
 	// Initialize indexes for each field
@@ -78,6 +84,19 @@ func NewCollection(schema CollectionSchema) (*Collection, error) {
 }
 
 // createIndex creates an index instance for a vector field.
+// defaultIVFNProbe is the number of clusters probed when the caller does
+// not override n_probe.
+const defaultIVFNProbe = 10
+
+// resolveNProbe maps the request's zero-value convention (0 or negative =
+// server default) onto the IVF search parameter.
+func resolveNProbe(n int) int {
+	if n > 0 {
+		return n
+	}
+	return defaultIVFNProbe
+}
+
 func (c *Collection) createIndex(field VectorField) error {
 	switch field.Type {
 	case VectorTypeDense:
@@ -413,6 +432,20 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 			return nil, err
 		}
 	}
+	if math.IsNaN(req.ScoreFloor) || req.ScoreFloor < 0 {
+		return nil, fmt.Errorf("%w: score_floor must be a finite value >= 0", ErrInvalidSearchArgument)
+	}
+	if math.IsNaN(req.UsageBoost) || req.UsageBoost < 0 || req.UsageBoost >= 1 {
+		return nil, fmt.Errorf("%w: usage_boost must be in [0, 1)", ErrInvalidSearchArgument)
+	}
+	if req.Fallback != nil {
+		if req.HybridParams != nil {
+			return nil, fmt.Errorf("%w: fallback and hybrid_params are mutually exclusive", ErrInvalidSearchArgument)
+		}
+		if err := validateFallbackParams(req.Queries, req.Fallback); err != nil {
+			return nil, err
+		}
+	}
 
 	// Parse metadata filters if provided
 	var metadataFilter filter.Filter
@@ -438,24 +471,162 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 		efSearch = req.EfSearch
 	}
 
+	// Auto-fallback ladder: exactly two query fields, primary first, then
+	// secondary if the primary answer is weak (zero hits — including hits
+	// wiped out by ScoreFloor — or best raw score worse than Threshold when
+	// one is set). The floor is applied to the primary answer before the
+	// decision, so "no confident result" always routes to the secondary.
+	if req.Fallback != nil {
+		primaryField := req.Fallback.Primary
+		primaryResp, err := c.searchSingleField(ctx, primaryField, req.Queries[primaryField], req.TopK, efSearch, req.NProbe, includeVectors, req.UsageBoost, metadataFilter)
+		if err != nil {
+			return nil, err
+		}
+		primaryLower := c.scoreLowerIsBetter(primaryField)
+		c.finalizeSearch(primaryResp, req, primaryLower)
+		needsFallback := len(primaryResp.Documents) == 0
+		if !needsFallback && req.Fallback.Threshold > 0 && primaryQualityWorse(float64(primaryResp.BestScore), req.Fallback.Threshold, primaryLower) {
+			needsFallback = true
+		}
+		if !needsFallback {
+			c.recordSearchUsage(primaryResp)
+			return primaryResp, nil
+		}
+
+		secondaryField := req.Fallback.Secondary
+		secondaryResp, err := c.searchSingleField(ctx, secondaryField, req.Queries[secondaryField], req.TopK, efSearch, req.NProbe, includeVectors, req.UsageBoost, metadataFilter)
+		if err != nil {
+			return nil, err
+		}
+		c.finalizeSearch(secondaryResp, req, c.scoreLowerIsBetter(secondaryField))
+		secondaryResp.FellBackTo = secondaryField
+		secondaryResp.CandidatesExamined += primaryResp.CandidatesExamined
+		c.recordSearchUsage(secondaryResp)
+		return secondaryResp, nil
+	}
+
 	// Single-field search
 	if len(req.Queries) == 1 {
 		for fieldName, queryVec := range req.Queries {
-			return c.searchSingleField(ctx, fieldName, queryVec, req.TopK, efSearch, includeVectors, metadataFilter)
+			resp, err := c.searchSingleField(ctx, fieldName, queryVec, req.TopK, efSearch, req.NProbe, includeVectors, req.UsageBoost, metadataFilter)
+			if err != nil {
+				return nil, err
+			}
+			c.finalizeSearch(resp, req, c.scoreLowerIsBetter(fieldName))
+			c.recordSearchUsage(resp)
+			return resp, nil
 		}
 	}
 
 	// Multi-field hybrid search
 	if req.HybridParams != nil {
-		return c.searchHybrid(ctx, req, efSearch, includeVectors, metadataFilter)
+		resp, err := c.searchHybrid(ctx, req, efSearch, includeVectors, metadataFilter)
+		if err != nil {
+			return nil, err
+		}
+		// Fused hybrid scores are contributions (higher is better).
+		c.finalizeSearch(resp, req, false)
+		c.recordSearchUsage(resp)
+		return resp, nil
 	}
 
 	// Multiple fields without fusion (return error)
-	return nil, fmt.Errorf("multiple query fields require HybridParams")
+	return nil, fmt.Errorf("%w: multiple query fields require HybridParams or Fallback", ErrInvalidSearchArgument)
+}
+
+// scoreLowerIsBetter reports whether the field's raw scores are
+// distances (smaller is better), the dense-field convention, as opposed
+// to BM25 and fused hybrid scores where higher is better. Unknown fields
+// default to the higher-is-better convention (they cannot score anyway).
+func (c *Collection) scoreLowerIsBetter(fieldName string) bool {
+	field := c.schema.GetField(fieldName)
+	return field != nil && field.Type == VectorTypeDense
+}
+
+// primaryQualityWorse reports whether the primary field's best score is
+// worse than the fallback threshold, in the field's score direction.
+func primaryQualityWorse(best, threshold float64, lowerIsBetter bool) bool {
+	if lowerIsBetter {
+		return best > threshold
+	}
+	return best < threshold
+}
+
+// validateFallbackParams checks the auto-fallback contract: the two named
+// query fields are distinct, non-empty, threshold finite, and both present
+// in the request's query map.
+func validateFallbackParams(queries map[string]interface{}, fb *FallbackParams) error {
+	// Both fields must be present and differ, and the collection caps a
+	// request at CanonicalMaxSearchFields (2) query fields, so a valid
+	// fallback request is exactly the two named fields.
+	if fb.Primary == "" || fb.Secondary == "" {
+		return fmt.Errorf("%w: fallback requires non-empty primary and secondary fields", ErrInvalidSearchArgument)
+	}
+	if fb.Primary == fb.Secondary {
+		return fmt.Errorf("%w: fallback primary and secondary must differ", ErrInvalidSearchArgument)
+	}
+	if math.IsNaN(fb.Threshold) || fb.Threshold < 0 {
+		return fmt.Errorf("%w: fallback threshold must be a finite value >= 0", ErrInvalidSearchArgument)
+	}
+	if _, ok := queries[fb.Primary]; !ok {
+		return fmt.Errorf("%w: fallback primary field %q is not in queries", ErrInvalidSearchArgument, fb.Primary)
+	}
+	if _, ok := queries[fb.Secondary]; !ok {
+		return fmt.Errorf("%w: fallback secondary field %q is not in queries", ErrInvalidSearchArgument, fb.Secondary)
+	}
+	return nil
+}
+
+// finalizeSearch applies the response-level retrieval contract: the
+// confidence floor (drops documents whose returned score is worse than it,
+// in the field's score direction), then computes BestScore (the best raw
+// score among the surviving documents, 0 when none survive) and WeakMatch.
+// It does not record usage, so the caller records only the response it
+// actually returns.
+func (c *Collection) finalizeSearch(resp *SearchResponse, req SearchRequest, lowerIsBetter bool) {
+	if resp == nil {
+		return
+	}
+	if req.ScoreFloor > 0 {
+		keep := 0
+		for i := range resp.Documents {
+			if !primaryQualityWorse(float64(resp.Scores[i]), req.ScoreFloor, lowerIsBetter) {
+				resp.Documents[keep] = resp.Documents[i]
+				resp.Scores[keep] = resp.Scores[i]
+				keep++
+			}
+		}
+		resp.Documents = resp.Documents[:keep]
+		resp.Scores = resp.Scores[:keep]
+	}
+	var best float32
+	for i, s := range resp.Scores {
+		// Keep s when it is not worse than the current best.
+		if i == 0 || !primaryQualityWorse(float64(s), float64(best), lowerIsBetter) {
+			best = s
+		}
+	}
+	resp.BestScore = best
+	resp.WeakMatch = req.ScoreFloor > 0 && len(resp.Documents) == 0
+}
+
+// recordSearchUsage feeds the non-durable frecency signal with the
+// documents actually returned to the caller.
+func (c *Collection) recordSearchUsage(resp *SearchResponse) {
+	if c == nil || c.usage == nil || resp == nil {
+		return
+	}
+	for _, d := range resp.Documents {
+		c.usage.Record(d.ID)
+	}
 }
 
 // searchSingleField performs a search on a single vector field.
-func (c *Collection) searchSingleField(ctx context.Context, fieldName string, queryVec interface{}, k int, efSearch int, includeVectors bool, metadataFilter filter.Filter) (*SearchResponse, error) {
+// usageBlend is the opt-in frecency weight applied to the raw ranking
+// (0 keeps the index order exactly). Response post-processing (floor,
+// weak-match, usage recording) is applied by the caller via
+// finalizeSearch so fallback can inspect the raw primary answer first.
+func (c *Collection) searchSingleField(ctx context.Context, fieldName string, queryVec interface{}, k int, efSearch int, nProbe int, includeVectors bool, usageBlend float64, metadataFilter filter.Filter) (*SearchResponse, error) {
 	field := c.schema.GetField(fieldName)
 	if field == nil {
 		return nil, fmt.Errorf("field not found: %s", fieldName)
@@ -485,7 +656,7 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 			}
 		case IndexTypeIVF:
 			params = index.IVFSearchParams{
-				NProbe: 10, // Default value
+				NProbe: resolveNProbe(nProbe),
 				Filter: metadataFilter,
 			}
 		default:
@@ -537,6 +708,14 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 	default:
 		return nil, fmt.Errorf("unsupported vector type: %d", field.Type)
 	}
+
+	// Frecency re-order (opt-in). Ranking only: raw scores are preserved in
+	// the response and the usage blend is bounded to < 1 by Search, so the
+	// similarity signal always dominates.
+	if usageBlend > 0 {
+		rankByUsage(results, c.usage, usageBlend, field.Type == VectorTypeDense)
+	}
+
 	if err := c.validateSearchResultsBudget(results, includeVectors); err != nil {
 		return nil, err
 	}
@@ -612,7 +791,7 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 			}
 		case IndexTypeIVF:
 			params = index.IVFSearchParams{
-				NProbe: 10, // Default value
+				NProbe: resolveNProbe(req.NProbe),
 				Filter: metadataFilter,
 			}
 		default:
@@ -695,6 +874,13 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 	if err != nil {
 		return nil, fmt.Errorf("fusion failed: %w", err)
 	}
+
+	// Frecency re-order (opt-in), same bounded semantics as the single
+	// field path: ranking only, raw fusion scores preserved.
+	if req.UsageBoost > 0 {
+		rankByUsage(fusedResults, c.usage, req.UsageBoost, false) // fused scores: higher is better
+	}
+
 	if err := c.validateSearchResultsBudget(fusedResults, includeVectors); err != nil {
 		return nil, err
 	}
@@ -1167,6 +1353,11 @@ func (c *Collection) GetDocument(docID uint64) (*Document, bool) {
 		return nil, false
 	}
 	clone := cloneDocumentPreservingTypes(*doc)
+	// A direct fetch is the strongest "this tenant consumed this document"
+	// signal, so it is recorded in the non-durable usage tracker too.
+	if c.usage != nil {
+		c.usage.Record(docID)
+	}
 	return &clone, true
 }
 
@@ -1235,7 +1426,13 @@ func (c *Collection) Schema() CollectionSchema {
 	defer c.mu.RUnlock()
 	clone, err := cloneCanonicalSchema(c.schema)
 	if err != nil {
-		return c.schema
+		// The JSON round-trip failed (in practice: unserializable metadata),
+		// so no live reference may escape under RLock. Return the structural
+		// fields with a fresh Fields slice and drop the metadata map.
+		schema := c.schema
+		schema.Fields = append([]VectorField(nil), c.schema.Fields...)
+		schema.Metadata = nil
+		return schema
 	}
 	return clone
 }
@@ -1515,7 +1712,7 @@ func (c *Collection) Recommend(ctx context.Context, req RecommendRequest) (*Sear
 	}
 
 	// Search with synthesized vector
-	resp, err := c.searchSingleField(ctx, fieldName, posCentroid, req.TopK, efSearch, true, metadataFilter)
+	resp, err := c.searchSingleField(ctx, fieldName, posCentroid, req.TopK, efSearch, 0, true, 0, metadataFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -1661,7 +1858,7 @@ func (c *Collection) Discover(ctx context.Context, req DiscoverRequest) (*Search
 	// Over-fetch candidates
 	overFetchK := topK * 4
 	overFetchEf := efSearch * 2
-	resp, err := c.searchSingleField(ctx, fieldName, targetVec, overFetchK, overFetchEf, true, metadataFilter)
+	resp, err := c.searchSingleField(ctx, fieldName, targetVec, overFetchK, overFetchEf, 0, true, 0, metadataFilter)
 	if err != nil {
 		return nil, err
 	}

@@ -30,6 +30,11 @@ var (
 	ErrTenantLimitExceeded          = errors.New("canonical tenant limit exceeded")
 	ErrCollectionLimitExceeded      = errors.New("canonical collection limit exceeded")
 	ErrSearchResponseBudgetExceeded = errors.New("canonical search response budget exceeded")
+	// ErrInvalidSearchArgument marks caller-supplied search parameters that
+	// violate the admission contract (score_floor, usage_boost, fallback).
+	// Transports map it to a client error (HTTP 400 / gRPC InvalidArgument)
+	// rather than a server fault.
+	ErrInvalidSearchArgument = errors.New("invalid search argument")
 )
 
 // StoreLimits is immutable deployment admission policy for new durable
