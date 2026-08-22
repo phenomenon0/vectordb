@@ -105,8 +105,11 @@ func TestCollectionJournalAppendIsSyncedSecureAndReplayable(t *testing.T) {
 	if _, err := j.append([]byte("insert-document")); err != nil {
 		t.Fatalf("append second frame: %v", err)
 	}
-	if fileSyncs != 2 || dirSyncs != 2 {
-		t.Fatalf("second append syncs: file=%d dir=%d, want 2/2", fileSyncs, dirSyncs)
+	// The second append must still fsync file contents, but the directory
+	// entry was made durable by this writer's first append; the once-per-
+	// descriptor contract means no further namespace barrier is required.
+	if fileSyncs != 2 || dirSyncs != 1 {
+		t.Fatalf("second append syncs: file=%d dir=%d, want 2/1", fileSyncs, dirSyncs)
 	}
 
 	reopened, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
@@ -119,12 +122,26 @@ func TestCollectionJournalAppendIsSyncedSecureAndReplayable(t *testing.T) {
 	if string(replay[0].Payload) != "create-collection" || string(replay[1].Payload) != "insert-document" {
 		t.Fatalf("replay payloads = %q, %q", replay[0].Payload, replay[1].Payload)
 	}
+	// A fresh descriptor in a new writer must re-establish namespace
+	// durability before acknowledging its first frame: the previous process
+	// may have crashed before its own directory sync survived.
+	defaultReopenedSyncDir := reopened.ops.syncDir
+	reopened.ops.syncDir = func(path string) error {
+		dirSyncs++
+		return defaultReopenedSyncDir(path)
+	}
 	third, err := reopened.append([]byte("delete-document"))
 	if err != nil {
 		t.Fatalf("append after reopen: %v", err)
 	}
 	if third.LSN != 3 {
 		t.Fatalf("LSN after reopen = %d, want 3", third.LSN)
+	}
+	// A fresh descriptor in a new writer must re-establish namespace
+	// durability before acknowledging its first frame: the previous process
+	// may have crashed before its own directory sync survived.
+	if dirSyncs != 2 {
+		t.Fatalf("dir syncs after reopen+append = %d, want 2 (one per writer)", dirSyncs)
 	}
 }
 
@@ -927,8 +944,9 @@ func TestCollectionJournalCleanupAllContinuesAfterOneRemoveFailure(t *testing.T)
 
 func TestCollectionJournalAppendFaultsAreLatched(t *testing.T) {
 	tests := []struct {
-		name   string
-		inject func(*collectionJournal)
+		name      string
+		inject    func(*collectionJournal)
+		viaRotate bool
 	}{
 		{
 			name: "partial write",
@@ -949,7 +967,7 @@ func TestCollectionJournalAppendFaultsAreLatched(t *testing.T) {
 			},
 		},
 		{
-			name: "close",
+			name: "close during rotation",
 			inject: func(j *collectionJournal) {
 				j.ops.closeFile = func(f *os.File) error {
 					if err := f.Close(); err != nil {
@@ -958,6 +976,9 @@ func TestCollectionJournalAppendFaultsAreLatched(t *testing.T) {
 					return errors.New("injected close uncertainty")
 				}
 			},
+			// Close no longer runs inside append; descriptor teardown happens
+			// when the artifact identity changes, so drive it via rotate.
+			viaRotate: true,
 		},
 		{
 			name: "creation directory sync",
@@ -975,8 +996,19 @@ func TestCollectionJournalAppendFaultsAreLatched(t *testing.T) {
 				t.Fatalf("open journal: %v", err)
 			}
 			tc.inject(j)
-			if _, err := j.append([]byte("uncertain-frame")); err == nil || !strings.Contains(err.Error(), "indeterminate") {
-				t.Fatalf("injected append error = %v", err)
+			if tc.viaRotate {
+				// Establish a cached descriptor first; close only runs during
+				// identity changes when one exists.
+				if _, err := j.append([]byte("seed-frame")); err != nil {
+					t.Fatalf("seed append before rotation: %v", err)
+				}
+				if err := j.rotate(); err == nil || !strings.Contains(err.Error(), "indeterminate") {
+					t.Fatalf("injected rotation error = %v", err)
+				}
+			} else {
+				if _, err := j.append([]byte("uncertain-frame")); err == nil || !strings.Contains(err.Error(), "indeterminate") {
+					t.Fatalf("injected append error = %v", err)
+				}
 			}
 			if fault := j.writeFault(); fault == nil {
 				t.Fatal("append uncertainty did not latch fault")

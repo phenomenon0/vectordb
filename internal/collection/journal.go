@@ -73,6 +73,18 @@ type collectionJournal struct {
 	maxPayload  uint32
 	fault       error
 	ops         collectionJournalFileOps
+
+	// file caches an open descriptor for the current artifact so appends do
+	// not pay open/chmod/stat/close per record. It is nil until the first
+	// append and is invalidated (closed) whenever the artifact identity can
+	// change: rotation, covered cleanup, and fault latching.
+	file *os.File
+	// fileNeedsNameSync records that the directory entry for the current
+	// artifact has not yet been made durable by THIS writer. A prior process
+	// may have crashed after syncing a new inode but before its directory
+	// entry survived, so every freshly opened descriptor syncs the parent
+	// directory exactly once before further name syncs are skipped.
+	fileNeedsNameSync bool
 }
 
 // collectionJournalFileOps provides per-instance fault-injection seams. Keeping
@@ -160,6 +172,12 @@ func newCollectionJournal(currentPath, frozenPath string, storeID [16]byte, last
 // append writes one complete frame and fsyncs it before reporting success. Any
 // error after frame I/O begins is treated as indeterminate and permanently
 // faults this writer; recovery must reopen and validate the journal.
+//
+// Durability semantics per record: the frame bytes and the file metadata are
+// synced on every append (fsync), while the parent directory is synced once
+// per open descriptor. Directory entries change only when an artifact name is
+// created or replaced, so after this writer has itself persisted the current
+// name, later appends to the same inode need no further namespace barrier.
 func (j *collectionJournal) append(payload []byte) (collectionJournalRecord, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -180,32 +198,58 @@ func (j *collectionJournal) append(payload []byte) (collectionJournalRecord, err
 		return collectionJournalRecord{}, err
 	}
 
-	f, _, err := j.openAppendFile()
-	if err != nil {
-		return collectionJournalRecord{}, fmt.Errorf("open collection journal: %w", err)
+	if j.file == nil {
+		f, _, openErr := j.openAppendFile()
+		if openErr != nil {
+			return collectionJournalRecord{}, fmt.Errorf("open collection journal: %w", openErr)
+		}
+		j.file = f
+		// The durability of the artifact's directory entry is unknown for a
+		// descriptor this process did not sync yet; establish it once.
+		j.fileNeedsNameSync = true
 	}
 
-	writeErr := writeCollectionJournalFrame(j.ops.writeFile, f, frame)
+	writeErr := writeCollectionJournalFrame(j.ops.writeFile, j.file, frame)
 	var syncErr error
 	if writeErr == nil {
-		syncErr = j.ops.syncFile(f)
+		syncErr = j.ops.syncFile(j.file)
 	}
-	closeErr := j.ops.closeFile(f)
-	// Sync the namespace on every append, not only creation. A previous process
-	// can crash after syncing a newly created journal inode but before syncing its
-	// directory entry. If a restart merely opens that surviving name and later
-	// acknowledges another frame, the name must be made durable before success.
-	// The unconditional sync also makes retries after post-create setup errors
-	// safe without relying on in-memory knowledge from the failed attempt.
-	dirErr := j.ops.syncDir(filepath.Dir(j.currentPath))
+	var dirErr error
+	if writeErr == nil && syncErr == nil && j.fileNeedsNameSync {
+		// Sync the namespace when the artifact name may not be durable. See
+		// the field comment: a surviving-but-unnamed inode would make any
+		// acknowledged frame unrecoverable after a crash.
+		dirErr = j.ops.syncDir(filepath.Dir(j.currentPath))
+		if dirErr == nil {
+			j.fileNeedsNameSync = false
+		}
+	}
 
-	if operationErr := errors.Join(writeErr, syncErr, closeErr, dirErr); operationErr != nil {
+	if operationErr := errors.Join(writeErr, syncErr, dirErr); operationErr != nil {
 		j.fault = fmt.Errorf("collection journal append at LSN %d is indeterminate: %w", lsn, operationErr)
+		closeErr := j.closeWriterLocked()
+		if closeErr != nil {
+			j.fault = errors.Join(j.fault, closeErr)
+		}
 		return collectionJournalRecord{}, j.fault
 	}
 
 	j.lastLSN = lsn
 	return collectionJournalRecord{LSN: lsn, Payload: append([]byte(nil), payload...)}, nil
+}
+
+// closeWriterLocked closes and forgets any cached descriptor. Callers hold
+// j.mu. It is invoked whenever the current artifact's identity changes or the
+// writer shuts down; the next append reopens and re-establishes namespace
+// durability from scratch.
+func (j *collectionJournal) closeWriterLocked() error {
+	if j.file == nil {
+		return nil
+	}
+	f := j.file
+	j.file = nil
+	j.fileNeedsNameSync = false
+	return j.ops.closeFile(f)
 }
 
 func (j *collectionJournal) openAppendFile() (*os.File, bool, error) {
@@ -523,6 +567,14 @@ func (j *collectionJournal) rotate() error {
 	if j.fault != nil {
 		return fmt.Errorf("%w: %v", errCollectionJournalFaulted, j.fault)
 	}
+	// The cached descriptor belongs to the artifact whose name is about to be
+	// replaced. Writing through it after the link/unlink would extend the
+	// frozen-linked inode, so it must be dropped before any name change. An
+	// uncertain close is treated exactly like other indeterminate I/O.
+	if err := j.closeWriterLocked(); err != nil {
+		j.fault = fmt.Errorf("collection journal descriptor close before rotation is indeterminate: %w", err)
+		return j.fault
+	}
 	if _, err := j.ops.statPath(j.frozenPath); err == nil {
 		return fmt.Errorf("%w: %s", errCollectionJournalFrozenExists, j.frozenPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -596,6 +648,14 @@ func (j *collectionJournal) cleanupAll() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
+	// Both artifact names are about to disappear; the cached descriptor would
+	// keep writing into an unlinked inode if reused. An uncertain close is
+	// treated exactly like other indeterminate I/O.
+	if err := j.closeWriterLocked(); err != nil {
+		j.fault = fmt.Errorf("collection journal descriptor close before cleanup is indeterminate: %w", err)
+		return j.fault
+	}
+
 	var removeErrs []error
 	for _, path := range []string{j.frozenPath, j.currentPath} {
 		if err := j.ops.removePath(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -621,6 +681,14 @@ func (j *collectionJournal) writeFault() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.fault
+}
+
+// closeWriter releases the cached descriptor. It is called during graceful
+// shutdown and abort, after all appends have completed.
+func (j *collectionJournal) closeWriter() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.closeWriterLocked()
 }
 
 func encodeCollectionJournalFrame(storeID [16]byte, lsn uint64, payload []byte, maxPayload uint32) ([]byte, error) {

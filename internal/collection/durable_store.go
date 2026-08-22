@@ -893,9 +893,10 @@ func (s *DurableStore) Close() error {
 		checkpointErr = fmt.Errorf("%w: %v", ErrDurableStoreFaulted, s.fault)
 	}
 	s.closed = true
+	journalCloseErr := s.journal.closeWriter()
 	s.manager.closeAll()
 	s.tenants.closeAll()
-	return errors.Join(checkpointErr, s.lock.release())
+	return errors.Join(checkpointErr, journalCloseErr, s.lock.release())
 }
 
 // Abort closes in-memory resources and releases the lifetime lock without
@@ -909,9 +910,10 @@ func (s *DurableStore) Abort() error {
 		return nil
 	}
 	s.closed = true
+	journalCloseErr := s.journal.closeWriter()
 	s.manager.closeAll()
 	s.tenants.closeAll()
-	return s.lock.release()
+	return errors.Join(journalCloseErr, s.lock.release())
 }
 
 func encodeDurableMutation(m canonicalMutation) ([]byte, error) {
