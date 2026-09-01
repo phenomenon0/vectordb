@@ -75,6 +75,7 @@ R4_PHRASES = [
     r"title-case",
     r"Playwright",
     r"group-commit.{0,60}(top|first|primary) lever",
+    r"[Ee]rrors are (unstructured )?plain text",
 ]
 LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 BACKTICK = re.compile(r"`([^`\n]+)`")

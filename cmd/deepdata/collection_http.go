@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/graph"
 	"github.com/phenomenon0/vectordb/internal/security"
@@ -343,11 +344,11 @@ func (s *CollectionHTTPServer) EnableGraphRAG(cfg graph.Config) {
 func (s *CollectionHTTPServer) RegisterCanonicalHandlers(mux *http.ServeMux, guard func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("/v3/tenants/", guard(func(w http.ResponseWriter, r *http.Request) {
 		if !s.IsDurable() {
-			http.Error(w, "durable collection persistence required", http.StatusServiceUnavailable)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeUnavailable, "durable collection persistence required"))
 			return
 		}
 		if err := s.PersistenceError(); err != nil {
-			http.Error(w, "collection persistence unavailable", http.StatusServiceUnavailable)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeUnavailable, "collection persistence unavailable"))
 			return
 		}
 		s.handleTenantRoutes(w, r)
@@ -392,7 +393,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 	parts := strings.SplitN(path, "/", 5) // tenant_id / collections / name / operation / ...
 
 	if len(parts) < 1 || parts[0] == "" {
-		http.Error(w, "tenant ID required in URL path", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "tenant ID required in URL path"))
 		return
 	}
 
@@ -400,7 +401,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 
 	// Validate tenant ID format
 	if !isValidTenantID(tenantID) {
-		http.Error(w, "invalid tenant ID: must be 1-64 alphanumeric/hyphen/underscore characters", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "invalid tenant ID: must be 1-64 alphanumeric/hyphen/underscore characters"))
 		return
 	}
 
@@ -415,7 +416,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 
 	// Must be /v3/tenants/{tenant_id}/collections[/...]
 	if parts[1] != "collections" {
-		http.Error(w, "unknown resource; expected 'collections'", http.StatusNotFound)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeNotFound, "unknown resource; expected 'collections'"))
 		return
 	}
 
@@ -436,14 +437,14 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 			}
 			s.handleTenantCreateCollection(w, r, tenantID)
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		}
 		return
 	}
 
 	collectionName := parts[2]
 	if collectionName == "" {
-		http.Error(w, "collection name required", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "collection name required"))
 		return
 	}
 
@@ -461,7 +462,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 			}
 			s.handleTenantDeleteCollection(w, r, tenantID, collectionName)
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		}
 		return
 	}
@@ -476,7 +477,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 		if len(parts) == 5 && parts[4] != "" && parts[4] != "batch" {
 			docID, err := parseDocIDPathPart(parts[4])
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusNotFound)
+				apierror.WriteHTTP(w, apierror.New(apierror.CodeNotFound, err.Error()))
 				return
 			}
 			switch r.Method {
@@ -491,7 +492,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 				}
 				s.handleTenantGetDoc(w, r, tenantID, collectionName, docID)
 			default:
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 			}
 			return
 		}
@@ -509,7 +510,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 		}
 		s.handleTenantSearch(w, r, tenantID, collectionName)
 	default:
-		http.Error(w, fmt.Sprintf("unknown operation: %s", operation), http.StatusNotFound)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeNotFound, fmt.Sprintf("unknown operation: %s", operation)))
 	}
 }
 
@@ -534,10 +535,10 @@ func writeCanonicalHTTPAuthorizationResult(w http.ResponseWriter, err error) boo
 		return true
 	}
 	if security.IsAuthorizationFailure(err, security.AuthorizationUnauthenticated) {
-		http.Error(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized: "+err.Error()))
 		return false
 	}
-	http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+	apierror.WriteHTTP(w, apierror.New(apierror.CodePermissionDenied, "forbidden: "+err.Error()))
 	return false
 }
 
@@ -635,36 +636,23 @@ func canonicalPersistenceUnavailable(err error) bool {
 	return errors.Is(err, vcollection.ErrDurableStoreClosed) || errors.Is(err, vcollection.ErrDurableStoreFaulted)
 }
 
-func writeCanonicalOperationError(w http.ResponseWriter, prefix string, err error, fallbackStatus int) {
-	if errors.Is(err, vcollection.ErrInvalidSearchArgument) {
-		http.Error(w, fmt.Sprintf("%s: %v", prefix, err), http.StatusBadRequest)
-		return
-	}
-	if canonicalPersistenceUnavailable(err) {
-		http.Error(w, "collection persistence unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	if errors.Is(err, vcollection.ErrSearchResponseBudgetExceeded) {
-		http.Error(w, fmt.Sprintf("%s: %v", prefix, err), http.StatusRequestEntityTooLarge)
-		return
-	}
-	if errors.Is(err, vcollection.ErrTenantLimitExceeded) || errors.Is(err, vcollection.ErrCollectionLimitExceeded) {
-		http.Error(w, fmt.Sprintf("%s: %v", prefix, err), http.StatusTooManyRequests)
-		return
-	}
-	http.Error(w, fmt.Sprintf("%s: %v", prefix, err), fallbackStatus)
+// writeCanonicalOperationError projects an engine error onto the wire:
+// apierror.FromEngine classifies the sentinels, fallback names the code for
+// anything the engine left unclassified.
+func writeCanonicalOperationError(w http.ResponseWriter, err error, fallback string) {
+	apierror.WriteHTTP(w, apierror.FromEngine(err, fallback))
 }
 
 func (s *CollectionHTTPServer) handleTenantInfo(w http.ResponseWriter, r *http.Request, tenantID string) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		return
 	}
 
 	stats, err := s.tenantManager.GetTenantStats(tenantID)
 	if err != nil {
 		if canonicalPersistenceUnavailable(err) {
-			writeCanonicalOperationError(w, "tenant info unavailable", err, http.StatusInternalServerError)
+			writeCanonicalOperationError(w, err, apierror.CodeInternal)
 			return
 		}
 		// Tenant with no collections yet is not an error — return empty stats
@@ -695,15 +683,15 @@ func (s *CollectionHTTPServer) handleTenantCreateCollection(w http.ResponseWrite
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&schema); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if err := ensureJSONEOF(dec); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if !vcollection.IsValidCanonicalIdentifier(schema.Name) {
-		http.Error(w, "invalid collection name: must be 1-64 alphanumeric/hyphen/underscore characters", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "invalid collection name: must be 1-64 alphanumeric/hyphen/underscore characters"))
 		return
 	}
 	if !authorizeCanonicalHTTP(w, r, tenantID, schema.Name, "admin") {
@@ -712,7 +700,7 @@ func (s *CollectionHTTPServer) handleTenantCreateCollection(w http.ResponseWrite
 
 	ctx := r.Context()
 	if _, err := s.tenantManager.CreateCollection(ctx, tenantID, schema); err != nil {
-		writeCanonicalOperationError(w, "failed to create collection", err, http.StatusBadRequest)
+		writeCanonicalOperationError(w, err, apierror.CodeInvalidArgument)
 		return
 	}
 
@@ -729,7 +717,7 @@ func (s *CollectionHTTPServer) handleTenantCreateCollection(w http.ResponseWrite
 func (s *CollectionHTTPServer) handleTenantListCollections(w http.ResponseWriter, r *http.Request, tenantID string) {
 	infos, err := s.tenantManager.ListCollectionInfosChecked(tenantID)
 	if err != nil {
-		writeCanonicalOperationError(w, "failed to list collections", err, http.StatusInternalServerError)
+		writeCanonicalOperationError(w, err, apierror.CodeInternal)
 		return
 	}
 
@@ -746,7 +734,7 @@ func (s *CollectionHTTPServer) handleTenantListCollections(w http.ResponseWriter
 func (s *CollectionHTTPServer) handleTenantGetCollection(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
 	info, err := s.tenantManager.GetCollectionInfo(tenantID, collectionName)
 	if err != nil {
-		writeCanonicalOperationError(w, "collection not found", err, http.StatusNotFound)
+		writeCanonicalOperationError(w, err, apierror.CodeNotFound)
 		return
 	}
 
@@ -762,7 +750,7 @@ func (s *CollectionHTTPServer) handleTenantGetCollection(w http.ResponseWriter, 
 func (s *CollectionHTTPServer) handleTenantDeleteCollection(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
 	ctx := r.Context()
 	if err := s.tenantManager.DeleteCollection(ctx, tenantID, collectionName); err != nil {
-		writeCanonicalOperationError(w, "failed to delete collection", err, http.StatusBadRequest)
+		writeCanonicalOperationError(w, err, apierror.CodeInvalidArgument)
 		return
 	}
 
@@ -789,16 +777,16 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 			return
 		}
 		if err := ensureJSONEOF(dec); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 			return
 		}
 
 		if len(req.Vectors) == 0 {
-			http.Error(w, "at least one vector required", http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one vector required"))
 			return
 		}
 
@@ -806,7 +794,7 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 		for fieldName, vectorData := range req.Vectors {
 			vector, err := decodeCanonicalVectorRaw(fieldName, vectorData)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, err.Error()))
 				return
 			}
 			vectors[fieldName] = vector
@@ -820,7 +808,7 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 
 		ctx := r.Context()
 		if err := s.tenantManager.AddDocument(ctx, tenantID, collectionName, &doc); err != nil {
-			writeCanonicalOperationError(w, "failed to add document", err, http.StatusInternalServerError)
+			writeCanonicalOperationError(w, err, apierror.CodeInternal)
 			return
 		}
 
@@ -840,21 +828,21 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 			return
 		}
 		if err := ensureJSONEOF(dec); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 			return
 		}
 		if req.DocID == 0 {
-			http.Error(w, "doc_id required", http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "doc_id required"))
 			return
 		}
 
 		ctx := r.Context()
 		if err := s.tenantManager.DeleteDocument(ctx, tenantID, collectionName, req.DocID); err != nil {
-			writeCanonicalOperationError(w, "failed to delete document", err, http.StatusInternalServerError)
+			writeCanonicalOperationError(w, err, apierror.CodeInternal)
 			return
 		}
 
@@ -866,7 +854,7 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 		})
 
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 	}
 }
 
@@ -897,15 +885,15 @@ func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *h
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if err := ensureJSONEOF(dec); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if len(req.Vectors) == 0 {
-		http.Error(w, "at least one vector required", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one vector required"))
 		return
 	}
 
@@ -913,7 +901,7 @@ func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *h
 	for fieldName, vectorData := range req.Vectors {
 		vector, err := decodeCanonicalVectorRaw(fieldName, vectorData)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, err.Error()))
 			return
 		}
 		vectors[fieldName] = vector
@@ -925,7 +913,7 @@ func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *h
 		Metadata: req.Metadata,
 	}
 	if err := s.tenantManager.UpsertDocument(r.Context(), tenantID, collectionName, &doc); err != nil {
-		writeCanonicalOperationError(w, "failed to upsert document", err, http.StatusInternalServerError)
+		writeCanonicalOperationError(w, err, apierror.CodeInternal)
 		return
 	}
 
@@ -942,7 +930,7 @@ func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *h
 func (s *CollectionHTTPServer) handleTenantGetDoc(w http.ResponseWriter, r *http.Request, tenantID, collectionName string, docID uint64) {
 	doc, ok := s.tenantManager.GetDocument(tenantID, collectionName, docID)
 	if !ok {
-		http.Error(w, fmt.Sprintf("document %d not found", docID), http.StatusNotFound)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeNotFound, fmt.Sprintf("document %d not found", docID)))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -960,7 +948,7 @@ func (s *CollectionHTTPServer) handleTenantGetDoc(w http.ResponseWriter, r *http
 // intentionally not part of the RC contract.
 func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		return
 	}
 
@@ -979,33 +967,33 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if err := ensureJSONEOF(dec); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if len(req.Documents) == 0 {
-		http.Error(w, "at least one document required", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one document required"))
 		return
 	}
 	if len(req.Documents) > vcollection.CanonicalMaxBatchDocuments {
-		http.Error(w, fmt.Sprintf("batch too large: maximum is %d documents", vcollection.CanonicalMaxBatchDocuments), http.StatusRequestEntityTooLarge)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodePayloadTooLarge, fmt.Sprintf("batch too large: maximum is %d documents", vcollection.CanonicalMaxBatchDocuments)))
 		return
 	}
 
 	docs := make([]vcollection.Document, len(req.Documents))
 	for i, input := range req.Documents {
 		if len(input.Vectors) == 0 {
-			http.Error(w, fmt.Sprintf("document %d requires at least one vector", i), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d requires at least one vector", i)))
 			return
 		}
 		vectors := make(map[string]interface{}, len(input.Vectors))
 		for fieldName, raw := range input.Vectors {
 			vector, err := decodeCanonicalVectorRaw(fieldName, raw)
 			if err != nil {
-				http.Error(w, fmt.Sprintf("document %d: %v", i, err), http.StatusBadRequest)
+				apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d: %v", i, err)))
 				return
 			}
 			vectors[fieldName] = vector
@@ -1014,7 +1002,7 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 	}
 
 	if err := s.tenantManager.BatchAddDocuments(r.Context(), tenantID, collectionName, docs); err != nil {
-		writeCanonicalOperationError(w, "failed to add document batch", err, http.StatusInternalServerError)
+		writeCanonicalOperationError(w, err, apierror.CodeInternal)
 		return
 	}
 	ids := make([]uint64, len(docs))
@@ -1034,7 +1022,7 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 // handleTenantSearch performs a search on a tenant's collection.
 func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		return
 	}
 
@@ -1053,28 +1041,11 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if err := ensureJSONEOF(dec); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	if len(req.Queries) == 0 {
-		http.Error(w, "at least one query vector required", http.StatusBadRequest)
-		return
-	}
-	if len(req.Queries) > vcollection.CanonicalMaxSearchFields {
-		http.Error(w, fmt.Sprintf("at most %d query fields are supported", vcollection.CanonicalMaxSearchFields), http.StatusBadRequest)
-		return
-	}
-	if req.TopK <= 0 {
-		http.Error(w, "top_k must be positive", http.StatusBadRequest)
-		return
-	}
-	if req.TopK > vcollection.CanonicalMaxSearchTopK {
-		http.Error(w, fmt.Sprintf("top_k must not exceed %d", vcollection.CanonicalMaxSearchTopK), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 
@@ -1082,7 +1053,7 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 	for fieldName, vectorData := range req.Queries {
 		vector, err := decodeCanonicalVectorRaw(fieldName, vectorData)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, err.Error()))
 			return
 		}
 		queries[fieldName] = vector
@@ -1090,7 +1061,7 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 
 	includeVectors, err := resolveIncludeVectors(req.IncludeVectors, r.URL.Query().Get("include_vectors"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, err.Error()))
 		return
 	}
 
@@ -1110,7 +1081,7 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 	ctx := r.Context()
 	resp, err := s.tenantManager.SearchCollection(ctx, tenantID, searchReq)
 	if err != nil {
-		writeCanonicalOperationError(w, "search failed", err, http.StatusInternalServerError)
+		writeCanonicalOperationError(w, err, apierror.CodeInternal)
 		return
 	}
 

@@ -721,15 +721,17 @@
     {
       "id": "CTL-01",
       "statement": "errors are prompts: every API error carries code, hint and docs pointer via internal/apierror",
-      "command": "GOTOOLCHAIN=go1.25.12 go test ./internal/apierror ./cmd/deepdata -run Error",
+      "command": "scripts/hardening_check.sh go-apierror",
       "scope": [
         "cmd/deepdata",
-        "internal/apierror"
+        "cmd/deepdata-mcp",
+        "internal/apierror",
+        "internal/collection"
       ],
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": "plan 9.2: package does not exist yet"
+      "note": "plan 9.2; the Python side of the envelope (sdk/python/tests/test_errors.py) is proven by python-unit"
     },
     {
       "id": "CTL-02",

@@ -101,3 +101,65 @@ class TestRateLimitError:
     def test_no_retry_after(self) -> None:
         err = RateLimitError()
         assert err.retry_after is None
+
+
+class TestEnvelope:
+    """The structured envelope (API.md, section Errors) drives classification."""
+
+    ENVELOPE = (
+        '{"code":"not_found","message":"collection not found: docs","hint":"list the collections",'
+        '"request_id":"req-1","retryable":false,"docs":"internal/collection/API.md#errors"}'
+    )
+
+    def test_envelope_fields_are_exposed(self) -> None:
+        err = classify_error(404, self.ENVELOPE)
+        assert isinstance(err, NotFoundError)
+        assert err.code == "not_found"
+        assert err.message == "collection not found: docs"
+        assert err.hint == "list the collections"
+        assert err.request_id == "req-1"
+        assert err.docs == "internal/collection/API.md#errors"
+        assert "not_found" in str(err) and "Hint: list the collections" in str(err)
+
+    def test_quota_409_is_not_retryable(self) -> None:
+        # A tenant or collection limit is permanent for the process lifetime;
+        # retrying it would loop forever against a wall.
+        err = classify_error(409, '{"code":"quota_exceeded","message":"tenant limit","retryable":false}')
+        assert type(err) is APIError
+        assert err.code == "quota_exceeded"
+        assert not err.retryable
+
+    def test_server_retryable_verdict_overrides_status_default(self) -> None:
+        err = classify_error(503, '{"code":"internal","message":"do not retry","retryable":false}')
+        assert isinstance(err, ServerError)
+        assert not err.retryable
+
+    def test_retry_after_from_envelope(self) -> None:
+        err = classify_error(
+            429, '{"code":"rate_limited","message":"slow down","retryable":true,"retry_after_ms":1000}'
+        )
+        assert isinstance(err, RateLimitError)
+        assert err.retry_after == 1.0
+        assert err.retryable
+
+    def test_retry_after_from_header_for_plain_text(self) -> None:
+        err = classify_error(429, "rate limited", {"Retry-After": "2"})
+        assert isinstance(err, RateLimitError)
+        assert err.retry_after == 2.0
+
+    def test_plain_text_body_has_empty_envelope(self) -> None:
+        err = classify_error(404, "collection not found")
+        assert err.message == "collection not found"
+        assert err.code == "" and err.hint == "" and err.retry_after is None
+
+
+class TestShouldRetry:
+    def test_honours_server_verdict(self) -> None:
+        from deepdata._utils import DEFAULT_RETRY, should_retry
+
+        retryable = classify_error(429, '{"code":"rate_limited","message":"x","retryable":true}')
+        permanent = classify_error(409, '{"code":"quota_exceeded","message":"x","retryable":false}')
+        assert should_retry(retryable, 0, DEFAULT_RETRY)
+        assert not should_retry(permanent, 0, DEFAULT_RETRY)
+        assert not should_retry(retryable, DEFAULT_RETRY.max_retries, DEFAULT_RETRY)
+        assert not should_retry(retryable, 0, None)

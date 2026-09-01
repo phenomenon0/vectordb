@@ -10,8 +10,8 @@ rendered from `tasks/gates.json` by `scripts/gates.py`. Map: [docs/ARCHITECTURE.
 
 `cmd/deepdata-mcp` is a stdio MCP server that forwards tool calls to a running DeepData server over the HTTP
 contract. It exposes five tools — `search`, `insert`, `upsert`, `get_document`, `list_collections` — and the three
-that carry vectors (`search`, `insert`, `upsert`) take vectors the caller has already computed (`cmd/deepdata-mcp/main.go:228-286`).
-It is configured by `DEEPDATA_URL`, `DEEPDATA_TENANT` and `DEEPDATA_API_KEY` (`cmd/deepdata-mcp/main.go:98-109`). Build, Claude
+that carry vectors (`search`, `insert`, `upsert`) take vectors the caller has already computed (`cmd/deepdata-mcp/main.go:257-315`).
+It is configured by `DEEPDATA_URL`, `DEEPDATA_TENANT` and `DEEPDATA_API_KEY` (`cmd/deepdata-mcp/main.go:117-129`). Build, Claude
 Desktop configuration, per-tool arguments and the error shape: [docs/mcp.md](docs/mcp.md). Sending text instead of vectors is a plan (gate CTL-02), as is the rewrite of the MCP server onto a shared
 contract package with the six memory verbs deepdata_recall, deepdata_remember, deepdata_forget, deepdata_get,
 deepdata_collections, deepdata_create_collection and the resources deepdata://contract and deepdata://status
@@ -45,10 +45,12 @@ Auth: `Authorization: Bearer <token>`, where the token is the static `API_TOKEN`
 access) or an HS256 JWT signed with `JWT_SECRET` that scopes a tenant, the permissions `read`/`write`/`admin`
 and optionally a collection allowlist; `cmd/gentoken` mints those JWTs (`cmd/gentoken/main.go:20-26`).
 
-Errors are plain text today: HTTP handlers answer with a status code and a one-line body via `http.Error`
-(`cmd/deepdata/collection_http.go:638-656`: invalid search argument 400, oversized response 413, tenant or
-collection limit 429, persistence unavailable 503), and `canonicalGRPCError` maps the same sentinels to status
-codes (`cmd/deepdata/collection_grpc.go:457-478`). A structured envelope with code, hint and docs pointer is gate CTL-01.
+Errors are a JSON envelope on every surface: `{"code","message","hint","field","request_id","retryable","retry_after_ms","docs"}`
+with the HTTP status from one code table (`internal/apierror/apierror.go:63-75`, written by `WriteHTTP`, `internal/apierror/apierror.go:129`);
+gRPC returns the mapped status code with the same fields as an `ErrorInfo` detail (`reason` = code, `domain` = `deepdata`) and a
+`RetryInfo` detail when retryable (`internal/apierror/apierror.go:147`); the MCP server forwards the envelope as `structuredContent`
+beside its `isError` text. `rate_limited` (429, `Retry-After: 1`) and `unavailable` (503) are the retryable codes; tenant and
+collection limits are `quota_exceeded`, 409 / `FailedPrecondition`, never retryable. Codes and an example: [internal/collection/API.md#errors](internal/collection/API.md#errors).
 
 Probes GET /healthz, /livez and /readyz answer without credentials (`cmd/deepdata/server.go:1537-1541`); /metrics sits
 behind the same auth guard as the API (`cmd/deepdata/server.go:1503-1507`). `const canonicalOnly = true` (`cmd/deepdata/main.go:3198`)

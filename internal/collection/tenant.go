@@ -113,7 +113,7 @@ func (tm *TenantManager) getCollectionDirect(tenantID, collectionName string) (*
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return nil, fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return nil, fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.GetCollection(collectionName)
 }
@@ -187,7 +187,7 @@ func (tm *TenantManager) deleteCollectionDirect(ctx context.Context, tenantID, c
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.deleteCollectionDirect(ctx, collectionName)
 }
@@ -206,7 +206,7 @@ func (tm *TenantManager) getCollectionInfoDirect(tenantID, collectionName string
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return nil, fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return nil, fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.GetCollectionInfo(collectionName)
 }
@@ -222,7 +222,7 @@ func (tm *TenantManager) AddDocument(ctx context.Context, tenantID, collectionNa
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.AddDocument(ctx, collectionName, doc)
 }
@@ -239,7 +239,7 @@ func (tm *TenantManager) BatchAddDocuments(ctx context.Context, tenantID, collec
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.BatchAddDocuments(ctx, collectionName, docs)
 }
@@ -258,7 +258,7 @@ func (tm *TenantManager) searchCollectionDirect(ctx context.Context, tenantID st
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return nil, fmt.Errorf("collection %s not found for tenant %s", req.CollectionName, tenantID)
+		return nil, fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, req.CollectionName, tenantID)
 	}
 	return mgr.SearchCollection(ctx, req)
 }
@@ -273,7 +273,7 @@ func (tm *TenantManager) DeleteDocument(ctx context.Context, tenantID, collectio
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.DeleteDocument(ctx, collectionName, docID)
 }
@@ -290,7 +290,7 @@ func (tm *TenantManager) UpsertDocument(ctx context.Context, tenantID, collectio
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.UpsertDocument(ctx, collectionName, doc)
 }
@@ -447,7 +447,7 @@ func (tm *TenantManager) attachDurableStore(store *DurableStore) {
 func (tm *TenantManager) addPreparedDocumentsDirect(ctx context.Context, tenantID, collectionName string, docs []Document, nextID uint64) error {
 	manager := tm.getManager(tenantID)
 	if manager == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	coll, err := manager.GetCollection(collectionName)
 	if err != nil {
@@ -462,7 +462,7 @@ func (tm *TenantManager) addPreparedDocumentsDirect(ctx context.Context, tenantI
 func (tm *TenantManager) upsertPreparedDocumentsDirect(ctx context.Context, tenantID, collectionName string, docs []Document, nextID uint64) error {
 	manager := tm.getManager(tenantID)
 	if manager == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	coll, err := manager.GetCollection(collectionName)
 	if err != nil {
@@ -476,7 +476,7 @@ func (tm *TenantManager) upsertPreparedDocumentsDirect(ctx context.Context, tena
 func (tm *TenantManager) deleteDocumentDirect(ctx context.Context, tenantID, collectionName string, docID uint64) error {
 	manager := tm.getManager(tenantID)
 	if manager == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	coll, err := manager.GetCollection(collectionName)
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"google.golang.org/grpc/codes"
@@ -91,8 +92,8 @@ func TestCanonicalDurableLimitsAreSharedAcrossHTTPAndGRPC(t *testing.T) {
 	if _, err := grpcServer.CreateCollection(
 		canonicalGRPCAdminContext("two"),
 		canonicalGRPCCreateCollectionRequest("two", "blocked"),
-	); status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("second tenant gRPC create error = %v, want ResourceExhausted", err)
+	); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("second tenant gRPC create error = %v, want FailedPrecondition (a fixed limit, not a retryable exhaustion)", err)
 	}
 	if _, err := grpcServer.CreateCollection(
 		canonicalGRPCAdminContext("one"),
@@ -102,8 +103,8 @@ func TestCanonicalDurableLimitsAreSharedAcrossHTTPAndGRPC(t *testing.T) {
 	}
 
 	response = canonicalHTTPCreateCollection(t, handler, "one", "third", "")
-	if response.Code != http.StatusTooManyRequests {
-		t.Fatalf("N+1 HTTP collection create returned %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusConflict {
+		t.Fatalf("N+1 HTTP collection create returned %d, want 409 (quota_exceeded is permanent, never 429): %s", response.Code, response.Body.String())
 	}
 }
 
@@ -174,11 +175,11 @@ func TestCanonicalTenantRateLimitIsSharedAcrossHTTPAndGRPCJWTs(t *testing.T) {
 func TestCanonicalResponseBudgetErrorMappings(t *testing.T) {
 	err := fmt.Errorf("search admission: %w", vcollection.ErrSearchResponseBudgetExceeded)
 	response := httptest.NewRecorder()
-	writeCanonicalOperationError(response, "search failed", err, http.StatusInternalServerError)
+	writeCanonicalOperationError(response, err, apierror.CodeInternal)
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("HTTP response budget error mapped to %d, want 413", response.Code)
 	}
-	if got := status.Code(canonicalGRPCError(err, codes.Internal)); got != codes.ResourceExhausted {
+	if got := status.Code(canonicalGRPCError(context.Background(), err, apierror.CodeInternal)); got != codes.ResourceExhausted {
 		t.Fatalf("gRPC response budget error mapped to %v, want ResourceExhausted", got)
 	}
 }

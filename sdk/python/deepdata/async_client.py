@@ -135,9 +135,7 @@ class AsyncDeepDataClient:
 
             except DeepDataError as exc:
                 last_exc = exc
-                if isinstance(exc, APIError) and should_retry(
-                    exc.status_code, attempt, retry_config
-                ):
+                if isinstance(exc, APIError) and should_retry(exc, attempt, retry_config):
                     continue
                 raise
 

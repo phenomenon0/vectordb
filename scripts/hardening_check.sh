@@ -24,6 +24,7 @@ list_checks() {
         go-short \
         go-race \
         go-vet-cgo0 \
+        go-apierror \
         python-unit \
         python-mypy \
         python-build \
@@ -71,6 +72,10 @@ case "$CHECK_NAME" in
     go-vet-cgo0)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=0 go vet ./..."
+        ;;
+    go-apierror)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 300s -run Error ./internal/apierror ./internal/collection ./cmd/deepdata ./cmd/deepdata-mcp"
         ;;
     python-unit)
         CHECK_CWD="$REPO_ROOT/sdk/python"
@@ -123,6 +128,12 @@ run_check() {
             mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
             timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
                 CGO_ENABLED=0 go vet ./...
+            ;;
+        go-apierror)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 300s -run Error \
+                ./internal/apierror ./internal/collection ./cmd/deepdata ./cmd/deepdata-mcp
             ;;
         python-unit)
             timeout 360s python -m pytest tests -q

@@ -65,6 +65,16 @@ assembled.
 - Status is derived from evidence: `tasks/gates.json` truth ledger driven by
   `scripts/gates.py`, the generated `docs/PRE_RELEASE_STATUS.md`, and the
   `scripts/check_docs_contract.py` docs linter (a443cd0).
+- Errors are a structured envelope: `internal/apierror` maps the engine
+  sentinels to one code table; HTTP writes `{code, message, hint, field,
+  request_id, retryable, retry_after_ms, docs}` as JSON, gRPC attaches
+  `ErrorInfo` and `RetryInfo` details, the MCP server forwards the envelope as
+  `structuredContent`, and the Python client exposes it on `APIError` and
+  retries on the server's `retryable` verdict. Tenant and collection limits
+  answer 409 `quota_exceeded` / `FailedPrecondition` instead of 429; 429 is
+  reserved for `rate_limited` and carries `Retry-After`; the search-shape and
+  `hybrid_params`/`fallback` checks moved from the transports into the engine
+  (gate CTL-01).
 - Normal startup exposes only the canonical V3 HTTP routes and V3 gRPC
   service. Legacy root/V2 mutation APIs and advanced recommendation,
   discovery, embedding-provider, GraphRAG, extraction, and feedback handlers

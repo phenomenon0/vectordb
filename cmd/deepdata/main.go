@@ -27,6 +27,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	"github.com/phenomenon0/vectordb/internal/index"
 	"github.com/phenomenon0/vectordb/internal/logging"
 	"github.com/phenomenon0/vectordb/internal/obsidian"
@@ -39,9 +40,7 @@ import (
 
 	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
 	"net"
 )
@@ -3942,21 +3941,32 @@ func grpcAuthInterceptorWithRateLimiters(
 		defer func() {
 			if r := recover(); r != nil {
 				logger.Error("panic recovered in gRPC handler", "error", r, "method", info.FullMethod)
-				err = status.Errorf(codes.Internal, "internal error")
+				err = apierror.New(apierror.CodeInternal, "internal error").GRPC(ctx)
 			}
 		}()
 
-		// Extract auth token from gRPC metadata (mirrors HTTP Authorization header)
-		token := ""
+		// Auth token and request id from gRPC metadata (mirrors the HTTP
+		// Authorization header and X-Request-ID middleware): honour the
+		// caller's x-request-id or mint one, echo it as a response header and
+		// carry it in ctx so every apierror quotes it.
+		token, requestID := "", ""
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
 			if vals := md.Get("authorization"); len(vals) > 0 {
 				token = strings.TrimPrefix(vals[0], "Bearer ")
 			}
+			if vals := md.Get("x-request-id"); len(vals) > 0 {
+				requestID = truncateRequestID(strings.TrimSpace(vals[0]), 128)
+			}
 		}
+		if requestID == "" {
+			requestID = generateRequestID()
+		}
+		ctx = context.WithValue(ctx, logging.RequestIDKey, requestID)
+		_ = grpc.SetHeader(ctx, metadata.Pairs("x-request-id", requestID))
 		authPeerKey := grpcAuthPeerKey(ctx)
 		authAttempt, allowed := authFailureLimiter.begin(authPeerKey)
 		if !allowed {
-			return nil, status.Error(codes.ResourceExhausted, "authentication rate limited")
+			return nil, apierror.New(apierror.CodeRateLimited, "authentication rate limited").GRPC(ctx)
 		}
 		finishAuthAttempt := func(failed bool) {
 			if authAttempt != nil {
@@ -3972,7 +3982,7 @@ func grpcAuthInterceptorWithRateLimiters(
 			if token == "" {
 				if requireAuth {
 					finishAuthAttempt(true)
-					return nil, status.Error(codes.Unauthenticated, "missing authentication token")
+					return nil, apierror.New(apierror.CodeUnauthenticated, "missing authentication token").GRPC(ctx)
 				}
 				tenantCtx = &security.TenantContext{
 					TenantID:    "default",
@@ -3985,7 +3995,7 @@ func grpcAuthInterceptorWithRateLimiters(
 				if valErr != nil {
 					logging.Default().Error("gRPC JWT validation failed", "error", valErr)
 					finishAuthAttempt(true)
-					return nil, status.Error(codes.Unauthenticated, "invalid token")
+					return nil, apierror.New(apierror.CodeUnauthenticated, "invalid token").GRPC(ctx)
 				}
 			}
 		} else {
@@ -3995,12 +4005,12 @@ func grpcAuthInterceptorWithRateLimiters(
 					authenticated = true
 				} else if token != "" {
 					finishAuthAttempt(true)
-					return nil, status.Error(codes.Unauthenticated, "unauthorized")
+					return nil, apierror.New(apierror.CodeUnauthenticated, "unauthorized").GRPC(ctx)
 				}
 			}
 			if requireAuth && !authenticated {
 				finishAuthAttempt(true)
-				return nil, status.Error(codes.Unauthenticated, "unauthorized")
+				return nil, apierror.New(apierror.CodeUnauthenticated, "unauthorized").GRPC(ctx)
 			}
 			serverAdmin := authenticated || (jwtMgr == nil && apiToken == "")
 			tenantCtx = &security.TenantContext{
@@ -4022,7 +4032,7 @@ func grpcAuthInterceptorWithRateLimiters(
 			}
 			tenantKey := canonicalRateLimitTenant(tenantCtx, targetTenant)
 			if !tenantLimiter.allow(tenantKey) {
-				return nil, status.Error(codes.ResourceExhausted, "tenant rate limited")
+				return nil, apierror.New(apierror.CodeRateLimited, "tenant rate limited").GRPC(ctx)
 			}
 		}
 

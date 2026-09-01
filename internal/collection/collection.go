@@ -511,16 +511,16 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 		return nil, fmt.Errorf("collection mismatch: expected %s, got %s", c.schema.Name, req.CollectionName)
 	}
 	if len(req.Queries) == 0 {
-		return nil, fmt.Errorf("at least one query field is required")
+		return nil, fmt.Errorf("%w: at least one query field is required", ErrInvalidArgument)
 	}
 	if len(req.Queries) > CanonicalMaxSearchFields {
-		return nil, fmt.Errorf("at most %d query fields are supported", CanonicalMaxSearchFields)
+		return nil, fmt.Errorf("%w: at most %d query fields are supported", ErrInvalidArgument, CanonicalMaxSearchFields)
 	}
 	if req.TopK <= 0 || req.TopK > CanonicalMaxSearchTopK {
-		return nil, fmt.Errorf("top_k must be in [1, %d]", CanonicalMaxSearchTopK)
+		return nil, fmt.Errorf("%w: top_k must be in [1, %d]", ErrInvalidArgument, CanonicalMaxSearchTopK)
 	}
 	if req.EfSearch < 0 || req.EfSearch > CanonicalMaxSearchEf {
-		return nil, fmt.Errorf("ef_search must be in [0, %d]", CanonicalMaxSearchEf)
+		return nil, fmt.Errorf("%w: ef_search must be in [0, %d]", ErrInvalidArgument, CanonicalMaxSearchEf)
 	}
 	if req.HybridParams != nil {
 		if err := validateHybridSearchParams(req.Queries, req.HybridParams); err != nil {
@@ -548,7 +548,7 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 		var err error
 		metadataFilter, err = filter.FromMap(req.Filters)
 		if err != nil {
-			return nil, fmt.Errorf("invalid filter: %w", err)
+			return nil, fmt.Errorf("%w: invalid filter: %v", ErrInvalidArgument, err)
 		}
 	}
 
@@ -626,7 +626,7 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 	}
 
 	// Multiple fields without fusion (return error)
-	return nil, fmt.Errorf("%w: multiple query fields require HybridParams or Fallback", ErrInvalidSearchArgument)
+	return nil, fmt.Errorf("%w: multiple query fields require hybrid_params or fallback", ErrInvalidSearchArgument)
 }
 
 // scoreLowerIsBetter reports whether the field's raw scores are
@@ -1001,23 +1001,23 @@ func validateHybridSearchParams(queries map[string]interface{}, params *HybridSe
 	switch params.Strategy {
 	case "rrf", "weighted", "linear":
 	default:
-		return fmt.Errorf("invalid hybrid strategy %q", params.Strategy)
+		return fmt.Errorf("%w: invalid hybrid strategy %q", ErrInvalidArgument, params.Strategy)
 	}
 	if math.IsNaN(float64(params.RRFConstant)) || math.IsInf(float64(params.RRFConstant), 0) || params.RRFConstant < 0 {
-		return fmt.Errorf("hybrid rrf_constant must be finite and non-negative")
+		return fmt.Errorf("%w: hybrid rrf_constant must be finite and non-negative", ErrInvalidArgument)
 	}
 	var weightSum float32
 	for field, weight := range params.Weights {
 		if _, ok := queries[field]; !ok && field != "dense" && field != "sparse" {
-			return fmt.Errorf("hybrid weight references unknown query field %q", field)
+			return fmt.Errorf("%w: hybrid weight references unknown query field %q", ErrInvalidArgument, field)
 		}
 		if math.IsNaN(float64(weight)) || math.IsInf(float64(weight), 0) || weight < 0 {
-			return fmt.Errorf("hybrid weight for %q must be finite and non-negative", field)
+			return fmt.Errorf("%w: hybrid weight for %q must be finite and non-negative", ErrInvalidArgument, field)
 		}
 		weightSum += weight
 	}
 	if len(params.Weights) > 0 && weightSum <= 0 {
-		return fmt.Errorf("hybrid weights must contain a positive value")
+		return fmt.Errorf("%w: hybrid weights must contain a positive value", ErrInvalidArgument)
 	}
 	return nil
 }
@@ -1089,7 +1089,7 @@ func (c *Collection) prepareDocumentsLockedVariant(docs []Document, allowReplace
 				return nil, c.nextID, fmt.Errorf("document %d duplicates ID %d in batch", i, clone.ID)
 			}
 			if _, exists := c.documents[clone.ID]; exists && !allowReplacement {
-				return nil, c.nextID, fmt.Errorf("document %d ID %d already exists", i, clone.ID)
+				return nil, c.nextID, fmt.Errorf("%w: document %d ID %d", ErrDocumentExists, i, clone.ID)
 			}
 			if clone.ID >= nextID {
 				nextID = clone.ID + 1
@@ -1520,7 +1520,7 @@ func (c *Collection) deleteDocumentDirect(ctx context.Context, docID uint64) err
 		return fmt.Errorf("document ID cannot be zero")
 	}
 	if _, exists := c.documents[docID]; !exists {
-		return fmt.Errorf("document %d not found", docID)
+		return fmt.Errorf("%w: %d", ErrDocumentNotFound, docID)
 	}
 
 	// Remove from all indexes

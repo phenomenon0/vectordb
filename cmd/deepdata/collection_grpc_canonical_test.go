@@ -455,6 +455,11 @@ func TestCanonicalGRPCSearchAdmissionIsBounded(t *testing.T) {
 		persistenceHealth: func() error { return nil },
 	}
 	ctx := canonicalGRPCAdminContext("acme")
+	// The bounds are checked by the engine, which needs the collection to
+	// exist; a missing collection is NotFound and would mask the check.
+	if _, err := server.CreateCollection(ctx, canonicalGRPCCreateCollectionRequest("acme", "docs")); err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
 
 	if _, err := server.Search(ctx, &deepdatav3.SearchRequest{
 		TenantId:   "acme",

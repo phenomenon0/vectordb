@@ -2,6 +2,7 @@ package collection
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -389,5 +390,58 @@ func TestSearchRecordsUsageForReturnedDocs(t *testing.T) {
 	}
 	if got := coll.usage.Len(); got != 2 {
 		t.Fatalf("usage entries = %d, want 2 (returned docs)", got)
+	}
+}
+
+// TestSearchErrorsAreTypedSentinels pins the engine's error classification.
+// The transports (cmd/deepdata) map these sentinels to HTTP statuses and gRPC
+// codes through internal/apierror; a bare fmt.Errorf here reaches an agent
+// as a 500 with no hint, which is what forced both transports to duplicate
+// the engine's validation before CTL-01.
+func TestSearchErrorsAreTypedSentinels(t *testing.T) {
+	ctx := context.Background()
+	tenants := NewTenantManager("")
+	field := func(name string) VectorField {
+		return VectorField{Name: name, Type: VectorTypeDense, Dim: 4, Index: IndexConfig{Type: IndexTypeFLAT}}
+	}
+	schema := CollectionSchema{Name: "docs", Fields: []VectorField{field("dense"), field("other")}}
+	if _, err := tenants.CreateCollection(ctx, "acme", schema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tenants.CreateCollection(ctx, "acme", schema); !errors.Is(err, ErrCollectionExists) {
+		t.Fatalf("duplicate create = %v, want ErrCollectionExists", err)
+	}
+	if _, err := tenants.GetCollection("acme", "missing"); !errors.Is(err, ErrCollectionNotFound) {
+		t.Fatalf("missing collection = %v, want ErrCollectionNotFound", err)
+	}
+	if _, err := tenants.SearchCollection(ctx, "nobody", SearchRequest{CollectionName: "docs", TopK: 1}); !errors.Is(err, ErrCollectionNotFound) {
+		t.Fatalf("unknown tenant = %v, want ErrCollectionNotFound", err)
+	}
+
+	q := []float32{1, 0, 0, 0}
+	cases := []struct {
+		name string
+		req  SearchRequest
+		want error
+	}{
+		{"no queries", SearchRequest{TopK: 1}, ErrInvalidArgument},
+		{"top_k above the cap", SearchRequest{Queries: map[string]interface{}{"dense": q}, TopK: CanonicalMaxSearchTopK + 1}, ErrInvalidArgument},
+		{"two fields without a fusion rule", SearchRequest{Queries: map[string]interface{}{"dense": q, "other": q}, TopK: 1}, ErrInvalidSearchArgument},
+	}
+	for _, tc := range cases {
+		tc.req.CollectionName = "docs"
+		_, err := tenants.SearchCollection(ctx, "acme", tc.req)
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("%s: err = %v, want %v", tc.name, err, tc.want)
+		}
+	}
+
+	// The message names the wire fields an agent can actually send, not the
+	// Go identifiers of the request struct.
+	_, err := tenants.SearchCollection(ctx, "acme", SearchRequest{
+		CollectionName: "docs", Queries: map[string]interface{}{"dense": q, "other": q}, TopK: 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "hybrid_params or fallback") {
+		t.Fatalf("multi-field message = %v, want it to name hybrid_params or fallback", err)
 	}
 }

@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from .errors import (
+    APIError,
     ConnectionError,
     TimeoutError,
     classify_error,
@@ -32,9 +33,6 @@ class RetryConfig:
 
 DEFAULT_RETRY = RetryConfig()
 
-# Status codes that trigger retry — matches Go client
-_RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-
 
 def retry_delay(attempt: int, cfg: RetryConfig) -> float:
     """Compute backoff delay for the given attempt (0-indexed)."""
@@ -44,11 +42,16 @@ def retry_delay(attempt: int, cfg: RetryConfig) -> float:
     return max(0.0, delay + jitter)
 
 
-def should_retry(status_code: int, attempt: int, cfg: RetryConfig | None) -> bool:
-    """Check if a request should be retried."""
+def should_retry(exc: APIError, attempt: int, cfg: RetryConfig | None) -> bool:
+    """Check if a request should be retried.
+
+    ``exc.retryable`` is the server's verdict when it sent the structured
+    envelope (a quota limit is 409 and never retryable; a rate limit is 429
+    and retryable), else the status-code default from classify_error.
+    """
     if cfg is None or attempt >= cfg.max_retries:
         return False
-    return status_code in _RETRYABLE_STATUS_CODES
+    return exc.retryable
 
 
 def build_headers(
@@ -74,7 +77,7 @@ def handle_response(response: httpx.Response) -> Any:
             return None
         return response.json()
 
-    raise classify_error(response.status_code, response.text)
+    raise classify_error(response.status_code, response.text, response.headers)
 
 
 def handle_request_error(exc: Exception) -> None:

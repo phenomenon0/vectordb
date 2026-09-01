@@ -216,6 +216,11 @@ func TestCanonicalHTTPRejectsUnaddressableCollectionName(t *testing.T) {
 
 func TestCanonicalRCSurfaceSearchAdmissionIsBounded(t *testing.T) {
 	handler := newCanonicalSurfaceTestHandler(t)
+	// The bounds are checked by the engine, which needs the collection to
+	// exist; a missing collection is a 404 and would mask the check.
+	if response := canonicalHTTPCreateCollection(t, handler, "acme", "docs", ""); response.Code/100 != 2 {
+		t.Fatalf("create collection returned %d: %s", response.Code, response.Body.String())
+	}
 	path := "/v3/tenants/acme/collections/docs/search"
 	for _, tc := range []struct {
 		name string

@@ -1,6 +1,6 @@
 # DeepData — plan
 
-Next action: CTL-01 — create internal/apierror; every API error carries code, hint, docs pointer.
+Next action: CTL-02 — text in, text out: Ollama first, hash embedder only when named.
 
 Status lives only in [tasks/gates.json](gates.json), rendered to [docs/PRE_RELEASE_STATUS.md](../docs/PRE_RELEASE_STATUS.md).
 This file holds ordering and dependencies; it has no checkboxes. Gate ids below name the ledger row.

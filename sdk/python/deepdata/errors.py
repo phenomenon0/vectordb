@@ -1,9 +1,16 @@
 """Exception hierarchy for the DeepData Python SDK.
 
-Mirrors the Go client's error classification (client/errors.go).
+Mirrors the Go client's error classification (client/errors.go). Servers that
+speak the structured error envelope (internal/collection/API.md, section
+Errors) populate ``code``, ``hint``, ``field``, ``request_id``, ``docs`` and
+``retryable`` on every :class:`APIError`; older plain-text servers leave the
+envelope fields empty.
 """
 
 from __future__ import annotations
+
+import json
+from typing import Any, Mapping
 
 
 class DeepDataError(Exception):
@@ -31,80 +38,139 @@ class APIError(DeepDataError):
         message: str = "",
         *,
         retryable: bool = False,
+        code: str = "",
+        hint: str = "",
+        field: str = "",
+        request_id: str = "",
+        retry_after: float | None = None,
+        docs: str = "",
     ) -> None:
         self.status_code = status_code
         self.retryable = retryable
+        self.code = code
+        self.hint = hint
+        self.field = field
+        self.request_id = request_id
+        self.retry_after = retry_after
+        self.docs = docs
         super().__init__(message or f"HTTP {status_code}")
 
     def __str__(self) -> str:
-        return f"deepdata api {self.status_code}: {self.message}"
+        head = f"deepdata api {self.status_code}"
+        if self.code:
+            head += f" {self.code}"
+        text = f"{head}: {self.message}"
+        if self.hint:
+            text += f" Hint: {self.hint}"
+        return text
 
 
 class AuthenticationError(APIError):
     """401 Unauthorized."""
 
-    def __init__(self, message: str = "unauthorized") -> None:
-        super().__init__(401, message, retryable=False)
+    def __init__(self, message: str = "unauthorized", **envelope: Any) -> None:
+        super().__init__(401, message, retryable=False, **envelope)
 
 
 class PermissionError(APIError):
     """403 Forbidden."""
 
-    def __init__(self, message: str = "forbidden") -> None:
-        super().__init__(403, message, retryable=False)
+    def __init__(self, message: str = "forbidden", **envelope: Any) -> None:
+        super().__init__(403, message, retryable=False, **envelope)
 
 
 class NotFoundError(APIError):
     """404 Not Found (collection or document missing)."""
 
-    def __init__(self, message: str = "not found") -> None:
-        super().__init__(404, message, retryable=False)
+    def __init__(self, message: str = "not found", **envelope: Any) -> None:
+        super().__init__(404, message, retryable=False, **envelope)
 
 
 class ValidationError(APIError):
     """400/422 validation failure."""
 
-    def __init__(self, message: str = "validation error", *, status_code: int = 422) -> None:
-        super().__init__(status_code, message, retryable=False)
+    def __init__(
+        self, message: str = "validation error", *, status_code: int = 422, **envelope: Any
+    ) -> None:
+        super().__init__(status_code, message, retryable=False, **envelope)
 
 
 class RateLimitError(APIError):
     """429 Too Many Requests."""
 
-    def __init__(self, message: str = "rate limited", retry_after: float | None = None) -> None:
-        super().__init__(429, message, retryable=True)
-        self.retry_after = retry_after
+    def __init__(
+        self, message: str = "rate limited", retry_after: float | None = None, **envelope: Any
+    ) -> None:
+        super().__init__(429, message, retryable=True, retry_after=retry_after, **envelope)
 
 
 class ServerError(APIError):
     """5xx server-side error."""
 
-    def __init__(self, status_code: int = 500, message: str = "server error") -> None:
-        super().__init__(status_code, message, retryable=True)
+    def __init__(self, status_code: int = 500, message: str = "server error", **envelope: Any) -> None:
+        super().__init__(status_code, message, retryable=True, **envelope)
 
 
 # Retryable status codes — matches Go client/errors.go
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
-def classify_error(status_code: int, body: str) -> APIError:
+def _parse_envelope(body: str) -> dict[str, Any]:
+    """Return the structured error envelope, or {} for a plain-text body."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return {}
+    if isinstance(data, dict) and isinstance(data.get("code"), str):
+        return data
+    return {}
+
+
+def classify_error(
+    status_code: int, body: str, headers: Mapping[str, str] | None = None
+) -> APIError:
     """Convert an HTTP status code + body into the appropriate exception.
 
-    Mirrors classifyHTTPError in the Go client.
+    Mirrors classifyHTTPError in the Go client. A structured envelope supplies
+    the message, the envelope fields and the server's own retryable verdict;
+    a plain-text body is the message and the status code decides retryability.
     """
-    retryable = status_code in _RETRYABLE_STATUS_CODES
+    envelope = _parse_envelope(body)
+    message = str(envelope.get("message", "")) or body
+    retry_after: float | None = None
+    if envelope.get("retry_after_ms"):
+        retry_after = float(envelope["retry_after_ms"]) / 1000
+    elif headers is not None and headers.get("Retry-After"):
+        try:
+            retry_after = float(headers["Retry-After"])
+        except ValueError:
+            retry_after = None
+    fields: dict[str, Any] = {
+        "code": str(envelope.get("code", "")),
+        "hint": str(envelope.get("hint", "")),
+        "field": str(envelope.get("field", "")),
+        "request_id": str(envelope.get("request_id", "")),
+        "docs": str(envelope.get("docs", "")),
+        "retry_after": retry_after,
+    }
 
+    err: APIError
     if status_code == 401:
-        return AuthenticationError(body)
-    if status_code == 403:
-        return PermissionError(body)
-    if status_code == 404:
-        return NotFoundError(body)
-    if status_code in (400, 422):
-        return ValidationError(body, status_code=status_code)
-    if status_code == 429:
-        return RateLimitError(body)
-    if status_code >= 500:
-        return ServerError(status_code, body)
-
-    return APIError(status_code, body, retryable=retryable)
+        err = AuthenticationError(message, **fields)
+    elif status_code == 403:
+        err = PermissionError(message, **fields)
+    elif status_code == 404:
+        err = NotFoundError(message, **fields)
+    elif status_code in (400, 422):
+        err = ValidationError(message, status_code=status_code, **fields)
+    elif status_code == 429:
+        err = RateLimitError(message, **fields)
+    elif status_code >= 500:
+        err = ServerError(status_code, message, **fields)
+    else:
+        err = APIError(
+            status_code, message, retryable=status_code in _RETRYABLE_STATUS_CODES, **fields
+        )
+    if isinstance(envelope.get("retryable"), bool):
+        err.retryable = envelope["retryable"]
+    return err

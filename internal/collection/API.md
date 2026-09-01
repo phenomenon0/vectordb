@@ -234,6 +234,55 @@ it), and `fell_back_to` (the secondary field name when the ladder fired,
 omitted otherwise) — types.go:466-478 and the HTTP struct in
 cmd/deepdata/collection_http.go:357-367.
 
+## Errors
+
+Every HTTP and gRPC error is an `internal/apierror` value (the envelope struct
+at `internal/apierror/apierror.go:43-53`, the code table at :63-75). Engine
+errors reach it through `FromEngine` (:92), one `errors.Is` table over the
+sentinels in limits.go (`ErrInvalidArgument`, `ErrInvalidSearchArgument`,
+`ErrCollectionNotFound`, `ErrDocumentNotFound`, `ErrCollectionExists`,
+`ErrDocumentExists`, `ErrTenantLimitExceeded`, `ErrCollectionLimitExceeded`);
+an unrecognised error is `internal`. HTTP writes the envelope as JSON with the
+table's status and sets `Retry-After` when `retry_after_ms` is set
+(`WriteHTTP`, :129). gRPC returns the table's status code and message with an
+`ErrorInfo` detail (`reason` = code, `domain` = `deepdata`, metadata `hint`,
+`field`, `request_id`, `docs`) and a `RetryInfo` detail when retryable
+(:147). `request_id` is the caller's `X-Request-ID` header or `x-request-id`
+metadata, else one the server mints; both transports echo it back
+(cmd/deepdata/server.go:3375, cmd/deepdata/main.go:3950-3965).
+
+```json
+{
+  "code": "not_found",
+  "message": "collection not found: missing for tenant acme",
+  "hint": "list the tenant's collections to see what exists; document ids are the ones you inserted",
+  "request_id": "agent-req-7",
+  "retryable": false,
+  "docs": "internal/collection/API.md#errors"
+}
+```
+
+`field` names the offending request field when known and is omitted otherwise.
+
+| code | HTTP | gRPC | retryable | when |
+|---|---|---|---|---|
+| `invalid_argument` | 400 | `InvalidArgument` | no | malformed body or identifier; `top_k`, `ef_search`, `score_floor`, `usage_boost`, `hybrid_params`/`fallback` shape out of range |
+| `not_found` | 404 | `NotFound` | no | unknown route, collection or document |
+| `already_exists` | 409 | `AlreadyExists` | no | create of an existing collection; insert of an existing document id (`PUT` upserts instead) |
+| `unauthenticated` | 401 | `Unauthenticated` | no | missing or invalid credential |
+| `permission_denied` | 403 | `PermissionDenied` | no | the token lacks the permission or collection scope |
+| `quota_exceeded` | 409 | `FailedPrecondition` | no | tenant or collection limit; fixed for the process lifetime, so retrying cannot help |
+| `payload_too_large` | 413 | `ResourceExhausted` | no | request or response above the size limits |
+| `rate_limited` | 429 | `ResourceExhausted` | yes; `retry_after_ms` 1000, `Retry-After: 1` | per-tenant or authentication-failure limiter |
+| `unavailable` | 503 | `Unavailable` | yes | persistence fault (see Durability behavior) or shutdown |
+| `method_not_allowed` | 405 | `Unimplemented` | no | known path, wrong method |
+| `internal` | 500 | `Internal` | no | unexpected fault; report the `request_id` |
+
+Tests: `cmd/deepdata/apierror_transport_test.go` (HTTP envelope, request id
+echo, 429 `Retry-After`, gRPC `ErrorInfo`/`RetryInfo`, interceptor plumbing),
+`internal/apierror/apierror_test.go` (the table), and
+TestSearchErrorsAreTypedSentinels in `agent_retrieval_test.go` (engine sentinels).
+
 ## gRPC mirror
 
 The canonical protobuf is

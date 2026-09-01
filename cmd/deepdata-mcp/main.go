@@ -76,13 +76,32 @@ type toolDefinition struct {
 }
 
 type toolCallResult struct {
-	Content []contentPart `json:"content"`
-	IsError bool          `json:"isError,omitempty"`
+	Content           []contentPart `json:"content"`
+	IsError           bool          `json:"isError,omitempty"`
+	StructuredContent any           `json:"structuredContent,omitempty"`
 }
 
 type contentPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+// serverError is the DeepData error envelope (internal/collection/API.md,
+// section Errors). The text part tells the model what went wrong and what to
+// do next; the raw envelope rides along as structuredContent for hosts that
+// branch on the code.
+type serverError struct {
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Hint    string          `json:"hint,omitempty"`
+	Raw     json.RawMessage `json:"-"`
+}
+
+func (e *serverError) Error() string {
+	if e.Hint == "" {
+		return e.Code + ": " + e.Message
+	}
+	return e.Code + ": " + e.Message + " Hint: " + e.Hint
 }
 
 // ── Server ───────────────────────────────────────────────────────────────
@@ -144,6 +163,11 @@ func (s *mcpServer) doHTTP(method, path string, body any) (json.RawMessage, erro
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		var envelope serverError
+		if json.Unmarshal(raw, &envelope) == nil && envelope.Code != "" {
+			envelope.Raw = raw
+			return nil, &envelope
+		}
 		return nil, errors.New(strings.TrimSpace(string(raw)))
 	}
 	return raw, nil
@@ -154,10 +178,15 @@ func textResult(payload json.RawMessage) any {
 }
 
 func errorResult(err error) any {
-	return toolCallResult{
+	result := toolCallResult{
 		Content: []contentPart{{Type: "text", Text: err.Error()}},
 		IsError: true,
 	}
+	var envelope *serverError
+	if errors.As(err, &envelope) {
+		result.StructuredContent = envelope.Raw
+	}
+	return result
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────

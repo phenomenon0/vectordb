@@ -27,6 +27,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Neumenon/cowrie/go/codec"
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/index"
 	"github.com/phenomenon0/vectordb/internal/logging"
@@ -198,7 +199,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			authPeerKey := httpAuthPeerKey(r, trustProxy)
 			authAttempt, allowed := store.authFailureRL.begin(authPeerKey)
 			if !allowed {
-				http.Error(w, "authentication rate limited", http.StatusTooManyRequests)
+				apierror.WriteHTTP(w, apierror.New(apierror.CodeRateLimited, "authentication rate limited"))
 				return
 			}
 			finishAuthAttempt := func(failed bool) {
@@ -218,7 +219,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 					// No token provided, but JWT is configured
 					if store.requireAuth {
 						finishAuthAttempt(true)
-						http.Error(w, "unauthorized: missing authentication token", http.StatusUnauthorized)
+						apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized: missing authentication token"))
 						return
 					}
 					// If not required, use default context (backward compatibility)
@@ -236,7 +237,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 					if err != nil {
 						logging.Default().Warn("JWT validation failed", "error", err, "path", r.URL.Path)
 						finishAuthAttempt(true)
-						http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
+						apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized: invalid token"))
 						return
 					}
 					authenticated = true
@@ -250,21 +251,21 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 						authenticated = true
 					} else if token != "" {
 						finishAuthAttempt(true)
-						http.Error(w, "unauthorized", http.StatusUnauthorized)
+						apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized"))
 						return
 					}
 				}
 
 				if store.requireAuth && !authenticated {
 					finishAuthAttempt(true)
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized"))
 					return
 				}
 
 				requestedTenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
 				if requestedTenantID != "" && !isValidTenantID(requestedTenantID) {
 					finishAuthAttempt(false)
-					http.Error(w, "invalid X-Tenant-ID header", http.StatusBadRequest)
+					apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "invalid X-Tenant-ID header"))
 					return
 				}
 				tenantID := "default"
@@ -315,7 +316,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 					key = "ip:" + strings.TrimSpace(clientIP)
 				}
 				if !store.rl.allow(key) {
-					http.Error(w, "rate limited", http.StatusTooManyRequests)
+					apierror.WriteHTTP(w, apierror.New(apierror.CodeRateLimited, "rate limited"))
 					return
 				}
 			}
@@ -323,7 +324,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			if canonicalOnly && store.canonicalTenantRL != nil {
 				tenantKey := canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
 				if !store.canonicalTenantRL.allow(tenantKey) {
-					http.Error(w, "tenant rate limited", http.StatusTooManyRequests)
+					apierror.WriteHTTP(w, apierror.New(apierror.CodeRateLimited, "tenant rate limited"))
 					return
 				}
 			}
@@ -3418,7 +3419,9 @@ func canonicalRCSurface(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		http.NotFound(w, r)
+		e := apierror.New(apierror.CodeNotFound, "no such route on the RC surface: "+path)
+		e.Hint = "the RC serves /v3/tenants/{tenant}/collections..., /healthz, /readyz, /livez and /metrics; the route table is in the contract"
+		apierror.WriteHTTP(w, e)
 	})
 }
 

@@ -55,7 +55,7 @@ require (
 	golang.org/x/net v0.56.0
 	golang.org/x/text v0.39.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478
 )
 
 replace github.com/coder/hnsw => ./internal/index/hnsw

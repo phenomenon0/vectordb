@@ -211,19 +211,44 @@ func TestToolsCallUpsertAndInsertUseCanonicalEndpoints(t *testing.T) {
 }
 
 func TestToolErrorsAreIsErrorNotRPCErrors(t *testing.T) {
+	// The server answers with the structured envelope; the tool result must
+	// hand the model the code, message and hint as text (so it can decide
+	// its next call) and the raw envelope as structuredContent (so a host
+	// can branch on the code without parsing prose).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "collection not found", http.StatusNotFound)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"not_found","message":"collection not found: nope","hint":"list the collections first","retryable":false,"docs":"internal/collection/API.md#errors"}`))
 	}))
 	defer server.Close()
 
 	s := newTestServer(server.URL)
-	frames := feedLines(t, s, mustCall(t, "tools/call", map[string]any{
+	getMissing := mustCall(t, "tools/call", map[string]any{
 		"name":      "get_document",
 		"arguments": map[string]any{"collection": "nope", "id": 1},
-	}))
+	})
+	frames := feedLines(t, s, getMissing)
 	text, isError := toolText(t, frames[0])
-	if !isError || !strings.Contains(text, "not found") {
-		t.Fatalf("expected isError with server message, got %q isError=%v", text, isError)
+	if !isError || !strings.Contains(text, "not_found: collection not found: nope Hint: list the collections first") {
+		t.Fatalf("expected isError with code, message and hint, got %q isError=%v", text, isError)
+	}
+	structured, _ := resultOf(t, frames[0])["structuredContent"].(map[string]any)
+	if structured["code"] != "not_found" || structured["hint"] != "list the collections first" {
+		t.Fatalf("structuredContent must carry the envelope, got %v", structured)
+	}
+
+	// A server that still answers in plain text is forwarded verbatim.
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "collection not found", http.StatusNotFound)
+	}))
+	defer plain.Close()
+	frames = feedLines(t, newTestServer(plain.URL), getMissing)
+	text, isError = toolText(t, frames[0])
+	if !isError || text != "collection not found" {
+		t.Fatalf("expected plain-text passthrough, got %q isError=%v", text, isError)
+	}
+	if _, has := resultOf(t, frames[0])["structuredContent"]; has {
+		t.Fatal("plain-text errors carry no structuredContent")
 	}
 
 	// Unknown tool and missing argument are RPC-level errors.

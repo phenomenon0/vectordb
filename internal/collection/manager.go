@@ -52,7 +52,7 @@ func (cm *CollectionManager) createCollectionDirect(ctx context.Context, schema 
 
 	// Check if collection already exists
 	if _, exists := cm.collections[schema.Name]; exists {
-		return nil, fmt.Errorf("collection %s already exists", schema.Name)
+		return nil, fmt.Errorf("%w: %s", ErrCollectionExists, schema.Name)
 	}
 
 	// Create collection
@@ -77,7 +77,7 @@ func (cm *CollectionManager) GetCollection(name string) (*Collection, error) {
 
 	coll, exists := cm.collections[name]
 	if !exists {
-		return nil, fmt.Errorf("collection %s not found", name)
+		return nil, fmt.Errorf("%w: %s", ErrCollectionNotFound, name)
 	}
 
 	return coll, nil
@@ -99,7 +99,7 @@ func (cm *CollectionManager) deleteCollectionDirect(ctx context.Context, name st
 
 	coll, exists := cm.collections[name]
 	if !exists {
-		return fmt.Errorf("collection %s not found", name)
+		return fmt.Errorf("%w: %s", ErrCollectionNotFound, name)
 	}
 
 	// Cleanup collection resources (indexes, documents)
@@ -145,7 +145,7 @@ func (cm *CollectionManager) GetCollectionInfo(name string) (*CollectionInfo, er
 
 	coll, exists := cm.collections[name]
 	if !exists {
-		return nil, fmt.Errorf("collection %s not found", name)
+		return nil, fmt.Errorf("%w: %s", ErrCollectionNotFound, name)
 	}
 
 	schema := coll.Schema()
@@ -290,7 +290,7 @@ func (cm *CollectionManager) GetDocument(collectionName string, docID uint64) (*
 
 	doc, ok := coll.GetDocument(docID)
 	if !ok {
-		return nil, fmt.Errorf("document %d not found in collection %s", docID, collectionName)
+		return nil, fmt.Errorf("%w: %d in collection %s", ErrDocumentNotFound, docID, collectionName)
 	}
 
 	return doc, nil
@@ -306,7 +306,7 @@ func (cm *CollectionManager) UpdateCollectionMetadata(name string, metadata map[
 
 	coll, exists := cm.collections[name]
 	if !exists {
-		return fmt.Errorf("collection %s not found", name)
+		return fmt.Errorf("%w: %s", ErrCollectionNotFound, name)
 	}
 
 	coll.UpdateMetadata(metadata)
@@ -365,12 +365,12 @@ func (cm *CollectionManager) RenameCollection(oldName, newName string) error {
 	// Check old collection exists
 	coll, exists := cm.collections[oldName]
 	if !exists {
-		return fmt.Errorf("collection %s not found", oldName)
+		return fmt.Errorf("%w: %s", ErrCollectionNotFound, oldName)
 	}
 
 	// Check new name is not taken
 	if _, exists := cm.collections[newName]; exists {
-		return fmt.Errorf("collection %s already exists", newName)
+		return fmt.Errorf("%w: %s", ErrCollectionExists, newName)
 	}
 
 	// Update schema name under the collection's own lock to prevent

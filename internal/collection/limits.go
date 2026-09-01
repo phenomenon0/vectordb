@@ -35,6 +35,15 @@ var (
 	// Transports map it to a client error (HTTP 400 / gRPC InvalidArgument)
 	// rather than a server fault.
 	ErrInvalidSearchArgument = errors.New("invalid search argument")
+	// ErrInvalidArgument marks any other caller-supplied value the engine
+	// rejects (search shape, hybrid params, filters). Same transport mapping.
+	ErrInvalidArgument = errors.New("invalid argument")
+	// ErrCollectionNotFound, ErrDocumentNotFound, ErrCollectionExists and ErrDocumentExists let
+	// transports classify manager errors with errors.Is instead of matching text.
+	ErrCollectionNotFound = errors.New("collection not found")
+	ErrDocumentNotFound   = errors.New("document not found")
+	ErrCollectionExists   = errors.New("collection already exists")
+	ErrDocumentExists     = errors.New("document already exists")
 )
 
 // StoreLimits is immutable deployment admission policy for new durable

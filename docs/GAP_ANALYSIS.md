@@ -108,7 +108,7 @@ The twelve gaps of journal §3, in its order. What already landed for agents is 
 | # | gap | root cause | fixing gate |
 |---|---|---|---|
 | 1 | no text-to-vector path on any agent surface | the /api/embed handler (`cmd/deepdata/server.go:2577`) is not on the RC surface; `cmd/deepdata/main.go:3275` hard-wires NewHashEmbedder(1); QueryText at `cmd/deepdata/collection_http.go:98` is a fossil nothing reads | CTL-02 |
-| 2 | errors are unstructured plain text on HTTP and MCP | `cmd/deepdata-mcp/main.go:147` forwards the body verbatim; writeCanonicalOperationError at `cmd/deepdata/collection_http.go:638` writes text with no code, hint or request id | CTL-01 |
+| 2 | HTTP and MCP errors carry no code, hint, request id or retry verdict | `cmd/deepdata-mcp/main.go:147` forwards the body verbatim; writeCanonicalOperationError at `cmd/deepdata/collection_http.go:638` writes text with no code, hint or request id | CTL-01 |
 | 3 | no schema or capability discovery: no OpenAPI, no proto reflection, no status route, no MCP resources | the contract exists only as Go types; nothing serves it | CTL-04 (self-description), CTL-03 (MCP resources) |
 | 4 | discovery is admin-gated while search is read-gated | `cmd/deepdata/collection_http.go` :409 and :426 require admin; :454 and :507 require read | CTL-04 |
 | 5 | no pagination; top_k capped at 1000; MCP returns up to 16 MiB as one text blob | no max_chars or response_format on the MCP path | CTL-03 (journal §5.3 pagination row: truncation plus steering hint, no cursor) |
@@ -157,7 +157,7 @@ Gate ids only, in the plan's §9.2 order. Each row names the tests that prove it
 
 | gate | what it proves | tests that prove it |
 |---|---|---|
-| CTL-01 | errors are prompts: code, hint, docs pointer via internal/apierror on every surface | errors.Is assertions in `internal/collection/agent_retrieval_test.go`; 404 envelope echoes request_id; 429 carries Retry-After; quota returns 409 |
+| CTL-01 | errors are prompts: code, hint, docs pointer via internal/apierror on every surface | TestSearchErrorsAreTypedSentinels in `internal/collection/agent_retrieval_test.go`; HTTP envelope, request_id echo, 429 Retry-After and gRPC ErrorInfo/RetryInfo in `cmd/deepdata/apierror_transport_test.go`; MCP isError plus structuredContent in `cmd/deepdata-mcp/main_test.go`; envelope fields and the retry verdict in `sdk/python/tests/test_errors.py` |
 | CTL-02 | text in, text out; Ollama first; hash only when named | TextToSparse deterministic; embedding schema validation and dim fill; create with hash, insert texts, search texts, hit carries embedded_by |
 | CTL-03 (+CI-05) | MCP rewritten on the shared api/contract package | tools/list has outputSchema and annotations for all six verbs; concise truncation sets truncated plus hint; remember routes one doc to POST, id to PUT, many to batch; resources/read serves the contract; cmd/deepdata-mcp in the CI package list |
 | CTL-04 (+DOC-03) | self-description and per-result confidence | contract_test.go reflects json tags, limits and the proto service set against operations.json; test_contract.py on the SDK; /v3/status shape; score_direction present; API.md route table generated from the routes subcommand |

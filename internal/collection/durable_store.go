@@ -547,7 +547,7 @@ func (s *DurableStore) prepareCreateMutationWithValidator(
 	m.collectionName = clone.Name
 	m.schema = clone
 	if manager := s.tenants.getManager(m.tenantID); manager != nil && manager.HasCollection(clone.Name) {
-		return fmt.Errorf("collection %s already exists", clone.Name)
+		return fmt.Errorf("%w: %s", ErrCollectionExists, clone.Name)
 	}
 	return nil
 }
@@ -769,7 +769,7 @@ func (s *DurableStore) prepareDeleteDocument(m canonicalMutation) error {
 	}
 	coll, _ := s.tenants.getCollectionDirect(m.tenantID, m.collectionName)
 	if _, ok := coll.GetDocument(m.documentID); !ok {
-		return fmt.Errorf("document %d not found in collection %s", m.documentID, m.collectionName)
+		return fmt.Errorf("%w: %d in collection %s", ErrDocumentNotFound, m.documentID, m.collectionName)
 	}
 	return nil
 }
