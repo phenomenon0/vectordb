@@ -203,7 +203,7 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	t.Cleanup(func() { _ = collections.Close() })
 
 	schema := canonicalResourceSchema("wide")
-	schema.Fields[0].Dim = vcollection.CanonicalMaxVectorDimension
+	schema.Fields[0].Dim = vcollection.MaxVectorDimension
 	createBody, err := json.Marshal(schema)
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 		t.Fatalf("create maximum-dimension collection returned %d: %s", response.Code, response.Body.String())
 	}
 
-	vector := make([]float32, vcollection.CanonicalMaxVectorDimension)
+	vector := make([]float32, vcollection.MaxVectorDimension)
 	vector[0] = 1
 	insertBody, err := json.Marshal(map[string]interface{}{
 		"id":       1,
@@ -237,7 +237,7 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	searchBody := func(includeVectors bool) []byte {
 		body, err := json.Marshal(map[string]interface{}{
 			"queries":         map[string]interface{}{"embedding": vector},
-			"top_k":           vcollection.CanonicalMaxSearchTopK,
+			"top_k":           vcollection.MaxSearchTopK,
 			"include_vectors": includeVectors,
 		})
 		if err != nil {
@@ -277,7 +277,7 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	grpcRequest := &deepdatav3.SearchRequest{
 		TenantId:       "acme",
 		Collection:     "wide",
-		TopK:           int32(vcollection.CanonicalMaxSearchTopK),
+		TopK:           int32(vcollection.MaxSearchTopK),
 		IncludeVectors: true,
 		Queries: map[string]*deepdatav3.VectorData{
 			"embedding": denseProtoVector(vector...),

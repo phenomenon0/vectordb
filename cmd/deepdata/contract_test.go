@@ -228,15 +228,15 @@ func TestContractCapsStayWithinCanonicalLimits(t *testing.T) {
 	recall := schemaProperties(t, schemaSection(t, "deepdata_recall", "input"))
 	topK, _ := recall["top_k"].(map[string]any)
 	maximum, _ := topK["maximum"].(float64)
-	if maximum <= 0 || int(maximum) > vcollection.CanonicalMaxSearchTopK {
-		t.Errorf("recall top_k maximum %v exceeds CanonicalMaxSearchTopK %d", maximum, vcollection.CanonicalMaxSearchTopK)
+	if maximum <= 0 || int(maximum) > vcollection.MaxSearchTopK {
+		t.Errorf("recall top_k maximum %v exceeds MaxSearchTopK %d", maximum, vcollection.MaxSearchTopK)
 	}
 
 	remember := schemaProperties(t, schemaSection(t, "deepdata_remember", "input"))
 	items, _ := remember["items"].(map[string]any)
 	maxItems, _ := items["maxItems"].(float64)
-	if maxItems <= 0 || int(maxItems) > vcollection.CanonicalMaxBatchDocuments {
-		t.Errorf("remember maxItems %v exceeds CanonicalMaxBatchDocuments %d", maxItems, vcollection.CanonicalMaxBatchDocuments)
+	if maxItems <= 0 || int(maxItems) > vcollection.MaxBatchDocuments {
+		t.Errorf("remember maxItems %v exceeds MaxBatchDocuments %d", maxItems, vcollection.MaxBatchDocuments)
 	}
 
 	// The operator set /v3/status advertises is the one the recall schema
@@ -393,8 +393,8 @@ func TestStatusDescribesTheServerFromTheContract(t *testing.T) {
 	if body.Embedding.Available || body.Embedding.Provider != "none" || body.Capabilities.Texts {
 		t.Errorf("embedding = %+v, texts = %v; want none/false without DEEPDATA_EMBEDDER", body.Embedding, body.Capabilities.Texts)
 	}
-	if got := body.Limits["max_search_top_k"]; got != float64(vcollection.CanonicalMaxSearchTopK) {
-		t.Errorf("limits.max_search_top_k = %v, want %d", got, vcollection.CanonicalMaxSearchTopK)
+	if got := body.Limits["max_search_top_k"]; got != float64(vcollection.MaxSearchTopK) {
+		t.Errorf("limits.max_search_top_k = %v, want %d", got, vcollection.MaxSearchTopK)
 	}
 	if len(body.Capabilities.Filters) != 15 {
 		t.Errorf("capabilities.filters = %v, want the 15 filter operators", body.Capabilities.Filters)

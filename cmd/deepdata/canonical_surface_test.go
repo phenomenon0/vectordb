@@ -235,7 +235,7 @@ func TestCanonicalRCSurfaceSearchAdmissionIsBounded(t *testing.T) {
 	}{
 		{
 			name: "top k",
-			body: fmt.Sprintf(`{"queries":{"dense":[1]},"top_k":%d}`, vcollection.CanonicalMaxSearchTopK+1),
+			body: fmt.Sprintf(`{"queries":{"dense":[1]},"top_k":%d}`, vcollection.MaxSearchTopK+1),
 		},
 		{
 			name: "query fields",

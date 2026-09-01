@@ -219,7 +219,7 @@ func openDurableStore(basePath, storagePath string, limits StoreLimits) (*Durabl
 
 func (s *DurableStore) Tenants() *TenantManager { return s.tenants }
 
-// LegacyCollectionCount is a checked startup/migration inspection. Canonical
+// LegacyCollectionCount is a checked startup/migration inspection. Live
 // request paths never receive the underlying V2 CollectionManager.
 func (s *DurableStore) LegacyCollectionCount() (int, error) {
 	s.mu.RLock()
@@ -271,7 +271,7 @@ func (s *DurableStore) latchFaultLocked(err error) error {
 	return fmt.Errorf("%w: %v", ErrDurableStoreFaulted, s.fault)
 }
 
-// Canonical reads hold a shared store barrier for their full operation. A
+// Reads hold a shared store barrier for their full operation. A
 // mutation/checkpoint has the exclusive side, so a read cannot pass a health
 // check and then observe an append/apply fault or a partially applied batch.
 func (s *DurableStore) getCollection(_, _ string) (*Collection, error) {
@@ -761,8 +761,8 @@ func (s *DurableStore) prepareDocumentsMutationWithAdmission(
 	if len(docs) == 0 {
 		return mutation, errors.New("documents cannot be empty")
 	}
-	if enforceCurrentAdmission && len(docs) > CanonicalMaxBatchDocuments {
-		return mutation, fmt.Errorf("document batch exceeds maximum of %d", CanonicalMaxBatchDocuments)
+	if enforceCurrentAdmission && len(docs) > MaxBatchDocuments {
+		return mutation, fmt.Errorf("document batch exceeds maximum of %d", MaxBatchDocuments)
 	}
 	if err := s.prepareCollectionTarget(mutation); err != nil {
 		return mutation, err

@@ -1064,7 +1064,7 @@ func validateStoragePayload(payload *storage.Payload) error {
 	if payload.FormatVersion < 0 || payload.FormatVersion > storage.CurrentFormatVersion {
 		return fmt.Errorf("unsupported format version %d", payload.FormatVersion)
 	}
-	if payload.FormatVersion >= storage.CanonicalFormatVersion && payload.Checksum == "" {
+	if payload.FormatVersion >= storage.StrictFormatVersion && payload.Checksum == "" {
 		return fmt.Errorf("canonical snapshot format %d is missing a checksum", payload.FormatVersion)
 	}
 	if payload.FormatVersion < storage.CurrentFormatVersion && payload.WALHighWater != 0 {
@@ -1082,7 +1082,7 @@ func validateStoragePayload(payload *storage.Payload) error {
 	if payload.Count != len(payload.IDs) {
 		return fmt.Errorf("count/id length mismatch: %d != %d", payload.Count, len(payload.IDs))
 	}
-	if payload.FormatVersion >= storage.CanonicalFormatVersion {
+	if payload.FormatVersion >= storage.StrictFormatVersion {
 		if payload.VectorType != 0 || len(payload.VectorData) != 0 {
 			return fmt.Errorf("current server does not support persisted VectorData payloads")
 		}
@@ -1284,7 +1284,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 			for collName, data := range payload.Indexes {
 				indexType := "hnsw"
 				indexDim := vs.Dim
-				if payload.FormatVersion >= storage.CanonicalFormatVersion {
+				if payload.FormatVersion >= storage.StrictFormatVersion {
 					indexType = payload.IndexTypes[collName]
 					indexDim = payload.IndexDims[collName]
 				}
@@ -1299,7 +1299,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 				if stats.Dim != vs.Dim {
 					return nil, false, fmt.Errorf("imported index %q dimension mismatch: got %d, want %d", collName, stats.Dim, vs.Dim)
 				}
-				if payload.FormatVersion >= storage.CanonicalFormatVersion {
+				if payload.FormatVersion >= storage.StrictFormatVersion {
 					expectedActive := 0
 					for _, id := range vs.IDs {
 						hid := hashID(id)
@@ -1351,7 +1351,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 			}
 		}
 
-		if payload.FormatVersion < storage.CanonicalFormatVersion && len(vs.Seqs) == 0 {
+		if payload.FormatVersion < storage.StrictFormatVersion && len(vs.Seqs) == 0 {
 			vs.Seqs = make([]uint64, len(vs.IDs))
 			for i := range vs.Seqs {
 				vs.Seqs[i] = uint64(i)
@@ -1360,18 +1360,18 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 		if len(vs.Seqs) != len(vs.IDs) {
 			return nil, false, fmt.Errorf("sequence/id length mismatch after migration: %d != %d", len(vs.Seqs), len(vs.IDs))
 		}
-		if payload.FormatVersion < storage.CanonicalFormatVersion {
+		if payload.FormatVersion < storage.StrictFormatVersion {
 			if len(vs.Seqs) > 0 {
 				vs.nextSeq = vs.Seqs[len(vs.Seqs)-1] + 1
 			} else {
 				vs.nextSeq = 0
 			}
 		}
-		if payload.FormatVersion < storage.CanonicalFormatVersion && vs.next == 0 {
+		if payload.FormatVersion < storage.StrictFormatVersion && vs.next == 0 {
 			vs.next = int64(len(vs.IDs))
 		}
 		// Normalize fields omitted by historical snapshots before migration.
-		if payload.FormatVersion < storage.CanonicalFormatVersion {
+		if payload.FormatVersion < storage.StrictFormatVersion {
 			for idKey := range vs.idToIx {
 				if vs.TenantID[idKey] == "" {
 					vs.TenantID[idKey] = "default"
@@ -1385,7 +1385,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 		// normalize them before migrating the checksum. Current snapshots must
 		// match exactly after the same codec-stable normalization.
 		if payload.FormatVersion < storage.CurrentFormatVersion {
-			if payload.FormatVersion == storage.CanonicalFormatVersion {
+			if payload.FormatVersion == storage.StrictFormatVersion {
 				if payload.Checksum != vs.computeV3Checksum() {
 					return nil, false, fmt.Errorf("canonical version 3 snapshot checksum mismatch")
 				}

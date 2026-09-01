@@ -90,7 +90,7 @@ def test_search_request_fields_are_in_the_recall_input_schema() -> None:
     # The SDK must not accept more than the server will take.
     top_k = TenantSearchRequest.model_fields["top_k"]
     assert any(getattr(m, "le", None) == 1000 for m in top_k.metadata), (
-        "top_k must stay capped at the engine's CanonicalMaxSearchTopK"
+        "top_k must stay capped at the engine's MaxSearchTopK"
     )
     assert schema["top_k"]["maximum"] <= 1000
 

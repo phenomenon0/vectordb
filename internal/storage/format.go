@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	// CanonicalFormatVersion is the first snapshot format whose checksum covers
+	// StrictFormatVersion is the first snapshot format whose checksum covers
 	// the complete logical query state and whose index descriptors are strict.
-	CanonicalFormatVersion = 3
+	StrictFormatVersion = 3
 	// CurrentFormatVersion adds the durable WAL checkpoint high-water mark.
 	CurrentFormatVersion = 4
 )

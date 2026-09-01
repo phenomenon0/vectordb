@@ -1366,7 +1366,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, rt *serverRuntime, embedder E
 
 		done := make(chan struct{})
 		go func() {
-			// Canonical mode has no legacy engine to deadlock on, so the
+			// There is no legacy engine to deadlock on, so the
 			// probe answers as it always did with an idle store: ok.
 			if store != nil {
 				store.RLock()

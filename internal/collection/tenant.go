@@ -24,7 +24,7 @@ type TenantManager struct {
 	storagePath string
 
 	// durable is set once, before the manager is returned from OpenDurableStore.
-	// Canonical mutation methods delegate to it; reads keep their stable pointer.
+	// Mutation methods delegate to it; reads keep their stable pointer.
 	durable *DurableStore
 }
 
@@ -118,7 +118,7 @@ func (tm *TenantManager) getCollectionDirect(tenantID, collectionName string) (*
 	return mgr.GetCollection(collectionName)
 }
 
-// ListCollections is the compatibility no-error form. Canonical callers must
+// ListCollections is the compatibility no-error form. Callers must
 // use ListCollectionsChecked so a fault cannot be mistaken for an empty list.
 func (tm *TenantManager) ListCollections(tenantID string) []string {
 	names, _ := tm.ListCollectionsChecked(tenantID)
@@ -316,7 +316,7 @@ func (tm *TenantManager) GetDocument(tenantID, collectionName string, docID uint
 	return doc, true
 }
 
-// ListTenants is the compatibility no-error form. Canonical callers must use
+// ListTenants is the compatibility no-error form. Callers must use
 // ListTenantsChecked so a fault cannot be mistaken for an empty tenant set.
 func (tm *TenantManager) ListTenants() []string {
 	ids, _ := tm.ListTenantsChecked()
@@ -344,7 +344,7 @@ func (tm *TenantManager) listTenantsDirect() []string {
 	return ids
 }
 
-// TenantCount is the compatibility no-error form. Canonical callers must use
+// TenantCount is the compatibility no-error form. Callers must use
 // TenantCountChecked so a fault cannot be mistaken for an empty store.
 func (tm *TenantManager) TenantCount() int {
 	count, _ := tm.TenantCountChecked()

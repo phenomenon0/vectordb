@@ -243,8 +243,8 @@ func (s *CollectionGRPCServer) BatchInsert(ctx context.Context, req *deepdatav3.
 	if len(req.Docs) == 0 {
 		return nil, apierror.New(apierror.CodeInvalidArgument, "at least one document required").GRPC(ctx)
 	}
-	if len(req.Docs) > vcollection.CanonicalMaxBatchDocuments {
-		return nil, apierror.New(apierror.CodePayloadTooLarge, fmt.Sprintf("batch too large: maximum is %d documents", vcollection.CanonicalMaxBatchDocuments)).GRPC(ctx)
+	if len(req.Docs) > vcollection.MaxBatchDocuments {
+		return nil, apierror.New(apierror.CodePayloadTooLarge, fmt.Sprintf("batch too large: maximum is %d documents", vcollection.MaxBatchDocuments)).GRPC(ctx)
 	}
 	if err := requireCanonicalGRPCMutationSize(ctx, req); err != nil {
 		return nil, err

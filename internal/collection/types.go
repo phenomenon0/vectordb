@@ -436,16 +436,16 @@ func (d *Document) SetMetadata(key string, value interface{}) {
 }
 
 const (
-	// CanonicalMaxSearchFields bounds the deliberately small RC hybrid surface.
-	CanonicalMaxSearchFields = 2
-	// CanonicalMaxSearchTopK bounds result allocation and response size.
-	CanonicalMaxSearchTopK = 1000
-	// CanonicalMaxSearchEf bounds the caller ef_search override so one request
+	// MaxSearchFields bounds the deliberately small RC hybrid surface.
+	MaxSearchFields = 2
+	// MaxSearchTopK bounds result allocation and response size.
+	MaxSearchTopK = 1000
+	// MaxSearchEf bounds the caller ef_search override so one request
 	// cannot force a full-graph HNSW scan; large recall needs stay below the
 	// cost of an unbounded beam.
-	CanonicalMaxSearchEf = 4096
-	// CanonicalMaxBatchDocuments bounds one atomic journaled batch.
-	CanonicalMaxBatchDocuments = 10_000
+	MaxSearchEf = 4096
+	// MaxBatchDocuments bounds one atomic journaled batch.
+	MaxBatchDocuments = 10_000
 )
 
 // SearchRequest represents a multi-vector search request.

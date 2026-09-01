@@ -100,7 +100,7 @@ assembled.
   list of V3 operations, naming for each its method, path, required permission,
   matching gRPC method and matching MCP tool where it has one.
   `GET /v3/status` returns that list with the build version, the resolved embedder,
-  the `Canonical*` limits and the engine's capabilities, and
+  the `Max*` limits and the engine's capabilities, and
   `go run ./cmd/deepdata routes` prints it as TSV, which is what generates the
   route table in `internal/collection/API.md`. Search answers on HTTP, gRPC and
   MCP now carry `score_direction` (`lower_is_better` on dense distances,
@@ -109,7 +109,7 @@ assembled.
   `score_direction` per field. Listing collections became `read`-gated on both
   transports, so a least-privilege agent can discover what it may search.
   Drift tests hold the operation list against the proto service, the HTTP
-  dispatcher, the Go json tags, the `Canonical*` caps and the Python models
+  dispatcher, the Go json tags, the `Max*` caps and the Python models
   (gates CTL-04, DOC-03).
 - Usage records now survive a restart. `DurableStore` writes every
   collection's `UsageTracker` to a `<basePath>.usage.json` sidecar with each

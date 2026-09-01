@@ -35,7 +35,7 @@ var canonicalFilterOperators = []string{
 // statusPayload is the GET /v3/status body: what this build is, what it
 // serves, what it will embed with, and where it says no. Every value is
 // derived — the operation list from api/contract/v3/operations.json, the
-// limits from the Canonical* consts and the rate-limit environment, the
+// limits from the Max* consts and the rate-limit environment, the
 // embedding block from the process embedder — so nothing here can drift
 // from the server that answers.
 func statusPayload(embedder *serverEmbedder, usageLoaded bool, requestID string) (map[string]any, error) {
@@ -88,14 +88,14 @@ func statusPayload(embedder *serverEmbedder, usageLoaded bool, requestID string)
 		},
 		"embedding": embedding,
 		"limits": map[string]any{
-			"max_schema_fields":         vcollection.CanonicalMaxSchemaFields,
-			"max_schema_metadata_bytes": vcollection.CanonicalMaxSchemaMetadataBytes,
-			"max_vector_dimension":      vcollection.CanonicalMaxVectorDimension,
-			"max_search_fields":         vcollection.CanonicalMaxSearchFields,
-			"max_search_top_k":          vcollection.CanonicalMaxSearchTopK,
-			"max_search_ef":             vcollection.CanonicalMaxSearchEf,
-			"max_search_response_bytes": vcollection.CanonicalMaxSearchResponseBytes,
-			"max_batch_documents":       vcollection.CanonicalMaxBatchDocuments,
+			"max_schema_fields":         vcollection.MaxSchemaFields,
+			"max_schema_metadata_bytes": vcollection.MaxSchemaMetadataBytes,
+			"max_vector_dimension":      vcollection.MaxVectorDimension,
+			"max_search_fields":         vcollection.MaxSearchFields,
+			"max_search_top_k":          vcollection.MaxSearchTopK,
+			"max_search_ef":             vcollection.MaxSearchEf,
+			"max_search_response_bytes": vcollection.MaxSearchResponseBytes,
+			"max_batch_documents":       vcollection.MaxBatchDocuments,
 			"api_rps":                   envInt("API_RPS", 100),
 			"tenant_rps":                envInt("TENANT_RPS", 100),
 			"tenant_burst":              envInt("TENANT_BURST", 100),

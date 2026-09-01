@@ -7,17 +7,17 @@ import (
 )
 
 const (
-	// CanonicalMaxSchemaFields keeps one collection from multiplying index and
+	// MaxSchemaFields keeps one collection from multiplying index and
 	// response costs beyond the deliberately small release-candidate surface.
-	CanonicalMaxSchemaFields = 8
-	// CanonicalMaxVectorDimension is the fixed persisted-schema admission bound.
-	CanonicalMaxVectorDimension = 65_536
-	// CanonicalMaxSchemaMetadataBytes bounds collection-level metadata after JSON
+	MaxSchemaFields = 8
+	// MaxVectorDimension is the fixed persisted-schema admission bound.
+	MaxVectorDimension = 65_536
+	// MaxSchemaMetadataBytes bounds collection-level metadata after JSON
 	// encoding, which is also how the value is persisted in the journal.
-	CanonicalMaxSchemaMetadataBytes = 64 << 10
-	// CanonicalMaxSearchResponseBytes bounds the estimated in-memory vector copies
+	MaxSchemaMetadataBytes = 64 << 10
+	// MaxSearchResponseBytes bounds the estimated in-memory vector copies
 	// made while constructing one search response.
-	CanonicalMaxSearchResponseBytes = 16 << 20
+	MaxSearchResponseBytes = 16 << 20
 )
 
 const (
@@ -65,16 +65,16 @@ func (limits StoreLimits) validateRequired() error {
 }
 
 func validateCanonicalSchemaResourceBounds(schema *CollectionSchema) error {
-	if len(schema.Fields) > CanonicalMaxSchemaFields {
-		return fmt.Errorf("schema has %d fields; maximum is %d", len(schema.Fields), CanonicalMaxSchemaFields)
+	if len(schema.Fields) > MaxSchemaFields {
+		return fmt.Errorf("schema has %d fields; maximum is %d", len(schema.Fields), MaxSchemaFields)
 	}
 	for _, field := range schema.Fields {
-		if field.Dim > CanonicalMaxVectorDimension {
+		if field.Dim > MaxVectorDimension {
 			return fmt.Errorf(
 				"field %s dimension %d exceeds maximum %d",
 				field.Name,
 				field.Dim,
-				CanonicalMaxVectorDimension,
+				MaxVectorDimension,
 			)
 		}
 	}
@@ -82,11 +82,11 @@ func validateCanonicalSchemaResourceBounds(schema *CollectionSchema) error {
 	if err != nil {
 		return fmt.Errorf("encode schema metadata: %w", err)
 	}
-	if len(metadata) > CanonicalMaxSchemaMetadataBytes {
+	if len(metadata) > MaxSchemaMetadataBytes {
 		return fmt.Errorf(
 			"schema metadata is %d bytes; maximum is %d",
 			len(metadata),
-			CanonicalMaxSchemaMetadataBytes,
+			MaxSchemaMetadataBytes,
 		)
 	}
 	return nil
@@ -101,13 +101,13 @@ func validateCanonicalSearchResponseBudget(schema CollectionSchema, topK int, in
 	if err != nil {
 		return err
 	}
-	if int64(topK) > int64(CanonicalMaxSearchResponseBytes)/perDocument {
+	if int64(topK) > int64(MaxSearchResponseBytes)/perDocument {
 		estimated := perDocument * int64(topK)
 		return fmt.Errorf(
 			"%w: estimated vector response is %d bytes; maximum is %d",
 			ErrSearchResponseBudgetExceeded,
 			estimated,
-			CanonicalMaxSearchResponseBytes,
+			MaxSearchResponseBytes,
 		)
 	}
 	return nil
@@ -124,11 +124,11 @@ func canonicalSearchResponseBytesPerDocument(schema CollectionSchema, includeVec
 		if field.Type == VectorTypeSparse {
 			bytesPerDimension = canonicalSparseResponseBytesPerDimension
 		}
-		if dimension > (int64(CanonicalMaxSearchResponseBytes)-perDocument)/bytesPerDimension {
+		if dimension > (int64(MaxSearchResponseBytes)-perDocument)/bytesPerDimension {
 			return 0, fmt.Errorf(
 				"%w: one result exceeds the %d-byte budget",
 				ErrSearchResponseBudgetExceeded,
-				CanonicalMaxSearchResponseBytes,
+				MaxSearchResponseBytes,
 			)
 		}
 		perDocument += dimension * bytesPerDimension

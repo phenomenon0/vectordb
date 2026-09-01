@@ -111,7 +111,7 @@ type CollectionHTTPServer struct {
 	manager       *vcollection.CollectionManager
 	tenantManager *vcollection.TenantManager // Multi-tenant collection manager
 	graphIndex    *graph.GraphIndex          // Optional GraphRAG index for graph-boosted search
-	durableStore  *vcollection.DurableStore  // Canonical Linux persistence boundary
+	durableStore  *vcollection.DurableStore  // canonical Linux persistence boundary
 	embedder      *serverEmbedder            // process text embedder for `texts`; nil = none
 
 	persistenceMu       sync.Mutex
@@ -325,7 +325,7 @@ func (s *CollectionHTTPServer) Abort() error {
 }
 
 // Manager returns the legacy V2 manager for explicit migration/compatibility
-// code. Canonical durable state is never installed into this raw manager.
+// code. The canonical durable state is never installed into this raw manager.
 func (s *CollectionHTTPServer) Manager() *vcollection.CollectionManager {
 	return s.manager
 }
@@ -1011,8 +1011,8 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one document required"))
 		return
 	}
-	if len(req.Documents) > vcollection.CanonicalMaxBatchDocuments {
-		apierror.WriteHTTP(w, apierror.New(apierror.CodePayloadTooLarge, fmt.Sprintf("batch too large: maximum is %d documents", vcollection.CanonicalMaxBatchDocuments)))
+	if len(req.Documents) > vcollection.MaxBatchDocuments {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodePayloadTooLarge, fmt.Sprintf("batch too large: maximum is %d documents", vcollection.MaxBatchDocuments)))
 		return
 	}
 

@@ -507,14 +507,14 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (resp *Searc
 	if len(req.Queries) == 0 {
 		return nil, fmt.Errorf("%w: at least one query field is required", ErrInvalidArgument)
 	}
-	if len(req.Queries) > CanonicalMaxSearchFields {
-		return nil, fmt.Errorf("%w: at most %d query fields are supported", ErrInvalidArgument, CanonicalMaxSearchFields)
+	if len(req.Queries) > MaxSearchFields {
+		return nil, fmt.Errorf("%w: at most %d query fields are supported", ErrInvalidArgument, MaxSearchFields)
 	}
-	if req.TopK <= 0 || req.TopK > CanonicalMaxSearchTopK {
-		return nil, fmt.Errorf("%w: top_k must be in [1, %d]", ErrInvalidArgument, CanonicalMaxSearchTopK)
+	if req.TopK <= 0 || req.TopK > MaxSearchTopK {
+		return nil, fmt.Errorf("%w: top_k must be in [1, %d]", ErrInvalidArgument, MaxSearchTopK)
 	}
-	if req.EfSearch < 0 || req.EfSearch > CanonicalMaxSearchEf {
-		return nil, fmt.Errorf("%w: ef_search must be in [0, %d]", ErrInvalidArgument, CanonicalMaxSearchEf)
+	if req.EfSearch < 0 || req.EfSearch > MaxSearchEf {
+		return nil, fmt.Errorf("%w: ef_search must be in [0, %d]", ErrInvalidArgument, MaxSearchEf)
 	}
 	if req.HybridParams != nil {
 		if err := validateHybridSearchParams(req.Queries, req.HybridParams); err != nil {
@@ -646,7 +646,7 @@ func primaryQualityWorse(best, threshold float64, lowerIsBetter bool) bool {
 // in the request's query map.
 func validateFallbackParams(queries map[string]interface{}, fb *FallbackParams) error {
 	// Both fields must be present and differ, and the collection caps a
-	// request at CanonicalMaxSearchFields (2) query fields, so a valid
+	// request at MaxSearchFields (2) query fields, so a valid
 	// fallback request is exactly the two named fields.
 	if fb.Primary == "" || fb.Secondary == "" {
 		return fmt.Errorf("%w: fallback requires non-empty primary and secondary fields", ErrInvalidSearchArgument)
@@ -1158,11 +1158,11 @@ func (c *Collection) validateSearchResultsBudget(results []hybrid.SearchResult, 
 			}
 			resultBytes += int64(len(metadata))
 		}
-		if resultBytes > int64(CanonicalMaxSearchResponseBytes)-estimated {
+		if resultBytes > int64(MaxSearchResponseBytes)-estimated {
 			return fmt.Errorf(
 				"%w: estimated response exceeds %d bytes",
 				ErrSearchResponseBudgetExceeded,
-				CanonicalMaxSearchResponseBytes,
+				MaxSearchResponseBytes,
 			)
 		}
 		estimated += resultBytes

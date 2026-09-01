@@ -438,7 +438,7 @@ func TestCanonicalGRPCMutationAdmissionProtectsJournalBoundary(t *testing.T) {
 	}
 
 	t.Run("batch count", func(t *testing.T) {
-		tooMany := make([]*deepdatav3.BatchDoc, vcollection.CanonicalMaxBatchDocuments+1)
+		tooMany := make([]*deepdatav3.BatchDoc, vcollection.MaxBatchDocuments+1)
 		if _, err := server.BatchInsert(ctx, &deepdatav3.BatchInsertRequest{
 			TenantId:   "acme",
 			Collection: "docs",
@@ -464,14 +464,14 @@ func TestCanonicalGRPCSearchAdmissionIsBounded(t *testing.T) {
 	if _, err := server.Search(ctx, &deepdatav3.SearchRequest{
 		TenantId:   "acme",
 		Collection: "docs",
-		TopK:       int32(vcollection.CanonicalMaxSearchTopK + 1),
+		TopK:       int32(vcollection.MaxSearchTopK + 1),
 		Queries:    map[string]*deepdatav3.VectorData{"dense": denseProtoVector(1)},
 	}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("oversized top_k code = %s, want InvalidArgument (err=%v)", status.Code(err), err)
 	}
 
-	queries := make(map[string]*deepdatav3.VectorData, vcollection.CanonicalMaxSearchFields+1)
-	for i := 0; i <= vcollection.CanonicalMaxSearchFields; i++ {
+	queries := make(map[string]*deepdatav3.VectorData, vcollection.MaxSearchFields+1)
+	for i := 0; i <= vcollection.MaxSearchFields; i++ {
 		queries[fmt.Sprintf("field-%d", i)] = denseProtoVector(1)
 	}
 	if _, err := server.Search(ctx, &deepdatav3.SearchRequest{

@@ -400,7 +400,7 @@ func TestVersion3SnapshotCannotDowngradeToWeakLegacyChecksum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load payload: %v", err)
 	}
-	payload.FormatVersion = storage.CanonicalFormatVersion
+	payload.FormatVersion = storage.StrictFormatVersion
 	payload.WALHighWater = 0
 	payload.Checksum = fmt.Sprintf("%x", hashID(fmt.Sprintf("%d-%d-%d", payload.Count, payload.Next, len(payload.Docs))))
 	f, err := os.OpenFile(snapshotPath, os.O_TRUNC|os.O_WRONLY, 0o600)

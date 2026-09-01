@@ -47,8 +47,8 @@ func newServerEmbedderFromEnv() (*serverEmbedder, error) {
 		return nil, nil
 	case "hash":
 		dim := envInt("DEEPDATA_EMBED_DIM", 384)
-		if dim <= 0 || dim > vcollection.CanonicalMaxVectorDimension {
-			return nil, fmt.Errorf("DEEPDATA_EMBED_DIM must be in 1..%d, got %d", vcollection.CanonicalMaxVectorDimension, dim)
+		if dim <= 0 || dim > vcollection.MaxVectorDimension {
+			return nil, fmt.Errorf("DEEPDATA_EMBED_DIM must be in 1..%d, got %d", vcollection.MaxVectorDimension, dim)
 		}
 		return &serverEmbedder{Embedder: NewHashEmbedder(dim), Provider: "hash", Model: strconv.Itoa(dim)}, nil
 	case "ollama":

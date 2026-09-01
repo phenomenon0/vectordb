@@ -677,7 +677,7 @@ func TestDurableStoreReplaysLegacyV1BatchAboveCurrentAdmissionLimit(t *testing.T
 		t.Fatal(err)
 	}
 
-	documents := make([]Document, CanonicalMaxBatchDocuments+1)
+	documents := make([]Document, MaxBatchDocuments+1)
 	for i := range documents {
 		documents[i] = durableTestDocument(float32(i + 1))
 		documents[i].ID = uint64(i + 1)

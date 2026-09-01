@@ -427,7 +427,7 @@ func TestSearchErrorsAreTypedSentinels(t *testing.T) {
 		want error
 	}{
 		{"no queries", SearchRequest{TopK: 1}, ErrInvalidArgument},
-		{"top_k above the cap", SearchRequest{Queries: map[string]interface{}{"dense": q}, TopK: CanonicalMaxSearchTopK + 1}, ErrInvalidArgument},
+		{"top_k above the cap", SearchRequest{Queries: map[string]interface{}{"dense": q}, TopK: MaxSearchTopK + 1}, ErrInvalidArgument},
 		{"two fields without a fusion rule", SearchRequest{Queries: map[string]interface{}{"dense": q, "other": q}, TopK: 1}, ErrInvalidSearchArgument},
 	}
 	for _, tc := range cases {

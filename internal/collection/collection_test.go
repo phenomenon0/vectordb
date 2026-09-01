@@ -508,7 +508,7 @@ func TestCollectionSearchEnforcesCanonicalRequestBounds(t *testing.T) {
 	if _, err := coll.Search(context.Background(), SearchRequest{
 		CollectionName: "docs",
 		Queries:        map[string]interface{}{"dense": []float32{1}},
-		TopK:           CanonicalMaxSearchTopK + 1,
+		TopK:           MaxSearchTopK + 1,
 	}); err == nil || !strings.Contains(err.Error(), "top_k") {
 		t.Fatalf("oversized top_k error = %v", err)
 	}
@@ -518,7 +518,7 @@ func TestCollectionSearchEnforcesCanonicalRequestBounds(t *testing.T) {
 		CollectionName: "docs",
 		Queries:        map[string]interface{}{"dense": []float32{1}},
 		TopK:           1,
-		EfSearch:       CanonicalMaxSearchEf + 1,
+		EfSearch:       MaxSearchEf + 1,
 	}); err == nil || !strings.Contains(err.Error(), "ef_search") {
 		t.Fatalf("oversized ef_search error = %v", err)
 	}

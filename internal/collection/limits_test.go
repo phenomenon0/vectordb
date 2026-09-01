@@ -330,13 +330,13 @@ func TestCanonicalSchemaResourceBounds(t *testing.T) {
 	store := openLimitsTestStore(t, base, StoreLimits{MaxTenants: 10, MaxCollections: 10})
 
 	maxDimension := limitsTestSchema("dimension-max")
-	maxDimension.Fields[0].Dim = CanonicalMaxVectorDimension
+	maxDimension.Fields[0].Dim = MaxVectorDimension
 	if _, err := store.Tenants().CreateCollection(ctx, "tenant", maxDimension); err != nil {
 		t.Fatalf("create schema at maximum dimension: %v", err)
 	}
 
 	overDimension := limitsTestSchema("dimension-over")
-	overDimension.Fields[0].Dim = CanonicalMaxVectorDimension + 1
+	overDimension.Fields[0].Dim = MaxVectorDimension + 1
 	before := store.Metadata().AppliedLSN
 	if _, err := store.Tenants().CreateCollection(ctx, "tenant", overDimension); err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
 		t.Fatalf("dimension max+1 error = %v, want exceeds maximum", err)
@@ -348,7 +348,7 @@ func TestCanonicalSchemaResourceBounds(t *testing.T) {
 	if _, err := store.Tenants().CreateCollection(
 		ctx,
 		"tenant",
-		limitsTestSchemaWithFields("fields-max", CanonicalMaxSchemaFields, 1),
+		limitsTestSchemaWithFields("fields-max", MaxSchemaFields, 1),
 	); err != nil {
 		t.Fatalf("create schema at maximum field count: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestCanonicalSchemaResourceBounds(t *testing.T) {
 	if _, err := store.Tenants().CreateCollection(
 		ctx,
 		"tenant",
-		limitsTestSchemaWithFields("fields-over", CanonicalMaxSchemaFields+1, 1),
+		limitsTestSchemaWithFields("fields-over", MaxSchemaFields+1, 1),
 	); err == nil || !strings.Contains(err.Error(), "maximum") {
 		t.Fatalf("field count max+1 error = %v, want maximum", err)
 	}
@@ -367,7 +367,7 @@ func TestCanonicalSchemaResourceBounds(t *testing.T) {
 
 	overMetadata := limitsTestSchema("metadata-over")
 	overMetadata.Metadata = map[string]interface{}{
-		"payload": strings.Repeat("x", CanonicalMaxSchemaMetadataBytes),
+		"payload": strings.Repeat("x", MaxSchemaMetadataBytes),
 	}
 	before = store.Metadata().AppliedLSN
 	if _, err := store.Tenants().CreateCollection(ctx, "tenant", overMetadata); err == nil || !strings.Contains(err.Error(), "metadata") {
@@ -380,14 +380,14 @@ func TestCanonicalSchemaResourceBounds(t *testing.T) {
 
 func TestSearchIncludeVectorsHonorsResponseBudget(t *testing.T) {
 	schema := limitsTestSchema("budget")
-	schema.Fields[0].Dim = CanonicalMaxVectorDimension
+	schema.Fields[0].Dim = MaxVectorDimension
 	coll, err := NewCollection(schema)
 	if err != nil {
 		t.Fatalf("create search-budget collection: %v", err)
 	}
 	t.Cleanup(coll.Close)
 
-	query := make([]float32, CanonicalMaxVectorDimension)
+	query := make([]float32, MaxVectorDimension)
 	query[0] = 1
 	if err := coll.Add(context.Background(), &Document{
 		ID:      1,
@@ -402,7 +402,7 @@ func TestSearchIncludeVectorsHonorsResponseBudget(t *testing.T) {
 	request := SearchRequest{
 		CollectionName: schema.Name,
 		Queries:        map[string]interface{}{"embedding": query},
-		TopK:           CanonicalMaxSearchTopK,
+		TopK:           MaxSearchTopK,
 		IncludeVectors: &includeVectors,
 	}
 	if _, err := coll.Search(context.Background(), request); !errors.Is(err, ErrSearchResponseBudgetExceeded) {
