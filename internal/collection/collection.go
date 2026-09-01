@@ -22,7 +22,7 @@ import (
 // Collection manages multiple vector indexes for a single collection.
 //
 // A collection can have multiple vector fields, each with its own index:
-//   - Dense fields use HNSW/IVF/FLAT indexes
+//   - Dense fields use the dense members of IndexTypes (HNSW, FLAT)
 //   - Sparse fields use InvertedIndex
 //
 // Example:
@@ -112,7 +112,8 @@ func (c *Collection) createIndex(field VectorField) error {
 	}
 }
 
-// createDenseIndex creates a dense vector index (HNSW/IVF/FLAT).
+// createDenseIndex creates a dense vector index: one constructor per dense
+// member of IndexTypes.
 // segmentCountFromParam coerces the schema's "segments" value (decoded as
 // float64 from JSON) into a validated segment count.
 func segmentCountFromParam(raw interface{}) (int, error) {
@@ -190,17 +191,6 @@ func (c *Collection) createDenseIndex(field VectorField) error {
 				return fmt.Errorf("failed to create HNSW index: %w", err)
 			}
 		}
-	case IndexTypeIVF:
-		// Set defaults if not provided
-		if _, ok := config["nlist"]; !ok {
-			config["nlist"] = 100
-		}
-
-		idx, err = index.NewIVFIndex(field.Dim, config)
-		if err != nil {
-			return fmt.Errorf("failed to create IVF index: %w", err)
-		}
-
 	case IndexTypeFLAT:
 		idx, err = index.NewFLATIndex(field.Dim, config)
 		if err != nil {
@@ -208,7 +198,13 @@ func (c *Collection) createDenseIndex(field VectorField) error {
 		}
 
 	default:
-		return fmt.Errorf("index type %s not supported for dense vectors", field.Index.Type)
+		// Outside the vocabulary, or inside it but sparse-only.
+		if err := validateFieldIndexType(field); err != nil {
+			return err
+		}
+		// In IndexTypes and dense, yet no constructor above: the schema would
+		// validate and journal, then fail to rebuild on replay.
+		return fmt.Errorf("%w: no dense index constructor for %s", ErrInvalidArgument, field.Index.Type)
 	}
 
 	c.indexes[field.Name] = idx
@@ -217,8 +213,8 @@ func (c *Collection) createDenseIndex(field VectorField) error {
 
 // createSparseIndex creates a sparse vector index (Inverted).
 func (c *Collection) createSparseIndex(field VectorField) error {
-	if field.Index.Type != IndexTypeInverted {
-		return fmt.Errorf("sparse vectors require inverted index, got %s", field.Index.Type)
+	if err := validateFieldIndexType(field); err != nil {
+		return err
 	}
 
 	// Extract BM25 parameters

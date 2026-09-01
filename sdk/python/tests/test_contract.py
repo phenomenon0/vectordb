@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
 from deepdata.models import (
     TenantCollectionInfo,
     TenantFieldInfo,
+    TenantIndexConfig,
     TenantSearchRequest,
     TenantSearchResponse,
 )
@@ -45,6 +47,25 @@ def test_operations_list_parses_with_unique_names() -> None:
         assert op["path"].startswith("/v3/"), op
         assert op["permission"] in {"read", "write", "admin"}, op
         assert op["method"] in {"GET", "POST", "PUT", "DELETE"}, op
+
+
+def test_index_type_literal_matches_the_create_collection_enum() -> None:
+    """The SDK's index vocabulary is the contract's, not a copy that drifted.
+
+    The Go engine derives its list from ``collection.IndexTypes``; this Literal
+    is the third rendering of it. Narrower than the enum, the SDK refuses a
+    collection the server would create; wider, it sends a type the server 400s
+    on. Either way the caller only finds out at runtime.
+    """
+
+    fields = _properties(_schema("deepdata_create_collection", "input"))["fields"]
+    index = _properties(_properties(fields["items"])["index"])
+    enum = index["type"]["enum"]
+    assert list(get_args(TenantIndexConfig.model_fields["type"].annotation)) == enum
+    # Every name in the enum must also survive the SDK's per-type parameter
+    # rules, which key off the same vocabulary.
+    for name in enum:
+        assert TenantIndexConfig(type=name).type == name
 
 
 def test_search_request_fields_are_in_the_recall_input_schema() -> None:

@@ -811,7 +811,7 @@ func TestDurableStoreRejectsOutOfScopeIndexAndOversizePayloadWithoutFault(t *tes
 	defer store.Close()
 	ivf := durableTestSchema("ivf")
 	ivf.Fields[0].Index.Type = IndexTypeIVF
-	if _, err := store.Tenants().CreateCollection(ctx, "t", ivf); err == nil || !strings.Contains(err.Error(), "only HNSW or Flat") {
+	if _, err := store.Tenants().CreateCollection(ctx, "t", ivf); err == nil || !strings.Contains(err.Error(), "index type ivf was retired") {
 		t.Fatalf("IVF create error = %v", err)
 	}
 	invalidName := durableTestSchema("contains/slash")

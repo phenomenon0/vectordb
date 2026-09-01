@@ -829,16 +829,16 @@
     {
       "id": "SYS-02",
       "statement": "one IndexTypes vocabulary shared by server, SDK and docs",
-      "command": "GOTOOLCHAIN=go1.25.12 go test ./internal/index ./cmd/deepdata -run IndexTypes",
+      "command": "scripts/hardening_check.sh go-indextypes",
       "scope": [
-        "internal/index",
+        "internal/collection",
         "cmd/deepdata",
         "sdk/python"
       ],
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": ""
+      "note": "collection.IndexTypes in internal/collection/types.go is the one vocabulary; ParseIndexType, both schema validators, the index constructors, capabilities.index_types and the contract enum all derive from or are drift-tested against it."
     },
     {
       "id": "SYS-03",

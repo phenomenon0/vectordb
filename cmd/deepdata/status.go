@@ -109,11 +109,7 @@ func statusPayload(embedder *serverEmbedder, usageLoaded bool, requestID string)
 			"hybrid":      []string{"rrf", "weighted", "linear"},
 			"fallback":    true,
 			"usage_boost": true,
-			"index_types": []string{
-				vcollection.IndexTypeHNSW.String(),
-				vcollection.IndexTypeFLAT.String(),
-				vcollection.IndexTypeInverted.String(),
-			},
+			"index_types": vcollection.IndexTypeNames(),
 		},
 		// signals is the accreted-signal surface (durability class B).
 		// usage.loaded is false only when a usage sidecar existed and was

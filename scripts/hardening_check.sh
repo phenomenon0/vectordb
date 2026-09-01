@@ -29,6 +29,7 @@ list_checks() {
         go-mcp \
         go-contract \
         go-usage \
+        go-indextypes \
         python-unit \
         python-mypy \
         python-build \
@@ -96,6 +97,10 @@ case "$CHECK_NAME" in
     go-usage)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -timeout 300s -run 'Usage' ./internal/collection && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -race -count=1 -p 1 -timeout 300s -run 'Usage' ./internal/collection"
+        ;;
+    go-indextypes)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -timeout 300s -run 'IndexTypes' ./internal/collection ./cmd/deepdata && (cd sdk/python && python -m pytest tests/test_contract.py -q)"
         ;;
     python-unit)
         CHECK_CWD="$REPO_ROOT/sdk/python"
@@ -185,6 +190,13 @@ run_check() {
                 go test -count=1 -p 1 -timeout 300s -run 'Usage' ./internal/collection && \
                 timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
                 go test -race -count=1 -p 1 -timeout 300s -run 'Usage' ./internal/collection
+            ;;
+        go-indextypes)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -timeout 300s -run 'IndexTypes' \
+                ./internal/collection ./cmd/deepdata && \
+            (cd "$REPO_ROOT/sdk/python" && timeout 180s python -m pytest tests/test_contract.py -q)
             ;;
         python-unit)
             timeout 360s python -m pytest tests -q

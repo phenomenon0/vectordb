@@ -195,6 +195,32 @@ func schemaProperties(t *testing.T, node map[string]any) map[string]any {
 	return props
 }
 
+// The contract enum is hand-written because it is what clients read (ADR
+// 0006), and the engine's IndexTypes slice is what the server enforces. They
+// are two spellings of one vocabulary, so drift in either direction fails
+// here: an enum entry the engine rejects is a 400 the client was invited to
+// hit, and an engine type the enum omits is a capability no client can reach.
+func TestContractIndexTypesEnumMatchesTheEngineVocabulary(t *testing.T) {
+	fields, _ := schemaProperties(t, schemaSection(t, "deepdata_create_collection", "input"))["fields"].(map[string]any)
+	items, _ := fields["items"].(map[string]any)
+	index, _ := schemaProperties(t, items)["index"].(map[string]any)
+	indexType, _ := schemaProperties(t, index)["type"].(map[string]any)
+	raw, _ := indexType["enum"].([]any)
+	enum := make([]string, len(raw))
+	for i, v := range raw {
+		enum[i], _ = v.(string)
+	}
+	if !reflect.DeepEqual(enum, vcollection.IndexTypeNames()) {
+		t.Errorf("create_collection index.type enum = %v, engine IndexTypes = %v", enum, vcollection.IndexTypeNames())
+	}
+	// The enum is only worth trusting if every name in it still parses.
+	for _, name := range enum {
+		if _, err := vcollection.ParseIndexType(name); err != nil {
+			t.Errorf("contract offers index type %q the engine will not parse: %v", name, err)
+		}
+	}
+}
+
 // The agent-facing caps are deliberately tighter than the engine's, but they
 // may never exceed it: a schema that advertises more than the engine accepts
 // invites a 400 the agent cannot see coming.
@@ -376,8 +402,8 @@ func TestStatusDescribesTheServerFromTheContract(t *testing.T) {
 	if !reflect.DeepEqual(body.Capabilities.Hybrid, []string{"rrf", "weighted", "linear"}) {
 		t.Errorf("capabilities.hybrid = %v", body.Capabilities.Hybrid)
 	}
-	if !reflect.DeepEqual(body.Capabilities.IndexTypes, []string{"hnsw", "flat", "inverted"}) {
-		t.Errorf("capabilities.index_types = %v", body.Capabilities.IndexTypes)
+	if !reflect.DeepEqual(body.Capabilities.IndexTypes, vcollection.IndexTypeNames()) {
+		t.Errorf("capabilities.index_types = %v, want %v", body.Capabilities.IndexTypes, vcollection.IndexTypeNames())
 	}
 	if !body.Capabilities.Fallback || !body.Capabilities.UsageBoost {
 		t.Error("fallback and usage_boost are engine capabilities and must be reported")

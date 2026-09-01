@@ -122,6 +122,20 @@ assembled.
   `DurableStore.UsageLoaded` reports the loss, so it is false only when a
   sidecar existed and was discarded, and `GET /v3/status` projects it as
   `signals.usage.loaded` (gate CTL-05).
+- The index vocabulary is one list. `collection.IndexTypes`
+  (`internal/collection/types.go`) names the three types the release candidate
+  admits — `hnsw`, `flat`, `inverted` — and `ParseIndexType`, the dense and
+  sparse index constructors, the v1 and canonical schema validators and
+  `capabilities.index_types` on `GET /v3/status` all read it, replacing the
+  copies in `types.go`, `collection.go` and `durable_store.go` that disagreed
+  on which types existed. A field whose index type is missing from
+  the vocabulary, or belongs to the other vector kind, is now refused with
+  `ErrInvalidArgument` rather than an untyped error. The retired `ivf` and
+  `diskann` names no longer parse, but keep their journaled ordinals and are
+  rejected by name. The hand-written enum in
+  `api/contract/v3/schemas/deepdata_create_collection.json` and the SDK's
+  `TenantIndexConfig` Literal stay hand-written and are drift-tested against
+  the slice in both directions (gate SYS-02).
 - Normal startup exposes only the canonical V3 HTTP routes and V3 gRPC
   service. Legacy root/V2 mutation APIs and advanced recommendation,
   discovery, embedding-provider, GraphRAG, extraction, and feedback handlers

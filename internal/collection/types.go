@@ -116,6 +116,69 @@ const (
 	IndexTypeInverted
 )
 
+// IndexTypes is the index vocabulary of the release candidate, in wire order.
+// ParseIndexType, UnmarshalJSON, createDenseIndex, createSparseIndex, both
+// schema validators, capabilities.index_types on GET /v3/status and the
+// contract enum in deepdata_create_collection.json all derive from this slice,
+// so an index type cannot exist for one layer and not another.
+//
+// IndexTypeIVF and IndexTypeDiskANN are deliberately absent: ADR 0001 narrows
+// the RC to HNSW, Flat and Inverted. Their iota values stay because index
+// types are journaled; renumbering would reinterpret every persisted schema.
+// String keeps naming them so a v2-era journal or client fails by name.
+var IndexTypes = []IndexType{IndexTypeHNSW, IndexTypeFLAT, IndexTypeInverted}
+
+// Vectors reports which vector kind an index type serves, and whether it is a
+// member of IndexTypes at all. It is the per-type property the validators and
+// the index constructors split IndexTypes on, so "dense takes hnsw or flat,
+// sparse takes inverted" is stated exactly once.
+func (it IndexType) Vectors() (VectorType, bool) {
+	switch it {
+	case IndexTypeHNSW, IndexTypeFLAT:
+		return VectorTypeDense, true
+	case IndexTypeInverted:
+		return VectorTypeSparse, true
+	default:
+		return 0, false
+	}
+}
+
+// IndexTypeNames returns the wire names of IndexTypes in order. GET /v3/status
+// publishes it and cmd/deepdata/contract_test.go compares the contract enum
+// against it, so clients and the engine cannot disagree silently.
+func IndexTypeNames() []string {
+	names := make([]string, len(IndexTypes))
+	for i, it := range IndexTypes {
+		names[i] = it.String()
+	}
+	return names
+}
+
+// indexTypeNamesFor returns the wire names of the index types that serve vt,
+// for error messages that tell a caller what it may send instead.
+func indexTypeNamesFor(vt VectorType) []string {
+	names := make([]string, 0, len(IndexTypes))
+	for _, it := range IndexTypes {
+		if kind, ok := it.Vectors(); ok && kind == vt {
+			names = append(names, it.String())
+		}
+	}
+	return names
+}
+
+// validateFieldIndexType is the one place the index vocabulary meets a schema.
+// A field whose index type is not in IndexTypes, or is in it but indexes the
+// other vector kind, would validate and journal yet have no constructor on
+// replay: the collection comes back without that index after a restart.
+func validateFieldIndexType(field VectorField) error {
+	if kind, ok := field.Index.Type.Vectors(); !ok || kind != field.Type {
+		return fmt.Errorf("%w: field %s uses index %s; %s fields accept only %s",
+			ErrInvalidArgument, field.Name, field.Index.Type, field.Type,
+			strings.Join(indexTypeNamesFor(field.Type), " or "))
+	}
+	return nil
+}
+
 func (it IndexType) String() string {
 	switch it {
 	case IndexTypeHNSW:
@@ -142,8 +205,8 @@ func (it IndexType) MarshalJSON() ([]byte, error) {
 func (it *IndexType) UnmarshalJSON(data []byte) error {
 	var n int
 	if err := json.Unmarshal(data, &n); err == nil {
-		if n < 0 || n > int(IndexTypeInverted) {
-			return fmt.Errorf("unknown index type: %d", n)
+		if _, ok := IndexType(n).Vectors(); !ok {
+			return fmt.Errorf("%w: unknown index type: %d", ErrInvalidArgument, n)
 		}
 		*it = IndexType(n)
 		return nil
@@ -162,22 +225,20 @@ func (it *IndexType) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ParseIndexType converts a string to IndexType.
+// ParseIndexType converts a wire string to IndexType. Only members of
+// IndexTypes parse; the retired names are refused by name so a v2-era journal
+// or client fails loud instead of being reinterpreted as a live type.
 func ParseIndexType(s string) (IndexType, error) {
-	switch s {
-	case "hnsw":
-		return IndexTypeHNSW, nil
-	case "ivf":
-		return IndexTypeIVF, nil
-	case "flat":
-		return IndexTypeFLAT, nil
-	case "diskann":
-		return IndexTypeDiskANN, nil
-	case "inverted":
-		return IndexTypeInverted, nil
-	default:
-		return 0, fmt.Errorf("unknown index type: %s", s)
+	for _, it := range IndexTypes {
+		if it.String() == s {
+			return it, nil
+		}
 	}
+	if s == IndexTypeIVF.String() || s == IndexTypeDiskANN.String() {
+		return 0, fmt.Errorf("%w: index type %s was retired; the release supports %s",
+			ErrInvalidArgument, s, strings.Join(IndexTypeNames(), ", "))
+	}
+	return 0, fmt.Errorf("%w: unknown index type: %s", ErrInvalidArgument, s)
 }
 
 // IndexConfig holds configuration for a specific index.
@@ -243,13 +304,9 @@ func (vf *VectorField) Validate() error {
 
 	// Validate index type matches vector type
 	switch vf.Type {
-	case VectorTypeDense:
-		if vf.Index.Type == IndexTypeInverted {
-			return fmt.Errorf("inverted index not supported for dense vectors")
-		}
-	case VectorTypeSparse:
-		if vf.Index.Type != IndexTypeInverted {
-			return fmt.Errorf("sparse vectors require inverted index, got %s", vf.Index.Type)
+	case VectorTypeDense, VectorTypeSparse:
+		if err := validateFieldIndexType(*vf); err != nil {
+			return err
 		}
 	case VectorTypeBinary:
 		return fmt.Errorf("binary vectors not yet supported")
@@ -288,7 +345,9 @@ func (cs *CollectionSchema) Validate() error {
 
 		// Validate each field
 		if err := field.Validate(); err != nil {
-			return fmt.Errorf("field %s: %v", field.Name, err)
+			// %w, not %v: the index-type rejection carries ErrInvalidArgument
+			// and the transports map that sentinel to a 400 rather than a 500.
+			return fmt.Errorf("field %s: %w", field.Name, err)
 		}
 	}
 

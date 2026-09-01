@@ -583,13 +583,12 @@ func validateDurableSchemaV1(schema *CollectionSchema) error {
 	}
 	for _, field := range schema.Fields {
 		switch field.Type {
-		case VectorTypeDense:
-			if field.Index.Type != IndexTypeHNSW && field.Index.Type != IndexTypeFLAT {
-				return fmt.Errorf("field %s uses index %s; canonical release supports only HNSW or Flat dense indexes", field.Name, field.Index.Type)
-			}
-		case VectorTypeSparse:
-			if field.Index.Type != IndexTypeInverted {
-				return fmt.Errorf("field %s uses index %s; sparse fields require Inverted", field.Name, field.Index.Type)
+		case VectorTypeDense, VectorTypeSparse:
+			// The v1 admission set and the canonical one coincide because the
+			// vocabulary itself is frozen (ADR 0001): IndexTypes is the whole
+			// RC scope, so reading it here cannot widen or narrow v1.
+			if err := validateFieldIndexType(field); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("field %s uses unsupported vector type %s", field.Name, field.Type)
@@ -607,13 +606,9 @@ func validateCanonicalSchema(schema *CollectionSchema) error {
 	}
 	for _, field := range schema.Fields {
 		switch field.Type {
-		case VectorTypeDense:
-			if field.Index.Type != IndexTypeHNSW && field.Index.Type != IndexTypeFLAT {
-				return fmt.Errorf("field %s uses index %s; canonical release supports only HNSW or Flat dense indexes", field.Name, field.Index.Type)
-			}
-		case VectorTypeSparse:
-			if field.Index.Type != IndexTypeInverted {
-				return fmt.Errorf("field %s uses index %s; sparse fields require Inverted", field.Name, field.Index.Type)
+		case VectorTypeDense, VectorTypeSparse:
+			if err := validateFieldIndexType(field); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("field %s uses unsupported vector type %s", field.Name, field.Type)
