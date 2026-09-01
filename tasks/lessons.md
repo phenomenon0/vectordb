@@ -103,3 +103,24 @@
 - Rule: format only the files you touched (list them explicitly); if you must
   format a whole package, check `git status` afterwards and revert unrelated
   reformatting before committing.
+## 2026-08-28 recovery lessons
+
+- Index topology is durable semantics. Do not derive a missing `segments`
+  parameter from `GOMAXPROCS`: the same journal would rebuild into a different
+  graph layout on another host, and high-core machines silently multiply
+  build/search/export concurrency. Keep the historical one-graph default and
+  require an explicit persisted segment count.
+- A Go soft memory limit is guidance, not containment. Production recovery
+  probes need both a measured `GOMEMLIMIT` and an OS/cgroup hard limit; otherwise
+  the allocator can still consume the desktop's RAM and swap under pressure.
+- A locally stored credential is still compromised once it appears in an agent
+  transcript. Bind the recovery service to loopback, never log the token, and
+  rotate it before any LAN exposure.
+- A two-pass bounded loader is safe only when both passes consume the exact
+  same artifact. Matching logical metadata such as store ID and applied LSN is
+  insufficient: two checksum-valid generations can share those values while
+  containing different documents. Rewind one pinned descriptor or compare a
+  full content fingerprint and file identity before publishing rebuilt state.
+- A snapshot writer must prove its own output can be reopened before rename.
+  Validate the retained schema by reconstructing it, reject exhausted or
+  regressed ID cursors, and never silently repair v2 durable semantics on load.
