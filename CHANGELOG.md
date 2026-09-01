@@ -136,6 +136,14 @@ assembled.
   `api/contract/v3/schemas/deepdata_create_collection.json` and the SDK's
   `TenantIndexConfig` Literal stay hand-written and are drift-tested against
   the slice in both directions (gate SYS-02).
+- The live server no longer constructs the legacy in-process engine. The
+  process-wide authentication and limit state it actually needs — API token,
+  JWT manager, require-auth flag, ACL, tenant quotas, the global rate limiter,
+  the shared canonical per-tenant limiter and the shared failed-authentication
+  budget — is now `serverRuntime` in `cmd/deepdata/runtime.go`, which the V3
+  HTTP handler and the gRPC interceptor take directly, so `func main()` never
+  names `VectorStore` and `NewVectorStore` has no live-server caller
+  (gate SYS-01).
 - Normal startup exposes only the canonical V3 HTTP routes and V3 gRPC
   service. Legacy root/V2 mutation APIs and advanced recommendation,
   discovery, embedding-provider, GraphRAG, extraction, and feedback handlers

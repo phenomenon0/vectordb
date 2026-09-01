@@ -71,9 +71,9 @@ func TestCanonicalDurableLimitsAreSharedAcrossHTTPAndGRPC(t *testing.T) {
 	t.Setenv("TENANT_RPS", "100")
 	t.Setenv("TENANT_BURST", "100")
 
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
@@ -118,24 +118,24 @@ func TestCanonicalTenantRateLimitIsSharedAcrossHTTPAndGRPCJWTs(t *testing.T) {
 	t.Setenv("MAX_TENANTS", "1")
 	t.Setenv("MAX_RATE_LIMIT_KEYS", "100")
 
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
 	)
 	t.Cleanup(func() { _ = collections.Close() })
 
-	firstToken, err := store.jwtMgr.GenerateTenantToken("acme", []string{"admin"}, nil, time.Hour)
+	firstToken, err := rt.jwtMgr.GenerateTenantToken("acme", []string{"admin"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondToken, err := store.jwtMgr.GenerateTenantToken("acme", []string{"admin", "read"}, nil, time.Hour)
+	secondToken, err := rt.jwtMgr.GenerateTenantToken("acme", []string{"admin", "read"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherToken, err := store.jwtMgr.GenerateTenantToken("other", []string{"read"}, nil, time.Hour)
+	otherToken, err := rt.jwtMgr.GenerateTenantToken("other", []string{"read"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,11 +149,11 @@ func TestCanonicalTenantRateLimitIsSharedAcrossHTTPAndGRPCJWTs(t *testing.T) {
 	}
 
 	interceptor := grpcAuthInterceptorWithTenantLimiter(
-		store.jwtMgr,
+		rt.jwtMgr,
 		"",
 		true,
 		testLogger(),
-		store.canonicalTenantRL,
+		rt.canonicalTenantRL,
 	)
 	grpcContext := metadata.NewIncomingContext(
 		context.Background(),
@@ -193,9 +193,9 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	t.Setenv("MAX_TENANTS", "10")
 	t.Setenv("MAX_COLLECTIONS", "10")
 
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),

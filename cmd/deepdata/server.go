@@ -155,190 +155,30 @@ func decodeRequest(r *http.Request, v any) error {
 // tests and explicit migration tooling. Production serve uses
 // newCanonicalHTTPHandler instead.
 func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
-	return newHTTPHandlerWithSurface(store, embedder, reranker, indexPath, false)
+	return newHTTPHandlerWithSurface(store, store.serverRuntime, embedder, reranker, indexPath, false)
 }
 
-func newCanonicalHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
-	return newHTTPHandlerWithSurface(store, embedder, reranker, indexPath, true)
+// newCanonicalHTTPHandler serves the RC surface from the server runtime alone;
+// the legacy engine is never constructed for it.
+func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
+	return newHTTPHandlerWithSurface(nil, rt, embedder, reranker, indexPath, true)
 }
 
-func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string, canonicalOnly bool) (http.Handler, *CollectionHTTPServer) {
+// newHTTPHandlerWithSurface registers both surfaces. store is nil in canonical
+// mode: every route that reaches it is a historical route, and canonicalRCSurface
+// answers 404 for all of them before a handler runs.
+func newHTTPHandlerWithSurface(store *VectorStore, rt *serverRuntime, embedder Embedder, reranker Reranker, indexPath string, canonicalOnly bool) (http.Handler, *CollectionHTTPServer) {
 	mux := http.NewServeMux()
 	var collectionHTTP *CollectionHTTPServer
 	configDir := "."
 	if indexPath != "" {
 		configDir = filepath.Dir(indexPath)
 	}
-	if store.rl == nil {
-		rps := envInt("API_RPS", 100)
-		store.rl = newRateLimiter(rps, rps, envInt("MAX_RATE_LIMIT_KEYS", 100_000), time.Minute)
-	}
-	if store.authFailureRL == nil {
-		store.authFailureRL = newAuthFailureLimiter(
-			envInt("AUTH_FAILURE_RPS", 1),
-			envInt("AUTH_FAILURE_BURST", 5),
-			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
-			time.Second,
-		)
-	}
-	if canonicalOnly && store.canonicalTenantRL == nil {
-		store.canonicalTenantRL = newRateLimiter(
-			envInt("TENANT_RPS", 100),
-			envInt("TENANT_BURST", 100),
-			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
-			time.Second,
-		)
-	}
-	trustProxy := os.Getenv("TRUST_PROXY") == "1"
+	rt.ensureLimiters(canonicalOnly)
 
-	// SECURITY FIX: Proper JWT validation guard
-	// When JWT_SECRET is configured, all requests MUST have valid JWT tokens
-	guard := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			token := r.Header.Get("Authorization")
-			authPeerKey := httpAuthPeerKey(r, trustProxy)
-			authAttempt, allowed := store.authFailureRL.begin(authPeerKey)
-			if !allowed {
-				apierror.WriteHTTP(w, apierror.New(apierror.CodeRateLimited, "authentication rate limited"))
-				return
-			}
-			finishAuthAttempt := func(failed bool) {
-				if authAttempt != nil {
-					authAttempt.finish(failed)
-					authAttempt = nil
-				}
-			}
-			defer func() { finishAuthAttempt(false) }()
-
-			authenticated := false
-			var tenantCtx *security.TenantContext
-
-			// JWT authentication (when enabled) - SECURE VERSION
-			if store.jwtMgr != nil {
-				if token == "" {
-					// No token provided, but JWT is configured
-					if store.requireAuth {
-						finishAuthAttempt(true)
-						apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized: missing authentication token"))
-						return
-					}
-					// If not required, use default context (backward compatibility)
-					tenantCtx = &security.TenantContext{
-						TenantID:    "default",
-						Permissions: map[string]bool{"read": true, "write": true},
-						Collections: make(map[string]bool),
-						IsAdmin:     false,
-					}
-				} else {
-					// Token provided - MUST be valid
-					jwtToken := strings.TrimPrefix(token, "Bearer ")
-					var err error
-					tenantCtx, err = store.jwtMgr.ValidateTenantToken(jwtToken)
-					if err != nil {
-						logging.Default().Warn("JWT validation failed", "error", err, "path", r.URL.Path)
-						finishAuthAttempt(true)
-						apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized: invalid token"))
-						return
-					}
-					authenticated = true
-				}
-			} else {
-				// No JWT manager configured - fallback to legacy API token auth
-				// Simple API token authentication (legacy)
-				if store.apiToken != "" {
-					candidate := strings.TrimPrefix(token, "Bearer ")
-					if security.SecureCompare(candidate, store.apiToken) {
-						authenticated = true
-					} else if token != "" {
-						finishAuthAttempt(true)
-						apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized"))
-						return
-					}
-				}
-
-				if store.requireAuth && !authenticated {
-					finishAuthAttempt(true)
-					apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized"))
-					return
-				}
-
-				requestedTenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
-				if requestedTenantID != "" && !isValidTenantID(requestedTenantID) {
-					finishAuthAttempt(false)
-					apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "invalid X-Tenant-ID header"))
-					return
-				}
-				tenantID := "default"
-				if requestedTenantID != "" {
-					tenantID = requestedTenantID
-				}
-
-				// Use default tenant context for non-JWT mode
-				if tenantCtx == nil {
-					serverAdmin := authenticated || (store.jwtMgr == nil && store.apiToken == "" && requestedTenantID == "")
-					tenantCtx = &security.TenantContext{
-						TenantID:    tenantID,
-						Permissions: map[string]bool{"read": true, "write": true},
-						Collections: make(map[string]bool),
-						// A configured static server token is an explicit full-control
-						// credential. JWTs remain the path for scoped tenant roles.
-						IsAdmin:       serverAdmin,
-						IsServerAdmin: serverAdmin,
-					}
-				}
-			}
-			finishAuthAttempt(false)
-
-			// Global rate limiting (per-IP or per-token)
-			if store.rl != nil {
-				// Use IP address for anonymous users instead of shared "anon" key
-				key := token
-				if key == "" {
-					// Extract client IP (handle X-Forwarded-For and X-Real-IP headers)
-					clientIP := ""
-					if trustProxy {
-						clientIP = r.Header.Get("X-Forwarded-For")
-						if clientIP == "" {
-							clientIP = r.Header.Get("X-Real-IP")
-						}
-					}
-					if clientIP == "" {
-						clientIP = r.RemoteAddr
-					}
-					// Use first IP in X-Forwarded-For chain
-					if idx := strings.Index(clientIP, ","); idx > 0 {
-						clientIP = clientIP[:idx]
-					}
-					// Strip port from RemoteAddr
-					if idx := strings.LastIndex(clientIP, ":"); idx > 0 {
-						clientIP = clientIP[:idx]
-					}
-					key = "ip:" + strings.TrimSpace(clientIP)
-				}
-				if !store.rl.allow(key) {
-					apierror.WriteHTTP(w, apierror.New(apierror.CodeRateLimited, "rate limited"))
-					return
-				}
-			}
-
-			if canonicalOnly && store.canonicalTenantRL != nil {
-				tenantKey := canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
-				if !store.canonicalTenantRL.allow(tenantKey) {
-					apierror.WriteHTTP(w, apierror.New(apierror.CodeRateLimited, "tenant rate limited"))
-					return
-				}
-			}
-
-			// Add tenant context to request context for handlers to use
-			if tenantCtx != nil {
-				ctx := r.Context()
-				ctx = context.WithValue(ctx, security.TenantContextKey, tenantCtx)
-				r = r.WithContext(ctx)
-			}
-
-			next(w, r)
-		}
-	}
+	// Authentication, global rate limiting and (canonical only) per-tenant
+	// rate limiting all live on the server runtime.
+	guard := rt.httpGuard(canonicalOnly)
 
 	mux.HandleFunc("/insert", withMetrics("insert", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1550,8 +1390,12 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 
 		done := make(chan struct{})
 		go func() {
-			store.RLock()
-			store.RUnlock()
+			// Canonical mode has no legacy engine to deadlock on, so the
+			// probe answers as it always did with an idle store: ok.
+			if store != nil {
+				store.RLock()
+				store.RUnlock()
+			}
 			close(done)
 		}()
 

@@ -28,9 +28,9 @@ func newTextTestHandler(t *testing.T, emb Embedder) http.Handler {
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "0")
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	indexPath := filepath.Join(t.TempDir(), "index.gob")
-	handler, collections := newCanonicalHTTPHandler(store, emb, nil, indexPath)
+	handler, collections := newCanonicalHTTPHandler(rt, emb, nil, indexPath)
 	if err := collections.PersistenceError(); err != nil {
 		t.Fatalf("open canonical persistence: %v", err)
 	}

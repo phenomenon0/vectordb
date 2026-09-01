@@ -30,7 +30,6 @@ import (
 	"github.com/phenomenon0/vectordb/internal/apierror"
 	"github.com/phenomenon0/vectordb/internal/index"
 	"github.com/phenomenon0/vectordb/internal/logging"
-	"github.com/phenomenon0/vectordb/internal/obsidian"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/storage"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
@@ -60,28 +59,27 @@ type VectorStore struct {
 	next    int64
 	nextSeq uint64
 	// Index abstraction - the single source of truth for vector search
-	indexes            map[string]index.Index // Collection -> Index mapping
-	idToIx             map[uint64]int
-	Meta               map[uint64]map[string]string
-	Deleted            map[uint64]bool
-	Coll               map[uint64]string
-	NumMeta            map[uint64]map[string]float64
-	TimeMeta           map[uint64]map[string]time.Time
-	numIndex           map[string][]numEntry
-	timeIndex          map[string][]timeEntry
-	walPath            string
-	walMu              sync.Mutex
-	walMaxBytes        int64
-	walMaxOps          int
-	walOps             int
-	walRotate          int64
-	walHook            func(walEntry) // Optional hook to forward WAL events (e.g., to replication stream)
-	walFault           error          // Latched after an append may have partially reached durable storage
-	nextWALSeq         uint64         // Next monotonic WAL sequence to allocate (starts at 1)
-	appliedWALSeq      uint64         // Highest WAL sequence represented in logical state
-	apiToken           string
-	rl                 *rateLimiter
-	authFailureRL      *authFailureLimiter // shared HTTP/gRPC failed-auth budget keyed by peer IP
+	indexes       map[string]index.Index // Collection -> Index mapping
+	idToIx        map[uint64]int
+	Meta          map[uint64]map[string]string
+	Deleted       map[uint64]bool
+	Coll          map[uint64]string
+	NumMeta       map[uint64]map[string]float64
+	TimeMeta      map[uint64]map[string]time.Time
+	numIndex      map[string][]numEntry
+	timeIndex     map[string][]timeEntry
+	walPath       string
+	walMu         sync.Mutex
+	walMaxBytes   int64
+	walMaxOps     int
+	walOps        int
+	walRotate     int64
+	walHook       func(walEntry) // Optional hook to forward WAL events (e.g., to replication stream)
+	walFault      error          // Latched after an append may have partially reached durable storage
+	nextWALSeq    uint64         // Next monotonic WAL sequence to allocate (starts at 1)
+	appliedWALSeq uint64         // Highest WAL sequence represented in logical state
+	// Authentication and limit state, shared with the V3 surface (runtime.go).
+	*serverRuntime
 	checksum           string
 	lastSaved          time.Time
 	lastSnapshotWALSeq uint64 // WAL high-water in the last successfully renamed snapshot
@@ -91,13 +89,8 @@ type VectorStore struct {
 	df      map[string]int
 	sumDocL int
 	// Multi-tenancy support
-	TenantID          map[uint64]string     // vector hash -> tenant ID
-	acl               *security.ACL         // access control lists
-	quotas            *security.TenantQuota // storage quotas per tenant
-	tenantRL          *tenantRateLimiter    // per-tenant rate limiting
-	canonicalTenantRL *rateLimiter          // shared V3 HTTP/gRPC limiter keyed by authenticated tenant
-	jwtMgr            *security.JWTManager  // JWT token manager
-	requireAuth       bool                  // Require JWT authentication
+	TenantID map[uint64]string  // vector hash -> tenant ID
+	tenantRL *tenantRateLimiter // per-tenant rate limiting
 	// Storage format (gob, cowrie, cowrie-zstd)
 	storageFormat storage.Format
 	// Metadata bitmap index for fast pre-filtering
@@ -127,16 +120,6 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		os.Exit(1)
 	}
 
-	// Initialize JWT manager if configured
-	var jwtMgr *security.JWTManager
-	if secret := os.Getenv("JWT_SECRET"); secret != "" {
-		issuer := os.Getenv("JWT_ISSUER")
-		if issuer == "" {
-			issuer = "vectordb"
-		}
-		jwtMgr = security.NewJWTManager(secret, issuer)
-	}
-
 	// Select storage format (default: gob for backward compatibility)
 	// Options: "gob", "cowrie", "cowrie-zstd"
 	storageFormat := storage.Default()
@@ -146,38 +129,32 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		}
 	}
 
-	apiToken := os.Getenv("API_TOKEN")
-	requireAuth := os.Getenv("REQUIRE_AUTH") == "1" || jwtMgr != nil || apiToken != ""
-
 	return &VectorStore{
-		Data:        make([]float32, 0, capacity*dim),
-		Dim:         dim,
-		Count:       0,
-		indexes:     map[string]index.Index{"default": defaultIdx},
-		idToIx:      make(map[uint64]int),
-		Meta:        make(map[uint64]map[string]string),
-		Deleted:     make(map[uint64]bool),
-		Coll:        make(map[uint64]string),
-		Seqs:        make([]uint64, 0, capacity),
-		NumMeta:     make(map[uint64]map[string]float64),
-		TimeMeta:    make(map[uint64]map[string]time.Time),
-		numIndex:    make(map[string][]numEntry),
-		timeIndex:   make(map[string][]timeEntry),
-		walMaxBytes: 0,
-		walMaxOps:   0,
-		nextWALSeq:  1,
-		apiToken:    apiToken,
-		requireAuth: requireAuth,
-		lexTF:       make(map[uint64]map[string]int),
-		docLen:      make(map[uint64]int),
-		df:          make(map[string]int),
-		sumDocL:     0,
+		// Authentication and limits, read from the same environment as before.
+		serverRuntime: newServerRuntime(),
+		Data:          make([]float32, 0, capacity*dim),
+		Dim:           dim,
+		Count:         0,
+		indexes:       map[string]index.Index{"default": defaultIdx},
+		idToIx:        make(map[uint64]int),
+		Meta:          make(map[uint64]map[string]string),
+		Deleted:       make(map[uint64]bool),
+		Coll:          make(map[uint64]string),
+		Seqs:          make([]uint64, 0, capacity),
+		NumMeta:       make(map[uint64]map[string]float64),
+		TimeMeta:      make(map[uint64]map[string]time.Time),
+		numIndex:      make(map[string][]numEntry),
+		timeIndex:     make(map[string][]timeEntry),
+		walMaxBytes:   0,
+		walMaxOps:     0,
+		nextWALSeq:    1,
+		lexTF:         make(map[uint64]map[string]int),
+		docLen:        make(map[uint64]int),
+		df:            make(map[string]int),
+		sumDocL:       0,
 		// Multi-tenancy
 		TenantID: make(map[uint64]string),
-		acl:      security.NewACL(),
-		quotas:   security.NewTenantQuota(),
 		tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), envInt("MAX_TENANTS", 100_000), time.Minute),
-		jwtMgr:   jwtMgr,
 		// Storage
 		storageFormat: storageFormat,
 		// Metadata index for fast pre-filtering
@@ -1237,16 +1214,9 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 		}
 		logging.Default().Info("loaded snapshot", "format", loadedFormat.Name(), "path", path)
 		// Initialize JWT manager if configured
-		var jwtMgr *security.JWTManager
-		if secret := os.Getenv("JWT_SECRET"); secret != "" {
-			issuer := os.Getenv("JWT_ISSUER")
-			if issuer == "" {
-				issuer = "vectordb"
-			}
-			jwtMgr = security.NewJWTManager(secret, issuer)
-		}
-
 		vs := &VectorStore{
+			// Authentication and limits, read from the same environment as before.
+			serverRuntime:      newServerRuntime(),
 			Data:               payload.Data,
 			Dim:                payload.Dim,
 			Count:              payload.Count,
@@ -1268,8 +1238,6 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 			walMu:              sync.Mutex{},
 			walMaxBytes:        0,
 			walMaxOps:          0,
-			apiToken:           os.Getenv("API_TOKEN"),
-			requireAuth:        os.Getenv("REQUIRE_AUTH") == "1" || jwtMgr != nil || os.Getenv("API_TOKEN") != "",
 			checksum:           payload.Checksum,
 			lastSaved:          payload.LastSaved,
 			lexTF:              payload.LexTF,
@@ -1282,10 +1250,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 			numIndex:  make(map[string][]numEntry),
 			timeIndex: make(map[string][]timeEntry),
 			// Multi-tenancy support (TenantID already set from payload above)
-			acl:      security.NewACL(),
-			quotas:   security.NewTenantQuota(),
 			tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), envInt("MAX_TENANTS", 100_000), time.Minute),
-			jwtMgr:   jwtMgr,
 			// Storage format
 			storageFormat: getStorageFormat(),
 			// Metadata index (rebuilt below)
@@ -3240,19 +3205,6 @@ func main() {
 	}
 	logger.Info("data directory ready", "path", dataDir)
 
-	// Cost tracking belongs to the unsupported provider-backed legacy runtime.
-	var costTracker *CostTracker
-	if !canonicalOnly {
-		costTracker, err = NewCostTracker(modeConfig.Mode)
-		if err != nil {
-			logger.Warn("failed to initialize cost tracker", "error", err)
-		}
-		if costTracker != nil {
-			defer costTracker.Close()
-			logger.Info("cost tracking enabled", "db", GetCostDBPath(modeConfig.Mode))
-		}
-	}
-
 	// Use mode-specific index path
 	indexPath := GetIndexPath(modeConfig.Mode)
 
@@ -3293,37 +3245,8 @@ func main() {
 		} else {
 			logger.Info("no text embedder configured (DEEPDATA_EMBEDDER=none); clients must provide vectors")
 		}
-	} else if os.Getenv("USE_HASH_EMBEDDER") == "1" {
-		logger.Info("using hash embedder (low-memory mode)")
-		embedder = NewHashEmbedder(modeConfig.Dimension)
-	} else {
-		// Use mode-aware embedder factory
-		embedder, err = InitEmbedderForMode(modeConfig, costTracker)
-		if err != nil {
-			logger.Error("failed to initialize embedder", "error", err)
-			// Fall back to hash embedder — use modeConfig.Dimension which
-			// InitEmbedderForMode may have updated before failing
-			logger.Warn("falling back to hash embedder")
-			embedder = NewHashEmbedder(modeConfig.Dimension)
-		}
 	}
 
-	if !canonicalOnly {
-		// Print mode banner only for the provider-backed legacy runtime.
-		PrintModeBanner(modeConfig)
-	}
-
-	// Make initial capacity configurable for low-memory deployments
-	initialCapacity := 1000 // Reduced from 100000 for low-memory deployment
-	if envCap := os.Getenv("VECTOR_CAPACITY"); envCap != "" {
-		if v, err := strconv.Atoi(envCap); err == nil && v >= 0 {
-			initialCapacity = v
-		}
-	}
-	// Swapping endpoints are absent from the canonical route surface.
-	swappableEmbedder := NewSwappableEmbedder(embedder)
-	var store *VectorStore
-	loaded := false
 	if canonicalOnly {
 		legacyArtifacts, inspectErr := existingLegacyRootArtifacts(indexPath)
 		if inspectErr != nil {
@@ -3334,38 +3257,14 @@ func main() {
 			logger.Error("legacy root persistence requires an explicit offline migration before canonical RC startup", "artifacts", legacyArtifacts)
 			os.Exit(1)
 		}
-		store = NewVectorStore(0, 1)
-	} else {
-		store, loaded, err = loadOrInitStore(indexPath, initialCapacity, swappableEmbedder.Dim())
-		if err != nil {
-			logger.Error("refusing to start with unreadable persistence state", "path", indexPath, "error", err)
-			os.Exit(1)
-		}
-	}
-	store.walMaxBytes = envInt64("WAL_MAX_BYTES", 5*1024*1024)
-	store.walMaxOps = envInt("WAL_MAX_OPS", 1000)
-
-	if !loaded && !canonicalOnly {
-		logger.Info("fresh index initialized", "capacity", initialCapacity, "dimension", swappableEmbedder.Dim())
-	}
-	if !canonicalOnly {
-		logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
 	}
 
-	var reranker Reranker
-	if !canonicalOnly {
-		reranker = initReranker(swappableEmbedder)
-		warmupModels(swappableEmbedder, reranker)
-	}
+	// The V3 surface keeps its authentication and limit state here; the legacy
+	// engine is never constructed.
+	rt := newServerRuntime()
 
 	// HTTP API with graceful shutdown
-	var handler http.Handler
-	var collectionHTTP *CollectionHTTPServer
-	if canonicalOnly {
-		handler, collectionHTTP = newCanonicalHTTPHandler(store, embedder, reranker, indexPath)
-	} else {
-		handler, collectionHTTP = newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
-	}
+	handler, collectionHTTP := newCanonicalHTTPHandler(rt, embedder, nil, indexPath)
 	if err := collectionHTTP.PersistenceError(); err != nil {
 		logger.Error("refusing to start with unreadable collection persistence state", "path", indexPath+".collections", "error", err)
 		os.Exit(1)
@@ -3440,14 +3339,7 @@ func main() {
 		grpcSrv = grpc.NewServer(
 			grpc.MaxRecvMsgSize(canonicalGRPCMaxReceiveBytes),
 			grpc.MaxSendMsgSize(64*1024*1024),
-			grpc.UnaryInterceptor(grpcAuthInterceptorWithRateLimiters(
-				store.jwtMgr,
-				store.apiToken,
-				store.requireAuth,
-				logger,
-				store.canonicalTenantRL,
-				store.authFailureRL,
-			)),
+			grpc.UnaryInterceptor(rt.grpcInterceptor(logger)),
 		)
 		deepdatav3.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
 			tenants:  collectionHTTP.TenantManager(),
@@ -3481,113 +3373,6 @@ func main() {
 		}()
 	}
 
-	// Background compaction belongs to the legacy VectorStore. Canonical mode
-	// must not evaluate or depend on its interval configuration.
-	compactDone := make(chan struct{})
-	compactStop := make(chan struct{})
-	if canonicalOnly {
-		close(compactDone)
-	} else {
-		go func() {
-			defer close(compactDone)
-			interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
-			tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0
-			t := time.NewTicker(interval)
-			defer t.Stop()
-			for {
-				select {
-				case <-compactStop:
-					return
-				case <-t.C:
-					store.RLock()
-					total := store.Count
-					deleted := len(store.Deleted)
-					store.RUnlock()
-					if total == 0 {
-						continue
-					}
-					if float64(deleted)/float64(total) >= tombstoneThreshold {
-						logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
-						if err := store.Compact(indexPath); err != nil {
-							logger.Error("compact error", "error", err)
-						}
-					}
-				}
-			}
-		}()
-	}
-
-	// Background Obsidian vault sync
-	var obsidianSyncCancel context.CancelFunc
-	obsidianDone := make(chan struct{})
-	if canonicalOnly {
-		close(obsidianDone)
-	} else {
-		cfg := obsidian.LoadOrDetectConfig(dataDir)
-		obsidian.ApplyEnvOverrides(&cfg)
-
-		if cfg.Enabled && cfg.VaultPath != "" {
-			cfg.StateFile = filepath.Join(dataDir, ".obsidian-sync-state")
-			syncCtx, cancel := context.WithCancel(context.Background())
-			obsidianSyncCancel = cancel
-
-			// Wire store methods into callbacks to avoid import cycles
-			embedFn := func(text string) ([]float32, error) {
-				return swappableEmbedder.Embed(text)
-			}
-			upsertFn := func(vec []float32, doc, id string, meta map[string]string, collection string) error {
-				_, err := store.Upsert(vec, doc, id, meta, collection, "default")
-				return err
-			}
-			deleteFn := func(id string) error {
-				return store.Delete(id)
-			}
-			iterFn := func(collection string, fn func(id string, meta map[string]string) bool) {
-				type snapshotEntry struct {
-					id   string
-					meta map[string]string
-				}
-
-				store.RLock()
-				entries := make([]snapshotEntry, 0, store.Count)
-				for i := 0; i < store.Count; i++ {
-					docID := store.GetID(i)
-					hid := hashID(docID)
-					if store.Deleted[hid] {
-						continue
-					}
-					if collection != "" && store.Coll[hid] != collection {
-						continue
-					}
-					metaCopy := make(map[string]string, len(store.Meta[hid]))
-					for k, v := range store.Meta[hid] {
-						metaCopy[k] = v
-					}
-					entries = append(entries, snapshotEntry{id: docID, meta: metaCopy})
-				}
-				store.RUnlock()
-
-				for _, entry := range entries {
-					if !fn(entry.id, entry.meta) {
-						break
-					}
-				}
-			}
-
-			go func() {
-				defer close(obsidianDone)
-				obsidian.SyncLoop(syncCtx, cfg, logger, embedFn, upsertFn, deleteFn, iterFn)
-			}()
-			logger.Info("obsidian auto-sync started", "vault", cfg.VaultPath, "interval", cfg.Interval)
-		} else {
-			close(obsidianDone) // Not started — unblock shutdown wait
-			if vaults := obsidian.DetectVaults(); len(vaults) > 0 {
-				logger.Info("obsidian vault detected (not syncing — set OBSIDIAN_VAULT to enable)",
-					"vault", vaults[0])
-			}
-		}
-	}
-
 	// Setup graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -3604,18 +3389,8 @@ func main() {
 	}
 	signal.Stop(sigCh)
 
-	// Stop background compaction
-	close(compactStop)
-
-	// Stop obsidian sync
-	if obsidianSyncCancel != nil {
-		obsidianSyncCancel()
-	}
-
-	// Graceful shutdown sequence. A forced or timed-out drain retains WAL
-	// artifacts even if a final snapshot succeeds; only a proven clean drain may
-	// discard the recovery source.
-	cleanDrain := !serveFailed
+	// Graceful shutdown sequence. The final collection checkpoint runs only
+	// when every handler has drained.
 	allHandlersDrained := true
 	if grpcSrv != nil {
 		logging.Default().Info("shutting down gRPC server")
@@ -3628,7 +3403,6 @@ func main() {
 		case <-grpcDone:
 		case <-time.After(30 * time.Second):
 			logging.Default().Warn("gRPC graceful shutdown timed out, forcing stop")
-			cleanDrain = false
 			grpcSrv.Stop()
 			select {
 			case <-grpcDone:
@@ -3643,7 +3417,6 @@ func main() {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		cleanDrain = false
 		logging.Default().Error("HTTP server shutdown error; forcing connection close", "error", err)
 		if closeErr := srv.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
 			logging.Default().Error("HTTP server forced close error", "error", closeErr)
@@ -3658,49 +3431,14 @@ func main() {
 	case <-httpDone:
 	case <-time.After(5 * time.Second):
 		allHandlersDrained = false
-		cleanDrain = false
 		logging.Default().Error("HTTP handlers did not drain after shutdown")
 	}
 
-	// Wait for background goroutines to finish before final save
-	logger.Info("waiting for background compaction to finish...")
-	<-compactDone
-	logger.Info("waiting for obsidian sync to finish...")
-	<-obsidianDone
 	if allHandlersDrained {
-		if !canonicalOnly {
-			logger.Info("waiting for in-flight legacy WAL snapshots to finish...")
-			store.bgWg.Wait()
-
-			logging.Default().Info("saving final legacy snapshot")
-			if err := store.Save(indexPath); err != nil {
-				logger.Error("failed to save final legacy snapshot", "error", err)
-			} else {
-				logger.Info("final legacy snapshot saved successfully")
-				store.RLock()
-				walFault := store.walFault
-				store.RUnlock()
-				if cleanDrain && walFault == nil && store.walPath != "" {
-					for _, walPath := range []string{store.walPath + ".frozen", store.walPath} {
-						if err := removeWALArtifact(walPath); err != nil {
-							logger.Error("failed to remove checkpointed WAL artifact", "path", walPath, "error", err)
-						}
-					}
-				} else if store.walPath != "" {
-					logger.Warn("retaining legacy WAL artifacts after non-clean shutdown or WAL fault", "clean_drain", cleanDrain, "wal_fault", walFault)
-				}
-			}
-		}
-		if canonicalOnly {
-			if err := collectionHTTP.Close(); err != nil {
-				logger.Error("failed to checkpoint and close canonical collection state", "error", err)
-			} else {
-				logger.Info("canonical collection state checkpointed and closed successfully")
-			}
-		} else if err := collectionHTTP.Save(indexPath + ".collections"); err != nil {
-			logger.Error("failed to save collection state", "error", err)
+		if err := collectionHTTP.Close(); err != nil {
+			logger.Error("failed to checkpoint and close canonical collection state", "error", err)
 		} else {
-			logger.Info("collection state saved successfully")
+			logger.Info("canonical collection state checkpointed and closed successfully")
 		}
 	} else {
 		logger.Error("skipping final persistence checkpoint because handlers are still active; WAL artifacts retained")

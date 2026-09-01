@@ -30,6 +30,7 @@ list_checks() {
         go-contract \
         go-usage \
         go-indextypes \
+        go-runtime \
         python-unit \
         python-mypy \
         python-build \
@@ -102,6 +103,10 @@ case "$CHECK_NAME" in
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -timeout 300s -run 'IndexTypes' ./internal/collection ./cmd/deepdata && (cd sdk/python && python -m pytest tests/test_contract.py -q)"
         ;;
+    go-runtime)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go vet ./cmd/deepdata && DEEPDATA_EMBEDDER=hash go test -count=1 -p 1 -timeout 600s ./cmd/deepdata && assert_no_new_vector_store_callers"
+        ;;
     python-unit)
         CHECK_CWD="$REPO_ROOT/sdk/python"
         CHECK_DESCRIPTION="python -m pytest tests -q"
@@ -124,6 +129,32 @@ case "$CHECK_NAME" in
         exit 2
         ;;
 esac
+
+# SYS-01: the live server builds its state from serverRuntime, never from the
+# legacy engine. NewVectorStore survives only as its own definition and the one
+# loadOrInitStore snapshot path the legacy WAL and persistence tests exercise;
+# func main() must not name VectorStore at all.
+assert_no_new_vector_store_callers() {
+    local callers
+    callers="$(grep -rn 'NewVectorStore(' cmd internal --include='*.go' \
+        | grep -v '_test\.go:' \
+        | grep -v '^cmd/deepdata/main\.go:[0-9]*:func NewVectorStore(' \
+        | grep -v '^cmd/deepdata/main\.go:[0-9]*:[[:space:]]*vs := NewVectorStore(capacity, dim)$')"
+    if [[ -n "$callers" ]]; then
+        echo "unexpected NewVectorStore callers outside tests:" >&2
+        echo "$callers" >&2
+        return 1
+    fi
+    local in_main
+    in_main="$(awk '/^func main\(\) \{$/{inside=1} inside{print} inside && /^\}$/{inside=0}' cmd/deepdata/main.go \
+        | grep -n 'VectorStore')"
+    if [[ -n "$in_main" ]]; then
+        echo "func main() still names VectorStore:" >&2
+        echo "$in_main" >&2
+        return 1
+    fi
+    echo "NewVectorStore has no live-server callers and func main() is engine-free"
+}
 
 run_check() {
     case "$CHECK_NAME" in
@@ -197,6 +228,14 @@ run_check() {
                 go test -count=1 -p 1 -timeout 300s -run 'IndexTypes' \
                 ./internal/collection ./cmd/deepdata && \
             (cd "$REPO_ROOT/sdk/python" && timeout 180s python -m pytest tests/test_contract.py -q)
+            ;;
+        go-runtime)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go vet ./cmd/deepdata && \
+            timeout 660s env DEEPDATA_EMBEDDER=hash GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -timeout 600s ./cmd/deepdata && \
+            assert_no_new_vector_store_callers
             ;;
         python-unit)
             timeout 360s python -m pytest tests -q

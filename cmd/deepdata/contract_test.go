@@ -500,20 +500,20 @@ func TestDiscoveryAndStatusAreReadGated(t *testing.T) {
 	t.Setenv("JWT_ISSUER", "canonical-test")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "1")
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
 	)
 	t.Cleanup(func() { _ = collections.Close() })
 
-	readOnly, err := store.jwtMgr.GenerateTenantToken("acme", []string{"read"}, nil, time.Hour)
+	readOnly, err := rt.jwtMgr.GenerateTenantToken("acme", []string{"read"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin, err := store.jwtMgr.GenerateTenantToken("acme", []string{"admin", "read", "write"}, nil, time.Hour)
+	admin, err := rt.jwtMgr.GenerateTenantToken("acme", []string{"admin", "read", "write"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

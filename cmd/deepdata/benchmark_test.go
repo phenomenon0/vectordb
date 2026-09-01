@@ -849,7 +849,9 @@ func newTestStore(dim int) *VectorStore {
 		docLen:   make(map[uint64]int),
 		df:       make(map[string]int),
 		TenantID: make(map[uint64]string),
-		quotas:   security.NewTenantQuota(),
+		serverRuntime: &serverRuntime{
+			quotas: security.NewTenantQuota(),
+		},
 	}
 }
 

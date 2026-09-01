@@ -75,13 +75,13 @@ func TestCanonicalHTTPRateLimitedErrorCarriesRetryAfter(t *testing.T) {
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "0")
 	t.Setenv("TRUST_PROXY", "0")
-	store := NewVectorStore(8, 4)
-	store.requireAuth = true
-	store.apiToken = "envelope-static-token"
-	store.rl = newRateLimiter(100, 100, 100, time.Hour)
-	store.canonicalTenantRL = newRateLimiter(100, 100, 100, time.Hour)
-	store.authFailureRL = newAuthFailureLimiter(1, 1, 100, time.Hour)
-	handler, collections := newCanonicalHTTPHandler(store, NewHashEmbedder(4), nil, filepath.Join(t.TempDir(), "index.gob"))
+	rt := newServerRuntime()
+	rt.requireAuth = true
+	rt.apiToken = "envelope-static-token"
+	rt.rl = newRateLimiter(100, 100, 100, time.Hour)
+	rt.canonicalTenantRL = newRateLimiter(100, 100, 100, time.Hour)
+	rt.authFailureRL = newAuthFailureLimiter(1, 1, 100, time.Hour)
+	handler, collections := newCanonicalHTTPHandler(rt, NewHashEmbedder(4), nil, filepath.Join(t.TempDir(), "index.gob"))
 	t.Cleanup(func() { _ = collections.Close() })
 
 	if response := authThrottleHTTPRequest(handler, "wrong"); response.Code != http.StatusUnauthorized {

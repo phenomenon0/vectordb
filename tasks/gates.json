@@ -816,7 +816,7 @@
     {
       "id": "SYS-01",
       "statement": "serverRuntime extracted from cmd/deepdata main; NewVectorStore has zero callers",
-      "command": "GOTOOLCHAIN=go1.25.12 go vet ./cmd/deepdata && grep -rn NewVectorStore cmd internal",
+      "command": "scripts/hardening_check.sh go-runtime",
       "scope": [
         "cmd/deepdata",
         "internal"
@@ -824,7 +824,7 @@
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": ""
+      "note": "cmd/deepdata/runtime.go holds serverRuntime, the process-wide auth and limit state (api token, JWT manager, require-auth flag, ACL, tenant quotas, global limiter, canonical tenant limiter, failed-auth limiter) that the V3 HTTP handler and the gRPC interceptor now take directly, so func main() never constructs the legacy VectorStore."
     },
     {
       "id": "SYS-02",
