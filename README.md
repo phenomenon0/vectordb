@@ -1,7 +1,7 @@
 # DeepData
 
 Tenant-aware vector search server in Go: a persistent, headless, single-node Linux binary that takes
-caller-supplied vectors over an HTTP V3 contract and a matching unary gRPC service. Version `0.2.0-rc.1`
+caller-supplied vectors — or texts, embedded server-side when `DEEPDATA_EMBEDDER` names an embedder — over an HTTP V3 contract and a matching unary gRPC service. Version `0.2.0-rc.1`
 (`internal/releaseinfo/version.txt`, checked against Python, Helm and image metadata by
 `scripts/check_version_contract.py` in CI). Gate status: [docs/PRE_RELEASE_STATUS.md](docs/PRE_RELEASE_STATUS.md),
 rendered from `tasks/gates.json` by `scripts/gates.py`. Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -10,12 +10,12 @@ rendered from `tasks/gates.json` by `scripts/gates.py`. Map: [docs/ARCHITECTURE.
 
 `cmd/deepdata-mcp` is a stdio MCP server that forwards tool calls to a running DeepData server over the HTTP
 contract. It exposes five tools — `search`, `insert`, `upsert`, `get_document`, `list_collections` — and the three
-that carry vectors (`search`, `insert`, `upsert`) take vectors the caller has already computed (`cmd/deepdata-mcp/main.go:257-315`).
+that carry vectors (`search`, `insert`, `upsert`) take `vectors` the caller has computed or `texts` for fields that bind an embedding (`fieldMaps`, `cmd/deepdata-mcp/main.go:346`, `:442`).
 It is configured by `DEEPDATA_URL`, `DEEPDATA_TENANT` and `DEEPDATA_API_KEY` (`cmd/deepdata-mcp/main.go:117-129`). Build, Claude
-Desktop configuration, per-tool arguments and the error shape: [docs/mcp.md](docs/mcp.md). Sending text instead of vectors is a plan (gate CTL-02), as is the rewrite of the MCP server onto a shared
+Desktop configuration, per-tool arguments and the error shape: [docs/mcp.md](docs/mcp.md). The rewrite of the MCP server onto a shared
 contract package with the six memory verbs deepdata_recall, deepdata_remember, deepdata_forget, deepdata_get,
 deepdata_collections, deepdata_create_collection and the resources deepdata://contract and deepdata://status
-(gate CTL-03).
+is a plan (gate CTL-03).
 
 ## Contract in one screen
 
@@ -70,11 +70,10 @@ Non-goals of the release candidate, rendered from the block in [docs/ARCHITECTUR
 - web UI
 - CUDA/GPU
 - built-in TLS/encryption-at-rest
-- server-managed embeddings (until CTL-02)
 <!-- /generated -->
 
 Also outside the RC: switching embedding providers at runtime, follower restore, and streaming snapshots to other
-nodes. The provider-switch handler is still registered (`cmd/deepdata/server.go:2137`) but sits outside that allowlist, so
+nodes. The provider-switch handler is still registered (`cmd/deepdata/server.go:2142`) but sits outside that allowlist, so
 the RC binary answers it 404; follower restore and snapshot streaming live in `internal/cluster`, which `cmd/deepdata` does not import.
 
 ## Run from source
@@ -130,6 +129,27 @@ curl --fail-with-body "${H[@]}" $C/docs/1
 curl --fail-with-body "${H[@]}" -X POST $C/search -d '{"queries": {"embedding": [0.1, 0.2, 0.3]}, "top_k": 10, "include_vectors": false}'
 ```
 
+Text in, text out: start the server with an embedder (`DEEPDATA_EMBEDDER=ollama`, one per process; the
+environment table is in [installation](docs/installation.md)), bind the field to it with `embedding` — `dim` may then
+be omitted and is filled from the embedder — and send `texts` instead of `vectors`. Each search names the embedder
+per field in `embedded_by` (`cmd/deepdata/embed_text.go:132`). The server stores text only where told, so put it in
+`metadata` to read it back.
+
+```bash
+curl --fail-with-body "${H[@]}" -X POST http://127.0.0.1:8080/v3/tenants/acme/collections -d '{"name": "notes", "fields": [
+    {"name": "text", "type": "dense", "index": {"type": "hnsw"},
+     "embedding": {"provider": "ollama", "model": "nomic-embed-text"}}]}'
+N=http://127.0.0.1:8080/v3/tenants/acme/collections/notes
+curl --fail-with-body "${H[@]}" -X POST $N/docs -d '{"id": 1, "texts": {"text": "Crash-safe retrieval"}, "metadata": {"text": "Crash-safe retrieval"}}'
+curl --fail-with-body "${H[@]}" -X POST $N/search -d '{"texts": {"text": "durable storage"}, "top_k": 10}'
+# → {"documents": [...], "embedded_by": {"text": "ollama:nomic-embed-text"}, ...}
+```
+
+A field named in both `texts` and `vectors` is `400 invalid_argument` (`field: "texts.<name>"`); `texts` on a server
+started without an embedder is `503 embedder_unavailable`; a binding that names a provider or model other than the
+one the server runs is `409 embedding_mismatch`. `GET /readyz` reports the process embedder as `embedder`
+(`"none"` when callers must send vectors).
+
 ## Agent retrieval
 
 Search accepts three opt-in fields (`internal/collection/types.go:385-404`; proto fields 9-11 of `SearchRequest`).
@@ -161,6 +181,7 @@ with DeepDataClient("http://127.0.0.1:8080", api_token="replace-me") as client:
         vectors={"embedding": [0.3, 0.2, 0.1], "keywords": {"indices": [7], "values": [1.0], "dim": 10000}})
 ```
 
+`insert`, `upsert` and `search` also take `texts=` for fields that bind an embedding (`sdk/python/deepdata/client.py:244`).
 See the [Python SDK guide](sdk/python/README.md). The package omits the older root and V1/V2 helpers so
 unsupported server routes cannot be selected by accident.
 

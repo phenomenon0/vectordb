@@ -278,3 +278,62 @@ func TestParseErrorAndUnknownMethod(t *testing.T) {
 		t.Fatal("method-not-found error expected")
 	}
 }
+
+// TestToolsCallTextsPassThrough: an agent speaks text; the MCP server must
+// forward texts untouched (search, insert, upsert) and refuse a call that
+// carries neither texts nor vectors before it reaches the network.
+func TestToolsCallTextsPassThrough(t *testing.T) {
+	bodies := map[string]map[string]any{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies[r.Method+" "+r.URL.Path] = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","tenant_id":"mcp","documents":[],"scores":[],"candidates_examined":0,"embedded_by":{"text":"hash:4"}}`))
+	}))
+	defer server.Close()
+
+	s := newTestServer(server.URL)
+	frames := feedLines(t, s,
+		mustCall(t, "tools/call", map[string]any{
+			"name":      "search",
+			"arguments": map[string]any{"collection": "notes", "texts": map[string]string{"text": "durable storage"}, "top_k": 3},
+		}),
+		mustCall(t, "tools/call", map[string]any{
+			"name":      "insert",
+			"arguments": map[string]any{"collection": "notes", "id": 7, "texts": map[string]string{"text": "hello"}, "metadata": map[string]any{"text": "hello"}},
+		}),
+		mustCall(t, "tools/call", map[string]any{
+			"name":      "upsert",
+			"arguments": map[string]any{"collection": "notes", "id": 7, "texts": map[string]string{"text": "hello again"}},
+		}),
+		mustCall(t, "tools/call", map[string]any{
+			"name":      "search",
+			"arguments": map[string]any{"collection": "notes", "top_k": 3},
+		}),
+	)
+	text, isError := toolText(t, frames[0])
+	if isError || !strings.Contains(text, `"embedded_by":{"text":"hash:4"}`) {
+		t.Fatalf("text search: isError=%v %s", isError, text)
+	}
+	search := bodies["POST /v3/tenants/mcp/collections/notes/search"]
+	if texts, _ := search["texts"].(map[string]any); texts["text"] != "durable storage" || search["queries"] != nil {
+		t.Fatalf("search body = %v", search)
+	}
+	insert := bodies["POST /v3/tenants/mcp/collections/notes/docs"]
+	if texts, _ := insert["texts"].(map[string]any); texts["text"] != "hello" || insert["id"] != float64(7) || insert["vectors"] != nil {
+		t.Fatalf("insert body = %v", insert)
+	}
+	upsert := bodies["PUT /v3/tenants/mcp/collections/notes/docs/7"]
+	if texts, _ := upsert["texts"].(map[string]any); texts["text"] != "hello again" || upsert["id"] != nil {
+		t.Fatalf("upsert body = %v", upsert)
+	}
+	// Missing arguments are RPC-level errors, like a missing collection.
+	rpcErr, _ := frames[3]["error"].(map[string]any)
+	if msg, _ := rpcErr["message"].(string); !strings.Contains(msg, "queries or texts is required") {
+		t.Fatalf("search without queries or texts must fail as an rpc error: %v", frames[3])
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("the rejected search must not reach the server: %v", bodies)
+	}
+}

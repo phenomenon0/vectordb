@@ -75,6 +75,15 @@ assembled.
   reserved for `rate_limited` and carries `Retry-After`; the search-shape and
   `hybrid_params`/`fallback` checks moved from the transports into the engine
   (gate CTL-01).
+- Text in, text out: a `VectorField.embedding` binding (`provider`, `model`)
+  journaled with the schema; `texts` on insert, batch insert, upsert and
+  search across V3 HTTP, gRPC, the Python client and `cmd/deepdata-mcp`,
+  resolved above the engine (`cmd/deepdata/embed_text.go`) by the one
+  process embedder `DEEPDATA_EMBEDDER` names (`none` by default; `ollama`,
+  `openai`, `onnx`, or the explicit-only `hash`); search responses carry
+  `embedded_by`; new codes `embedding_mismatch` (409) and
+  `embedder_unavailable` (503); `/readyz` reports `embedder`; sparse `bm25`
+  bindings use the deterministic `TextToSparse` (gate CTL-02).
 - Normal startup exposes only the canonical V3 HTTP routes and V3 gRPC
   service. Legacy root/V2 mutation APIs and advanced recommendation,
   discovery, embedding-provider, GraphRAG, extraction, and feedback handlers

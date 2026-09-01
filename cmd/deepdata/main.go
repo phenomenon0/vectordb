@@ -3266,13 +3266,22 @@ func main() {
 		}()
 	}
 
-	// Canonical requests carry vectors, so the RC never initializes an external
-	// or model-backed embedder. A tiny in-process placeholder keeps historical
-	// handler construction isolated behind the canonical route allowlist.
+	// One text embedder per process, named by DEEPDATA_EMBEDDER (default none:
+	// callers send vectors). A configured-but-unreachable embedder refuses to
+	// start, like unreadable persistence below.
 	var embedder Embedder
 	if canonicalOnly {
-		embedder = NewHashEmbedder(1)
-		logger.Info("server-managed embedding disabled; canonical clients must provide vectors")
+		serverEmb, embErr := newServerEmbedderFromEnv()
+		if embErr != nil {
+			logger.Error("refusing to start with an unusable text embedder", "error", embErr)
+			os.Exit(1)
+		}
+		if serverEmb != nil {
+			embedder = serverEmb
+			logger.Info("text embedder ready", "embedder", serverEmb.Label(), "dim", serverEmb.Dim())
+		} else {
+			logger.Info("no text embedder configured (DEEPDATA_EMBEDDER=none); clients must provide vectors")
+		}
 	} else if os.Getenv("USE_HASH_EMBEDDER") == "1" {
 		logger.Info("using hash embedder (low-memory mode)")
 		embedder = NewHashEmbedder(modeConfig.Dimension)
@@ -3342,7 +3351,7 @@ func main() {
 	var handler http.Handler
 	var collectionHTTP *CollectionHTTPServer
 	if canonicalOnly {
-		handler, collectionHTTP = newCanonicalHTTPHandler(store, swappableEmbedder, reranker, indexPath)
+		handler, collectionHTTP = newCanonicalHTTPHandler(store, embedder, reranker, indexPath)
 	} else {
 		handler, collectionHTTP = newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
 	}
@@ -3430,7 +3439,8 @@ func main() {
 			)),
 		)
 		deepdatav3.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
-			tenants: collectionHTTP.TenantManager(),
+			tenants:  collectionHTTP.TenantManager(),
+			embedder: collectionHTTP.embedder,
 			persistenceHealth: func() error {
 				if !collectionHTTP.IsDurable() {
 					return errors.New("durable collection persistence is not initialized")

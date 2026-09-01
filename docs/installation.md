@@ -7,8 +7,10 @@ single-process, single-node server. Linux arm64 and non-Linux cross-builds are
 compile proofs, not persistence-supported release artifacts.
 
 The server exposes tenant-aware HTTP V3 on port 8080 and the matching eleven
-unary gRPC methods on port 50051. Clients provide vectors; the server does not
-initialize an embedding service.
+unary gRPC methods on port 50051. Clients provide vectors; when `DEEPDATA_EMBEDDER`
+names an embedder they may instead send `texts` for fields that bind an
+`embedding`. One embedder per process; the default `none` refuses `texts` with
+`503 embedder_unavailable`.
 
 ## Container quick start
 
@@ -102,6 +104,13 @@ for the complete typed sync and async contract.
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 | `LOG_FORMAT` | `json` | `json` or `text` |
 | `MAX_COLLECTIONS` | `10000` | Collection limit |
+| `DEEPDATA_EMBEDDER` | `none` | Process text embedder for fields that bind an `embedding`: `none`, `ollama`, `openai`, `onnx` (build tag `onnx`) or `hash` (deterministic test embedder, never implicit). `none` answers `texts` with `503 embedder_unavailable`; a configured embedder is probed once at startup and refuses to start when unreachable (`cmd/deepdata/embed_text.go:43`) |
+| `DEEPDATA_EMBED_DIM` | `384` | Vector dimension for `hash` and `onnx`; Ollama and OpenAI report their own |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama base URL for `DEEPDATA_EMBEDDER=ollama` |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model; bindings name it as `provider:model` |
+| `OPENAI_API_KEY` | unset | Required by `DEEPDATA_EMBEDDER=openai` |
+| `ONNX_EMBED_MODEL` / `ONNX_EMBED_TOKENIZER` | `vectordb/models/bge-small-en-v1.5/model.onnx` and the tokenizer.json beside it | ONNX model and tokenizer paths (`scripts/fetch_bge_small.sh`) |
+| `ONNX_EMBED_MAX_LEN` | `512` | ONNX tokenizer truncation length |
 | `MAX_TENANTS` | `100000` | Tenant limit |
 | `TENANT_RPS` | `100` | Per-tenant requests per second |
 | `TENANT_BURST` | `100` | Per-tenant burst allowance |

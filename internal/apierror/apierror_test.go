@@ -37,6 +37,8 @@ func TestErrorCodeTable(t *testing.T) {
 		{CodeUnavailable, 503, codes.Unavailable, true},
 		{CodeMethodNotAllowed, 405, codes.Unimplemented, false},
 		{CodeInternal, 500, codes.Internal, false},
+		{CodeEmbeddingMismatch, 409, codes.FailedPrecondition, false},
+		{CodeEmbedderUnavailable, 503, codes.Unavailable, true},
 	}
 	for _, tc := range cases {
 		e := New(tc.code, "m")

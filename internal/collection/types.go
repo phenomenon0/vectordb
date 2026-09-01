@@ -199,7 +199,24 @@ type VectorField struct {
 	Type  VectorType  `json:"type"`  // Dense, Sparse, or Binary
 	Dim   int         `json:"dim"`   // Vector dimension
 	Index IndexConfig `json:"index"` // Index configuration
+	// Embedding binds the field to a text embedder so callers may send
+	// `texts` instead of vectors. Journaled with the schema; nil means the
+	// field only accepts vectors. Dense fields name the server embedder
+	// (provider:model); sparse fields may bind only the deterministic
+	// "bm25" term hash (TextToSparse).
+	Embedding *EmbeddingConfig `json:"embedding,omitempty"`
 }
+
+// EmbeddingConfig names the embedder a field's texts are resolved with.
+// The vector dimension is the field's Dim; there is no second copy.
+type EmbeddingConfig struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model,omitempty"`
+}
+
+// EmbeddingProviderBM25 is the only provider a sparse field may bind: the
+// deterministic term-hash path any client can reproduce.
+const EmbeddingProviderBM25 = "bm25"
 
 // Validate checks if the vector field configuration is valid.
 func (vf *VectorField) Validate() error {
@@ -209,6 +226,19 @@ func (vf *VectorField) Validate() error {
 
 	if vf.Dim <= 0 {
 		return fmt.Errorf("dimension must be positive, got %d", vf.Dim)
+	}
+
+	if vf.Embedding != nil {
+		if vf.Embedding.Provider == "" {
+			return fmt.Errorf("embedding.provider cannot be empty")
+		}
+		isBM25 := vf.Embedding.Provider == EmbeddingProviderBM25
+		if vf.Type == VectorTypeSparse && (!isBM25 || vf.Embedding.Model != "") {
+			return fmt.Errorf("sparse fields may bind only embedding {provider: %q} without a model", EmbeddingProviderBM25)
+		}
+		if vf.Type == VectorTypeDense && isBM25 {
+			return fmt.Errorf("embedding provider %q is for sparse fields; dense fields bind a text embedder", EmbeddingProviderBM25)
+		}
 	}
 
 	// Validate index type matches vector type

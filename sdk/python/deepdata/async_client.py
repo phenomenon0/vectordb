@@ -229,12 +229,15 @@ class AsyncTenantClient:
         collection: str,
         *,
         id: int | None = None,
-        vectors: dict[str, Any],
+        vectors: dict[str, Any] | None = None,
+        texts: dict[str, str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TenantInsertResponse:
         """Insert one document into a canonical tenant collection."""
         segment = collection_segment(collection)
-        document = TenantDocumentInput(id=id, vectors=vectors, metadata=metadata)
+        document = TenantDocumentInput(
+            id=id, vectors=vectors, texts=texts, metadata=metadata
+        )
         data = await self._request(
             "POST",
             f"/collections/{segment}/docs",
@@ -283,7 +286,8 @@ class AsyncTenantClient:
         collection: str,
         *,
         id: int,
-        vectors: dict[str, Any],
+        vectors: dict[str, Any] | None = None,
+        texts: dict[str, str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TenantUpsertResponse:
         """Insert or replace a document under a caller-supplied ID.
@@ -293,7 +297,9 @@ class AsyncTenantClient:
         metadata atomically.
         """
         segment = collection_segment(collection)
-        request = TenantUpsertDocumentRequest(vectors=vectors, metadata=metadata)
+        request = TenantUpsertDocumentRequest(
+            vectors=vectors, texts=texts, metadata=metadata
+        )
         data = await self._request(
             "PUT",
             f"/collections/{segment}/docs/{id}",
@@ -318,7 +324,8 @@ class AsyncTenantClient:
         self,
         collection: str,
         *,
-        queries: dict[str, Any],
+        queries: dict[str, Any] | None = None,
+        texts: dict[str, str] | None = None,
         top_k: int = 10,
         ef_search: int | None = None,
         filters: dict[str, Any] | None = None,
@@ -348,6 +355,7 @@ class AsyncTenantClient:
         )
         request = TenantSearchRequest(
             queries=queries,
+            texts=texts,
             top_k=top_k,
             ef_search=ef_search,
             filters=filters,

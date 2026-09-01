@@ -36,6 +36,12 @@ const (
 	CodeUnavailable      = "unavailable"
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeInternal         = "internal"
+	// CodeEmbeddingMismatch: the field's embedding binding names a provider or
+	// model this server does not run; well-formed request, state cannot honor it.
+	CodeEmbeddingMismatch = "embedding_mismatch"
+	// CodeEmbedderUnavailable: texts were sent to a server started without an
+	// embedder (DEEPDATA_EMBEDDER=none); retryable once one is configured.
+	CodeEmbedderUnavailable = "embedder_unavailable"
 )
 
 // Error is the wire envelope. The same struct is the HTTP JSON body, the
@@ -61,17 +67,19 @@ type spec struct {
 }
 
 var specs = map[string]spec{
-	CodeInvalidArgument:  {http.StatusBadRequest, codes.InvalidArgument, false, "fix the named value and resend; the limits are in the contract"},
-	CodeNotFound:         {http.StatusNotFound, codes.NotFound, false, "list the tenant's collections to see what exists; document ids are the ones you inserted"},
-	CodeAlreadyExists:    {http.StatusConflict, codes.AlreadyExists, false, "use the existing collection or choose another name; there is no create-or-get"},
-	CodeUnauthenticated:  {http.StatusUnauthorized, codes.Unauthenticated, false, "send Authorization: Bearer <token> (the API_TOKEN or a JWT from cmd/gentoken)"},
-	CodePermissionDenied: {http.StatusForbidden, codes.PermissionDenied, false, "the token lacks the permission or collection scope for this call; mint one with the needed read/write/admin claim"},
-	CodeQuotaExceeded:    {http.StatusConflict, codes.FailedPrecondition, false, "a fixed deployment limit (max tenants or max collections) is reached; delete a collection or raise the limit; retrying does not help"},
-	CodePayloadTooLarge:  {http.StatusRequestEntityTooLarge, codes.ResourceExhausted, false, "send fewer or smaller documents, or lower top_k and drop include_vectors"},
-	CodeRateLimited:      {http.StatusTooManyRequests, codes.ResourceExhausted, true, "wait retry_after_ms and retry the same request"},
-	CodeUnavailable:      {http.StatusServiceUnavailable, codes.Unavailable, true, "the server is refusing work (persistence fault or shutdown); check GET /readyz and retry later"},
-	CodeMethodNotAllowed: {http.StatusMethodNotAllowed, codes.Unimplemented, false, "the path exists but not for this method; the route table is in the contract"},
-	CodeInternal:         {http.StatusInternalServerError, codes.Internal, false, "unexpected server fault; report it with the request_id"},
+	CodeInvalidArgument:     {http.StatusBadRequest, codes.InvalidArgument, false, "fix the named value and resend; the limits are in the contract"},
+	CodeNotFound:            {http.StatusNotFound, codes.NotFound, false, "list the tenant's collections to see what exists; document ids are the ones you inserted"},
+	CodeAlreadyExists:       {http.StatusConflict, codes.AlreadyExists, false, "use the existing collection or choose another name; there is no create-or-get"},
+	CodeUnauthenticated:     {http.StatusUnauthorized, codes.Unauthenticated, false, "send Authorization: Bearer <token> (the API_TOKEN or a JWT from cmd/gentoken)"},
+	CodePermissionDenied:    {http.StatusForbidden, codes.PermissionDenied, false, "the token lacks the permission or collection scope for this call; mint one with the needed read/write/admin claim"},
+	CodeQuotaExceeded:       {http.StatusConflict, codes.FailedPrecondition, false, "a fixed deployment limit (max tenants or max collections) is reached; delete a collection or raise the limit; retrying does not help"},
+	CodePayloadTooLarge:     {http.StatusRequestEntityTooLarge, codes.ResourceExhausted, false, "send fewer or smaller documents, or lower top_k and drop include_vectors"},
+	CodeRateLimited:         {http.StatusTooManyRequests, codes.ResourceExhausted, true, "wait retry_after_ms and retry the same request"},
+	CodeUnavailable:         {http.StatusServiceUnavailable, codes.Unavailable, true, "the server is refusing work (persistence fault or shutdown); check GET /readyz and retry later"},
+	CodeEmbeddingMismatch:   {http.StatusConflict, codes.FailedPrecondition, false, "the field is bound to a different embedder than this server runs (see embedder in GET /readyz); send a vector for the field or recreate the collection with the server's provider:model"},
+	CodeEmbedderUnavailable: {http.StatusServiceUnavailable, codes.Unavailable, true, "this server has no text embedder (DEEPDATA_EMBEDDER=none); send vectors instead of texts, or start the server with an embedder"},
+	CodeMethodNotAllowed:    {http.StatusMethodNotAllowed, codes.Unimplemented, false, "the path exists but not for this method; the route table is in the contract"},
+	CodeInternal:            {http.StatusInternalServerError, codes.Internal, false, "unexpected server fault; report it with the request_id"},
 }
 
 // New builds an Error for a known code. An unknown code is an internal error.

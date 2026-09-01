@@ -1573,10 +1573,13 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			w.Header().Set("Content-Type", "application/json")
 			if len(issues) == 0 {
 				w.WriteHeader(http.StatusOK)
+				// embedder names the process text embedder ("none" when
+				// callers must send vectors); no live embedding call here.
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"ready":   true,
-					"checks":  []string{"collection_snapshot", "mutation_journal", "lifetime_lock"},
-					"version": releaseinfo.Version(),
+					"ready":    true,
+					"checks":   []string{"collection_snapshot", "mutation_journal", "lifetime_lock"},
+					"embedder": collectionHTTP.embedder.Label(),
+					"version":  releaseinfo.Version(),
 				})
 			} else {
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -2076,6 +2079,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		collectionBasePath = indexPath + ".collections"
 	}
 	collectionHTTP = NewCollectionHTTPServer(collectionBasePath)
+	collectionHTTP.embedder, _ = embedder.(*serverEmbedder)
 	if collectionBasePath != "" {
 		var err error
 		if canonicalOnly {

@@ -12,12 +12,22 @@ import "google/protobuf/struct.proto";
 
 // ── Collection Management ────────────────────────────────────────────
 
+// EmbeddingConfig binds a field to a text embedder so requests may send
+// `texts` for it. Dense fields bind the server's DEEPDATA_EMBEDDER
+// (provider, plus model when set; the server fills model and dim at create).
+// Sparse fields may bind only provider "bm25" (deterministic term hashing).
+message EmbeddingConfig {
+  string provider = 1;
+  string model = 2;
+}
+
 message VectorFieldConfig {
   string name = 1;
   int32 type = 2;  // 0=dense, 1=sparse
-  int32 dim = 3;
+  int32 dim = 3;   // 0 at create takes the bound embedder's dimension
   string index_type = 4;  // RC: "hnsw", "flat", or "inverted"
   google.protobuf.Struct index_params = 5;
+  EmbeddingConfig embedding = 6;
 }
 
 message CollectionInfo {
@@ -110,6 +120,9 @@ message InsertRequest {
   reserved "text";
   string tenant_id = 5;
   uint64 id = 6;  // optional caller-supplied id; zero assigns one
+  // texts: field name -> text, embedded server-side for fields with an
+  // embedding binding; a field may not appear in both texts and vectors.
+  map<string, string> texts = 7;
 }
 
 message InsertResponse {
@@ -124,6 +137,7 @@ message BatchDoc {
   reserved 3;
   reserved "text";
   uint64 id = 4;  // optional caller-supplied id; zero assigns one
+  map<string, string> texts = 5;  // as InsertRequest.texts
 }
 
 message BatchInsertRequest {
@@ -173,6 +187,9 @@ message SearchRequest {
   // usage_boost: blend non-durable tenant usage (frecency) into ranking,
   // 0 disables, [0, 1) enforced; reported scores stay raw.
   double usage_boost = 11;
+  // texts: field name -> query text, embedded server-side (EmbedQuery) for
+  // fields with an embedding binding; may combine with queries on other fields.
+  map<string, string> texts = 12;
 }
 
 message SearchHit {
@@ -191,6 +208,8 @@ message SearchResponse {
   bool weak_match = 4;
   // secondary field name when the fallback ladder fired ("" otherwise)
   string fell_back_to = 5;
+  // embedded_by: field -> "provider:model" for each query embedded from texts
+  map<string, string> embedded_by = 6;
 }
 
 // ── Delete ───────────────────────────────────────────────────────────
@@ -215,6 +234,7 @@ message UpsertRequest {
   // Upsert is caller-addressed: id is required and, unlike Insert's optional
   // id, zero is rejected rather than auto-assigned.
   uint64 id = 6;
+  map<string, string> texts = 7;  // as InsertRequest.texts
 }
 
 message UpsertResponse {

@@ -5,7 +5,8 @@ release candidate. The production surface is deliberately small:
 
 - persistent, single-node operation on Linux only;
 - tenant-aware V3 HTTP plus the equivalent unary gRPC service;
-- caller-supplied dense and sparse vectors;
+- caller-supplied dense and sparse vectors, or `texts` for fields that bind an
+  `embedding`, embedded server-side by the process embedder (`DEEPDATA_EMBEDDER`);
 - HNSW or Flat for dense fields and Inverted/BM25 for sparse fields;
 - one-field search or two-field hybrid search, plus single-document fetch by
   caller-supplied ID; and
@@ -114,6 +115,18 @@ Supported field/index combinations are:
 IVF, DiskANN, binary vectors, quantization, and CUDA are rejected by the
 canonical persistence boundary.
 
+A field may bind an `embedding` so requests can send `texts` for it instead of
+vectors. Dense fields bind the server's embedder (`{"provider": "ollama",
+"model": "nomic-embed-text"}`; `model` and `dim` may be omitted and are filled
+from the server). Sparse fields bind `{"provider": "bm25"}`, a deterministic
+term hash (`TextToSparse`, `internal/collection/migration.go:211`) that needs no
+embedder. The binding is journaled with the schema (`types.go:207`). A dense
+binding whose provider or model differs from the server's `DEEPDATA_EMBEDDER`
+is `409 embedding_mismatch`; a binding on a server without an embedder is
+`503 embedder_unavailable`; a `dim` that disagrees with the embedder is
+`400 invalid_argument` (`cmd/deepdata/embed_text.go:101`). `GET` on the
+collection returns the resolved `dim` and `embedding`.
+
 ### Insert one document
 
 ```http
@@ -141,6 +154,20 @@ server assign one. To replace a document under a caller-supplied ID, send
 comes from the path and must be a non-zero `uint64`); `GET .../docs/{doc_id}`
 returns the stored `vectors` and `metadata`, or `404` when absent. There is no
 partial metadata-update mutation.
+
+For bound fields send `texts` (field name → text) instead of `vectors`; every
+schema field must appear in exactly one of the two. Had `embedding` bound to the
+server's embedder and `keywords` to `bm25`, the same document could be sent as:
+
+```json
+{"id": 1001, "texts": {"embedding": "wireless studio headphones", "keywords": "wireless studio headphones"}, "metadata": {"text": "wireless studio headphones"}}
+```
+
+The server stores text only where told: put it in `metadata` to read it back.
+A field in both `texts` and `vectors` is `400 invalid_argument` with
+`field: "texts.<name>"`; `texts` for an unbound field is `400` with the hint to
+bind an embedding or send a vector (`cmd/deepdata/embed_text.go:132`). Upsert
+and batch documents take `texts` the same way.
 
 ### Insert a batch
 
@@ -214,6 +241,12 @@ Two-field hybrid search requires explicit fusion parameters:
 Search accepts at most two query fields and `top_k` must be between 1 and
 1,000. Supported fusion strategies are `rrf`, `weighted`, and `linear`.
 
+`texts` (field name → query text) replaces `queries` for bound fields and may
+be mixed with it; together they name at most two fields. Each text is embedded
+with the embedder's query path, and the response reports `embedded_by` (field →
+`provider:model`, e.g. `{"embedding": "ollama:nomic-embed-text", "keywords": "bm25"}`),
+omitted when every query was a vector.
+
 Three optional agent-retrieval request fields (bde4f94) refine a search:
 
 - `score_floor` — confidence filter on raw scores in the field's metric
@@ -272,9 +305,11 @@ metadata, else one the server mints; both transports echo it back
 | `unauthenticated` | 401 | `Unauthenticated` | no | missing or invalid credential |
 | `permission_denied` | 403 | `PermissionDenied` | no | the token lacks the permission or collection scope |
 | `quota_exceeded` | 409 | `FailedPrecondition` | no | tenant or collection limit; fixed for the process lifetime, so retrying cannot help |
+| `embedding_mismatch` | 409 | `FailedPrecondition` | no | the field binds an embedding provider or model other than the one this server runs (`embedder` in `/readyz`); send a vector or recreate the collection with the server's `provider:model` |
 | `payload_too_large` | 413 | `ResourceExhausted` | no | request or response above the size limits |
 | `rate_limited` | 429 | `ResourceExhausted` | yes; `retry_after_ms` 1000, `Retry-After: 1` | per-tenant or authentication-failure limiter |
 | `unavailable` | 503 | `Unavailable` | yes | persistence fault (see Durability behavior) or shutdown |
+| `embedder_unavailable` | 503 | `Unavailable` | yes | `texts` sent to a server started with `DEEPDATA_EMBEDDER=none`, or the embedder failed on the request; send vectors or start the server with an embedder |
 | `method_not_allowed` | 405 | `Unimplemented` | no | known path, wrong method |
 | `internal` | 500 | `Internal` | no | unexpected fault; report the `request_id` |
 
@@ -299,6 +334,10 @@ HTTP route table — generated once the routes subcommand exists (gate DOC-03):
 Pass the same bearer credential in gRPC `authorization` metadata. The gRPC
 methods use the same tenant manager, authorization decisions, validation, and
 durable mutation journal as HTTP. There are no streaming RPCs in the RC.
+`texts` and `embedded_by` are the same-named map fields on the proto messages
+(`InsertRequest.texts = 7`, batch documents `texts = 5`, `SearchRequest.texts = 12`,
+`UpsertRequest.texts = 7`, `SearchResponse.embedded_by = 6`) and the binding is
+`VectorFieldConfig.embedding = 6`.
 
 ## Durability behavior
 
@@ -319,7 +358,7 @@ does not depend on graceful shutdown.
 
 - V2 and root writes, rename, metadata mutation, bulk-specialized imports,
   document scan, and destructive “drop all” operations;
-- server-managed embeddings or provider hot-swapping;
+- switching the embedder at runtime (one per process, chosen by `DEEPDATA_EMBEDDER`);
 - GraphRAG, extraction, recommendation, discovery, and feedback APIs;
 - replication, clustering, follower restore, and snapshot streaming;
 - IVF, DiskANN, binary/PQ quantization, and CUDA; and

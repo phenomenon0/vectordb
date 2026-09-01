@@ -64,8 +64,10 @@ Tenant and collection identifiers must contain 1–64 ASCII letters, digits,
 hyphens, or underscores. The SDK validates them before issuing a request so a
 dynamic identifier cannot alter the URL path.
 
-Canonical V3 accepts caller-supplied vectors. The SDK does not invoke an
-embedding model or external embedding provider.
+Canonical V3 accepts caller-supplied vectors, or `texts=` on `insert`, `upsert`
+and `search` for fields whose collection schema binds an `embedding`; the server
+embeds them and search results report `embedded_by`. The SDK itself never
+invokes an embedding model.
 
 ## Collections
 

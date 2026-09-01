@@ -112,6 +112,7 @@ type CollectionHTTPServer struct {
 	tenantManager *vcollection.TenantManager // Multi-tenant collection manager
 	graphIndex    *graph.GraphIndex          // Optional GraphRAG index for graph-boosted search
 	durableStore  *vcollection.DurableStore  // Canonical Linux persistence boundary
+	embedder      *serverEmbedder            // process text embedder for `texts`; nil = none
 
 	persistenceMu       sync.Mutex
 	snapshotMetadata    vcollection.CollectionSnapshotMetadata
@@ -365,6 +366,7 @@ type tenantSearchJSONResponse struct {
 	BestScore          float32                `json:"best_score,omitempty"`
 	WeakMatch          bool                   `json:"weak_match"`
 	FellBackTo         string                 `json:"fell_back_to,omitempty"`
+	EmbeddedBy         map[string]string      `json:"embedded_by,omitempty"`
 }
 
 func resolveIncludeVectors(bodyValue *bool, raw string) (*bool, error) {
@@ -697,6 +699,10 @@ func (s *CollectionHTTPServer) handleTenantCreateCollection(w http.ResponseWrite
 	if !authorizeCanonicalHTTP(w, r, tenantID, schema.Name, "admin") {
 		return
 	}
+	if aerr := resolveSchemaEmbedding(&schema, s.embedder); aerr != nil {
+		apierror.WriteHTTP(w, aerr)
+		return
+	}
 
 	ctx := r.Context()
 	if _, err := s.tenantManager.CreateCollection(ctx, tenantID, schema); err != nil {
@@ -772,6 +778,7 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 		var req struct {
 			ID       uint64                     `json:"id,omitempty"`
 			Vectors  map[string]json.RawMessage `json:"vectors"`
+			Texts    map[string]string          `json:"texts,omitempty"`
 			Metadata map[string]interface{}     `json:"metadata,omitempty"`
 		}
 		dec := json.NewDecoder(r.Body)
@@ -785,12 +792,12 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		if len(req.Vectors) == 0 {
-			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one vector required"))
+		if len(req.Vectors) == 0 && len(req.Texts) == 0 {
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one vector or text required"))
 			return
 		}
 
-		vectors := make(map[string]interface{}, len(req.Vectors))
+		vectors := make(map[string]interface{}, len(req.Vectors)+len(req.Texts))
 		for fieldName, vectorData := range req.Vectors {
 			vector, err := decodeCanonicalVectorRaw(fieldName, vectorData)
 			if err != nil {
@@ -798,6 +805,9 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 				return
 			}
 			vectors[fieldName] = vector
+		}
+		if _, ok := s.applyTexts(w, tenantID, collectionName, req.Texts, vectors, false); !ok {
+			return
 		}
 
 		doc := vcollection.Document{
@@ -880,6 +890,7 @@ func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *h
 	r.Body = http.MaxBytesReader(w, r.Body, limitInsertBody)
 	var req struct {
 		Vectors  map[string]json.RawMessage `json:"vectors"`
+		Texts    map[string]string          `json:"texts,omitempty"`
 		Metadata map[string]interface{}     `json:"metadata,omitempty"`
 	}
 	dec := json.NewDecoder(r.Body)
@@ -892,12 +903,12 @@ func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *h
 		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
-	if len(req.Vectors) == 0 {
-		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one vector required"))
+	if len(req.Vectors) == 0 && len(req.Texts) == 0 {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one vector or text required"))
 		return
 	}
 
-	vectors := make(map[string]interface{}, len(req.Vectors))
+	vectors := make(map[string]interface{}, len(req.Vectors)+len(req.Texts))
 	for fieldName, vectorData := range req.Vectors {
 		vector, err := decodeCanonicalVectorRaw(fieldName, vectorData)
 		if err != nil {
@@ -905,6 +916,9 @@ func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *h
 			return
 		}
 		vectors[fieldName] = vector
+	}
+	if _, ok := s.applyTexts(w, tenantID, collectionName, req.Texts, vectors, false); !ok {
+		return
 	}
 
 	doc := vcollection.Document{
@@ -961,6 +975,7 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 		Documents []struct {
 			ID       uint64                     `json:"id,omitempty"`
 			Vectors  map[string]json.RawMessage `json:"vectors"`
+			Texts    map[string]string          `json:"texts,omitempty"`
 			Metadata map[string]interface{}     `json:"metadata,omitempty"`
 		} `json:"documents"`
 	}
@@ -984,12 +999,13 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 	}
 
 	docs := make([]vcollection.Document, len(req.Documents))
+	var fields []vcollection.VectorField // schema, loaded once if any document sends texts
 	for i, input := range req.Documents {
-		if len(input.Vectors) == 0 {
-			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d requires at least one vector", i)))
+		if len(input.Vectors) == 0 && len(input.Texts) == 0 {
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d requires at least one vector or text", i)))
 			return
 		}
-		vectors := make(map[string]interface{}, len(input.Vectors))
+		vectors := make(map[string]interface{}, len(input.Vectors)+len(input.Texts))
 		for fieldName, raw := range input.Vectors {
 			vector, err := decodeCanonicalVectorRaw(fieldName, raw)
 			if err != nil {
@@ -997,6 +1013,21 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 				return
 			}
 			vectors[fieldName] = vector
+		}
+		if len(input.Texts) > 0 {
+			if fields == nil {
+				info, err := s.tenantManager.GetCollectionInfo(tenantID, collectionName)
+				if err != nil {
+					writeCanonicalOperationError(w, err, apierror.CodeNotFound)
+					return
+				}
+				fields = info.Fields
+			}
+			if _, aerr := resolveTexts(fields, s.embedder, input.Texts, vectors, false); aerr != nil {
+				aerr.Message = fmt.Sprintf("document %d: %s", i, aerr.Message)
+				apierror.WriteHTTP(w, aerr)
+				return
+			}
 		}
 		docs[i] = vcollection.Document{ID: input.ID, Vectors: vectors, Metadata: input.Metadata}
 	}
@@ -1029,6 +1060,7 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 	r.Body = http.MaxBytesReader(w, r.Body, limitQueryBody)
 	var req struct {
 		Queries        map[string]json.RawMessage      `json:"queries"`
+		Texts          map[string]string               `json:"texts,omitempty"`
 		TopK           int                             `json:"top_k"`
 		EfSearch       int                             `json:"ef_search,omitempty"`
 		IncludeVectors *bool                           `json:"include_vectors,omitempty"`
@@ -1049,7 +1081,7 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 		return
 	}
 
-	queries := make(map[string]interface{}, len(req.Queries))
+	queries := make(map[string]interface{}, len(req.Queries)+len(req.Texts))
 	for fieldName, vectorData := range req.Queries {
 		vector, err := decodeCanonicalVectorRaw(fieldName, vectorData)
 		if err != nil {
@@ -1057,6 +1089,10 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 			return
 		}
 		queries[fieldName] = vector
+	}
+	embeddedBy, ok := s.applyTexts(w, tenantID, collectionName, req.Texts, queries, true)
+	if !ok {
+		return
 	}
 
 	includeVectors, err := resolveIncludeVectors(req.IncludeVectors, r.URL.Query().Get("include_vectors"))
@@ -1095,5 +1131,6 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 		BestScore:          resp.BestScore,
 		WeakMatch:          resp.WeakMatch,
 		FellBackTo:         resp.FellBackTo,
+		EmbeddedBy:         embeddedBy,
 	})
 }

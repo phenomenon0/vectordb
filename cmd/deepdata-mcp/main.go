@@ -259,13 +259,19 @@ func (s *mcpServer) tools() []toolDefinition {
 		{
 			Name: "search",
 			Description: "Search a DeepData collection (dense, sparse, or multi-field). " +
+				"Give queries (field name -> vector) or texts (field name -> query text, " +
+				"embedded by the server for fields created with an embedding binding; " +
+				"the response reports embedded_by). " +
 				"Agent-retrieval options: score_floor (confidence filter; the response " +
 				"reports weak_match=true when nothing survives), fallback (auto-fallback " +
 				"ladder to a secondary field when the primary is weak), usage_boost " +
 				"(0..1 frecency blend; reported scores stay raw).",
-			InputSchema: objectSchema([]string{"collection", "queries"}, map[string]any{
+			InputSchema: objectSchema([]string{"collection"}, map[string]any{
 				"collection": map[string]any{"type": "string"},
 				"queries": map[string]any{
+					"type": "object",
+				},
+				"texts": map[string]any{
 					"type": "object",
 				},
 				"top_k":       map[string]any{"type": "integer", "minimum": 1},
@@ -279,22 +285,27 @@ func (s *mcpServer) tools() []toolDefinition {
 		{
 			Name: "insert",
 			Description: "Insert one document into a DeepData collection. " +
-				"The document id is caller-supplied and must be non-zero.",
-			InputSchema: objectSchema([]string{"collection", "id", "vectors"}, map[string]any{
+				"The document id is caller-supplied and must be non-zero. Give vectors " +
+				"(field name -> vector) or texts (field name -> text, embedded by the " +
+				"server for fields with an embedding binding); the server stores only " +
+				"the vector, so keep the text in metadata if you want it back.",
+			InputSchema: objectSchema([]string{"collection", "id"}, map[string]any{
 				"collection": map[string]any{"type": "string"},
 				"id":         map[string]any{"type": "integer", "minimum": 1},
 				"vectors":    map[string]any{"type": "object"},
+				"texts":      map[string]any{"type": "object"},
 				"metadata":   map[string]any{"type": "object"},
 			}),
 		},
 		{
 			Name: "upsert",
 			Description: "Insert or replace a document by caller-supplied id in a " +
-				"DeepData collection.",
-			InputSchema: objectSchema([]string{"collection", "id", "vectors"}, map[string]any{
+				"DeepData collection. Takes vectors or texts as insert does.",
+			InputSchema: objectSchema([]string{"collection", "id"}, map[string]any{
 				"collection": map[string]any{"type": "string"},
 				"id":         map[string]any{"type": "integer", "minimum": 1},
 				"vectors":    map[string]any{"type": "object"},
+				"texts":      map[string]any{"type": "object"},
 				"metadata":   map[string]any{"type": "object"},
 			}),
 		},
@@ -332,11 +343,10 @@ func (s *mcpServer) callTool(name string, args map[string]any) (any, bool, error
 		if err != nil {
 			return nil, true, err
 		}
-		queries, ok := args["queries"].(map[string]any)
-		if !ok || len(queries) == 0 {
-			return nil, true, errors.New("queries is a required non-empty object")
+		payload, ok := fieldMaps(args, "queries", "texts")
+		if !ok {
+			return nil, true, errors.New("queries or texts is required: a non-empty object keyed by field name")
 		}
-		payload := map[string]any{"queries": queries}
 		if v, ok := args["top_k"].(float64); ok {
 			payload["top_k"] = int(v)
 		}
@@ -359,11 +369,11 @@ func (s *mcpServer) callTool(name string, args map[string]any) (any, bool, error
 		if !ok || id < 1 {
 			return nil, true, errors.New("id is a required positive integer argument")
 		}
-		vectors, ok := args["vectors"].(map[string]any)
-		if !ok || len(vectors) == 0 {
-			return nil, true, errors.New("vectors is a required non-empty object")
+		payload, ok := docPayload(args)
+		if !ok {
+			return nil, true, errors.New("vectors or texts is required: a non-empty object keyed by field name")
 		}
-		payload := docPayload(args, int64(id), vectors)
+		payload["id"] = int64(id)
 		raw, err := s.doHTTP(http.MethodPost, s.tenantPath(collection, "/docs"), payload)
 		if err != nil {
 			return errorResult(err), true, nil
@@ -378,16 +388,12 @@ func (s *mcpServer) callTool(name string, args map[string]any) (any, bool, error
 		if !ok || id < 1 {
 			return nil, true, errors.New("id is a required positive integer argument")
 		}
-		vectors, ok := args["vectors"].(map[string]any)
-		if !ok || len(vectors) == 0 {
-			return nil, true, errors.New("vectors is a required non-empty object")
-		}
 		// The upsert endpoint takes the id in the path, never the body.
-		upsertPayload := map[string]any{"vectors": vectors}
-		if metadata, ok := args["metadata"].(map[string]any); ok {
-			upsertPayload["metadata"] = metadata
+		payload, ok := docPayload(args)
+		if !ok {
+			return nil, true, errors.New("vectors or texts is required: a non-empty object keyed by field name")
 		}
-		raw, err := s.doHTTP(http.MethodPut, s.tenantPath(collection, fmt.Sprintf("/docs/%d", int64(id))), upsertPayload)
+		raw, err := s.doHTTP(http.MethodPut, s.tenantPath(collection, fmt.Sprintf("/docs/%d", int64(id))), payload)
 		if err != nil {
 			return errorResult(err), true, nil
 		}
@@ -417,14 +423,27 @@ func (s *mcpServer) callTool(name string, args map[string]any) (any, bool, error
 	}
 }
 
-// docPayload builds the {id, vectors, metadata} document body, forwarding
-// metadata only when the caller provided it.
-func docPayload(args map[string]any, id int64, vectors map[string]any) map[string]any {
-	payload := map[string]any{"id": id, "vectors": vectors}
-	if metadata, ok := args["metadata"].(map[string]any); ok {
+// fieldMaps copies the named field-keyed object arguments (vectors/queries and
+// texts) that are present and non-empty; ok is false when none is.
+func fieldMaps(args map[string]any, keys ...string) (map[string]any, bool) {
+	payload := map[string]any{}
+	for _, key := range keys {
+		if m, ok := args[key].(map[string]any); ok && len(m) > 0 {
+			payload[key] = m
+		}
+	}
+	return payload, len(payload) > 0
+}
+
+// docPayload builds the {vectors, texts, metadata} document body, forwarding
+// metadata only when the caller provided it. The id is added by insert and
+// carried in the path by upsert.
+func docPayload(args map[string]any) (map[string]any, bool) {
+	payload, ok := fieldMaps(args, "vectors", "texts")
+	if metadata, has := args["metadata"].(map[string]any); has {
 		payload["metadata"] = metadata
 	}
-	return payload
+	return payload, ok
 }
 
 // ── stdio transport ──────────────────────────────────────────────────────

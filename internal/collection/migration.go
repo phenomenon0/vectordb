@@ -36,44 +36,44 @@ type MigrationConfig struct {
 	TargetCollection string
 
 	// Dense vector field configuration
-	DenseFieldName string
-	DenseDimension int
-	DenseIndexType IndexType
+	DenseFieldName   string
+	DenseDimension   int
+	DenseIndexType   IndexType
 	DenseIndexParams map[string]interface{}
 
 	// Sparse vector configuration
-	EnableSparse bool
-	SparseFieldName string
-	SparseMethod string // "bm25" or "none"
-	SparseDimension int
+	EnableSparse      bool
+	SparseFieldName   string
+	SparseMethod      string // "bm25" or "none"
+	SparseDimension   int
 	SparseIndexParams map[string]interface{}
 
 	// Generation settings
-	GenerateSparseFromText bool // Generate sparse vectors from text field
-	TextFieldName string // Field in metadata containing text
+	GenerateSparseFromText bool   // Generate sparse vectors from text field
+	TextFieldName          string // Field in metadata containing text
 }
 
 // DefaultMigrationConfig returns a sensible default configuration
 func DefaultMigrationConfig(targetCollection string) MigrationConfig {
 	return MigrationConfig{
 		TargetCollection: targetCollection,
-		DenseFieldName: "embedding",
-		DenseDimension: 384,
-		DenseIndexType: IndexTypeHNSW,
+		DenseFieldName:   "embedding",
+		DenseDimension:   384,
+		DenseIndexType:   IndexTypeHNSW,
 		DenseIndexParams: map[string]interface{}{
-			"m": 16,
+			"m":               16,
 			"ef_construction": 200,
 		},
-		EnableSparse: true,
+		EnableSparse:    true,
 		SparseFieldName: "keywords",
-		SparseMethod: "bm25",
+		SparseMethod:    "bm25",
 		SparseDimension: 10000,
 		SparseIndexParams: map[string]interface{}{
 			"k1": 1.2,
-			"b": 0.75,
+			"b":  0.75,
 		},
 		GenerateSparseFromText: true,
-		TextFieldName: "text",
+		TextFieldName:          "text",
 	}
 }
 
@@ -84,9 +84,9 @@ func (mt *MigrationTool) CreateV2Collection(ctx context.Context, config Migratio
 		{
 			Name: config.DenseFieldName,
 			Type: VectorTypeDense,
-			Dim: config.DenseDimension,
+			Dim:  config.DenseDimension,
 			Index: IndexConfig{
-				Type: config.DenseIndexType,
+				Type:   config.DenseIndexType,
 				Params: config.DenseIndexParams,
 			},
 		},
@@ -97,17 +97,17 @@ func (mt *MigrationTool) CreateV2Collection(ctx context.Context, config Migratio
 		fields = append(fields, VectorField{
 			Name: config.SparseFieldName,
 			Type: VectorTypeSparse,
-			Dim: config.SparseDimension,
+			Dim:  config.SparseDimension,
 			Index: IndexConfig{
-				Type: IndexTypeInverted,
+				Type:   IndexTypeInverted,
 				Params: config.SparseIndexParams,
 			},
 		})
 	}
 
 	schema := CollectionSchema{
-		Name: config.TargetCollection,
-		Fields: fields,
+		Name:        config.TargetCollection,
+		Fields:      fields,
 		Description: fmt.Sprintf("Migrated from v1 with hybrid search support"),
 	}
 
@@ -168,7 +168,7 @@ func (mt *MigrationTool) convertDocument(config MigrationConfig, v1Doc V1Documen
 	}
 
 	return Document{
-		Vectors: vectors,
+		Vectors:  vectors,
 		Metadata: v1Doc.Metadata,
 	}, nil
 }
@@ -201,6 +201,28 @@ func (mt *MigrationTool) generateSparseVector(config MigrationConfig, text strin
 
 	// Create sparse vector
 	return sparse.NewSparseVector(indices, values, config.SparseDimension)
+}
+
+// TextToSparse is the deterministic text → sparse-vector path a field bound
+// to embedding {provider: "bm25"} uses: tokenize (letters/digits lowercased,
+// len > 2, stopwords dropped), djb2 term hash modulo dim, term frequency as
+// the value; colliding terms add. Any client can reproduce it. Text with no
+// surviving token yields an empty vector.
+func TextToSparse(text string, dim int) (*sparse.SparseVector, error) {
+	if dim <= 0 {
+		return nil, fmt.Errorf("sparse dimension must be positive, got %d", dim)
+	}
+	weights := make(map[uint32]float32)
+	for _, term := range tokenize(text) {
+		weights[hashTerm(term)%uint32(dim)]++
+	}
+	indices := make([]uint32, 0, len(weights))
+	values := make([]float32, 0, len(weights))
+	for idx, w := range weights {
+		indices = append(indices, idx)
+		values = append(values, w)
+	}
+	return sparse.NewSparseVector(indices, values, dim)
 }
 
 // tokenize splits text into tokens (words)
@@ -257,17 +279,17 @@ func isStopword(word string) bool {
 
 // MigrationStats tracks migration progress
 type MigrationStats struct {
-	TotalDocuments int
+	TotalDocuments    int
 	MigratedDocuments int
-	FailedDocuments int
-	Errors []string
+	FailedDocuments   int
+	Errors            []string
 }
 
 // MigrateBatch migrates documents in batches for better performance
 func (mt *MigrationTool) MigrateBatch(ctx context.Context, config MigrationConfig, v1Docs []V1Document, batchSize int) (*MigrationStats, error) {
 	stats := &MigrationStats{
 		TotalDocuments: len(v1Docs),
-		Errors: make([]string, 0),
+		Errors:         make([]string, 0),
 	}
 
 	// Ensure target collection exists
@@ -342,21 +364,21 @@ func ExampleMigration() {
 	// 1. Prepare v1 documents (normally loaded from existing v1 collection)
 	v1Docs := []V1Document{
 		{
-			ID: "doc1",
+			ID:     "doc1",
 			Vector: []float32{0.1, 0.2, 0.3}, // ... 384 dims
-			Text: "Machine learning is transforming artificial intelligence research",
+			Text:   "Machine learning is transforming artificial intelligence research",
 			Metadata: map[string]interface{}{
 				"category": "AI",
-				"year": "2025",
+				"year":     "2025",
 			},
 		},
 		{
-			ID: "doc2",
+			ID:     "doc2",
 			Vector: []float32{0.2, 0.3, 0.4}, // ... 384 dims
-			Text: "Natural language processing enables better text understanding",
+			Text:   "Natural language processing enables better text understanding",
 			Metadata: map[string]interface{}{
 				"category": "NLP",
-				"year": "2025",
+				"year":     "2025",
 			},
 		},
 	}

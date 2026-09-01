@@ -35,6 +35,7 @@ type CollectionGRPCServer struct {
 	deepdatav3.UnimplementedDeepDataServer
 	tenants           *vcollection.TenantManager
 	persistenceHealth func() error
+	embedder          *serverEmbedder // process text embedder for `texts`; nil = none
 }
 
 func (s *CollectionGRPCServer) GetTenantInfo(ctx context.Context, req *deepdatav3.GetTenantInfoRequest) (*deepdatav3.GetTenantInfoResponse, error) {
@@ -160,6 +161,9 @@ func (s *CollectionGRPCServer) CreateCollection(ctx context.Context, req *deepda
 				Params: structToMap(field.IndexParams),
 			},
 		}
+		if field.Embedding != nil {
+			fields[i].Embedding = &vcollection.EmbeddingConfig{Provider: field.Embedding.Provider, Model: field.Embedding.Model}
+		}
 	}
 
 	schema := vcollection.CollectionSchema{
@@ -167,6 +171,9 @@ func (s *CollectionGRPCServer) CreateCollection(ctx context.Context, req *deepda
 		Fields:      fields,
 		Metadata:    structToMap(req.Metadata),
 		Description: req.Description,
+	}
+	if aerr := resolveSchemaEmbedding(&schema, s.embedder); aerr != nil {
+		return nil, aerr.GRPC(ctx)
 	}
 	if _, err := s.tenants.CreateCollection(ctx, req.TenantId, schema); err != nil {
 		return nil, canonicalGRPCError(ctx, err, apierror.CodeInvalidArgument)
@@ -203,13 +210,16 @@ func (s *CollectionGRPCServer) Insert(ctx context.Context, req *deepdatav3.Inser
 	if err := requireCanonicalGRPCMutationSize(ctx, req); err != nil {
 		return nil, err
 	}
-	if len(req.Vectors) == 0 {
-		return nil, apierror.New(apierror.CodeInvalidArgument, "at least one vector required").GRPC(ctx)
+	if len(req.Vectors) == 0 && len(req.Texts) == 0 {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "at least one vector or text required").GRPC(ctx)
 	}
 
 	vectors, err := protoVectorsToInterface(req.Vectors)
 	if err != nil {
 		return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("%v", err)).GRPC(ctx)
+	}
+	if _, err := s.applyTexts(ctx, req.TenantId, req.Collection, req.Texts, vectors, false); err != nil {
+		return nil, err
 	}
 	doc := &vcollection.Document{ID: req.Id, Vectors: vectors, Metadata: structToMap(req.Metadata)}
 	if err := s.tenants.AddDocument(ctx, req.TenantId, req.Collection, doc); err != nil {
@@ -239,16 +249,30 @@ func (s *CollectionGRPCServer) BatchInsert(ctx context.Context, req *deepdatav3.
 	}
 
 	docs := make([]vcollection.Document, len(req.Docs))
+	var fields []vcollection.VectorField // schema, loaded once if any document sends texts
 	for i, batchDoc := range req.Docs {
 		if batchDoc == nil {
 			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d is required", i)).GRPC(ctx)
 		}
-		if len(batchDoc.Vectors) == 0 {
-			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d requires at least one vector", i)).GRPC(ctx)
+		if len(batchDoc.Vectors) == 0 && len(batchDoc.Texts) == 0 {
+			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d requires at least one vector or text", i)).GRPC(ctx)
 		}
 		vectors, err := protoVectorsToInterface(batchDoc.Vectors)
 		if err != nil {
 			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d: %v", i, err)).GRPC(ctx)
+		}
+		if len(batchDoc.Texts) > 0 {
+			if fields == nil {
+				info, err := s.tenants.GetCollectionInfo(req.TenantId, req.Collection)
+				if err != nil {
+					return nil, canonicalGRPCError(ctx, err, apierror.CodeNotFound)
+				}
+				fields = info.Fields
+			}
+			if _, aerr := resolveTexts(fields, s.embedder, batchDoc.Texts, vectors, false); aerr != nil {
+				aerr.Message = fmt.Sprintf("document %d: %s", i, aerr.Message)
+				return nil, aerr.GRPC(ctx)
+			}
 		}
 		docs[i] = vcollection.Document{ID: batchDoc.Id, Vectors: vectors, Metadata: structToMap(batchDoc.Metadata)}
 	}
@@ -276,6 +300,10 @@ func (s *CollectionGRPCServer) Search(ctx context.Context, req *deepdatav3.Searc
 	queries, err := protoVectorsToInterface(req.Queries)
 	if err != nil {
 		return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("%v", err)).GRPC(ctx)
+	}
+	embeddedBy, err := s.applyTexts(ctx, req.TenantId, req.Collection, req.Texts, queries, true)
+	if err != nil {
+		return nil, err
 	}
 	searchReq := vcollection.SearchRequest{
 		CollectionName: req.Collection,
@@ -331,6 +359,7 @@ func (s *CollectionGRPCServer) Search(ctx context.Context, req *deepdatav3.Searc
 		BestScore:          resp.BestScore,
 		WeakMatch:          resp.WeakMatch,
 		FellBackTo:         resp.FellBackTo,
+		EmbeddedBy:         embeddedBy,
 	}, nil
 }
 
@@ -366,13 +395,16 @@ func (s *CollectionGRPCServer) Upsert(ctx context.Context, req *deepdatav3.Upser
 	if err := requireCanonicalGRPCMutationSize(ctx, req); err != nil {
 		return nil, err
 	}
-	if len(req.Vectors) == 0 {
-		return nil, apierror.New(apierror.CodeInvalidArgument, "at least one vector required").GRPC(ctx)
+	if len(req.Vectors) == 0 && len(req.Texts) == 0 {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "at least one vector or text required").GRPC(ctx)
 	}
 
 	vectors, err := protoVectorsToInterface(req.Vectors)
 	if err != nil {
 		return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("%v", err)).GRPC(ctx)
+	}
+	if _, err := s.applyTexts(ctx, req.TenantId, req.Collection, req.Texts, vectors, false); err != nil {
+		return nil, err
 	}
 	doc := &vcollection.Document{ID: req.Id, Vectors: vectors, Metadata: structToMap(req.Metadata)}
 	if err := s.tenants.UpsertDocument(ctx, req.TenantId, req.Collection, doc); err != nil {
@@ -587,6 +619,9 @@ func collectionInfoToProto(info vcollection.CollectionInfo) (*deepdatav3.Collect
 			Dim:         int32(field.Dim),
 			IndexType:   field.Index.Type.String(),
 			IndexParams: params,
+		}
+		if field.Embedding != nil {
+			fields[i].Embedding = &deepdatav3.EmbeddingConfig{Provider: field.Embedding.Provider, Model: field.Embedding.Model}
 		}
 	}
 	metadata, err := mapToStruct(info.Metadata)

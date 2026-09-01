@@ -742,16 +742,20 @@
     {
       "id": "CTL-02",
       "statement": "text in, text out: server-side embeddings, Ollama first, hash embedder only when named explicitly",
-      "command": "GOTOOLCHAIN=go1.25.12 go test ./internal/embed ./cmd/deepdata -run Embed",
+      "command": "scripts/hardening_check.sh go-embed",
       "scope": [
         "cmd/deepdata",
-        "internal/embed",
+        "cmd/deepdata-mcp",
+        "internal/collection",
+        "internal/apierror",
+        "api",
+        "sdk/python",
         "docs/ARCHITECTURE.md"
       ],
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": "remove the server-managed-embeddings non-goal from docs/ARCHITECTURE.md when this lands"
+      "note": "plan 9.2; the check runs with the hash embedder only (Ollama/OpenAI/ONNX startup probes are not exercised); the Python side (sdk/python/tests/test_texts.py) is proven by python-unit"
     },
     {
       "id": "CTL-03",
