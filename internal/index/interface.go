@@ -102,19 +102,11 @@ func (DefaultSearchParams) Type() string { return "default" }
 
 // HNSWSearchParams are parameters specific to HNSW index search
 type HNSWSearchParams struct {
-	EfSearch int            // Beam width for search (higher = more accurate, slower)
-	Filter   filter.Filter  // Optional metadata filter (nil = no filtering)
+	EfSearch int           // Beam width for search (higher = more accurate, slower)
+	Filter   filter.Filter // Optional metadata filter (nil = no filtering)
 }
 
 func (HNSWSearchParams) Type() string { return "hnsw" }
-
-// IVFSearchParams are parameters specific to IVF index search
-type IVFSearchParams struct {
-	NProbe int            // Number of clusters to search (higher = more accurate, slower)
-	Filter filter.Filter  // Optional metadata filter (nil = no filtering)
-}
-
-func (IVFSearchParams) Type() string { return "ivf" }
 
 // Result represents a single search result (ID + distance/score)
 type Result struct {

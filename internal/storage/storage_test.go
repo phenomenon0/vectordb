@@ -94,117 +94,24 @@ func TestGobRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCowrieRoundTrip(t *testing.T) {
-	cw := &CowrieFormat{UseCompression: false}
-	payload := generateTestPayload(100, 384)
-
-	var buf bytes.Buffer
-	if err := cw.Save(&buf, payload); err != nil {
-		t.Fatalf("cowrie save failed: %v", err)
-	}
-
-	loaded, err := cw.Load(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		t.Fatalf("cowrie load failed: %v", err)
-	}
-
-	// Verify key fields
-	if loaded.Dim != payload.Dim {
-		t.Errorf("Dim mismatch: got %d, want %d", loaded.Dim, payload.Dim)
-	}
-	if loaded.Count != payload.Count {
-		t.Errorf("Count mismatch: got %d, want %d", loaded.Count, payload.Count)
-	}
-	if len(loaded.Data) != len(payload.Data) {
-		t.Errorf("Data length mismatch: got %d, want %d", len(loaded.Data), len(payload.Data))
-	}
-
-	// Verify embedding data
-	for i := 0; i < min(100, len(payload.Data)); i++ {
-		if loaded.Data[i] != payload.Data[i] {
-			t.Errorf("Data[%d] mismatch: got %v, want %v", i, loaded.Data[i], payload.Data[i])
-			break
-		}
-	}
-}
-
-func TestCowrieZstdRoundTrip(t *testing.T) {
-	cw := &CowrieFormat{UseCompression: true}
-	payload := generateTestPayload(100, 384)
-
-	var buf bytes.Buffer
-	if err := cw.Save(&buf, payload); err != nil {
-		t.Fatalf("cowrie-zstd save failed: %v", err)
-	}
-
-	loaded, err := cw.Load(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		t.Fatalf("cowrie-zstd load failed: %v", err)
-	}
-
-	if loaded.Count != payload.Count {
-		t.Errorf("Count mismatch: got %d, want %d", loaded.Count, payload.Count)
-	}
-	if len(loaded.Data) != len(payload.Data) {
-		t.Errorf("Data length mismatch: got %d, want %d", len(loaded.Data), len(payload.Data))
-	}
-}
-
-func TestSizeComparison(t *testing.T) {
-	gob := &GobFormat{}
-	cw := &CowrieFormat{UseCompression: false}
-	cwZstd := &CowrieFormat{UseCompression: true}
-
-	sizes := []struct {
-		vectors int
-		dim     int
-	}{
-		{100, 384},
-		{1000, 384},
-		{1000, 768},
-	}
-
-	t.Logf("%-8s | %-10s | %-10s | %-10s | %-10s | %-10s", "Config", "Gob", "Cowrie", "Cowrie+Zstd", "CW Save%", "Zstd Save%")
-	t.Logf("---------|------------|------------|------------|------------|------------")
-
-	for _, sz := range sizes {
-		payload := generateTestPayload(sz.vectors, sz.dim)
-
-		var gobBuf, cowrieBuf, zstdBuf bytes.Buffer
-		gob.Save(&gobBuf, payload)
-		cw.Save(&cowrieBuf, payload)
-		cwZstd.Save(&zstdBuf, payload)
-
-		gobSize := gobBuf.Len()
-		cowrieSize := cowrieBuf.Len()
-		zstdSize := zstdBuf.Len()
-
-		cowrieSavings := float64(gobSize-cowrieSize) / float64(gobSize) * 100
-		zstdSavings := float64(gobSize-zstdSize) / float64(gobSize) * 100
-
-		t.Logf("%dx%d | %10d | %10d | %10d | %9.1f%% | %9.1f%%",
-			sz.vectors, sz.dim, gobSize, cowrieSize, zstdSize, cowrieSavings, zstdSavings)
-	}
-}
-
 func TestFormatRegistry(t *testing.T) {
-	// Check all formats are registered
+	// The Cowrie formats were retired under SYS-03; gob is the only registered
+	// format left, so it must also be the default the engine picks silently.
 	formats := List()
-	if len(formats) < 3 {
-		t.Errorf("Expected at least 3 formats (gob, cowrie, cowrie-zstd), got %d", len(formats))
+	if len(formats) != 1 || formats[0] != "gob" {
+		t.Errorf("Expected only the gob format to be registered, got %v", formats)
 	}
 
-	// Check cowrie-zstd is default (optimized for embeddings)
 	if Default() == nil {
-		t.Error("Default format should not be nil")
+		t.Fatal("Default format should not be nil")
 	}
-	if Default().Name() != "cowrie-zstd" {
-		t.Errorf("Default format should be cowrie-zstd, got %s", Default().Name())
+	if Default().Name() != "gob" {
+		t.Errorf("Default format should be gob, got %s", Default().Name())
 	}
 
 	// Check Get works
-	if Get("cowrie") == nil {
-		t.Error("Get(cowrie) should not return nil")
+	if Get("gob") == nil {
+		t.Error("Get(gob) should not return nil")
 	}
 }
 
@@ -234,39 +141,6 @@ func BenchmarkGobSave(b *testing.B) {
 		})
 	}
 }
-
-func BenchmarkCowrieSave(b *testing.B) {
-	cw := &CowrieFormat{UseCompression: false}
-
-	for _, sz := range benchSizes {
-		payload := generateTestPayload(sz.vectors, sz.dim)
-
-		b.Run(fmt.Sprintf("%dx%d", sz.vectors, sz.dim), func(b *testing.B) {
-			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
-				var buf bytes.Buffer
-				cw.Save(&buf, payload)
-			}
-		})
-	}
-}
-
-func BenchmarkCowrieZstdSave(b *testing.B) {
-	cw := &CowrieFormat{UseCompression: true}
-
-	for _, sz := range benchSizes {
-		payload := generateTestPayload(sz.vectors, sz.dim)
-
-		b.Run(fmt.Sprintf("%dx%d", sz.vectors, sz.dim), func(b *testing.B) {
-			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
-				var buf bytes.Buffer
-				cw.Save(&buf, payload)
-			}
-		})
-	}
-}
-
 func BenchmarkGobLoad(b *testing.B) {
 	gob := &GobFormat{}
 
@@ -285,45 +159,6 @@ func BenchmarkGobLoad(b *testing.B) {
 		})
 	}
 }
-
-func BenchmarkCowrieLoad(b *testing.B) {
-	cw := &CowrieFormat{UseCompression: false}
-
-	for _, sz := range benchSizes {
-		payload := generateTestPayload(sz.vectors, sz.dim)
-		var buf bytes.Buffer
-		cw.Save(&buf, payload)
-		data := buf.Bytes()
-
-		b.Run(fmt.Sprintf("%dx%d", sz.vectors, sz.dim), func(b *testing.B) {
-			b.ReportAllocs()
-			b.SetBytes(int64(len(data)))
-			for i := 0; i < b.N; i++ {
-				cw.Load(bytes.NewReader(data))
-			}
-		})
-	}
-}
-
-func BenchmarkCowrieZstdLoad(b *testing.B) {
-	cw := &CowrieFormat{UseCompression: true}
-
-	for _, sz := range benchSizes {
-		payload := generateTestPayload(sz.vectors, sz.dim)
-		var buf bytes.Buffer
-		cw.Save(&buf, payload)
-		data := buf.Bytes()
-
-		b.Run(fmt.Sprintf("%dx%d", sz.vectors, sz.dim), func(b *testing.B) {
-			b.ReportAllocs()
-			b.SetBytes(int64(len(data)))
-			for i := 0; i < b.N; i++ {
-				cw.Load(bytes.NewReader(data))
-			}
-		})
-	}
-}
-
 func min(a, b int) int {
 	if a < b {
 		return a

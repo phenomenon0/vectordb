@@ -91,7 +91,7 @@ type VectorStore struct {
 	// Multi-tenancy support
 	TenantID map[uint64]string  // vector hash -> tenant ID
 	tenantRL *tenantRateLimiter // per-tenant rate limiting
-	// Storage format (gob, cowrie, cowrie-zstd)
+	// Storage format (gob)
 	storageFormat storage.Format
 	// Metadata bitmap index for fast pre-filtering
 	// Metadata bitmap index for fast pre-filtering
@@ -120,8 +120,7 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		os.Exit(1)
 	}
 
-	// Select storage format (default: gob for backward compatibility)
-	// Options: "gob", "cowrie", "cowrie-zstd"
+	// Select storage format (gob is the only format the RC ships)
 	storageFormat := storage.Default()
 	if formatName := os.Getenv("STORAGE_FORMAT"); formatName != "" {
 		if f := storage.Get(formatName); f != nil {
@@ -997,15 +996,9 @@ func getStorageFormat() storage.Format {
 }
 
 func persistedIndexType(name string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "hnsw", "ivf", "flat", "diskann", "sparse", "binary", "ivf_binary", "ivf-binary":
-		return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "-", "_"), nil
-	case "pq-adc":
-		return "pq", nil
-	case "ivf-pq-adc":
-		return "ivf_pq", nil
-	case "pq4-adc":
-		return "pq4", nil
+	switch normalized := strings.ToLower(strings.TrimSpace(name)); normalized {
+	case "hnsw", "flat", "sparse":
+		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported index type %q", name)
 	}
@@ -1020,7 +1013,7 @@ func indexBlobChecksum(data []byte) string {
 // decoder errors. An existing file that no codec can verify is corrupt state,
 // not permission to initialize an empty database.
 func tryLoadPayload(path string) (*storage.Payload, storage.Format, error) {
-	formatNames := []string{"gob", "cowrie", "cowrie-zstd", "cowrie-delta-zstd"}
+	formatNames := []string{"gob"}
 	loadErrors := make([]error, 0, len(formatNames))
 	for _, formatName := range formatNames {
 		format := storage.Get(formatName)
@@ -2814,7 +2807,7 @@ func sortedStringMapKeys[V any](values map[string]V) []string {
 // that defines logical query state. Derived indexes and LastSaved are excluded:
 // index blobs have their own format validation and timestamps are metadata, not
 // database contents. Length-prefixing and sorted map keys make the hash stable
-// across Go map iteration order and across Gob/Cowrie round-trips.
+// across Go map iteration order and across Gob round-trips.
 func (vs *VectorStore) computeChecksumForFormat(formatVersion int, includeWALHighWater bool) string {
 	digest := sha256.New()
 	var scalar [8]byte

@@ -157,11 +157,6 @@ func GetWALPath(mode VectorDBMode) string {
 	return filepath.Join(GetDataDirectory(mode), "index.gob.wal")
 }
 
-// GetCostDBPath returns the path to the SQLite cost tracking database
-func GetCostDBPath(mode VectorDBMode) string {
-	return filepath.Join(GetDataDirectory(mode), "costs.db")
-}
-
 // ModeInfo returns a struct suitable for JSON serialization in API responses
 type ModeInfo struct {
 	Mode           string  `json:"mode"`

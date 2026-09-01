@@ -277,34 +277,5 @@ func TestMLResearcherReview(t *testing.T) {
 		}
 	})
 
-	// Check 6: IVF recall with sufficient nprobe
-	t.Run("ivf_nprobe_recall", func(t *testing.T) {
-		idx, err := index.Create("ivf", dim, map[string]interface{}{
-			"nlist": 50, "nprobe": 20, "metric": "cosine",
-		})
-		if err != nil {
-			review.Fail("ivf_recall", "IVF index creation", SeverityMedium, err.Error())
-			return
-		}
-		for i, v := range vectors {
-			if err := idx.Add(ctx, uint64(i), v); err != nil {
-				t.Fatalf("inserting vector %d: %v", i, err)
-			}
-		}
-		_, r10, _, err := competitive.MeasureRecall(idx, queries, gt.Neighbors, 100,
-			&index.IVFSearchParams{NProbe: 20})
-		if err != nil {
-			review.Fail("ivf_recall", "IVF recall measurement", SeverityMedium, err.Error())
-			return
-		}
-		if r10 >= 0.7 {
-			review.Pass("ivf_recall", "IVF recall@10 >= 0.7 with nprobe=20", SeverityMedium,
-				fmt.Sprintf("recall@10=%.4f", r10))
-		} else {
-			review.Fail("ivf_recall", "IVF recall@10 >= 0.7 with nprobe=20", SeverityMedium,
-				fmt.Sprintf("recall@10=%.4f (expected >= 0.7)", r10))
-		}
-	})
-
 	review.Report(t)
 }

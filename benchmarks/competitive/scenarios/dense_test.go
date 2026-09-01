@@ -31,23 +31,6 @@ func denseIndexes() []indexSetup {
 			},
 			Params: &index.HNSWSearchParams{EfSearch: 100},
 		},
-		{
-			Name: "IVF",
-			Type: "ivf",
-			Config: map[string]interface{}{
-				"nlist": 100, "nprobe": 10, "metric": "cosine",
-			},
-			Params: &index.IVFSearchParams{NProbe: 10},
-		},
-		{
-			Name: "DiskANN",
-			Type: "diskann",
-			Config: map[string]interface{}{
-				"max_degree": 32, "ef_construction": 100, "ef_search": 50,
-				"memory_limit": 100000, "metric": "cosine",
-			},
-			Params: &index.DefaultSearchParams{},
-		},
 	}
 }
 
@@ -126,4 +109,3 @@ func mergeConfig(base map[string]interface{}, quantConfig map[string]interface{}
 	}
 	return merged
 }
-

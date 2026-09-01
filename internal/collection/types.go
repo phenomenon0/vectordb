@@ -491,11 +491,6 @@ type SearchRequest struct {
 	// signal entirely. The re-ordering only changes result order; reported
 	// scores remain the raw per-field scores.
 	UsageBoost float64 `json:"usage_boost,omitempty"`
-
-	// NProbe overrides the number of IVF clusters probed per search
-	// (0 = server default of 10). Higher values raise recall at the cost
-	// of latency; values above the index's cluster count are clamped.
-	NProbe int `json:"n_probe,omitempty"`
 }
 
 // FallbackParams configures the auto-fallback ladder for a two-field
@@ -580,33 +575,3 @@ const (
 	ScoreDirectionLowerIsBetter  = "lower_is_better"
 	ScoreDirectionHigherIsBetter = "higher_is_better"
 )
-
-// RecommendRequest represents a recommendation request using positive/negative examples.
-type RecommendRequest struct {
-	CollectionName string                 `json:"collection"`
-	FieldName      string                 `json:"field"`
-	PositiveIDs    []uint64               `json:"positive_ids"`
-	NegativeIDs    []uint64               `json:"negative_ids"`
-	NegativeWeight float32                `json:"negative_weight"`
-	TopK           int                    `json:"top_k"`
-	EfSearch       int                    `json:"ef_search"`
-	Filters        map[string]interface{} `json:"filters,omitempty"`
-}
-
-// ContextPair represents a positive/negative document pair for discovery search.
-type ContextPair struct {
-	PositiveID uint64 `json:"positive_id"`
-	NegativeID uint64 `json:"negative_id"`
-}
-
-// DiscoverRequest represents a context-based discovery search request.
-type DiscoverRequest struct {
-	CollectionName string                 `json:"collection"`
-	FieldName      string                 `json:"field"`
-	TargetID       uint64                 `json:"target_id"`
-	TargetVector   []float32              `json:"target_vector"`
-	Context        []ContextPair          `json:"context"`
-	TopK           int                    `json:"top_k"`
-	EfSearch       int                    `json:"ef_search"`
-	Filters        map[string]interface{} `json:"filters,omitempty"`
-}

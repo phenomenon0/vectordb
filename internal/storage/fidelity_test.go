@@ -71,7 +71,7 @@ func TestEveryRegisteredFormatRoundTripsEveryPayloadField(t *testing.T) {
 		},
 	}
 
-	for _, formatName := range []string{"gob", "cowrie", "cowrie-zstd", "cowrie-delta-zstd"} {
+	for _, formatName := range []string{"gob"} {
 		format := Get(formatName)
 		if format == nil {
 			t.Fatalf("format %q is not registered", formatName)

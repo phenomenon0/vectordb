@@ -21,9 +21,9 @@ COPY api ./api
 COPY cmd ./cmd
 COPY internal ./internal
 
-# The canonical RC never initializes the legacy SQLite cost tracker. A static,
-# CGO-free binary therefore matches the cross-compile proof and avoids a second
-# architecture/runtime contract.
+# The SQLite cost ledger was retired under SYS-03, so nothing in the RC needs
+# cgo. A static, CGO-free binary matches the cross-compile proof and avoids a
+# second architecture/runtime contract.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
     -o /out/deepdata ./cmd/deepdata/
 
