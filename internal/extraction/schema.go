@@ -4,6 +4,11 @@
 // This package implements "cognify" functionality similar to Cognee,
 // automatically extracting entities and relationships from text chunks
 // and storing them in the existing EntityGraph infrastructure.
+//
+// Status: dormant, not part of the RC surface; its handlers are registered
+// only when canonicalOnly is off. It returns only as an out-of-band client
+// per docs/decisions/0008-graph-and-extraction-return-as-signals-over-text-in.md
+// (gate MEM-01).
 package extraction
 
 import (

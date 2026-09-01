@@ -4,6 +4,11 @@
 // stored as CSR adjacency for efficient PageRank computation.
 // Graph importance scores are used as a third signal in hybrid fusion
 // alongside dense (vector) and sparse (BM25) results.
+//
+// Status: dormant, not part of the RC surface; nothing registers it when
+// canonicalOnly is set. It returns only as a class-C signal per
+// docs/decisions/0008-graph-and-extraction-return-as-signals-over-text-in.md
+// (gate MEM-01).
 package graph
 
 import (

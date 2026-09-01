@@ -82,5 +82,5 @@ Each item names the decision or gate that owns it; none is scheduled:
 - [tasks/PROTOCOL.md](PROTOCOL.md) — the rules: sources of truth, staleness, cold start, dirty tree, decision rules, escalation triggers, retry and timeout budget, authority.
 - [tasks/lessons.md](lessons.md) — append-only correction → rule.
 - [tasks/journal/](journal/) — one file per session, frozen once written; the 2026-08-17, 2026-08-22 and 2026-08-28 entries are the sections this file carried at a443cd0.
-- [docs/GAP_ANALYSIS.md](../docs/GAP_ANALYSIS.md) — claim → truth → fix at HEAD; [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) — the tower and the machine-read non-goals; [docs/decisions/](../docs/decisions/) — ADRs 0001-0007.
+- [docs/GAP_ANALYSIS.md](../docs/GAP_ANALYSIS.md) — claim → truth → fix at HEAD; [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) — the tower and the machine-read non-goals; [docs/decisions/](../docs/decisions/) — ADRs 0001-0008.
 - The pre-ledger plan (phases 0-9, frozen RC scope, decision rules, escalation triggers, retry budget) is tasks/todo.md at commit a443cd0 in git history; its phases are the DUR/SDK/PKG/OPS/SOAK/SEC/REL/CI/EVID/REV gates.
