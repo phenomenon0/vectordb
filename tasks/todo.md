@@ -1,6 +1,6 @@
 # DeepData — plan
 
-Next action: CTL-04 — self-description: routes subcommand and per-result confidence.
+Next action: SYS-03 — archive tag archive/pre-narrowing-v2 (owner authority), then retire the RETIRE rows and tidy go.mod.
 
 Status lives only in [tasks/gates.json](gates.json), rendered to [docs/PRE_RELEASE_STATUS.md](../docs/PRE_RELEASE_STATUS.md).
 This file holds ordering and dependencies; it has no checkboxes. Gate ids below name the ledger row.

@@ -46,7 +46,7 @@ jobs:
       - name: Verify release artifact version parity
         run: python3 scripts/check_version_contract.py
       - name: Check the docs contract
-        run: DOC_ALLOW_R3_SKIP=1 python3 scripts/check_docs_contract.py
+        run: python3 scripts/check_docs_contract.py
       - name: Check the truth ledger
         run: python3 scripts/gates.py check
       - name: Vet the supported server surface
