@@ -450,7 +450,11 @@ func TestTenantUpsertHNSWReplacement(t *testing.T) {
 	if !ok {
 		t.Fatal("HNSW-upserted document not found")
 	}
-	if vec, _ := got.Vectors["vec"].([]interface{}); len(vec) != 2 || vec[0] != float64(2) {
+	// Live tenant preparation preserves the caller's []float32 representation;
+	// read through the coercion layer here because this test is about upsert
+	// value/count semantics rather than the separate persistence type contract.
+	vec, err := coerceDenseVector(got.Vectors["vec"])
+	if err != nil || len(vec) != 2 || vec[0] != 2 {
 		t.Fatalf("expected replaced vector [2 2], got %v", got.Vectors["vec"])
 	}
 }

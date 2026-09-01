@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"sync"
@@ -111,6 +112,25 @@ func (c *Collection) createIndex(field VectorField) error {
 }
 
 // createDenseIndex creates a dense vector index (HNSW/IVF/FLAT).
+// segmentCountFromParam coerces the schema's "segments" value (decoded as
+// float64 from JSON) into a validated segment count.
+func segmentCountFromParam(raw interface{}) (int, error) {
+	switch v := raw.(type) {
+	case int:
+		if v < 1 || v > 64 {
+			return 0, fmt.Errorf("segments must be in [1,64], got %d", v)
+		}
+		return v, nil
+	case float64:
+		if v != math.Trunc(v) || v < 1 || v > 64 {
+			return 0, fmt.Errorf("segments must be an integer in [1,64], got %v", v)
+		}
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("segments must be a number in [1,64]")
+	}
+}
+
 func (c *Collection) createDenseIndex(field VectorField) error {
 	config := field.Index.Params
 	if config == nil {
@@ -130,11 +150,45 @@ func (c *Collection) createDenseIndex(field VectorField) error {
 			config["ef_construction"] = 200
 		}
 
-		idx, err = index.NewHNSWIndex(field.Dim, config)
-		if err != nil {
-			return fmt.Errorf("failed to create HNSW index: %w", err)
+		// Segment topology is part of the persisted schema, not an ambient host
+		// tuning knob. A missing parameter preserves the historical single HNSW
+		// graph; callers opt into deterministic segmented routing explicitly.
+		// This also prevents a journal from replaying into a different topology
+		// merely because GOMAXPROCS changed between hosts or restarts.
+		segments := index.SegmentsForNewCollection()
+		if raw, ok := config["segments"]; ok {
+			parsed, convErr := segmentCountFromParam(raw)
+			if convErr != nil {
+				return fmt.Errorf("field %s: %w", field.Name, convErr)
+			}
+			segments = parsed
 		}
 
+		if segments > 1 {
+			// Each segment is an independent HNSW graph built from the same
+			// configuration; docs route deterministically by document ID.
+			// The wrapper hides them behind the single-index interfaces, so
+			// search/delete/export paths below need no segmentation awareness.
+			hnswConfig := make(map[string]interface{}, len(config))
+			for k, v := range config {
+				if k == "segments" {
+					continue // wrapper-level knob, not an HNSW parameter
+				}
+				hnswConfig[k] = v
+			}
+			dim := field.Dim
+			idx, err = index.NewSegmentedIndex(segments, func() (index.Index, error) {
+				return index.NewHNSWIndex(dim, hnswConfig)
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create segmented HNSW index (%d segments): %w", segments, err)
+			}
+		} else {
+			idx, err = index.NewHNSWIndex(field.Dim, config)
+			if err != nil {
+				return fmt.Errorf("failed to create HNSW index: %w", err)
+			}
+		}
 	case IndexTypeIVF:
 		// Set defaults if not provided
 		if _, ok := config["nlist"]; !ok {
@@ -197,7 +251,7 @@ func (c *Collection) Add(ctx context.Context, doc *Document) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	normalized, nextID, err := c.prepareDocumentsLocked([]Document{*doc}, false)
+	normalized, nextID, err := c.prepareDocumentsLockedVariant([]Document{*doc}, false)
 	if err != nil {
 		return err
 	}
@@ -338,6 +392,47 @@ func coerceSparseVector(vector interface{}) (*sparse.SparseVector, error) {
 	default:
 		return nil, fmt.Errorf("expected *SparseVector or map, got %T", vector)
 	}
+}
+
+// normalizeDocumentVectorTypes converts JSON-decoded vector containers into
+// the compact typed representations the indexes consume. It is intentionally
+// separate from ordinary document preparation: live callers keep the concrete
+// Go types they supplied, while persistence recovery owns its freshly decoded
+// documents and can canonicalize them without weakening caller isolation.
+//
+// Snapshot V2 load and durable-journal replay share this helper so both cold
+// start paths retain []float32 dense vectors and *sparse.SparseVector sparse
+// vectors instead of keeping allocation-heavy []interface{} JSON trees alive.
+func normalizeDocumentVectorTypes(doc *Document, schema *CollectionSchema) error {
+	for fieldName, vector := range doc.Vectors {
+		field := schema.GetField(fieldName)
+		if field == nil {
+			return fmt.Errorf("unknown vector field %s", fieldName)
+		}
+		switch field.Type {
+		case VectorTypeDense:
+			dense, err := coerceDenseVector(vector)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", fieldName, err)
+			}
+			if len(dense) != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, len(dense), field.Dim)
+			}
+			doc.Vectors[fieldName] = dense
+		case VectorTypeSparse:
+			sparseVector, err := coerceSparseVector(vector)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", fieldName, err)
+			}
+			if sparseVector.Dim != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, sparseVector.Dim, field.Dim)
+			}
+			doc.Vectors[fieldName] = sparseVector
+		default:
+			return fmt.Errorf("unsupported vector type %s for field %s", field.Type, fieldName)
+		}
+	}
+	return nil
 }
 
 // addToIndex adds a vector to the appropriate index.
@@ -936,7 +1031,7 @@ func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	normalized, nextID, err := c.prepareDocumentsLocked(docs, false)
+	normalized, nextID, err := c.prepareDocumentsLockedVariant(docs, false)
 	if err != nil {
 		return err
 	}
@@ -952,17 +1047,23 @@ func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
 // prepareCanonicalDocuments validates and deep-clones documents without
 // changing collection or caller-owned state. IDs are resolved before WAL
 // append, including explicit IDs, so replay cannot make a different choice.
+//
+// The clone preserves caller Go types instead of round-tripping through JSON.
+// This is deliberate: Validate and validatePersistedDocument coerce by value
+// shape rather than concrete type, journal replay re-decodes every record
+// from JSON anyway, and snapshots marshal stored documents wholesale, so no
+// consumer depends on JSON-normalized types. Preserved []float32 vectors let
+// index insertion take coerceDenseVector's zero-copy fast path instead of
+// unboxing a per-dimension float64 map on every batch. Deep-copy isolation is
+// unchanged: cloneDocumentPreservingTypes copies every reachable slice, map,
+// and pointer, so later caller mutations cannot reach stored state.
 func (c *Collection) prepareCanonicalDocuments(docs []Document) ([]Document, uint64, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.prepareDocumentsLocked(docs, true)
+	return c.prepareDocumentsLockedVariant(docs, false)
 }
 
-func (c *Collection) prepareDocumentsLocked(docs []Document, canonicalJSON bool) ([]Document, uint64, error) {
-	return c.prepareDocumentsLockedVariant(docs, canonicalJSON, false)
-}
-
-func (c *Collection) prepareDocumentsLockedVariant(docs []Document, canonicalJSON, allowReplacement bool) ([]Document, uint64, error) {
+func (c *Collection) prepareDocumentsLockedVariant(docs []Document, allowReplacement bool) ([]Document, uint64, error) {
 	if len(docs) == 0 {
 		return nil, c.nextID, fmt.Errorf("documents cannot be empty")
 	}
@@ -973,16 +1074,8 @@ func (c *Collection) prepareDocumentsLockedVariant(docs []Document, canonicalJSO
 	reserved := make(map[uint64]struct{}, len(docs))
 	normalized := make([]Document, len(docs))
 	for i := range docs {
-		var clone Document
+		clone := cloneDocumentPreservingTypes(docs[i])
 		var err error
-		if canonicalJSON {
-			clone, err = cloneCanonicalDocument(docs[i])
-		} else {
-			clone = cloneDocumentPreservingTypes(docs[i])
-		}
-		if err != nil {
-			return nil, c.nextID, fmt.Errorf("document %d clone failed: %w", i, err)
-		}
 		if clone.ID == 0 {
 			clone.ID, nextID, err = nextCanonicalID(nextID, reserved, c.documents)
 			if err != nil {
@@ -1028,7 +1121,7 @@ func (c *Collection) prepareCanonicalUpsert(docs []Document) ([]Document, uint64
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.prepareDocumentsLockedVariant(docs, true, true)
+	return c.prepareDocumentsLockedVariant(docs, true)
 }
 
 func cloneDocumentPreservingTypes(doc Document) Document {
@@ -1119,20 +1212,71 @@ func cloneDocumentValue(value interface{}) interface{} {
 			Dim:     typed.Dim,
 		}
 	default:
-		return typed
+		// Anything outside the vector vocabulary (e.g. []string or
+		// map[string]string metadata) must still be isolated: share only
+		// immutable leaves and copy every reachable composite.
+		return cloneCompositeDocumentValue(value)
 	}
 }
 
-func cloneCanonicalDocument(doc Document) (Document, error) {
-	data, err := json.Marshal(doc)
-	if err != nil {
-		return Document{}, err
+// cloneCompositeDocumentValue deep-copies slice, array, map, and pointer
+// values that the typed cases above do not cover, so caller mutations after
+// insertion can never alias stored state. Scalar leaves (numbers, strings,
+// bools, nil) are immutable from the store's side and shared as-is; structs
+// reached through pointers are copied as opaque values, which is safe because
+// mutation through them would require exporting a reference interior that
+// JSON-shaped callers cannot construct.
+func cloneCompositeDocumentValue(value interface{}) interface{} {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return value
 	}
-	var clone Document
-	if err := decodeCollectionJSON(data, &clone); err != nil {
-		return Document{}, err
+	cloned := cloneReflectValue(rv)
+	if !cloned.IsValid() {
+		return value
 	}
-	return clone, nil
+	return cloned.Interface()
+}
+
+func cloneReflectValue(rv reflect.Value) reflect.Value {
+	switch rv.Kind() {
+	case reflect.Slice:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(rv.Index(i)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(rv.Type()).Elem()
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(rv.Index(i)))
+		}
+		return out
+	case reflect.Map:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			// Keys stay as-is: they are comparable values, and cloning a key
+			// could break identity-based lookups on pointer-keyed maps.
+			out.SetMapIndex(iter.Key(), cloneReflectValue(iter.Value()))
+		}
+		return out
+	case reflect.Ptr:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.New(rv.Type().Elem())
+		out.Elem().Set(cloneReflectValue(rv.Elem()))
+		return out
+	default:
+		return rv
+	}
 }
 
 func (c *Collection) addPreparedDocuments(ctx context.Context, docs []Document, nextID uint64) error {

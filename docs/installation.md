@@ -93,6 +93,7 @@ for the complete typed sync and async contract.
 | `VECTORDB_MODE` | `local` | Must be `local` in canonical startup |
 | `VECTORDB_BASE_DIR` | `~/.vectordb` | Parent used when the data directory is relative or unset |
 | `VECTORDB_DATA_DIR` | empty | Exact primary directory if absolute; otherwise relative to the base directory |
+| `DEEPDATA_BIND_HOST` | empty (all interfaces with auth) | Optional IP literal to bind both HTTP and gRPC; use `127.0.0.1` for a host-local service |
 | `API_TOKEN` | unset | Static bearer token with server-wide administrative access; at least 32 bytes with no surrounding whitespace; configure this or `JWT_SECRET`, never both |
 | `JWT_SECRET` | unset | HS256 JWT verification secret; at least 32 bytes with no surrounding whitespace; configure this or `API_TOKEN`, never both |
 | `REQUIRE_AUTH` | `0` | Compatibility/defense-in-depth switch set to `1` by shipped deployments; it does not relax the exact-one-credential startup requirement |

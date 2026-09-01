@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
 func durableTestSchema(name string) CollectionSchema {
@@ -128,7 +130,7 @@ func TestDurableStoreRejectsSymlinkLockWithoutTouchingTarget(t *testing.T) {
 	}
 }
 
-func TestDurableStoreReplayAndRecoveredCheckpoint(t *testing.T) {
+func TestDurableStoreReplayRetainsJournalUntilExplicitCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	base := filepath.Join(t.TempDir(), "collections")
 	store, err := OpenDurableStore(base, base)
@@ -183,9 +185,18 @@ func TestDurableStoreReplayAndRecoveredCheckpoint(t *testing.T) {
 	if _, err := reopened.Tenants().GetCollectionInfo("tenant-a", "temporary"); err == nil {
 		t.Fatal("deleted collection reappeared after replay")
 	}
+	if _, err := os.Stat(base + ".journal"); err != nil {
+		t.Fatalf("recovery did not retain validated current journal: %v", err)
+	}
+	if _, err := os.Stat(base + ".journal.frozen"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected frozen journal after current-only recovery: %v", err)
+	}
+	if err := reopened.Checkpoint(); err != nil {
+		t.Fatalf("explicit checkpoint after recovery: %v", err)
+	}
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("recovery did not clean covered journal %s: %v", path, err)
+			t.Fatalf("explicit checkpoint did not clean covered journal %s: %v", path, err)
 		}
 	}
 }
@@ -248,6 +259,10 @@ func TestDurableStoreUpsertReplacesAndReplays(t *testing.T) {
 	if got.Metadata["source"] != "replaced" {
 		t.Fatalf("replay applied first upsert instead of replacement: %+v", got.Metadata)
 	}
+	replayedVector, ok := got.Vectors["embedding"].([]float32)
+	if !ok || len(replayedVector) != 4 || replayedVector[0] != 4 {
+		t.Fatalf("upsert replay retained non-compact dense vector: %T %v", got.Vectors["embedding"], got.Vectors["embedding"])
+	}
 }
 
 func TestDurableStoreUpsertContractAndReadNotFound(t *testing.T) {
@@ -286,7 +301,7 @@ func TestDurableStoreUpsertContractAndReadNotFound(t *testing.T) {
 	}
 }
 
-func TestDurableStoreRepairsPartialMutationTailThroughRecoveryCheckpointExactlyOnce(t *testing.T) {
+func TestDurableStoreRepairsPartialMutationTailAndDefersCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	base := filepath.Join(t.TempDir(), "collections")
 	store, err := OpenDurableStore(base, base)
@@ -359,9 +374,18 @@ func TestDurableStoreRepairsPartialMutationTailThroughRecoveryCheckpointExactlyO
 	if _, ok := durableTestStoredDocument(t, reopened, "tenant", "docs", 2); ok {
 		t.Fatal("partial unacknowledged document was applied")
 	}
+	if _, err := os.Stat(base + ".journal"); err != nil {
+		t.Fatalf("partial-tail recovery did not retain repaired journal: %v", err)
+	}
+	if _, err := os.Stat(base + ".journal.frozen"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected frozen journal after partial-tail recovery: %v", err)
+	}
+	if err := reopened.Checkpoint(); err != nil {
+		t.Fatalf("explicit checkpoint after partial-tail recovery: %v", err)
+	}
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("recovery checkpoint retained journal %s: %v", path, err)
+			t.Fatalf("explicit checkpoint retained journal %s: %v", path, err)
 		}
 	}
 	if err := reopened.Close(); err != nil {
@@ -421,8 +445,16 @@ func TestDurableStoreRestartRecoversFrozenAndCurrentAfterCheckpointFailureExactl
 		t.Fatalf("recovered document count = %d, want 1", got)
 	}
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("restart recovery did not retain validated journal %s: %v", path, err)
+		}
+	}
+	if err := reopened.Checkpoint(); err != nil {
+		t.Fatalf("explicit checkpoint after frozen/current recovery: %v", err)
+	}
+	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("restart recovery retained covered journal %s: %v", path, err)
+			t.Fatalf("explicit checkpoint retained covered journal %s: %v", path, err)
 		}
 	}
 	if err := reopened.Close(); err != nil {
@@ -476,6 +508,19 @@ func TestDurableStoreReplaysSupportedHNSWAndSparseState(t *testing.T) {
 	info := durableTestCollectionInfo(t, reopened, "t", "hybrid")
 	if info.DocCount != 1 {
 		t.Fatalf("hybrid collection after replay: count=%d", info.DocCount)
+	}
+	replayed, ok := durableTestStoredDocument(t, reopened, "t", "hybrid", doc.ID)
+	if !ok {
+		t.Fatal("hybrid document missing after replay")
+	}
+	dense, ok := replayed.Vectors["dense"].([]float32)
+	if !ok || len(dense) != 4 || dense[0] != 1 {
+		t.Fatalf("WAL replay retained non-compact dense vector: %T %v", replayed.Vectors["dense"], replayed.Vectors["dense"])
+	}
+	sparseVector, ok := replayed.Vectors["sparse"].(*sparse.SparseVector)
+	if !ok || len(sparseVector.Indices) != 2 || sparseVector.Indices[0] != 1 || sparseVector.Indices[1] != 3 ||
+		len(sparseVector.Values) != 2 || sparseVector.Values[0] != 2 || sparseVector.Values[1] != 1 {
+		t.Fatalf("WAL replay retained non-compact or misaligned sparse vector: %T %+v", replayed.Vectors["sparse"], replayed.Vectors["sparse"])
 	}
 	response, err := reopened.Tenants().SearchCollection(ctx, "t", SearchRequest{
 		CollectionName: "hybrid",

@@ -148,21 +148,20 @@ func openDurableStore(basePath, storagePath string, limits StoreLimits) (*Durabl
 	if err != nil {
 		return fail(nil, nil, err)
 	}
-	journal, records, err := openCollectionJournal(basePath+".journal", basePath+".journal.frozen", metadata.StoreID, metadata.AppliedLSN)
+	journal, replayPlan, err := openCollectionJournalValidated(
+		basePath+".journal",
+		basePath+".journal.frozen",
+		metadata.StoreID,
+		metadata.AppliedLSN,
+		func(record collectionJournalRecord) error {
+			if _, err := decodeDurableMutation(record.Payload); err != nil {
+				return fmt.Errorf("decode collection mutation at LSN %d: %w", record.LSN, err)
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		return fail(manager, tenants, fmt.Errorf("open durable collection journal: %w", err))
-	}
-
-	// Decode every record before changing any loaded state. This makes unknown
-	// versions, operations, fields, and trailing JSON a startup failure rather
-	// than a partially replayed live store.
-	mutations := make([]canonicalMutation, len(records))
-	for i, record := range records {
-		mutation, err := decodeDurableMutation(record.Payload)
-		if err != nil {
-			return fail(manager, tenants, fmt.Errorf("decode collection mutation at LSN %d: %w", record.LSN, err))
-		}
-		mutations[i] = mutation
 	}
 
 	store := &DurableStore{
@@ -175,25 +174,33 @@ func openDurableStore(basePath, storagePath string, limits StoreLimits) (*Durabl
 		lock:     lock,
 	}
 	store.apply = store.applyMutationDirect
-	for i, mutation := range mutations {
+	err = journal.streamReplay(replayPlan, func(record collectionJournalRecord) error {
+		mutation, err := decodeDurableMutation(record.Payload)
+		if err != nil {
+			return fmt.Errorf("decode collection mutation at LSN %d: %w", record.LSN, err)
+		}
 		if err := store.prepareReplayMutation(&mutation); err != nil {
-			return fail(manager, tenants, fmt.Errorf("validate collection mutation at LSN %d: %w", records[i].LSN, err))
+			return fmt.Errorf("validate collection mutation at LSN %d: %w", record.LSN, err)
 		}
 		if err := store.applyMutationDirect(context.Background(), mutation); err != nil {
-			return fail(manager, tenants, fmt.Errorf("replay collection mutation at LSN %d: %w", records[i].LSN, err))
+			return fmt.Errorf("replay collection mutation at LSN %d: %w", record.LSN, err)
 		}
-		store.metadata.AppliedLSN = records[i].LSN
+		store.metadata.AppliedLSN = record.LSN
+		return nil
+	})
+	if err != nil {
+		return fail(manager, tenants, fmt.Errorf("stream durable collection journal replay: %w", err))
 	}
 	// Older snapshots could retain tenant managers after their final collection
 	// was deleted. They carry no tenant data and must not grow the tenant map or
 	// consume persistence on every subsequent checkpoint.
 	store.tenants.pruneEmptyManagers()
 	store.activeTenants, store.collectionCount = store.tenants.resourceCounts()
-	if len(records) > 0 {
-		if err := store.commitSnapshotAndCleanupLocked(true); err != nil {
-			return fail(manager, tenants, fmt.Errorf("checkpoint replayed collection mutations: %w", err))
-		}
-	}
+	// Keep the fully validated journal after recovery. Snapshot serialization is
+	// a separate bounded-memory track; invoking the current snapshot writer here
+	// would reintroduce an unbounded startup allocation before callers can choose
+	// when to checkpoint. Explicit Checkpoint and graceful Close still commit a
+	// snapshot before coverage-checked cleanup.
 
 	manager.setDurableReadOnly()
 	tenants.attachDurableStore(store)
@@ -603,6 +610,7 @@ func validateCanonicalIndexParams(field VectorField) error {
 		allowed = map[string]bool{
 			"m": true, "ml": true, "ef_search": true,
 			"ef_construction": true, "prenormalize": true,
+			"segments": true,
 		}
 	case IndexTypeFLAT:
 		allowed = map[string]bool{"metric": true}
@@ -634,6 +642,9 @@ func validateCanonicalIndexParams(field VectorField) error {
 			return err
 		}
 		if err := validateCanonicalIntegerParam(field, "ef_construction", 1, 1_000_000); err != nil {
+			return err
+		}
+		if err := validateCanonicalIntegerParam(field, "segments", 1, 64); err != nil {
 			return err
 		}
 		if value, ok, err := canonicalNumericParam(field, "ml"); err != nil {
@@ -763,6 +774,26 @@ func (s *DurableStore) prepareDeleteDocument(m canonicalMutation) error {
 	return nil
 }
 
+// normalizeReplayDocuments canonicalizes only documents freshly decoded from
+// the durable journal. Those values are private to the recovery mutation, so
+// replacing JSON-generic vector trees cannot alias a caller. Ordinary live
+// preparation deliberately bypasses this method and continues to preserve
+// caller-provided Go types while making its defensive deep copy.
+func (s *DurableStore) normalizeReplayDocuments(m *canonicalMutation) error {
+	if err := s.prepareCollectionTarget(*m); err != nil {
+		return err
+	}
+	coll, _ := s.tenants.getCollectionDirect(m.tenantID, m.collectionName)
+	coll.mu.RLock()
+	defer coll.mu.RUnlock()
+	for i := range m.documents {
+		if err := normalizeDocumentVectorTypes(&m.documents[i], &coll.schema); err != nil {
+			return fmt.Errorf("document %d vector normalization failed: %w", i, err)
+		}
+	}
+	return nil
+}
+
 func (s *DurableStore) prepareReplayMutation(m *canonicalMutation) error {
 	switch m.typeName {
 	case mutationCreateCollection:
@@ -773,6 +804,9 @@ func (s *DurableStore) prepareReplayMutation(m *canonicalMutation) error {
 	case mutationDeleteCollection:
 		return s.prepareCollectionTarget(*m)
 	case mutationInsertDocument, mutationBatchInsert:
+		if err := s.normalizeReplayDocuments(m); err != nil {
+			return err
+		}
 		prepared, err := s.prepareDocumentsMutationWithAdmission(
 			m.typeName,
 			m.tenantID,
@@ -791,6 +825,9 @@ func (s *DurableStore) prepareReplayMutation(m *canonicalMutation) error {
 	case mutationUpsertDocument:
 		if len(m.documents) != 1 {
 			return errors.New("upsert mutation must contain exactly one document")
+		}
+		if err := s.normalizeReplayDocuments(m); err != nil {
+			return err
 		}
 		prepared, err := s.prepareUpsertMutation(m.tenantID, m.collectionName, m.documents[0])
 		if err != nil {
@@ -863,21 +900,7 @@ func (s *DurableStore) commitSnapshotAndCleanupLocked(recovery bool) error {
 }
 
 func (s *DurableStore) verifyJournalCoverageLocked() error {
-	for _, path := range []string{s.journal.frozenPath, s.journal.currentPath} {
-		records, exists, err := readCollectionJournalFile(path, s.metadata.StoreID, s.journal.maxPayload)
-		if err != nil {
-			return fmt.Errorf("verify checkpoint coverage for %q: %w", path, err)
-		}
-		if !exists || len(records) == 0 {
-			continue
-		}
-		for _, record := range records {
-			if record.LSN > s.metadata.AppliedLSN {
-				return fmt.Errorf("refusing journal cleanup: %q LSN %d exceeds snapshot LSN %d", path, record.LSN, s.metadata.AppliedLSN)
-			}
-		}
-	}
-	return nil
+	return s.journal.verifyCovered(s.metadata.AppliedLSN)
 }
 
 func (s *DurableStore) Close() error {
@@ -947,11 +970,21 @@ func encodeDurableMutationVersion(m canonicalMutation, version uint16) ([]byte, 
 	default:
 		return nil, fmt.Errorf("unknown durable mutation type %q", m.typeName)
 	}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal durable mutation payload: %w", err)
-	}
-	return json.Marshal(durableMutationEnvelope{Version: version, Type: m.typeName, Payload: payloadBytes})
+	// Single traversal: the typed payload is marshaled inline instead of being
+	// encoded to an intermediate buffer that a second pass copies into the
+	// envelope. Field order matches durableMutationEnvelope (version, type,
+	// payload), and the payload structs emit identical members nested or
+	// standalone, so journal bytes stay byte-compatible with records written
+	// by earlier encoders.
+	return json.Marshal(struct {
+		Version uint16 `json:"version"`
+		Type    string `json:"type"`
+		Payload any    `json:"payload"`
+	}{
+		Version: version,
+		Type:    m.typeName,
+		Payload: payload,
+	})
 }
 
 func decodeDurableMutation(data []byte) (canonicalMutation, error) {

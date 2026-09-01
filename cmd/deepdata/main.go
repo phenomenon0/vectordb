@@ -3369,11 +3369,19 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	addr, grpcAddr := canonicalListenerAddresses(
+	addr, grpcAddr, err := canonicalListenerAddresses(
 		envInt("PORT", 8080),
 		envInt("GRPC_PORT", 50051),
 		os.Getenv("DEEPDATA_INSECURE_DEV_MODE") == "1",
+		os.Getenv("DEEPDATA_BIND_HOST"),
 	)
+	if err != nil {
+		logger.Error("refusing invalid API bind host", "error", err)
+		if closeErr := collectionHTTP.Abort(); closeErr != nil {
+			logger.Error("failed to release collection store after bind-host refusal", "error", closeErr)
+		}
+		os.Exit(1)
+	}
 	httpListener, grpcListener, err := bindAPIListeners(addr, grpcAddr)
 	if err != nil {
 		logger.Error("refusing to start without the complete API listener set", "error", err)
@@ -3708,10 +3716,23 @@ func bindAPIListeners(httpAddr, grpcAddr string) (net.Listener, net.Listener, er
 
 // canonicalListenerAddresses keeps the explicit credentialless development
 // escape hatch loopback-only. Authenticated deployments retain wildcard binds
-// so containers and orchestrators can publish the configured ports.
-func canonicalListenerAddresses(httpPort, grpcPort int, insecureDevelopment bool) (string, string) {
+// by default so containers and orchestrators can publish the configured ports,
+// while DEEPDATA_BIND_HOST lets an operator reduce exposure to one IP literal.
+func canonicalListenerAddresses(httpPort, grpcPort int, insecureDevelopment bool, configuredHost string) (string, string, error) {
 	host := ""
-	if insecureDevelopment {
+	if configuredHost != strings.TrimSpace(configuredHost) {
+		return "", "", errors.New("DEEPDATA_BIND_HOST must not contain surrounding whitespace")
+	}
+	if configuredHost != "" {
+		ip := net.ParseIP(configuredHost)
+		if ip == nil {
+			return "", "", fmt.Errorf("DEEPDATA_BIND_HOST=%q must be an IP literal", configuredHost)
+		}
+		if insecureDevelopment && !ip.IsLoopback() {
+			return "", "", errors.New("DEEPDATA_INSECURE_DEV_MODE may bind only to a loopback IP")
+		}
+		host = configuredHost
+	} else if insecureDevelopment {
 		host = "127.0.0.1"
 	}
 	httpAddr := net.JoinHostPort(host, strconv.Itoa(httpPort))
@@ -3719,7 +3740,7 @@ func canonicalListenerAddresses(httpPort, grpcPort int, insecureDevelopment bool
 	if grpcPort > 0 {
 		grpcAddr = net.JoinHostPort(host, strconv.Itoa(grpcPort))
 	}
-	return httpAddr, grpcAddr
+	return httpAddr, grpcAddr, nil
 }
 
 func envInt(key string, def int) int {

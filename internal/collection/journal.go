@@ -40,16 +40,45 @@ type collectionJournalRecord struct {
 	Payload []byte
 }
 
+// collectionJournalRecordVisitor consumes one validated frame synchronously.
+// Payload aliases a bounded scanner buffer and is valid only until the visitor
+// returns. Callers that need to retain it must make an explicit copy.
+type collectionJournalRecordVisitor func(collectionJournalRecord) error
+
+// collectionJournalFileSummary is bounded validation evidence for one
+// artifact. It deliberately contains no record payloads.
+type collectionJournalFileSummary struct {
+	exists      bool
+	info        os.FileInfo
+	recordCount uint64
+	firstLSN    uint64
+	lastLSN     uint64
+	digest      [sha256.Size]byte
+}
+
+// collectionJournalReplayPlan binds a later streaming replay pass to the
+// exact artifacts that passed validation. The plan is constant-size no matter
+// how many frames or payload bytes the journal contains.
+type collectionJournalReplayPlan struct {
+	appliedLSN      uint64
+	replayRecords   uint64
+	firstReplayLSN  uint64
+	lastReplayLSN   uint64
+	lastArtifactLSN uint64
+	frozen          collectionJournalFileSummary
+	current         collectionJournalFileSummary
+}
+
 // collectionJournalPartialTailError describes an EOF-short final frame. The
-// validated prefix is retained only so the open path can decide whether the
-// current artifact is safe to truncate. Callers must not treat records as
-// replayable until repair has completed and the artifact has been reparsed.
+// validated prefix is represented only by aggregate evidence so the open path
+// can decide whether the current artifact is safe to truncate. Callers must not
+// replay it until repair has completed and the artifact has been reparsed.
 type collectionJournalPartialTailError struct {
 	path        string
 	offset      int64
 	fileSize    int64
 	header      []byte
-	records     []collectionJournalRecord
+	summary     collectionJournalFileSummary
 	partialBody bool
 }
 
@@ -129,18 +158,32 @@ func defaultCollectionJournalFileOps() collectionJournalFileOps {
 
 // openCollectionJournal validates frozen then current artifacts in full before
 // returning a usable writer. appliedLSN is the high-water mark already present
-// in the caller's snapshot; only later records are returned for replay.
-func openCollectionJournal(currentPath, frozenPath string, storeID [16]byte, appliedLSN uint64) (*collectionJournal, []collectionJournalRecord, error) {
+// in the caller's snapshot. The returned replay plan contains only aggregate
+// validation evidence; payloads are never retained by the open path.
+func openCollectionJournal(currentPath, frozenPath string, storeID [16]byte, appliedLSN uint64) (*collectionJournal, collectionJournalReplayPlan, error) {
+	return openCollectionJournalValidated(currentPath, frozenPath, storeID, appliedLSN, nil)
+}
+
+// openCollectionJournalValidated additionally invokes validate for every
+// replayable record during the full validation pass. This is the startup seam
+// used by DurableStore to decode every mutation before any loaded state is
+// changed. Validation remains bounded to one maximum-sized record.
+func openCollectionJournalValidated(
+	currentPath, frozenPath string,
+	storeID [16]byte,
+	appliedLSN uint64,
+	validate collectionJournalRecordVisitor,
+) (*collectionJournal, collectionJournalReplayPlan, error) {
 	j, err := newCollectionJournal(currentPath, frozenPath, storeID, appliedLSN)
 	if err != nil {
-		return nil, nil, err
+		return nil, collectionJournalReplayPlan{}, err
 	}
 
-	records, err := j.readAfter(appliedLSN)
+	plan, err := j.validateAndRepair(appliedLSN, validate)
 	if err != nil {
-		return nil, nil, err
+		return nil, collectionJournalReplayPlan{}, err
 	}
-	return j, records, nil
+	return j, plan, nil
 }
 
 func newCollectionJournal(currentPath, frozenPath string, storeID [16]byte, lastLSN uint64) (*collectionJournal, error) {
@@ -172,6 +215,10 @@ func newCollectionJournal(currentPath, frozenPath string, storeID [16]byte, last
 // append writes one complete frame and fsyncs it before reporting success. Any
 // error after frame I/O begins is treated as indeterminate and permanently
 // faults this writer; recovery must reopen and validate the journal.
+//
+// On success the returned record carries only the assigned LSN; payloads are
+// intentionally not returned. Replay via streamReplay is the sole source for
+// previously appended payload bytes.
 //
 // Durability semantics per record: the frame bytes and the file metadata are
 // synced on every append (fsync), while the parent directory is synced once
@@ -235,7 +282,7 @@ func (j *collectionJournal) append(payload []byte) (collectionJournalRecord, err
 	}
 
 	j.lastLSN = lsn
-	return collectionJournalRecord{LSN: lsn, Payload: append([]byte(nil), payload...)}, nil
+	return collectionJournalRecord{LSN: lsn}, nil
 }
 
 // closeWriterLocked closes and forgets any cached descriptor. Callers hold
@@ -284,154 +331,268 @@ func (j *collectionJournal) openAppendFile() (*os.File, bool, error) {
 	return f, created, nil
 }
 
-// readAfter validates both artifacts and all of their frames before returning
-// any replay work. Artifact order is always frozen followed by current.
-func (j *collectionJournal) readAfter(appliedLSN uint64) ([]collectionJournalRecord, error) {
+// collectionJournalSequenceState validates the ordering contract across a
+// frozen/current scan without retaining any frame. Covered records may overlap
+// between artifacts for compatibility with older checkpoints, but replayable
+// records must form one exact sequence beginning at appliedLSN+1.
+type collectionJournalSequenceState struct {
+	appliedLSN      uint64
+	replayRecords   uint64
+	firstReplayLSN  uint64
+	lastReplayLSN   uint64
+	lastArtifactLSN uint64
+}
+
+func (s *collectionJournalSequenceState) accept(
+	path string,
+	record collectionJournalRecord,
+	previousInArtifact uint64,
+	hasPreviousInArtifact bool,
+) error {
+	if hasPreviousInArtifact {
+		switch {
+		case record.LSN <= previousInArtifact:
+			return fmt.Errorf("collection journal LSN %d in %q duplicates or regresses from %d", record.LSN, path, previousInArtifact)
+		case previousInArtifact == math.MaxUint64 || record.LSN != previousInArtifact+1:
+			return fmt.Errorf("collection journal LSN gap in %q: got %d after %d", path, record.LSN, previousInArtifact)
+		}
+	}
+	if record.LSN > s.lastArtifactLSN {
+		s.lastArtifactLSN = record.LSN
+	}
+	if record.LSN <= s.appliedLSN {
+		if s.replayRecords > 0 {
+			return fmt.Errorf("collection journal LSN %d in %q duplicates or regresses behind replay after checkpoint %d", record.LSN, path, s.appliedLSN)
+		}
+		return nil
+	}
+
+	if s.replayRecords == 0 {
+		if s.appliedLSN == math.MaxUint64 || record.LSN != s.appliedLSN+1 {
+			return fmt.Errorf("collection journal LSN gap after checkpoint %d: first replay record is %d", s.appliedLSN, record.LSN)
+		}
+		s.firstReplayLSN = record.LSN
+	} else {
+		previous := s.lastReplayLSN
+		if record.LSN <= previous {
+			return fmt.Errorf("collection journal LSN %d in %q duplicates or regresses from %d", record.LSN, path, previous)
+		}
+		if previous == math.MaxUint64 || record.LSN != previous+1 {
+			return fmt.Errorf("collection journal LSN gap during replay: got %d after %d", record.LSN, previous)
+		}
+	}
+	s.replayRecords++
+	s.lastReplayLSN = record.LSN
+	return nil
+}
+
+// validateAndRepair performs the fail-closed startup pass. It validates frame
+// structure, checksums, store identity, LSN order, and (through validate) the
+// complete mutation encoding before a caller is allowed to mutate loaded
+// collection state. Only one payload-sized buffer is live at any time.
+func (j *collectionJournal) validateAndRepair(appliedLSN uint64, validate collectionJournalRecordVisitor) (collectionJournalReplayPlan, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if err := j.repairInterruptedRotation(); err != nil {
-		return nil, err
+		return collectionJournalReplayPlan{}, err
 	}
 
-	var (
-		replay          []collectionJournalRecord
-		lastArtifactLSN uint64
-		currentRecords  []collectionJournalRecord
-		currentExists   bool
+	var payloadBuffer []byte
+	state := collectionJournalSequenceState{appliedLSN: appliedLSN}
+	frozen, err := scanCollectionJournalArtifact(
+		j.frozenPath,
+		j.storeID,
+		j.maxPayload,
+		nil,
+		&payloadBuffer,
+		&state,
+		validate,
 	)
-	for _, path := range []string{j.frozenPath, j.currentPath} {
-		records, exists, err := readCollectionJournalFile(path, j.storeID, j.maxPayload)
-		if err != nil {
-			var partial *collectionJournalPartialTailError
-			if path != j.currentPath || !errors.As(err, &partial) {
-				return nil, err
-			}
+	if err != nil {
+		return collectionJournalReplayPlan{}, err
+	}
+	stateAfterFrozen := state
 
-			// Validate the complete prefix, including its global LSN position,
-			// before changing the artifact. This keeps LSN corruption fail-closed.
-			trialReplay := append([]collectionJournalRecord(nil), replay...)
-			trialLastArtifactLSN := lastArtifactLSN
-			if err := appendValidatedCollectionJournalRecords(
-				path,
-				partial.records,
-				appliedLSN,
-				&trialReplay,
-				&trialLastArtifactLSN,
-			); err != nil {
-				return nil, err
-			}
-			expectedLSN, err := expectedCollectionJournalTailLSN(
-				appliedLSN,
-				lastArtifactLSN,
-				partial.records,
-			)
-			if err != nil {
-				return nil, err
-			}
-			if err := validateCollectionJournalPartialTail(partial, j.storeID, expectedLSN, j.maxPayload); err != nil {
-				return nil, fmt.Errorf("refuse collection journal partial-tail repair: %w", err)
-			}
-			if err := j.repairCurrentPartialTail(partial); err != nil {
-				return nil, err
-			}
+	current, err := scanCollectionJournalArtifact(
+		j.currentPath,
+		j.storeID,
+		j.maxPayload,
+		nil,
+		&payloadBuffer,
+		&state,
+		validate,
+	)
+	if err != nil {
+		var partial *collectionJournalPartialTailError
+		if !errors.As(err, &partial) {
+			return collectionJournalReplayPlan{}, err
+		}
 
-			// Never trust the in-memory prefix after changing durable state. Parse
-			// the repaired artifact from byte zero before returning a writer.
-			records, exists, err = readCollectionJournalFile(path, j.storeID, j.maxPayload)
-			if err != nil {
-				return nil, fmt.Errorf("reparse repaired current collection journal: %w", err)
-			}
-		}
-		if !exists {
-			continue
-		}
-		if path == j.currentPath {
-			currentExists = true
-			currentRecords = records
-		}
-		if err := appendValidatedCollectionJournalRecords(
-			path,
-			records,
+		expectedLSN, tailErr := expectedCollectionJournalTailLSN(
 			appliedLSN,
-			&replay,
-			&lastArtifactLSN,
-		); err != nil {
-			return nil, err
+			stateAfterFrozen.lastArtifactLSN,
+			partial.summary,
+		)
+		if tailErr != nil {
+			return collectionJournalReplayPlan{}, tailErr
+		}
+		if tailErr := validateCollectionJournalPartialTail(partial, j.storeID, expectedLSN, j.maxPayload); tailErr != nil {
+			return collectionJournalReplayPlan{}, fmt.Errorf("refuse collection journal partial-tail repair: %w", tailErr)
+		}
+		if tailErr := j.repairCurrentPartialTail(partial); tailErr != nil {
+			return collectionJournalReplayPlan{}, tailErr
+		}
+
+		// Reparse the repaired artifact from byte zero. The validation callback
+		// intentionally runs again so no bytes trusted before the durable change
+		// can authorize replay afterward.
+		state = stateAfterFrozen
+		current, err = scanCollectionJournalArtifact(
+			j.currentPath,
+			j.storeID,
+			j.maxPayload,
+			nil,
+			&payloadBuffer,
+			&state,
+			validate,
+		)
+		if err != nil {
+			return collectionJournalReplayPlan{}, fmt.Errorf("reparse repaired current collection journal: %w", err)
 		}
 	}
 
-	if lastArtifactLSN > j.lastLSN {
-		j.lastLSN = lastArtifactLSN
+	if state.lastArtifactLSN > j.lastLSN {
+		j.lastLSN = state.lastArtifactLSN
 	}
 	// A stale current prefix ending before the checkpoint cannot safely accept
-	// the next LSN: appending appliedLSN+1 would create an intra-file gap. The
-	// snapshot already covers the prefix, so durably remove it before writes.
-	if currentExists && len(currentRecords) > 0 && currentRecords[len(currentRecords)-1].LSN < appliedLSN {
+	// appliedLSN+1 because doing so would create an intra-file gap. Its contents
+	// are already covered, so durably remove it and bind the plan to its absence.
+	if current.exists && current.recordCount > 0 && current.lastLSN < appliedLSN {
 		if err := j.ops.removePath(j.currentPath); err != nil {
-			return nil, fmt.Errorf("remove checkpoint-covered current collection journal: %w", err)
+			return collectionJournalReplayPlan{}, fmt.Errorf("remove checkpoint-covered current collection journal: %w", err)
 		}
 		if err := j.ops.syncDir(filepath.Dir(j.currentPath)); err != nil {
-			return nil, fmt.Errorf("sync checkpoint-covered current journal cleanup: %w", err)
+			return collectionJournalReplayPlan{}, fmt.Errorf("sync checkpoint-covered current journal cleanup: %w", err)
 		}
+		current = collectionJournalFileSummary{}
+		state = stateAfterFrozen
 	}
-	return replay, nil
+
+	return replayPlanFromState(appliedLSN, state, frozen, current), nil
 }
 
-func appendValidatedCollectionJournalRecords(
-	path string,
-	records []collectionJournalRecord,
-	appliedLSN uint64,
-	replay *[]collectionJournalRecord,
-	lastArtifactLSN *uint64,
-) error {
-	for i, record := range records {
-		if i > 0 {
-			previous := records[i-1].LSN
-			switch {
-			case record.LSN <= previous:
-				return fmt.Errorf("collection journal LSN %d in %q duplicates or regresses from %d", record.LSN, path, previous)
-			case previous == math.MaxUint64 || record.LSN != previous+1:
-				return fmt.Errorf("collection journal LSN gap in %q: got %d after %d", path, record.LSN, previous)
-			}
-		}
-		if record.LSN > *lastArtifactLSN {
-			*lastArtifactLSN = record.LSN
-		}
-		if record.LSN <= appliedLSN {
-			if len(*replay) > 0 {
-				return fmt.Errorf("collection journal LSN %d in %q duplicates or regresses behind replay after checkpoint %d", record.LSN, path, appliedLSN)
-			}
-			continue
-		}
-		if len(*replay) == 0 {
-			if appliedLSN == math.MaxUint64 || record.LSN != appliedLSN+1 {
-				return fmt.Errorf("collection journal LSN gap after checkpoint %d: first replay record is %d", appliedLSN, record.LSN)
-			}
-		} else {
-			previous := (*replay)[len(*replay)-1].LSN
-			if record.LSN <= previous {
-				return fmt.Errorf("collection journal LSN %d in %q duplicates or regresses from %d", record.LSN, path, previous)
-			}
-			if previous == math.MaxUint64 || record.LSN != previous+1 {
-				return fmt.Errorf("collection journal LSN gap during replay: got %d after %d", record.LSN, previous)
-			}
-		}
-		*replay = append(*replay, record)
+// streamReplay reopens the exact artifacts captured by plan and passes one
+// validated replay frame at a time to visit. Payload is never retained here;
+// it aliases a single reusable buffer. Artifact identity and metadata are
+// checked before visiting that artifact, and its content digest is rechecked
+// after the scan as a final integrity guard.
+func (j *collectionJournal) streamReplay(plan collectionJournalReplayPlan, visit collectionJournalRecordVisitor) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	var payloadBuffer []byte
+	state := collectionJournalSequenceState{appliedLSN: plan.appliedLSN}
+	frozen, err := scanCollectionJournalArtifact(
+		j.frozenPath,
+		j.storeID,
+		j.maxPayload,
+		&plan.frozen,
+		&payloadBuffer,
+		&state,
+		visit,
+	)
+	if err != nil {
+		return fmt.Errorf("reopen validated frozen collection journal: %w", err)
+	}
+	current, err := scanCollectionJournalArtifact(
+		j.currentPath,
+		j.storeID,
+		j.maxPayload,
+		&plan.current,
+		&payloadBuffer,
+		&state,
+		visit,
+	)
+	if err != nil {
+		return fmt.Errorf("reopen validated current collection journal: %w", err)
+	}
+	actual := replayPlanFromState(plan.appliedLSN, state, frozen, current)
+	if actual.replayRecords != plan.replayRecords ||
+		actual.firstReplayLSN != plan.firstReplayLSN ||
+		actual.lastReplayLSN != plan.lastReplayLSN ||
+		actual.lastArtifactLSN != plan.lastArtifactLSN {
+		return errors.New("collection journal replay sequence changed after validation")
 	}
 	return nil
+}
+
+// verifyCovered streams and validates both artifacts while retaining only
+// aggregate coverage evidence. It is used after a snapshot commit and before
+// journal cleanup.
+func (j *collectionJournal) verifyCovered(appliedLSN uint64) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	var (
+		payloadBuffer []byte
+		state         = collectionJournalSequenceState{appliedLSN: appliedLSN}
+		uncoveredPath string
+		uncoveredLSN  uint64
+	)
+	for _, path := range []string{j.frozenPath, j.currentPath} {
+		_, err := scanCollectionJournalArtifact(
+			path,
+			j.storeID,
+			j.maxPayload,
+			nil,
+			&payloadBuffer,
+			&state,
+			func(record collectionJournalRecord) error {
+				if uncoveredPath == "" {
+					uncoveredPath = path
+					uncoveredLSN = record.LSN
+				}
+				return nil
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("verify checkpoint coverage for %q: %w", path, err)
+		}
+	}
+	if uncoveredPath != "" {
+		return fmt.Errorf("refusing journal cleanup: %q LSN %d exceeds snapshot LSN %d", uncoveredPath, uncoveredLSN, appliedLSN)
+	}
+	return nil
+}
+
+func replayPlanFromState(
+	appliedLSN uint64,
+	state collectionJournalSequenceState,
+	frozen collectionJournalFileSummary,
+	current collectionJournalFileSummary,
+) collectionJournalReplayPlan {
+	return collectionJournalReplayPlan{
+		appliedLSN:      appliedLSN,
+		replayRecords:   state.replayRecords,
+		firstReplayLSN:  state.firstReplayLSN,
+		lastReplayLSN:   state.lastReplayLSN,
+		lastArtifactLSN: state.lastArtifactLSN,
+		frozen:          frozen,
+		current:         current,
+	}
 }
 
 func expectedCollectionJournalTailLSN(
 	appliedLSN uint64,
 	previousArtifactLSN uint64,
-	currentRecords []collectionJournalRecord,
+	current collectionJournalFileSummary,
 ) (uint64, error) {
 	lastLSN := appliedLSN
 	if previousArtifactLSN > lastLSN {
 		lastLSN = previousArtifactLSN
 	}
-	if len(currentRecords) > 0 {
-		lastLSN = currentRecords[len(currentRecords)-1].LSN
+	if current.recordCount > 0 {
+		lastLSN = current.lastLSN
 	}
 	if lastLSN == math.MaxUint64 {
 		return 0, errors.New("collection journal LSN exhausted before partial tail")
@@ -501,6 +662,8 @@ func (j *collectionJournal) repairCurrentPartialTail(tail *collectionJournalPart
 			statErr = errors.New("current collection journal is not a regular file")
 		case info.Mode().Perm() != 0o600:
 			statErr = fmt.Errorf("current collection journal has permissions %04o; expected 0600", info.Mode().Perm())
+		case tail.summary.info != nil && !os.SameFile(tail.summary.info, info):
+			statErr = errors.New("current collection journal was replaced before partial-tail repair")
 		case info.Size() != tail.fileSize:
 			statErr = fmt.Errorf("current collection journal changed size from %d to %d before partial-tail repair", tail.fileSize, info.Size())
 		}
@@ -718,99 +881,168 @@ func encodeCollectionJournalFrame(storeID [16]byte, lsn uint64, payload []byte, 
 	return frame, nil
 }
 
-func readCollectionJournalFile(path string, storeID [16]byte, maxPayload uint32) ([]collectionJournalRecord, bool, error) {
+func scanCollectionJournalArtifact(
+	path string,
+	storeID [16]byte,
+	maxPayload uint32,
+	expected *collectionJournalFileSummary,
+	payloadBuffer *[]byte,
+	state *collectionJournalSequenceState,
+	visit collectionJournalRecordVisitor,
+) (collectionJournalFileSummary, error) {
+	var (
+		previousInArtifact    uint64
+		hasPreviousInArtifact bool
+	)
+	return scanCollectionJournalFile(path, storeID, maxPayload, expected, payloadBuffer, func(record collectionJournalRecord) error {
+		if err := state.accept(path, record, previousInArtifact, hasPreviousInArtifact); err != nil {
+			return err
+		}
+		previousInArtifact = record.LSN
+		hasPreviousInArtifact = true
+		if record.LSN > state.appliedLSN && visit != nil {
+			return visit(record)
+		}
+		return nil
+	})
+}
+
+// scanCollectionJournalFile validates one artifact with constant aggregate
+// state and one caller-owned payload buffer. The visitor must consume payload
+// synchronously because the next frame overwrites the same backing storage.
+func scanCollectionJournalFile(
+	path string,
+	storeID [16]byte,
+	maxPayload uint32,
+	expected *collectionJournalFileSummary,
+	payloadBuffer *[]byte,
+	visit collectionJournalRecordVisitor,
+) (collectionJournalFileSummary, error) {
+	var summary collectionJournalFileSummary
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, false, nil
+			if expected != nil && expected.exists {
+				return summary, fmt.Errorf("collection journal %q disappeared after validation", path)
+			}
+			return summary, nil
 		}
-		return nil, false, fmt.Errorf("open collection journal %q: %w", path, err)
+		return summary, fmt.Errorf("open collection journal %q: %w", path, err)
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return nil, true, fmt.Errorf("stat collection journal %q: %w", path, err)
+		return summary, fmt.Errorf("stat collection journal %q: %w", path, err)
 	}
+	summary.exists = true
+	summary.info = info
 	if !info.Mode().IsRegular() {
-		return nil, true, fmt.Errorf("collection journal %q is not a regular file", path)
+		return summary, fmt.Errorf("collection journal %q is not a regular file", path)
 	}
 	if info.Mode().Perm() != 0o600 {
-		return nil, true, fmt.Errorf("collection journal %q has permissions %04o; expected 0600", path, info.Mode().Perm())
+		return summary, fmt.Errorf("collection journal %q has permissions %04o; expected 0600", path, info.Mode().Perm())
+	}
+	if err := validateCollectionJournalArtifactIdentity(path, info, expected); err != nil {
+		return summary, err
+	}
+	if payloadBuffer == nil {
+		payloadBuffer = new([]byte)
 	}
 
 	fileSize := info.Size()
 	var (
-		offset  int64
-		records []collectionJournalRecord
+		offset       int64
+		header       [collectionJournalHeaderSize]byte
+		artifactHash = sha256.New()
+		checksumHash = sha256.New()
 	)
+	setDigest := func() {
+		copy(summary.digest[:], artifactHash.Sum(nil))
+	}
 	for offset < fileSize {
 		remaining := fileSize - offset
 		if remaining < int64(collectionJournalHeaderSize) {
-			headerPrefix := make([]byte, int(remaining))
+			headerPrefix := header[:int(remaining)]
 			if _, err := io.ReadFull(f, headerPrefix); err != nil {
-				return nil, true, fmt.Errorf("read collection journal %q partial frame header at offset %d: %w", path, offset, err)
+				return summary, fmt.Errorf("read collection journal %q partial frame header at offset %d: %w", path, offset, err)
 			}
-			return records, true, &collectionJournalPartialTailError{
+			setDigest()
+			return summary, &collectionJournalPartialTailError{
 				path:     path,
 				offset:   offset,
 				fileSize: fileSize,
-				header:   headerPrefix,
-				records:  records,
+				header:   append([]byte(nil), headerPrefix...),
+				summary:  summary,
 			}
 		}
 
-		header := make([]byte, int(collectionJournalHeaderSize))
-		if _, err := io.ReadFull(f, header); err != nil {
-			return nil, true, fmt.Errorf("read collection journal %q frame header at offset %d: %w", path, offset, err)
+		headerBytes := header[:]
+		if _, err := io.ReadFull(f, headerBytes); err != nil {
+			return summary, fmt.Errorf("read collection journal %q frame header at offset %d: %w", path, offset, err)
 		}
-		if string(header[:len(collectionJournalMagic)]) != string(collectionJournalMagic[:]) {
-			return nil, true, fmt.Errorf("collection journal %q has invalid magic at offset %d", path, offset)
+		if !bytes.Equal(headerBytes[:len(collectionJournalMagic)], collectionJournalMagic[:]) {
+			return summary, fmt.Errorf("collection journal %q has invalid magic at offset %d", path, offset)
 		}
-		version := binary.BigEndian.Uint16(header[collectionJournalVersionOffset:])
+		version := binary.BigEndian.Uint16(headerBytes[collectionJournalVersionOffset:])
 		if version != collectionJournalVersion {
-			return nil, true, fmt.Errorf("collection journal %q has unknown version %d at offset %d", path, version, offset)
+			return summary, fmt.Errorf("collection journal %q has unknown version %d at offset %d", path, version, offset)
 		}
-		headerSize := binary.BigEndian.Uint16(header[collectionJournalHeaderSizeOffset:])
+		headerSize := binary.BigEndian.Uint16(headerBytes[collectionJournalHeaderSizeOffset:])
 		if headerSize != collectionJournalHeaderSize {
-			return nil, true, fmt.Errorf("collection journal %q has unsupported header size %d at offset %d", path, headerSize, offset)
+			return summary, fmt.Errorf("collection journal %q has unsupported header size %d at offset %d", path, headerSize, offset)
 		}
 		var frameStoreID [16]byte
-		copy(frameStoreID[:], header[collectionJournalStoreIDOffset:collectionJournalLSNOffset])
+		copy(frameStoreID[:], headerBytes[collectionJournalStoreIDOffset:collectionJournalLSNOffset])
 		if frameStoreID != storeID {
-			return nil, true, fmt.Errorf("collection journal %q store UUID mismatch at offset %d", path, offset)
+			return summary, fmt.Errorf("collection journal %q store UUID mismatch at offset %d", path, offset)
 		}
-		lsn := binary.BigEndian.Uint64(header[collectionJournalLSNOffset:])
+		lsn := binary.BigEndian.Uint64(headerBytes[collectionJournalLSNOffset:])
 		if lsn == 0 {
-			return nil, true, fmt.Errorf("collection journal %q has zero LSN at offset %d", path, offset)
+			return summary, fmt.Errorf("collection journal %q has zero LSN at offset %d", path, offset)
 		}
-		payloadLen := binary.BigEndian.Uint32(header[collectionJournalPayloadLenOffset:])
+		payloadLen := binary.BigEndian.Uint32(headerBytes[collectionJournalPayloadLenOffset:])
 		if payloadLen > maxPayload {
-			return nil, true, fmt.Errorf("collection journal %q payload at offset %d is %d bytes; maximum is %d", path, offset, payloadLen, maxPayload)
+			return summary, fmt.Errorf("collection journal %q payload at offset %d is %d bytes; maximum is %d", path, offset, payloadLen, maxPayload)
 		}
 		if int64(payloadLen) > remaining-int64(collectionJournalHeaderSize) {
-			return records, true, &collectionJournalPartialTailError{
+			setDigest()
+			return summary, &collectionJournalPartialTailError{
 				path:        path,
 				offset:      offset,
 				fileSize:    fileSize,
-				header:      header,
-				records:     records,
+				header:      append([]byte(nil), headerBytes...),
+				summary:     summary,
 				partialBody: true,
 			}
 		}
 
-		payload := make([]byte, int(payloadLen))
-		if _, err := io.ReadFull(f, payload); err != nil {
-			return nil, true, fmt.Errorf("read collection journal %q frame body at offset %d: %w", path, offset, err)
+		if cap(*payloadBuffer) < int(payloadLen) {
+			*payloadBuffer = make([]byte, int(payloadLen))
 		}
-		h := sha256.New()
-		_, _ = h.Write(header[:collectionJournalChecksumOffset])
-		_, _ = h.Write(payload)
-		if !equalCollectionJournalChecksum(header[collectionJournalChecksumOffset:int(collectionJournalHeaderSize)], h.Sum(nil)) {
-			return nil, true, fmt.Errorf("collection journal %q checksum mismatch at offset %d", path, offset)
+		payload := (*payloadBuffer)[:int(payloadLen)]
+		if _, err := io.ReadFull(f, payload); err != nil {
+			return summary, fmt.Errorf("read collection journal %q frame body at offset %d: %w", path, offset, err)
+		}
+		checksumHash.Reset()
+		_, _ = checksumHash.Write(headerBytes[:collectionJournalChecksumOffset])
+		_, _ = checksumHash.Write(payload)
+		if !equalCollectionJournalChecksum(headerBytes[collectionJournalChecksumOffset:int(collectionJournalHeaderSize)], checksumHash.Sum(nil)) {
+			return summary, fmt.Errorf("collection journal %q checksum mismatch at offset %d", path, offset)
 		}
 
-		records = append(records, collectionJournalRecord{LSN: lsn, Payload: payload})
+		_, _ = artifactHash.Write(headerBytes)
+		_, _ = artifactHash.Write(payload)
+		summary.recordCount++
+		if summary.recordCount == 1 {
+			summary.firstLSN = lsn
+		}
+		summary.lastLSN = lsn
+		if visit != nil {
+			if err := visit(collectionJournalRecord{LSN: lsn, Payload: payload}); err != nil {
+				return summary, err
+			}
+		}
 		offset += int64(collectionJournalHeaderSize) + int64(payloadLen)
 	}
 
@@ -822,9 +1054,52 @@ func readCollectionJournalFile(path string, storeID [16]byte, maxPayload uint32)
 		if err == nil {
 			err = errors.New("unexpected trailing byte")
 		}
-		return nil, true, fmt.Errorf("collection journal %q changed or has trailing junk after validation: %w", path, err)
+		return summary, fmt.Errorf("collection journal %q changed or has trailing junk after validation: %w", path, err)
 	}
-	return records, true, nil
+	setDigest()
+
+	// Confirm the path still names the inode just scanned and that no metadata
+	// relevant to bounded parsing changed while it was open.
+	pathInfo, err := os.Stat(path)
+	if err != nil {
+		return summary, fmt.Errorf("restat collection journal %q after validation: %w", path, err)
+	}
+	if !os.SameFile(info, pathInfo) || info.Size() != pathInfo.Size() || info.Mode() != pathInfo.Mode() || !info.ModTime().Equal(pathInfo.ModTime()) {
+		return summary, fmt.Errorf("collection journal %q changed during validation", path)
+	}
+	if err := validateCollectionJournalSummary(path, summary, expected); err != nil {
+		return summary, err
+	}
+	return summary, nil
+}
+
+func validateCollectionJournalArtifactIdentity(path string, info os.FileInfo, expected *collectionJournalFileSummary) error {
+	if expected == nil {
+		return nil
+	}
+	if !expected.exists {
+		return fmt.Errorf("collection journal %q appeared after validation", path)
+	}
+	if expected.info == nil || !os.SameFile(expected.info, info) {
+		return fmt.Errorf("collection journal %q was replaced after validation", path)
+	}
+	if expected.info.Size() != info.Size() || expected.info.Mode() != info.Mode() || !expected.info.ModTime().Equal(info.ModTime()) {
+		return fmt.Errorf("collection journal %q metadata changed after validation", path)
+	}
+	return nil
+}
+
+func validateCollectionJournalSummary(path string, actual collectionJournalFileSummary, expected *collectionJournalFileSummary) error {
+	if expected == nil {
+		return nil
+	}
+	if actual.recordCount != expected.recordCount ||
+		actual.firstLSN != expected.firstLSN ||
+		actual.lastLSN != expected.lastLSN ||
+		actual.digest != expected.digest {
+		return fmt.Errorf("collection journal %q contents changed after validation", path)
+	}
+	return nil
 }
 
 func equalCollectionJournalChecksum(a, b []byte) bool {

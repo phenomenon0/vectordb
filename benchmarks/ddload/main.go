@@ -92,6 +92,7 @@ func appendFloat(dst []byte, f float64) []byte {
 
 func main() {
 	basePath := flag.String("base", "", "path to .fvecs base vectors")
+	segments := flag.Int("segments", 0, "explicit HNSW segment count (0 = server default)")
 	flag.Parse()
 	if *basePath == "" {
 		flag.Usage()
@@ -108,8 +109,12 @@ func main() {
 	client := &http.Client{Timeout: 120 * time.Second}
 
 	// Create collection with HNSW matching the Python harness schema.
-	schema := fmt.Sprintf(`{"name":%q,"fields":[{"name":"embedding","type":"dense","dim":%d,"index":{"type":"hnsw","params":{"m":16,"ef_construction":300}}}]}`,
-		coll, len(vectors[0]))
+	segmentParam := ""
+	if *segments > 0 {
+		segmentParam = fmt.Sprintf(`,"segments":%d`, *segments)
+	}
+	schema := fmt.Sprintf(`{"name":%q,"fields":[{"name":"embedding","type":"dense","dim":%d,"index":{"type":"hnsw","params":{"m":16,"ef_construction":300%s}}}]}`,
+		coll, len(vectors[0]), segmentParam)
 	createResp, err := authReq("POST", "/v3/tenants/"+tenant+"/collections", []byte(schema))
 	must(err)
 	if createResp.StatusCode != 201 && createResp.StatusCode != 200 {

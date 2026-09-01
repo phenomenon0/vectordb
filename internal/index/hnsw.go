@@ -291,7 +291,9 @@ func (h *HNSWIndex) SetMetadata(id uint64, metadata map[string]interface{}) erro
 // This is significantly faster than calling Add in a loop for large batches.
 //
 // Graph insertion is parallelized across GOMAXPROCS workers (capped at 8)
-// using AddConcurrent for fine-grained locking within the graph.
+// using AddConcurrent for fine-grained locking within the graph. The cap keeps
+// allocation pressure bounded on high-core hosts and prevents segmented outer
+// parallelism from multiplying an unbounded inner worker pool.
 //
 // The batch is atomic at the index level: if any step fails after a mutation
 // began (cancelled graph insertion or a storage failure), resurrected
