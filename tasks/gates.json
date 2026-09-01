@@ -637,8 +637,14 @@
         ":(exclude)docs/PRE_RELEASE_STATUS.md"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "c07a47b2dc8894036b898ed1f1e9c7bd28c44ba1",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": null,
+        "ci_run": null
+      },
       "note": "R3 (generated route table) is a SKIP until DOC-03 lands the routes subcommand; .github/workflows/ci.yml runs this same command. Scope excludes the generated render: every promotion rewrites it, and gates.py check already proves it equals a fresh render."
     },
     {
@@ -651,9 +657,15 @@
         "tasks/lessons.md"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
-      "note": "promoted when the S3 slice is committed"
+      "status": "pass",
+      "evidence": {
+        "commit": "c07a47b2dc8894036b898ed1f1e9c7bd28c44ba1",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "promoted with the S3 slice (c07a47b); the three files carry no checkboxes and point at the ledger"
     },
     {
       "id": "DOC-03",

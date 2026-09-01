@@ -74,8 +74,8 @@ Readiness: 25 release gates, 2 pass and fresh, 15 pass (stale), 8 not passed. A 
 
 | DOC | status | commit | date | statement |
 |---|---|---|---|---|
-| DOC-01 | open | — | — | docs contract linter passes on the tree (scripts/check_docs_contract.py) |
-| DOC-02 | open | — | — | tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing… |
+| DOC-01 | pass | c07a47b | 2026-09-01 | docs contract linter passes on the tree (scripts/check_docs_contract.py) |
+| DOC-02 | pass | c07a47b | 2026-09-01 | tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing… |
 | DOC-03 | open | — | — | HTTP route table in internal/collection/API.md is generated from the routes subcommand |
 
 | PUB | status | commit | date | statement |
