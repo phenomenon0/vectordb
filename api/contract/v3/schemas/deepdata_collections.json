@@ -2,7 +2,7 @@
  "input": {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "description": "Describe one collection (name) or list every collection of this tenant (no arguments; listing needs the admin permission until CTL-04, describing one needs only read).",
+  "description": "Describe one collection (name) or list every collection of this tenant (no arguments). Both need only the read permission.",
   "properties": {
    "name": {
     "type": "string",
@@ -46,6 +46,14 @@
          },
          "index": {
           "type": "object"
+         },
+         "score_direction": {
+          "type": "string",
+          "enum": [
+           "lower_is_better",
+           "higher_is_better"
+          ],
+          "description": "How this field's scores read: dense returns distances (lower_is_better), sparse returns BM25 scores (higher_is_better)."
          },
          "embedding": {
           "type": "object",

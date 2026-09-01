@@ -79,15 +79,18 @@ func (x *EmbeddingConfig) GetModel() string {
 }
 
 type VectorFieldConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Type          int32                  `protobuf:"varint,2,opt,name=type,proto3" json:"type,omitempty"`                           // 0=dense, 1=sparse
-	Dim           int32                  `protobuf:"varint,3,opt,name=dim,proto3" json:"dim,omitempty"`                             // 0 at create takes the bound embedder's dimension
-	IndexType     string                 `protobuf:"bytes,4,opt,name=index_type,json=indexType,proto3" json:"index_type,omitempty"` // RC: "hnsw", "flat", or "inverted"
-	IndexParams   *structpb.Struct       `protobuf:"bytes,5,opt,name=index_params,json=indexParams,proto3" json:"index_params,omitempty"`
-	Embedding     *EmbeddingConfig       `protobuf:"bytes,6,opt,name=embedding,proto3" json:"embedding,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Type        int32                  `protobuf:"varint,2,opt,name=type,proto3" json:"type,omitempty"`                           // 0=dense, 1=sparse
+	Dim         int32                  `protobuf:"varint,3,opt,name=dim,proto3" json:"dim,omitempty"`                             // 0 at create takes the bound embedder's dimension
+	IndexType   string                 `protobuf:"bytes,4,opt,name=index_type,json=indexType,proto3" json:"index_type,omitempty"` // RC: "hnsw", "flat", or "inverted"
+	IndexParams *structpb.Struct       `protobuf:"bytes,5,opt,name=index_params,json=indexParams,proto3" json:"index_params,omitempty"`
+	Embedding   *EmbeddingConfig       `protobuf:"bytes,6,opt,name=embedding,proto3" json:"embedding,omitempty"`
+	// output only: "lower_is_better" on dense fields, "higher_is_better" on
+	// sparse fields; ignored on create
+	ScoreDirection string `protobuf:"bytes,7,opt,name=score_direction,json=scoreDirection,proto3" json:"score_direction,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *VectorFieldConfig) Reset() {
@@ -160,6 +163,13 @@ func (x *VectorFieldConfig) GetEmbedding() *EmbeddingConfig {
 		return x.Embedding
 	}
 	return nil
+}
+
+func (x *VectorFieldConfig) GetScoreDirection() string {
+	if x != nil {
+		return x.ScoreDirection
+	}
+	return ""
 }
 
 type CollectionInfo struct {
@@ -1641,7 +1651,14 @@ type SearchResponse struct {
 	// secondary field name when the fallback ladder fired ("" otherwise)
 	FellBackTo string `protobuf:"bytes,5,opt,name=fell_back_to,json=fellBackTo,proto3" json:"fell_back_to,omitempty"`
 	// embedded_by: field -> "provider:model" for each query embedded from texts
-	EmbeddedBy    map[string]string `protobuf:"bytes,6,rep,name=embedded_by,json=embeddedBy,proto3" json:"embedded_by,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	EmbeddedBy map[string]string `protobuf:"bytes,6,rep,name=embedded_by,json=embeddedBy,proto3" json:"embedded_by,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// how to read results[].score and best_score: "lower_is_better" (dense
+	// distances) or "higher_is_better" (sparse BM25, fused hybrid)
+	ScoreDirection string `protobuf:"bytes,7,opt,name=score_direction,json=scoreDirection,proto3" json:"score_direction,omitempty"`
+	// server-side wall time of the search
+	QueryTimeMs float64 `protobuf:"fixed64,8,opt,name=query_time_ms,json=queryTimeMs,proto3" json:"query_time_ms,omitempty"`
+	// the request id this answer was produced under
+	RequestId     string `protobuf:"bytes,9,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1716,6 +1733,27 @@ func (x *SearchResponse) GetEmbeddedBy() map[string]string {
 		return x.EmbeddedBy
 	}
 	return nil
+}
+
+func (x *SearchResponse) GetScoreDirection() string {
+	if x != nil {
+		return x.ScoreDirection
+	}
+	return ""
+}
+
+func (x *SearchResponse) GetQueryTimeMs() float64 {
+	if x != nil {
+		return x.QueryTimeMs
+	}
+	return 0
+}
+
+func (x *SearchResponse) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
 }
 
 type DeleteDocRequest struct {
@@ -2071,7 +2109,7 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\x1adeepdata/v3/deepdata.proto\x12\vdeepdata.v3\x1a\x1cgoogle/protobuf/struct.proto\"C\n" +
 	"\x0fEmbeddingConfig\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
-	"\x05model\x18\x02 \x01(\tR\x05model\"\xe4\x01\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\"\x8d\x02\n" +
 	"\x11VectorFieldConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\x05R\x04type\x12\x10\n" +
@@ -2079,7 +2117,8 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\n" +
 	"index_type\x18\x04 \x01(\tR\tindexType\x12:\n" +
 	"\findex_params\x18\x05 \x01(\v2\x17.google.protobuf.StructR\vindexParams\x12:\n" +
-	"\tembedding\x18\x06 \x01(\v2\x1c.deepdata.v3.EmbeddingConfigR\tembedding\"\xda\x01\n" +
+	"\tembedding\x18\x06 \x01(\v2\x1c.deepdata.v3.EmbeddingConfigR\tembedding\x12'\n" +
+	"\x0fscore_direction\x18\a \x01(\tR\x0escoreDirection\"\xda\x01\n" +
 	"\x0eCollectionInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x126\n" +
 	"\x06fields\x18\x02 \x03(\v2\x1e.deepdata.v3.VectorFieldConfigR\x06fields\x12 \n" +
@@ -2214,7 +2253,7 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\avectors\x18\x04 \x03(\v2#.deepdata.v3.SearchHit.VectorsEntryR\avectors\x1aS\n" +
 	"\fVectorsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
-	"\x05value\x18\x02 \x01(\v2\x17.deepdata.v3.VectorDataR\x05value:\x028\x01\"\xe0\x02\n" +
+	"\x05value\x18\x02 \x01(\v2\x17.deepdata.v3.VectorDataR\x05value:\x028\x01\"\xcc\x03\n" +
 	"\x0eSearchResponse\x120\n" +
 	"\aresults\x18\x01 \x03(\v2\x16.deepdata.v3.SearchHitR\aresults\x12/\n" +
 	"\x13candidates_examined\x18\x02 \x01(\x05R\x12candidatesExamined\x12\x1d\n" +
@@ -2225,7 +2264,11 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\ffell_back_to\x18\x05 \x01(\tR\n" +
 	"fellBackTo\x12L\n" +
 	"\vembedded_by\x18\x06 \x03(\v2+.deepdata.v3.SearchResponse.EmbeddedByEntryR\n" +
-	"embeddedBy\x1a=\n" +
+	"embeddedBy\x12'\n" +
+	"\x0fscore_direction\x18\a \x01(\tR\x0escoreDirection\x12\"\n" +
+	"\rquery_time_ms\x18\b \x01(\x01R\vqueryTimeMs\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\t \x01(\tR\trequestId\x1a=\n" +
 	"\x0fEmbeddedByEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"f\n" +

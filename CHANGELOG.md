@@ -96,6 +96,21 @@ assembled.
   with `truncated` plus a steering hint, `DEEPDATA_COLLECTION`, and a place in
   the CI vet and test lists (gates CTL-03, CI-05). The five untyped tools
   `search`, `insert`, `upsert`, `get_document`, `list_collections` are gone.
+- The server now describes itself. `api/contract/v3/operations.json` is the one
+  list of V3 operations, naming for each its method, path, required permission,
+  matching gRPC method and matching MCP tool where it has one.
+  `GET /v3/status` returns that list with the build version, the resolved embedder,
+  the `Canonical*` limits and the engine's capabilities, and
+  `go run ./cmd/deepdata routes` prints it as TSV, which is what generates the
+  route table in `internal/collection/API.md`. Search answers on HTTP, gRPC and
+  MCP now carry `score_direction` (`lower_is_better` on dense distances,
+  `higher_is_better` on sparse and fused scores, naming the field that actually
+  answered) plus `query_time_ms` and `request_id`, and collection reads report
+  `score_direction` per field. Listing collections became `read`-gated on both
+  transports, so a least-privilege agent can discover what it may search.
+  Drift tests hold the operation list against the proto service, the HTTP
+  dispatcher, the Go json tags, the `Canonical*` caps and the Python models
+  (gates CTL-04, DOC-03).
 - Normal startup exposes only the canonical V3 HTTP routes and V3 gRPC
   service. Legacy root/V2 mutation APIs and advanced recommendation,
   discovery, embedding-provider, GraphRAG, extraction, and feedback handlers

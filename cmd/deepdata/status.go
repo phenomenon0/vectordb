@@ -1,0 +1,123 @@
+package main
+
+import (
+	"github.com/phenomenon0/vectordb/api/contract"
+	vcollection "github.com/phenomenon0/vectordb/internal/collection"
+	"github.com/phenomenon0/vectordb/internal/filter"
+	"github.com/phenomenon0/vectordb/internal/releaseinfo"
+)
+
+// canonicalFilterOperators is the comparison operator set filter.FromMap
+// accepts, spelled the way a caller writes it in a filter object ("$" plus
+// the operator) and named by its constant so a rename breaks the build.
+//
+// ponytail: the parser has no registry, so a newly added operator has to be
+// added here too; the drift test in contract_test.go checks each one against
+// the recall schema's filter description.
+var canonicalFilterOperators = []string{
+	"$" + string(filter.OpEqual),
+	"$" + string(filter.OpNotEqual),
+	"$" + string(filter.OpGreaterThan),
+	"$" + string(filter.OpGreaterThanOrEqual),
+	"$" + string(filter.OpLessThan),
+	"$" + string(filter.OpLessThanOrEqual),
+	"$" + string(filter.OpIn),
+	"$" + string(filter.OpNotIn),
+	"$" + string(filter.OpContains),
+	"$" + string(filter.OpStartsWith),
+	"$" + string(filter.OpEndsWith),
+	"$" + string(filter.OpRegex),
+	"$" + string(filter.OpExists),
+	"$" + string(filter.OpGeoRadius),
+	"$" + string(filter.OpGeoBBox),
+}
+
+// statusPayload is the GET /v3/status body: what this build is, what it
+// serves, what it will embed with, and where it says no. Every value is
+// derived — the operation list from api/contract/v3/operations.json, the
+// limits from the Canonical* consts and the rate-limit environment, the
+// embedding block from the process embedder — so nothing here can drift
+// from the server that answers.
+func statusPayload(embedder *serverEmbedder, requestID string) (map[string]any, error) {
+	ops, err := contract.Operations()
+	if err != nil {
+		return nil, err
+	}
+	httpOps := make([]map[string]string, 0, len(ops))
+	grpcRPCs := make([]string, 0, len(ops))
+	mcpTools := make([]string, 0, len(ops))
+	seenRPC := map[string]bool{}
+	seenTool := map[string]bool{}
+	for _, op := range ops {
+		httpOps = append(httpOps, map[string]string{
+			"method":     op.Method,
+			"path":       op.Path,
+			"permission": op.Permission,
+		})
+		if op.GRPCRPC != "" && !seenRPC[op.GRPCRPC] {
+			seenRPC[op.GRPCRPC] = true
+			grpcRPCs = append(grpcRPCs, op.GRPCRPC)
+		}
+		if op.MCPTool != "" && !seenTool[op.MCPTool] {
+			seenTool[op.MCPTool] = true
+			mcpTools = append(mcpTools, op.MCPTool)
+		}
+	}
+
+	embedding := map[string]any{
+		"provider":  "none",
+		"model":     "",
+		"dim":       0,
+		"available": false,
+	}
+	if embedder != nil {
+		embedding = map[string]any{
+			"provider":  embedder.Provider,
+			"model":     embedder.Model,
+			"dim":       embedder.Dim(),
+			"available": true,
+		}
+	}
+
+	return map[string]any{
+		"version": releaseinfo.Version(),
+		"contract": map[string]any{
+			"http": httpOps,
+			"grpc": grpcRPCs,
+			"mcp":  mcpTools,
+		},
+		"embedding": embedding,
+		"limits": map[string]any{
+			"max_schema_fields":         vcollection.CanonicalMaxSchemaFields,
+			"max_schema_metadata_bytes": vcollection.CanonicalMaxSchemaMetadataBytes,
+			"max_vector_dimension":      vcollection.CanonicalMaxVectorDimension,
+			"max_search_fields":         vcollection.CanonicalMaxSearchFields,
+			"max_search_top_k":          vcollection.CanonicalMaxSearchTopK,
+			"max_search_ef":             vcollection.CanonicalMaxSearchEf,
+			"max_search_response_bytes": vcollection.CanonicalMaxSearchResponseBytes,
+			"max_batch_documents":       vcollection.CanonicalMaxBatchDocuments,
+			"api_rps":                   envInt("API_RPS", 100),
+			"tenant_rps":                envInt("TENANT_RPS", 100),
+			"tenant_burst":              envInt("TENANT_BURST", 100),
+			"auth_failure_rps":          envInt("AUTH_FAILURE_RPS", 1),
+			"auth_failure_burst":        envInt("AUTH_FAILURE_BURST", 5),
+			"max_rate_limit_keys":       envInt("MAX_RATE_LIMIT_KEYS", 100_000),
+		},
+		"capabilities": map[string]any{
+			"texts":       embedder != nil,
+			"filters":     canonicalFilterOperators,
+			"hybrid":      []string{"rrf", "weighted", "linear"},
+			"fallback":    true,
+			"usage_boost": true,
+			"index_types": []string{
+				vcollection.IndexTypeHNSW.String(),
+				vcollection.IndexTypeFLAT.String(),
+				vcollection.IndexTypeInverted.String(),
+			},
+		},
+		// signals is the accreted-signal surface (durability class B). It is
+		// an empty object until a signal is durable enough to name (CTL-05).
+		"signals":    map[string]any{},
+		"request_id": requestID,
+	}, nil
+}

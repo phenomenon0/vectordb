@@ -28,6 +28,9 @@ message VectorFieldConfig {
   string index_type = 4;  // RC: "hnsw", "flat", or "inverted"
   google.protobuf.Struct index_params = 5;
   EmbeddingConfig embedding = 6;
+  // output only: "lower_is_better" on dense fields, "higher_is_better" on
+  // sparse fields; ignored on create
+  string score_direction = 7;
 }
 
 message CollectionInfo {
@@ -210,6 +213,13 @@ message SearchResponse {
   string fell_back_to = 5;
   // embedded_by: field -> "provider:model" for each query embedded from texts
   map<string, string> embedded_by = 6;
+  // how to read results[].score and best_score: "lower_is_better" (dense
+  // distances) or "higher_is_better" (sparse BM25, fused hybrid)
+  string score_direction = 7;
+  // server-side wall time of the search
+  double query_time_ms = 8;
+  // the request id this answer was produced under
+  string request_id = 9;
 }
 
 // ── Delete ───────────────────────────────────────────────────────────

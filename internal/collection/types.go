@@ -506,7 +506,21 @@ type SearchResponse struct {
 	// FellBackTo names the secondary field used when the fallback ladder
 	// fired (empty when the primary field answered the query).
 	FellBackTo string `json:"fell_back_to,omitempty"`
+
+	// ScoreDirection tells the caller how to read Scores and BestScore:
+	// "lower_is_better" on dense distance fields, "higher_is_better" on
+	// sparse BM25 fields and on fused hybrid contributions. It names the
+	// direction of the answer actually returned, so a fallback response
+	// reports the secondary field's direction.
+	ScoreDirection string `json:"score_direction,omitempty"`
 }
+
+// Score directions reported by SearchResponse.ScoreDirection and
+// FieldInfo.ScoreDirection.
+const (
+	ScoreDirectionLowerIsBetter  = "lower_is_better"
+	ScoreDirectionHigherIsBetter = "higher_is_better"
+)
 
 // RecommendRequest represents a recommendation request using positive/negative examples.
 type RecommendRequest struct {

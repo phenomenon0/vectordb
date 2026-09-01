@@ -81,7 +81,9 @@ func (s *CollectionGRPCServer) ListCollections(ctx context.Context, req *deepdat
 	if req == nil {
 		return nil, apierror.New(apierror.CodeInvalidArgument, "request required").GRPC(ctx)
 	}
-	if err := authorizeCanonicalGRPC(ctx, req.TenantId, "", "admin"); err != nil {
+	// Discovery is read-gated: listing collection names and schemas is the
+	// same class of read as searching them (CTL-04).
+	if err := authorizeCanonicalGRPC(ctx, req.TenantId, "", "read"); err != nil {
 		return nil, err
 	}
 
@@ -249,7 +251,7 @@ func (s *CollectionGRPCServer) BatchInsert(ctx context.Context, req *deepdatav3.
 	}
 
 	docs := make([]vcollection.Document, len(req.Docs))
-	var fields []vcollection.VectorField // schema, loaded once if any document sends texts
+	var fields []vcollection.FieldInfo // schema, loaded once if any document sends texts
 	for i, batchDoc := range req.Docs {
 		if batchDoc == nil {
 			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d is required", i)).GRPC(ctx)
@@ -360,6 +362,9 @@ func (s *CollectionGRPCServer) Search(ctx context.Context, req *deepdatav3.Searc
 		WeakMatch:          resp.WeakMatch,
 		FellBackTo:         resp.FellBackTo,
 		EmbeddedBy:         embeddedBy,
+		ScoreDirection:     resp.ScoreDirection,
+		QueryTimeMs:        resp.QueryTimeMs,
+		RequestId:          requestIDFromContext(ctx),
 	}, nil
 }
 
@@ -619,6 +624,8 @@ func collectionInfoToProto(info vcollection.CollectionInfo) (*deepdatav3.Collect
 			Dim:         int32(field.Dim),
 			IndexType:   field.Index.Type.String(),
 			IndexParams: params,
+
+			ScoreDirection: field.ScoreDirection,
 		}
 		if field.Embedding != nil {
 			fields[i].Embedding = &deepdatav3.EmbeddingConfig{Provider: field.Embedding.Provider, Model: field.Embedding.Model}

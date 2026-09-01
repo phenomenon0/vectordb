@@ -12,8 +12,34 @@ import (
 	"strings"
 )
 
-//go:embed v3/schemas/*.json v3/CONTRACT.md
+//go:embed v3/schemas/*.json v3/operations.json v3/CONTRACT.md
 var files embed.FS
+
+// Operation is one V3 HTTP operation and its projections: the gRPC method
+// that answers the same call (empty when there is none) and the MCP tool
+// that reaches it (empty when no tool does). This list is the source the
+// routes subcommand, GET /v3/status and the drift tests all read.
+type Operation struct {
+	Name       string `json:"name"`
+	Method     string `json:"method"`
+	Path       string `json:"path"`
+	Permission string `json:"permission"`
+	GRPCRPC    string `json:"grpc_rpc"`
+	MCPTool    string `json:"mcp_tool"`
+}
+
+// Operations returns the V3 operation list in file order.
+func Operations() ([]Operation, error) {
+	b, err := files.ReadFile("v3/operations.json")
+	if err != nil {
+		return nil, fmt.Errorf("contract operations: %w", err)
+	}
+	var ops []Operation
+	if err := json.Unmarshal(b, &ops); err != nil {
+		return nil, fmt.Errorf("contract operations: %w", err)
+	}
+	return ops, nil
+}
 
 // Markdown is the agent-facing contract document (deepdata://contract).
 var Markdown = func() string {

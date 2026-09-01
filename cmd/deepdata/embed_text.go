@@ -129,7 +129,7 @@ func resolveSchemaEmbedding(schema *vcollection.CollectionSchema, emb *serverEmb
 // resolveTexts embeds each text into vectors under the same field name and
 // returns embedded_by (field → provider:model). Shared by HTTP and gRPC for
 // documents (isQuery=false, Embed) and queries (isQuery=true, EmbedQuery).
-func resolveTexts(fields []vcollection.VectorField, emb *serverEmbedder, texts map[string]string, vectors map[string]interface{}, isQuery bool) (map[string]string, *apierror.Error) {
+func resolveTexts(fields []vcollection.FieldInfo, emb *serverEmbedder, texts map[string]string, vectors map[string]interface{}, isQuery bool) (map[string]string, *apierror.Error) {
 	embeddedBy := make(map[string]string, len(texts))
 	for name, text := range texts {
 		fail := func(code, msg string) (map[string]string, *apierror.Error) {
@@ -140,7 +140,7 @@ func resolveTexts(fields []vcollection.VectorField, emb *serverEmbedder, texts m
 		if _, dup := vectors[name]; dup {
 			return fail(apierror.CodeInvalidArgument, fmt.Sprintf("field %s was sent as both a text and a vector", name))
 		}
-		var field *vcollection.VectorField
+		var field *vcollection.FieldInfo
 		for i := range fields {
 			if fields[i].Name == name {
 				field = &fields[i]

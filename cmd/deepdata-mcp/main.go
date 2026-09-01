@@ -190,11 +190,14 @@ type collectionInfo struct {
 }
 
 type fieldInfo struct {
-	Name      string           `json:"name"`
-	Type      string           `json:"type"`
-	Dim       int              `json:"dim"`
-	Index     json.RawMessage  `json:"index,omitempty"`
-	Embedding *embeddingConfig `json:"embedding,omitempty"`
+	Name  string          `json:"name"`
+	Type  string          `json:"type"`
+	Dim   int             `json:"dim"`
+	Index json.RawMessage `json:"index,omitempty"`
+	// ScoreDirection tells the agent how to read this field's scores:
+	// "lower_is_better" on dense distances, "higher_is_better" on sparse.
+	ScoreDirection string           `json:"score_direction,omitempty"`
+	Embedding      *embeddingConfig `json:"embedding,omitempty"`
 }
 
 type embeddingConfig struct {
@@ -393,7 +396,7 @@ func (s *mcpServer) handle(req rpcRequest) rpcResponse {
 		case contractURI:
 			result = resourceContents(contractURI, "text/markdown", contract.Markdown)
 		case statusURI:
-			raw, _, err := s.doHTTP(http.MethodGet, "/readyz", nil)
+			raw, _, err := s.doHTTP(http.MethodGet, "/v3/status", nil)
 			text := string(raw)
 			if err != nil {
 				text = err.Error() // a 503 body is still the status the agent asked for
@@ -543,13 +546,14 @@ type recallHit struct {
 }
 
 type recallOutput struct {
-	Hits       []recallHit       `json:"hits"`
-	BestScore  float64           `json:"best_score"`
-	WeakMatch  bool              `json:"weak_match"`
-	FellBackTo string            `json:"fell_back_to,omitempty"`
-	EmbeddedBy map[string]string `json:"embedded_by,omitempty"`
-	Truncated  bool              `json:"truncated,omitempty"`
-	Hint       string            `json:"hint,omitempty"`
+	Hits           []recallHit       `json:"hits"`
+	BestScore      float64           `json:"best_score"`
+	ScoreDirection string            `json:"score_direction,omitempty"`
+	WeakMatch      bool              `json:"weak_match"`
+	FellBackTo     string            `json:"fell_back_to,omitempty"`
+	EmbeddedBy     map[string]string `json:"embedded_by,omitempty"`
+	Truncated      bool              `json:"truncated,omitempty"`
+	Hint           string            `json:"hint,omitempty"`
 }
 
 func (s *mcpServer) recall(raw json.RawMessage) (any, error) {
@@ -628,21 +632,23 @@ func (s *mcpServer) recall(raw json.RawMessage) (any, error) {
 			ID       uint64         `json:"id"`
 			Metadata map[string]any `json:"metadata"`
 		} `json:"documents"`
-		Scores     []float64         `json:"scores"`
-		BestScore  float64           `json:"best_score"`
-		WeakMatch  bool              `json:"weak_match"`
-		FellBackTo string            `json:"fell_back_to"`
-		EmbeddedBy map[string]string `json:"embedded_by"`
+		Scores         []float64         `json:"scores"`
+		BestScore      float64           `json:"best_score"`
+		ScoreDirection string            `json:"score_direction"`
+		WeakMatch      bool              `json:"weak_match"`
+		FellBackTo     string            `json:"fell_back_to"`
+		EmbeddedBy     map[string]string `json:"embedded_by"`
 	}
 	if err := json.Unmarshal(raw, &sr); err != nil {
 		return nil, fmt.Errorf("decode search response: %v", err)
 	}
 	out := recallOutput{
-		Hits:       make([]recallHit, 0, len(sr.Documents)),
-		BestScore:  sr.BestScore,
-		WeakMatch:  sr.WeakMatch,
-		FellBackTo: sr.FellBackTo,
-		EmbeddedBy: sr.EmbeddedBy,
+		Hits:           make([]recallHit, 0, len(sr.Documents)),
+		BestScore:      sr.BestScore,
+		ScoreDirection: sr.ScoreDirection,
+		WeakMatch:      sr.WeakMatch,
+		FellBackTo:     sr.FellBackTo,
+		EmbeddedBy:     sr.EmbeddedBy,
 	}
 	for i, doc := range sr.Documents {
 		hit := recallHit{ID: doc.ID, Metadata: doc.Metadata}

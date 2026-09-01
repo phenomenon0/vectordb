@@ -676,7 +676,7 @@
     {
       "id": "DOC-03",
       "statement": "HTTP route table in internal/collection/API.md is generated from the routes subcommand",
-      "command": "GOTOOLCHAIN=go1.25.12 go run ./cmd/deepdata routes",
+      "command": "python3 scripts/check_docs_contract.py",
       "scope": [
         "cmd/deepdata",
         "internal/collection/API.md"
@@ -684,7 +684,7 @@
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": "depends on CTL-04; the linter prints R3 SKIP until the subcommand exists"
+      "note": "the route table in internal/collection/API.md is the generated:http-routes block, rendered from `go run ./cmd/deepdata routes` via api/contract/v3/operations.json; R3 no longer skips, so the linter run without DOC_ALLOW_R3_SKIP is the receipt"
     },
     {
       "id": "PUB-01",
@@ -791,14 +791,14 @@
     {
       "id": "CTL-04",
       "statement": "server self-description: routes subcommand and per-result confidence",
-      "command": "GOTOOLCHAIN=go1.25.12 go run ./cmd/deepdata routes && go test ./cmd/deepdata -run Routes",
+      "command": "scripts/hardening_check.sh go-contract",
       "scope": [
         "cmd/deepdata"
       ],
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": "unblocks DOC-03"
+      "note": "api/contract/v3/operations.json is the operation list; GET /v3/status and `go run ./cmd/deepdata routes` are its runtime projections; search answers carry score_direction, query_time_ms and request_id; collection reads carry per-field score_direction; collection list and get are read-gated. The check runs the drift, status, routes and permission tests plus the Python contract test. Unblocks DOC-03."
     },
     {
       "id": "CTL-05",

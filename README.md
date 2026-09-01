@@ -26,12 +26,14 @@ configuration, per-verb arguments and the error shape: [docs/mcp.md](docs/mcp.md
 
 Six of them are mutations (`CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `DeleteDoc`, `Upsert`)
 and all six go through one durable journal. Proto: [api/proto/deepdata/v3/deepdata.proto](api/proto/deepdata/v3/deepdata.proto).
-HTTP routes, dispatched in `cmd/deepdata/collection_http.go:389-514`:
+HTTP routes, listed in [api/contract/v3/operations.json](api/contract/v3/operations.json) and dispatched in
+`cmd/deepdata/collection_http.go:389-514`. `go run ./cmd/deepdata routes` prints the same table, and
+`GET /v3/status` returns it alongside the server's version, embedder, limits and capabilities:
 
 | Method | Path | Permission |
 |---|---|---|
 | GET | /v3/tenants/{tenant} | admin |
-| GET | /v3/tenants/{tenant}/collections | admin |
+| GET | /v3/tenants/{tenant}/collections | read |
 | POST | /v3/tenants/{tenant}/collections | admin |
 | GET | /v3/tenants/{tenant}/collections/{collection} | read |
 | DELETE | /v3/tenants/{tenant}/collections/{collection} | admin |
@@ -41,6 +43,7 @@ HTTP routes, dispatched in `cmd/deepdata/collection_http.go:389-514`:
 | PUT | /v3/tenants/{tenant}/collections/{collection}/docs/{doc_id} | write |
 | GET | /v3/tenants/{tenant}/collections/{collection}/docs/{doc_id} | read |
 | POST | /v3/tenants/{tenant}/collections/{collection}/search | read |
+| GET | /v3/status | read |
 
 Auth: `Authorization: Bearer <token>`, where the token is the static `API_TOKEN` (server-wide administrative
 access) or an HS256 JWT signed with `JWT_SECRET` that scopes a tenant, the permissions `read`/`write`/`admin`

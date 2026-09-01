@@ -272,11 +272,11 @@ func TestCanonicalHTTPTextsWithoutEmbedder(t *testing.T) {
 // configuration (restart with DEEPDATA_EMBEDDER=none, or a different one);
 // resolveTexts is the shared HTTP/gRPC gate that must then refuse text.
 func TestResolveTextsAgainstChangedEmbedder(t *testing.T) {
-	fields := []vcollection.VectorField{{
+	fields := []vcollection.FieldInfo{{VectorField: vcollection.VectorField{
 		Name: "text", Type: vcollection.VectorTypeDense, Dim: 4,
 		Index:     vcollection.IndexConfig{Type: vcollection.IndexTypeFLAT},
 		Embedding: &vcollection.EmbeddingConfig{Provider: "hash", Model: "4"},
-	}}
+	}}}
 	texts := map[string]string{"text": "hello"}
 
 	_, aerr := resolveTexts(fields, nil, texts, map[string]interface{}{}, false)

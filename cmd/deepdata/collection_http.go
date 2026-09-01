@@ -367,6 +367,9 @@ type tenantSearchJSONResponse struct {
 	WeakMatch          bool                   `json:"weak_match"`
 	FellBackTo         string                 `json:"fell_back_to,omitempty"`
 	EmbeddedBy         map[string]string      `json:"embedded_by,omitempty"`
+	ScoreDirection     string                 `json:"score_direction,omitempty"`
+	QueryTimeMs        float64                `json:"query_time_ms"`
+	RequestID          string                 `json:"request_id,omitempty"`
 }
 
 func resolveIncludeVectors(bodyValue *bool, raw string) (*bool, error) {
@@ -426,7 +429,9 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 	if len(parts) == 2 {
 		switch r.Method {
 		case http.MethodGet:
-			if !authorizeCanonicalHTTP(w, r, tenantID, "", "admin") {
+			// Discovery is read-gated: listing collection names and
+			// schemas is the same class of read as searching them (CTL-04).
+			if !authorizeCanonicalHTTP(w, r, tenantID, "", "read") {
 				return
 			}
 			s.handleTenantListCollections(w, r, tenantID)
@@ -999,7 +1004,7 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 	}
 
 	docs := make([]vcollection.Document, len(req.Documents))
-	var fields []vcollection.VectorField // schema, loaded once if any document sends texts
+	var fields []vcollection.FieldInfo // schema, loaded once if any document sends texts
 	for i, input := range req.Documents {
 		if len(input.Vectors) == 0 && len(input.Texts) == 0 {
 			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d requires at least one vector or text", i)))
@@ -1132,5 +1137,8 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 		WeakMatch:          resp.WeakMatch,
 		FellBackTo:         resp.FellBackTo,
 		EmbeddedBy:         embeddedBy,
+		ScoreDirection:     resp.ScoreDirection,
+		QueryTimeMs:        resp.QueryTimeMs,
+		RequestID:          requestIDFromContext(r.Context()),
 	})
 }

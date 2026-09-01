@@ -1507,6 +1507,36 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 	// on. In credentialless dev mode the guard authorizes anonymous access.
 	mux.Handle("/metrics", guard(globalMetrics.Handler().ServeHTTP))
 
+	// GET /v3/status — the server describing itself: version, the operation
+	// list, the embedder it will use, its limits and its capabilities. It
+	// names no tenant, so it is gated on the caller's own read permission
+	// (CTL-04).
+	mux.Handle("/v3/status", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
+			return
+		}
+		tenantCtx, _ := security.GetTenantContextFromContext(r.Context())
+		var ownTenant string
+		if tenantCtx != nil {
+			ownTenant = tenantCtx.TenantID
+		}
+		if !writeCanonicalHTTPAuthorizationResult(w, security.AuthorizeTenantPermission(tenantCtx, ownTenant, "read")) {
+			return
+		}
+		var embedder *serverEmbedder
+		if collectionHTTP != nil {
+			embedder = collectionHTTP.embedder
+		}
+		payload, err := statusPayload(embedder, requestIDFromContext(r.Context()))
+		if err != nil {
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInternal, "status unavailable"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(payload)
+	}))
+
 	// Kubernetes-style health probes
 	// /healthz - Liveness probe: Is the process alive and not deadlocked?
 	livenessHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -3419,12 +3449,12 @@ func canonicalRateLimitTenant(tenantCtx *security.TenantContext, targetTenant st
 func canonicalRCSurface(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		if strings.HasPrefix(path, "/v3/tenants/") || path == "/healthz" || path == "/readyz" || path == "/livez" || path == "/metrics" {
+		if strings.HasPrefix(path, "/v3/tenants/") || path == "/v3/status" || path == "/healthz" || path == "/readyz" || path == "/livez" || path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
 		e := apierror.New(apierror.CodeNotFound, "no such route on the RC surface: "+path)
-		e.Hint = "the RC serves /v3/tenants/{tenant}/collections..., /healthz, /readyz, /livez and /metrics; the route table is in the contract"
+		e.Hint = "the RC serves /v3/tenants/{tenant}/collections..., /v3/status, /healthz, /readyz, /livez and /metrics; the route table is in the contract"
 		apierror.WriteHTTP(w, e)
 	})
 }

@@ -61,3 +61,32 @@ func TestMarkdownNamesEveryTool(t *testing.T) {
 		}
 	}
 }
+
+// operations.json is the single list of what the server serves; the routes
+// subcommand, GET /v3/status and the docs linter all render it, so a
+// malformed or ambiguous entry would go out on three surfaces at once.
+func TestOperationsParseWithUniqueNames(t *testing.T) {
+	ops, err := Operations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) == 0 {
+		t.Fatal("operations.json lists no operations")
+	}
+	names := map[string]bool{}
+	routes := map[string]bool{}
+	for _, op := range ops {
+		if op.Name == "" || op.Method == "" || op.Path == "" || op.Permission == "" {
+			t.Errorf("operation %+v is missing a required field", op)
+		}
+		if names[op.Name] {
+			t.Errorf("duplicate operation name %q", op.Name)
+		}
+		names[op.Name] = true
+		route := op.Method + " " + op.Path
+		if routes[route] {
+			t.Errorf("duplicate route %q", route)
+		}
+		routes[route] = true
+	}
+}

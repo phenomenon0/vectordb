@@ -136,6 +136,14 @@
     "type": "number",
     "description": "Best raw score among returned hits; 0 when none. Use it to calibrate score_floor."
    },
+   "score_direction": {
+    "type": "string",
+    "enum": [
+     "lower_is_better",
+     "higher_is_better"
+    ],
+    "description": "How to read score and best_score: dense fields return distances (lower_is_better), sparse and fused hybrid return scores (higher_is_better). Names the direction of the field that actually answered, so a fallback answer reports the secondary field's direction."
+   },
    "weak_match": {
     "type": "boolean",
     "description": "true = score_floor was set and nothing survived it; treat as 'no confident answer'."

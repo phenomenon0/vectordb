@@ -33,9 +33,11 @@ reporting `fell_back_to` when that happened. Pass your own `fallback` to overrid
 
 ## Reading a recall result
 
-- `hits` are best-first; `score` is the raw engine score. Dense fields score by distance
-  (lower is better); sparse and fused scores are similarities (higher is better).
-- `best_score` calibrates future `score_floor` values.
+- `hits` are best-first; `score` is the raw engine score. `score_direction` names how to
+  read it: dense fields score by distance (`lower_is_better`), sparse and fused scores are
+  similarities (`higher_is_better`). It describes the field that actually answered, so a
+  fallback answer reports the secondary field's direction.
+- `best_score` calibrates future `score_floor` values, in the same direction.
 - `weak_match: true` means your `score_floor` filtered everything — treat as "no confident
   answer", not an error.
 - `truncated: true` means the `max_chars` budget dropped tail hits; the `hint` names them.
@@ -66,10 +68,10 @@ Failures return `isError` with a text line `code: message Hint: hint` and the fu
 - `top_k` ≤ 50 over MCP; identifiers (collections, fields) match `[A-Za-z0-9_-]{1,64}`.
 - `deepdata_remember` ≤ 100 items per call; `deepdata_get` ≤ 50 ids.
 - At most 2 fields per search; recall output is budgeted by `max_chars` (default 8000).
-- Listing all collections needs the admin permission until read-gated discovery lands
-  (CTL-04); describing one collection by name needs only read.
+- Listing all collections and describing one by name both need only the read permission.
 
 ## Resources
 
 - `deepdata://contract` — this document.
-- `deepdata://status` — live server state (readiness, named checks, embedder, version).
+- `deepdata://status` — the server's `GET /v3/status`: version, the operation list, the
+  embedder it will use, its limits and its capabilities.

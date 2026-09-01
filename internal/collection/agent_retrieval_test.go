@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
 func newAgentRetrievalCollection(t *testing.T) *Collection {
@@ -443,5 +445,73 @@ func TestSearchErrorsAreTypedSentinels(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "hybrid_params or fallback") {
 		t.Fatalf("multi-field message = %v, want it to name hybrid_params or fallback", err)
+	}
+}
+
+// A score is unreadable without its direction: dense fields answer with
+// distances, sparse fields with BM25 scores, and fusion always ranks upward.
+// The answer names the direction of the field that actually answered, so a
+// fallback across metrics does not silently invert the caller's comparison.
+func TestSearchReportsScoreDirectionAndQueryTime(t *testing.T) {
+	ctx := context.Background()
+	coll, err := NewCollection(CollectionSchema{
+		Name: "docs",
+		Fields: []VectorField{
+			{Name: "dense", Type: VectorTypeDense, Dim: 4, Index: IndexConfig{Type: IndexTypeFLAT}},
+			{Name: "keywords", Type: VectorTypeSparse, Dim: 16, Index: IndexConfig{Type: IndexTypeInverted}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kw := &sparse.SparseVector{Indices: []uint32{3}, Values: []float32{1}, Dim: 16}
+	for _, id := range []uint64{1, 2} {
+		if err := coll.Add(ctx, &Document{ID: id, Vectors: map[string]interface{}{
+			"dense": []float32{0, 0, 1, 0}, "keywords": kw,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		name string
+		req  SearchRequest
+		want string
+	}{
+		{"dense distances", SearchRequest{
+			Queries: map[string]interface{}{"dense": []float32{1, 0, 0, 0}}, TopK: 2,
+		}, ScoreDirectionLowerIsBetter},
+		{"sparse scores", SearchRequest{
+			Queries: map[string]interface{}{"keywords": kw}, TopK: 2,
+		}, ScoreDirectionHigherIsBetter},
+		{"fused hybrid ranks upward", SearchRequest{
+			Queries:      map[string]interface{}{"dense": []float32{1, 0, 0, 0}, "keywords": kw},
+			TopK:         2,
+			HybridParams: &HybridSearchParams{Strategy: "rrf", RRFConstant: 60},
+		}, ScoreDirectionHigherIsBetter},
+		// Dense best distance 1.0 blows the 0.5 threshold, so the sparse
+		// field answers and the direction flips with it.
+		{"fallback reports the field that answered", SearchRequest{
+			Queries:  map[string]interface{}{"dense": []float32{1, 0, 0, 0}, "keywords": kw},
+			TopK:     2,
+			Fallback: &FallbackParams{Primary: "dense", Secondary: "keywords", Threshold: 0.5},
+		}, ScoreDirectionHigherIsBetter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.req.CollectionName = "docs"
+			resp, err := coll.Search(ctx, tc.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.ScoreDirection != tc.want {
+				t.Errorf("ScoreDirection = %q, want %q", resp.ScoreDirection, tc.want)
+			}
+			// Search stamps wall time around the whole call, both rungs of
+			// the ladder included; a real search is never instantaneous.
+			if resp.QueryTimeMs <= 0 {
+				t.Errorf("QueryTimeMs = %v, want > 0", resp.QueryTimeMs)
+			}
+		})
 	}
 }

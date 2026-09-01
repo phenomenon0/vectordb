@@ -151,7 +151,7 @@ func (cm *CollectionManager) GetCollectionInfo(name string) (*CollectionInfo, er
 	schema := coll.Schema()
 	return &CollectionInfo{
 		Name:        schema.Name,
-		Fields:      schema.Fields,
+		Fields:      fieldInfos(schema.Fields),
 		Description: schema.Description,
 		Metadata:    schema.Metadata,
 		DocCount:    coll.Count(),
@@ -168,7 +168,7 @@ func (cm *CollectionManager) ListCollectionInfos() []CollectionInfo {
 		schema := coll.Schema()
 		infos = append(infos, CollectionInfo{
 			Name:        schema.Name,
-			Fields:      schema.Fields,
+			Fields:      fieldInfos(schema.Fields),
 			Description: schema.Description,
 			Metadata:    schema.Metadata,
 			DocCount:    coll.Count(),
@@ -180,10 +180,37 @@ func (cm *CollectionManager) ListCollectionInfos() []CollectionInfo {
 // CollectionInfo contains metadata about a collection.
 type CollectionInfo struct {
 	Name        string                 `json:"name"`
-	Fields      []VectorField          `json:"fields"`
+	Fields      []FieldInfo            `json:"fields"`
 	Description string                 `json:"description,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 	DocCount    int                    `json:"doc_count"`
+}
+
+// FieldInfo is a schema field as a read reports it: the journaled
+// VectorField (flattened, so the JSON shape is unchanged) plus the score
+// direction its raw scores follow. Output only — a create request carries
+// VectorField, which has no score direction to state.
+type FieldInfo struct {
+	VectorField
+	ScoreDirection string `json:"score_direction"`
+}
+
+// FieldScoreDirection reports how a field's raw scores read: dense fields
+// return distances (lower is better), sparse BM25 fields return scores
+// (higher is better).
+func FieldScoreDirection(t VectorType) string {
+	if t == VectorTypeDense {
+		return ScoreDirectionLowerIsBetter
+	}
+	return ScoreDirectionHigherIsBetter
+}
+
+func fieldInfos(fields []VectorField) []FieldInfo {
+	infos := make([]FieldInfo, len(fields))
+	for i, f := range fields {
+		infos[i] = FieldInfo{VectorField: f, ScoreDirection: FieldScoreDirection(f.Type)}
+	}
+	return infos
 }
 
 // AddDocument adds a document to a collection.

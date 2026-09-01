@@ -80,11 +80,12 @@ invalidates tokens signed with the old secret.
 | Canonical operation | Permission |
 |---|---|
 | Tenant info | `admin` |
-| List collections | `admin` |
+| List collections | `read` |
 | Create collection | `admin` |
 | Delete collection | `admin` |
 | Get collection | `read` |
 | Search | `read` |
+| Server status (`GET /v3/status`) | `read` |
 | Insert / atomic batch insert | `write` |
 | Delete document | `write` |
 

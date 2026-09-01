@@ -30,8 +30,8 @@ func newTestServer(base string) *mcpServer {
 // memoryInfo is GET /collections/memory for a preset "memory" collection:
 // a dense field bound to the server embedder plus a sparse bm25 field.
 const memoryInfo = `{"status":"success","tenant_id":"mcp","collection":{"name":"memory","fields":[` +
-	`{"name":"text","type":"dense","dim":4,"index":{"type":"hnsw"},"embedding":{"provider":"hash","model":"4"}},` +
-	`{"name":"keywords","type":"sparse","dim":10000,"index":{"type":"inverted"},"embedding":{"provider":"bm25"}}],"doc_count":3}}`
+	`{"name":"text","type":"dense","dim":4,"index":{"type":"hnsw"},"score_direction":"lower_is_better","embedding":{"provider":"hash","model":"4"}},` +
+	`{"name":"keywords","type":"sparse","dim":10000,"index":{"type":"inverted"},"score_direction":"higher_is_better","embedding":{"provider":"bm25"}}],"doc_count":3}}`
 
 // vectorsOnlyInfo has no embedding binding, so text cannot be routed.
 const vectorsOnlyInfo = `{"status":"success","tenant_id":"mcp","collection":{"name":"raw","fields":[` +
@@ -296,7 +296,8 @@ func TestRecallTextRoutesToBoundFieldsWithDefaultFallback(t *testing.T) {
 	rec.on(http.MethodGet, memoryPath, 200, memoryInfo)
 	rec.on(http.MethodPost, memoryPath+"/search", 200, `{"status":"success","tenant_id":"mcp",`+
 		`"documents":[{"id":7,"vectors":{"text":[0.1,0.2,0.3,0.4]},"metadata":{"text":"the durable journal","tag":"ops"}}],`+
-		`"scores":[0.12],"candidates_examined":3,"best_score":0.12,"weak_match":false,"fell_back_to":"keywords","embedded_by":{"text":"hash:4","keywords":"bm25"}}`)
+		`"scores":[0.12],"candidates_examined":3,"best_score":0.12,"weak_match":false,"fell_back_to":"keywords",`+
+		`"score_direction":"higher_is_better","query_time_ms":1.5,"request_id":"abc","embedded_by":{"text":"hash:4","keywords":"bm25"}}`)
 
 	s := newTestServer(server.URL)
 	frames := feedLines(t, s,
@@ -320,6 +321,11 @@ func TestRecallTextRoutesToBoundFieldsWithDefaultFallback(t *testing.T) {
 	}
 	if out["fell_back_to"] != "keywords" || out["best_score"] != 0.12 || out["weak_match"] != false {
 		t.Fatalf("confidence fields missing: %v", out)
+	}
+	// The ladder answered from the sparse field, so the score reads upward;
+	// without this the agent compares a BM25 score as if it were a distance.
+	if out["score_direction"] != "higher_is_better" {
+		t.Fatalf("score_direction = %v, want higher_is_better", out["score_direction"])
 	}
 	if by, _ := out["embedded_by"].(map[string]any); by["text"] != "hash:4" {
 		t.Fatalf("embedded_by missing: %v", out)
@@ -556,7 +562,7 @@ func TestGetCollectsMissingIdsAndStripsVectors(t *testing.T) {
 func TestCollectionsListAndDescribe(t *testing.T) {
 	rec, server := newRecorder(t)
 	rec.on(http.MethodGet, "/v3/tenants/mcp/collections", 200, `{"status":"success","tenant_id":"mcp","count":1,"collections":[`+
-		`{"name":"memory","fields":[{"name":"text","type":"dense","dim":4,"index":{"type":"hnsw"},"embedding":{"provider":"hash","model":"4"}}],"doc_count":3}]}`)
+		`{"name":"memory","fields":[{"name":"text","type":"dense","dim":4,"index":{"type":"hnsw"},"score_direction":"lower_is_better","embedding":{"provider":"hash","model":"4"}}],"doc_count":3}]}`)
 	rec.on(http.MethodGet, memoryPath, 200, memoryInfo)
 	frames := feedLines(t, newTestServer(server.URL),
 		toolCall(t, "deepdata_collections", map[string]any{}),
@@ -575,6 +581,11 @@ func TestCollectionsListAndDescribe(t *testing.T) {
 	field, _ := fields[0].(map[string]any)
 	if emb, _ := field["embedding"].(map[string]any); emb["provider"] != "hash" {
 		t.Fatalf("embedding binding must be visible to the agent: %v", field)
+	}
+	// Per-field score direction is how the agent knows which way to read the
+	// scores it will get back from this field.
+	if field["score_direction"] != "lower_is_better" {
+		t.Fatalf("field score_direction = %v, want lower_is_better", field["score_direction"])
 	}
 	one := structured(t, frames[1])
 	cols, _ = one["collections"].([]any)
@@ -660,7 +671,7 @@ func TestSchemaCacheDropsOn4xx(t *testing.T) {
 
 func TestResourcesServeContractAndStatus(t *testing.T) {
 	rec, server := newRecorder(t)
-	rec.on(http.MethodGet, "/readyz", 200, `{"ready":true,"checks":["mutation_journal"],"embedder":"none","version":"test"}`)
+	rec.on(http.MethodGet, "/v3/status", 200, `{"version":"test","contract":{"http":[{"method":"GET","path":"/v3/status","permission":"read"}]},"embedding":{"provider":"none","available":false},"capabilities":{"texts":false}}`)
 	frames := feedLines(t, newTestServer(server.URL),
 		mustCall(t, "resources/list", map[string]any{}),
 		mustCall(t, "resources/read", map[string]any{"uri": contractURI}),
@@ -679,8 +690,11 @@ func TestResourcesServeContractAndStatus(t *testing.T) {
 	}
 	contents, _ = resultOf(t, frames[2])["contents"].([]any)
 	status, _ := contents[0].(map[string]any)
-	if text, _ := status["text"].(string); !strings.Contains(text, `"embedder":"none"`) {
-		t.Fatalf("status resource must proxy /readyz: %v", status)
+	// deepdata://status is the server's own self-description, not a liveness
+	// probe: the agent reads the operation list and the embedder from it.
+	statusText, _ := status["text"].(string)
+	if !strings.Contains(statusText, `"contract"`) || !strings.Contains(statusText, `"provider":"none"`) {
+		t.Fatalf("status resource must proxy GET /v3/status: %v", status)
 	}
 	if rpcErrorCode(t, frames[3]) != -32002 {
 		t.Fatalf("unknown resource must be -32002: %v", frames[3])

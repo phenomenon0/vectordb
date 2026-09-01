@@ -3125,6 +3125,17 @@ func warmupModels(embedder Embedder, reranker Reranker) {
 func main() {
 	// CLI flag parsing — strip "serve" subcommand if present
 	args := os.Args[1:]
+	// `routes` prints the contract's HTTP surface and exits. It reads only
+	// the embedded operations list, so it needs no data directory, no
+	// environment and no server; the docs linter runs it to generate the
+	// route table in internal/collection/API.md (DOC-03).
+	if len(args) > 0 && args[0] == "routes" {
+		if err := printRoutes(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}

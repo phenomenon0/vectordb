@@ -71,7 +71,8 @@ collections are `readOnlyHint` + `idempotentHint`; remember and create_collectio
   `fallback {primary: <dense>, secondary: <sparse>}`. A collection with no binding answers `invalid_argument` with
   a hint naming `deepdata_create_collection`; more than two bindings answers a hint to pass `queries`. POST
   …/search with `include_vectors: false` (main.go:555). Output: `hits [{id, score, metadata}]`, `best_score`,
-  `weak_match`, `fell_back_to`, `embedded_by`, `truncated`, `hint`. Concise mode cuts every metadata string
+  `score_direction` (`lower_is_better` on dense distances, `higher_is_better` on sparse and fused scores, naming
+  the field that actually answered), `weak_match`, `fell_back_to`, `embedded_by`, `truncated`, `hint`. Concise mode cuts every metadata string
   over 300 runes to 300 + `…` (main.go:681); both modes then drop tail hits until the JSON fits `max_chars`, set
   `truncated: true` and name the dropped ids in `hint`. Vectors are never returned.
 - `deepdata_remember` — `items` (1–100), each exactly one of `text` or `vectors`, optional `metadata` and `id`;
@@ -83,9 +84,10 @@ collections are `readOnlyHint` + `idempotentHint`; remember and create_collectio
 - `deepdata_get` — `ids` (1–50); optional `collection`. GET …/docs/{id} per id; unknown ids land in `missing`
   instead of failing the call (main.go:833). Output: `documents [{id, metadata}]`, `missing`. Vectors are stripped.
 - `deepdata_collections` — optional `name`. With a name, GET …/collections/{name}; without, GET
-  /v3/tenants/{tenant}/collections, which the server still authorizes at the `admin` permission (read-gated
-  discovery is CTL-04). Output: `collections [{name, fields [{name, type, dim, index, embedding}], doc_count,
-  description}]` (main.go:874).
+  /v3/tenants/{tenant}/collections. Both need only the `read` permission, so a least-privilege agent can find
+  out what it may search. Output: `collections [{name, fields [{name, type, dim, index, score_direction,
+  embedding}], doc_count, description}]`; `score_direction` says which way that field's scores read
+  (main.go:874).
 - `deepdata_create_collection` — `name` (`[A-Za-z0-9_-]{1,64}`) and exactly one of `preset: "memory"` or
   explicit `fields`; optional `description`. POST …/collections, then GET the result so the output carries the
   server-resolved `fields` (main.go:916).
@@ -98,8 +100,9 @@ collection is re-read on the next text call (main.go:272; test TestSchemaCacheDr
 `resources/list` returns two entries (main.go:380); `resources/read` (main.go:387) serves:
 
 - `deepdata://contract` — `api/contract/v3/CONTRACT.md` as `text/markdown`.
-- `deepdata://status` — the server's `GET /readyz` body as `application/json` (readiness, named checks,
-  `embedder`, `version`); when the server is unreachable the error text is the content.
+- `deepdata://status` — the server's `GET /v3/status` body as `application/json` (version, the HTTP/gRPC/MCP
+  operation lists, the embedder, limits, capabilities); when the server is unreachable the error text is the
+  content.
 - Any other URI is JSON-RPC error `-32002`.
 
 ## Errors

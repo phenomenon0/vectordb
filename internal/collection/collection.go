@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/phenomenon0/vectordb/internal/filter"
 	"github.com/phenomenon0/vectordb/internal/hybrid"
@@ -503,7 +504,18 @@ func (c *Collection) setIndexMetadata(field VectorField, docID uint64, metadata 
 }
 
 // Search performs a search across one or more vector fields.
-func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+//
+// Every answering path funnels through here, so this is the one place
+// that stamps QueryTimeMs: the wall time of the whole call, including
+// both rungs of the fallback ladder.
+func (c *Collection) Search(ctx context.Context, req SearchRequest) (resp *SearchResponse, err error) {
+	start := time.Now()
+	defer func() {
+		if resp != nil {
+			resp.QueryTimeMs = float64(time.Since(start).Nanoseconds()) / float64(time.Millisecond)
+		}
+	}()
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -703,6 +715,10 @@ func (c *Collection) finalizeSearch(resp *SearchResponse, req SearchRequest, low
 	}
 	resp.BestScore = best
 	resp.WeakMatch = req.ScoreFloor > 0 && len(resp.Documents) == 0
+	resp.ScoreDirection = ScoreDirectionHigherIsBetter
+	if lowerIsBetter {
+		resp.ScoreDirection = ScoreDirectionLowerIsBetter
+	}
 }
 
 // recordSearchUsage feeds the non-durable frecency signal with the

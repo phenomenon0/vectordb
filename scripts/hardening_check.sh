@@ -27,6 +27,7 @@ list_checks() {
         go-apierror \
         go-embed \
         go-mcp \
+        go-contract \
         python-unit \
         python-mypy \
         python-build \
@@ -86,6 +87,10 @@ case "$CHECK_NAME" in
     go-mcp)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="grep -q deepdata-mcp .github/workflows/ci.yml && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 300s ./cmd/deepdata-mcp ./api/contract"
+        ;;
+    go-contract)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 300s -run 'Contract|Operations|Routes|Status|Discovery|ScoreDirection' ./cmd/deepdata && go test -count=1 -timeout 300s ./api/contract ./cmd/deepdata-mcp && go run ./cmd/deepdata routes >/dev/null && (cd sdk/python && python -m pytest tests/test_contract.py -q)"
         ;;
     python-unit)
         CHECK_CWD="$REPO_ROOT/sdk/python"
@@ -156,6 +161,18 @@ run_check() {
             grep -q deepdata-mcp .github/workflows/ci.yml && \
                 timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
                 go test -count=1 -timeout 300s ./cmd/deepdata-mcp ./api/contract
+            ;;
+        go-contract)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 300s \
+                -run 'Contract|Operations|Routes|Status|Discovery|ScoreDirection' \
+                ./cmd/deepdata && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 300s ./api/contract ./cmd/deepdata-mcp && \
+            timeout 180s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go run ./cmd/deepdata routes >/dev/null && \
+            (cd "$REPO_ROOT/sdk/python" && timeout 180s python -m pytest tests/test_contract.py -q)
             ;;
         python-unit)
             timeout 360s python -m pytest tests -q

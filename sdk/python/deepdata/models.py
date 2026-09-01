@@ -132,6 +132,20 @@ class TenantVectorField(_TenantRequestModel):
         return self
 
 
+class TenantFieldInfo(TenantVectorField):
+    """A vector field as a read reports it.
+
+    Everything ``TenantVectorField`` carries plus ``score_direction``, which
+    the server derives from the field type and sends only on responses.
+    Unknown keys are ignored so a newer server can add response fields
+    without breaking this client.
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    score_direction: Literal["lower_is_better", "higher_is_better"] | None = None
+
+
 class TenantCollectionSchema(_TenantRequestModel):
     """Canonical collection creation payload."""
 
@@ -150,7 +164,7 @@ class TenantCollectionInfo(_TenantResponseModel):
     """
 
     name: str = Field(validation_alias=AliasChoices("name", "Name"))
-    fields: list[TenantVectorField] = Field(
+    fields: list[TenantFieldInfo] = Field(
         validation_alias=AliasChoices("fields", "Fields")
     )
     description: str = Field(
@@ -421,6 +435,10 @@ class TenantSearchResponse(_TenantResponseModel):
     ``fell_back_to`` names the secondary field when the fallback ladder
     fired. ``embedded_by`` maps each field queried by text to the
     ``provider:model`` that embedded it (empty when only vectors were sent).
+    ``score_direction`` says how to read ``scores`` and ``best_score``:
+    dense fields return distances (``lower_is_better``), sparse and fused
+    hybrid return scores (``higher_is_better``); it names the direction of
+    the field that actually answered.
     """
 
     status: Literal["success"]
@@ -432,6 +450,9 @@ class TenantSearchResponse(_TenantResponseModel):
     weak_match: bool = False
     fell_back_to: str = ""
     embedded_by: dict[str, str] = Field(default_factory=dict)
+    score_direction: Literal["lower_is_better", "higher_is_better"] | None = None
+    query_time_ms: float = 0.0
+    request_id: str = ""
 
 
 class TenantCollectionStats(_TenantResponseModel):

@@ -45,21 +45,32 @@ network boundary.
 
 ## HTTP routes
 
-All canonical data routes are below `/v3/tenants/{tenant_id}`.
+All canonical data routes are below `/v3/tenants/{tenant}`. The table below is
+rendered from [`api/contract/v3/operations.json`](../../api/contract/v3/operations.json)
+by `go run ./cmd/deepdata routes`; the same file answers `GET /v3/status` and is
+checked against the dispatcher and the proto service by
+`cmd/deepdata/contract_test.go`.
 
-| Method | Path | Required permission | Operation |
+<!-- generated:http-routes -->
+| method | path | permission | grpc_rpc |
 |---|---|---|---|
-| `GET` | `/v3/tenants/{tenant_id}` | `admin` | Tenant counters |
-| `GET` | `/v3/tenants/{tenant_id}/collections` | `admin` | List collections |
-| `POST` | `/v3/tenants/{tenant_id}/collections` | `admin` | Create collection |
-| `GET` | `/v3/tenants/{tenant_id}/collections/{name}` | `read` | Get collection |
-| `DELETE` | `/v3/tenants/{tenant_id}/collections/{name}` | `admin` | Delete collection |
-| `POST` | `/v3/tenants/{tenant_id}/collections/{name}/docs` | `write` | Insert document |
-| `POST` | `/v3/tenants/{tenant_id}/collections/{name}/docs/batch` | `write` | Atomic batch insert |
-| `DELETE` | `/v3/tenants/{tenant_id}/collections/{name}/docs` | `write` | Delete document |
-| `PUT` | `/v3/tenants/{tenant_id}/collections/{name}/docs/{doc_id}` | `write` | Upsert document |
-| `GET` | `/v3/tenants/{tenant_id}/collections/{name}/docs/{doc_id}` | `read` | Get document |
-| `POST` | `/v3/tenants/{tenant_id}/collections/{name}/search` | `read` | Search |
+| GET | /v3/tenants/{tenant} | admin | GetTenantInfo |
+| GET | /v3/tenants/{tenant}/collections | read | ListCollections |
+| POST | /v3/tenants/{tenant}/collections | admin | CreateCollection |
+| GET | /v3/tenants/{tenant}/collections/{collection} | read | GetCollection |
+| DELETE | /v3/tenants/{tenant}/collections/{collection} | admin | DeleteCollection |
+| POST | /v3/tenants/{tenant}/collections/{collection}/docs | write | Insert |
+| DELETE | /v3/tenants/{tenant}/collections/{collection}/docs | write | DeleteDoc |
+| POST | /v3/tenants/{tenant}/collections/{collection}/docs/batch | write | BatchInsert |
+| PUT | /v3/tenants/{tenant}/collections/{collection}/docs/{doc_id} | write | Upsert |
+| GET | /v3/tenants/{tenant}/collections/{collection}/docs/{doc_id} | read | GetDoc |
+| POST | /v3/tenants/{tenant}/collections/{collection}/search | read | Search |
+| GET | /v3/status | read |  |
+<!-- /generated -->
+
+`GET /v3/status` is the server's self-description: build version, the operation
+list above, the embedder it will use, its limits and its capabilities
+(cmd/deepdata/status.go:40).
 
 Tenant and collection path identifiers must contain 1–64 ASCII letters,
 digits, hyphens, or underscores. JSON request bodies are strict; unknown fields
@@ -325,10 +336,6 @@ The canonical protobuf is
 
 <!-- generated:grpc-rpcs -->
 `deepdata.v3.DeepData` exposes 11 unary RPCs: `GetTenantInfo`, `ListCollections`, `GetCollection`, `CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `Search`, `DeleteDoc`, `Upsert`, `GetDoc`.
-<!-- /generated -->
-
-HTTP route table — generated once the routes subcommand exists (gate DOC-03):
-<!-- generated:http-routes -->
 <!-- /generated -->
 
 Pass the same bearer credential in gRPC `authorization` metadata. The gRPC
