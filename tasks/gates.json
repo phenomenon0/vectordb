@@ -1,0 +1,856 @@
+{
+  "schema_version": 1,
+  "gates": [
+    {
+      "id": "DUR-01",
+      "statement": "go vet passes with CGO_ENABLED=0 across the RC package list",
+      "command": "scripts/hardening_check.sh go-vet-cgo0",
+      "scope": [
+        "cmd",
+        "internal",
+        "api",
+        "go.mod",
+        "go.sum"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "a3de51621d35f2cde72b4c0025f4d5cc3d805fce",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-08-07",
+        "receipt": ".deepdata-run/checks/go-vet-cgo0/receipt.json",
+        "ci_run": null
+      },
+      "note": "receipt-bound at a3de516; re-promote after any Go change"
+    },
+    {
+      "id": "DUR-02",
+      "statement": "storage tests pass: journal, snapshot, durable store, WAL recovery",
+      "command": "scripts/hardening_check.sh go-storage",
+      "scope": [
+        "internal/collection",
+        "internal/storage",
+        "internal/index"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "a3de51621d35f2cde72b4c0025f4d5cc3d805fce",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-08-07",
+        "receipt": ".deepdata-run/checks/go-storage/receipt.json",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "DUR-03",
+      "statement": "go test -short passes for cmd/deepdata and internal packages",
+      "command": "scripts/hardening_check.sh go-short",
+      "scope": [
+        "cmd",
+        "internal",
+        "api",
+        "go.mod",
+        "go.sum"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "a3de51621d35f2cde72b4c0025f4d5cc3d805fce",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-08-07",
+        "receipt": ".deepdata-run/checks/go-short/receipt.json",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "DUR-04",
+      "statement": "go test -race passes on the RC package list",
+      "command": "scripts/hardening_check.sh go-race",
+      "scope": [
+        "cmd",
+        "internal",
+        "api",
+        "go.mod",
+        "go.sum"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "a3de51621d35f2cde72b4c0025f4d5cc3d805fce",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-08-07",
+        "receipt": ".deepdata-run/checks/go-race/receipt.json",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "DUR-05",
+      "statement": "focused persistence matrices pass serially (go test -count=1 -p 1 ./internal/collection ./cmd/deepdata)",
+      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 ./internal/collection ./cmd/deepdata",
+      "scope": [
+        "internal/collection",
+        "cmd/deepdata"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "ece6f23 prose claims a run; no receipt or fingerprint recorded, so it stays open until promoted from a receipt"
+    },
+    {
+      "id": "SDK-01",
+      "statement": "Python SDK unit tests and mypy pass",
+      "command": "scripts/hardening_check.sh python-unit && scripts/hardening_check.sh python-mypy",
+      "scope": [
+        "sdk/python"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "a3de51621d35f2cde72b4c0025f4d5cc3d805fce",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-08-07",
+        "receipt": ".deepdata-run/checks/python-unit/receipt.json",
+        "ci_run": null
+      },
+      "note": "python-mypy receipt at the same commit: .deepdata-run/checks/python-mypy/receipt.json"
+    },
+    {
+      "id": "SDK-02",
+      "statement": "live authenticated SDK contract passes against a running server, including restart persistence",
+      "command": "tests/smoke_test.sh (live SDK phase)",
+      "scope": [
+        "sdk/python",
+        "cmd/deepdata",
+        "tests/smoke_test.sh"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "d5b2d3a live-sdk rehearsal PASS is in the evidence report but the SDK has changed since; re-run and promote"
+    },
+    {
+      "id": "PKG-01",
+      "statement": "Python sdist and wheel build cleanly",
+      "command": "scripts/hardening_check.sh python-build",
+      "scope": [
+        "sdk/python"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "a3de51621d35f2cde72b4c0025f4d5cc3d805fce",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-08-07",
+        "receipt": ".deepdata-run/checks/python-build/receipt.json",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "PKG-02",
+      "statement": "Linux binaries, container image and SBOM build reproducibly from the frozen tree",
+      "command": ".deepdata-run/rehearsals/build_artifacts.sh",
+      "scope": [
+        "Dockerfile",
+        "cmd",
+        "internal",
+        "go.mod",
+        "go.sum",
+        ".goreleaser.yaml",
+        "deploy"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": ".deepdata-run/rehearsals/EVIDENCE-d5b2d3a.md",
+        "ci_run": null
+      },
+      "note": "evidence report states worktree clean at generation; artifacts under .deepdata-run/rehearsals/artifacts-d5b2d3a"
+    },
+    {
+      "id": "OPS-01",
+      "statement": "backup and restore rehearsal passes, including disk-full and permission-denied paths",
+      "command": "scripts/backup_restore_drill.sh",
+      "scope": [
+        "scripts/backup_restore_drill.sh",
+        "internal/collection",
+        "cmd/deepdata"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": ".deepdata-run/rehearsals/backup-restore-d5b2d3a/rehearsal.log",
+        "ci_run": null
+      },
+      "note": "todo.md:142 drill box closed at bc1fa27 (2026-08-21) by prose only; the receipt-backed run is d5b2d3a"
+    },
+    {
+      "id": "OPS-02",
+      "statement": "legacy export/import round-trips a pre-0.2 data directory",
+      "command": "tests/smoke_test.sh (legacy migration phase)",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection",
+        "docs/upgrade-to-0.2-rc.md"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": ".deepdata-run/rehearsals/legacy-migration-d5b2d3a",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "OPS-03",
+      "statement": "container, Compose and kind+Helm lifecycle contracts pass",
+      "command": "tests/container_contract_test.sh && tests/compose_contract_test.sh && .deepdata-run/rehearsals/kind_helm_rehearsal.sh",
+      "scope": [
+        "Dockerfile",
+        "docker-compose.yml",
+        "deploy/helm/deepdata",
+        "tests"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": ".deepdata-run/rehearsals/kind-helm-d5b2d3a",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "SOAK-01",
+      "statement": "sustained soak holds recall, restart-under-load and memory growth within envelope",
+      "command": ".deepdata-run/rehearsals/soak.py",
+      "scope": [
+        "cmd/deepdata",
+        "internal"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "d5b2d3a soak FAILED on memory drift (109.7% growth) while recall and restart phases passed; not re-run after the 14d1442 fix"
+    },
+    {
+      "id": "SOAK-02",
+      "statement": "restart reclaims memory after the memory-drift fix",
+      "command": ".deepdata-run/rehearsals/restart_reclaim_probe.py",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection",
+        "internal/index"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "fix landed at 14d1442 with local receipts (memdrift-fix/restart_reclaim_receipt.json) that carry no commit or fingerprint; cannot bind honestly"
+    },
+    {
+      "id": "SEC-01",
+      "statement": "gitleaks, govulncheck, gosec and trivy scans are clean on the frozen tree",
+      "command": "gitleaks detect && govulncheck ./... && gosec ./... && trivy image",
+      "scope": [
+        "cmd",
+        "internal",
+        "go.mod",
+        "go.sum",
+        "Dockerfile",
+        "sdk/python"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "ece6f23 prose records a clean rerun; no receipt or fingerprint"
+    },
+    {
+      "id": "REL-01",
+      "statement": "version parity across version.txt, Python SDK, Helm chart and Dockerfile; generated proto is fresh",
+      "command": "python3 scripts/check_version_contract.py && scripts/check_proto_generated.sh",
+      "scope": [
+        "internal/releaseinfo/version.txt",
+        "sdk/python/pyproject.toml",
+        "sdk/python/deepdata/__init__.py",
+        "deploy/helm/deepdata/Chart.yaml",
+        "Dockerfile",
+        "api"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "f5d45827baed2776827ea3ac1f3cb162041a352e",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": null,
+        "ci_run": "https://github.com/phenomenon0/vectordb/actions/runs/29977008196"
+      },
+      "note": "CI run on PR #4 checked out f5d4582; fingerprint is the clean-tree constant because CI builds the committed tree"
+    },
+    {
+      "id": "REL-02",
+      "statement": "repository carries an Apache-2.0 LICENSE and the chart, SDK and README declare it",
+      "command": "git cat-file -e HEAD:LICENSE && grep -q Apache LICENSE",
+      "scope": [
+        "LICENSE",
+        "README.md",
+        "deploy/helm/deepdata/Chart.yaml",
+        "sdk/python/pyproject.toml"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "b1f28bef6f11f2154266a3c8a27db378e55d4d03",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-08-21",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "todo.md:198 box closed at b1f28be; re-verified 2026-09-01 with git cat-file -e b1f28be:LICENSE (Apache License 2.0)"
+    },
+    {
+      "id": "REL-03",
+      "statement": "go.mod and go.sum are tidy (go mod tidy -diff is empty)",
+      "command": "GOTOOLCHAIN=go1.25.12 go mod tidy -diff",
+      "scope": [
+        "go.mod",
+        "go.sum",
+        "cmd",
+        "internal",
+        "api"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "442cdb68c23e2de9b40767f8ffd514e4b6b664bd",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-08-21",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "todo.md:212 cowrie box closed at 442cdb6; re-verified 2026-09-01: tidy -diff exit 0 on a git archive of 442cdb6 (clean by construction). cowrie/shard/sqlite modules still listed: SYS-03"
+    },
+    {
+      "id": "REL-04",
+      "statement": "release candidate SHA frozen; manifests and changelog name the same version and commit",
+      "command": "python3 scripts/check_version_contract.py && git tag --points-at HEAD",
+      "scope": [
+        "CHANGELOG.md",
+        "internal/releaseinfo/version.txt",
+        "deploy",
+        "docs/releasing.md"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "candidate moved from a99fe53 to 14d1442 and then past it; freeze again after RCV-03 closes"
+    },
+    {
+      "id": "CI-01",
+      "statement": "Linux RC Go contract job green (proto freshness, version parity, vet, test, hnsw)",
+      "command": "gh run view --job \"Linux RC Go contract\"",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "cmd",
+        "internal",
+        "api",
+        "go.mod"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "f5d45827baed2776827ea3ac1f3cb162041a352e",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": null,
+        "ci_run": "https://github.com/phenomenon0/vectordb/actions/runs/29977008196"
+      },
+      "note": "run 29977008196 on PR #4, all 10 checks green"
+    },
+    {
+      "id": "CI-02",
+      "statement": "race job green on the RC package list",
+      "command": "gh run view --job test-rc-race",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "cmd",
+        "internal"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "f5d45827baed2776827ea3ac1f3cb162041a352e",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": null,
+        "ci_run": "https://github.com/phenomenon0/vectordb/actions/runs/29977008196"
+      },
+      "note": ""
+    },
+    {
+      "id": "CI-03",
+      "statement": "deployment manifests, Python client and cross-compile proof jobs green",
+      "command": "gh run view --job test-deployment-manifests --job \"Canonical Python client\" --job cross-compile-proof",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "deploy",
+        "sdk/python",
+        "tests/deployment_manifests_test.sh"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "f5d45827baed2776827ea3ac1f3cb162041a352e",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": null,
+        "ci_run": "https://github.com/phenomenon0/vectordb/actions/runs/29977008196"
+      },
+      "note": ""
+    },
+    {
+      "id": "CI-04",
+      "statement": "browser UI end-to-end job runs in CI",
+      "command": "(none)",
+      "scope": [
+        ".github/workflows/ci.yml"
+      ],
+      "release_gate": false,
+      "status": "retired",
+      "evidence": null,
+      "note": "browser UI job removed at d139313 (2026-07-19) when the web UI left scope; todo.md:155 box was closed at 6bb19de"
+    },
+    {
+      "id": "CI-05",
+      "statement": "cmd/deepdata-mcp is in the CI package list and its tests run",
+      "command": "grep -n deepdata-mcp .github/workflows/ci.yml",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "cmd/deepdata-mcp"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "absent from every package list today; lands with CTL-03"
+    },
+    {
+      "id": "CI-06",
+      "statement": "RC smoke test job runs tests/smoke_test.sh against a built binary in CI",
+      "command": "grep -n smoke_test .github/workflows/ci.yml",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "tests/smoke_test.sh"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "EVID-01",
+      "statement": "evidence report generated for the frozen candidate with rehearsal receipts",
+      "command": ".deepdata-run/rehearsals/generate_evidence_report.py",
+      "scope": [
+        "cmd",
+        "internal",
+        "deploy",
+        "Dockerfile",
+        "sdk/python"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": ".deepdata-run/rehearsals/EVIDENCE-d5b2d3a.md",
+        "ci_run": null
+      },
+      "note": "report tree sha 982daf0 does not resolve locally; binding uses the commit it names"
+    },
+    {
+      "id": "EVID-02",
+      "statement": "the truth ledger passes gates.py check --release",
+      "command": "python3 scripts/gates.py check --release",
+      "scope": [
+        "tasks/gates.json",
+        "scripts/gates.py",
+        "docs/PRE_RELEASE_STATUS.md"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "cannot pass while any release gate is open or stale"
+    },
+    {
+      "id": "EVID-03",
+      "statement": "adversarial review (Stage F) findings closed against the frozen candidate",
+      "command": "scripts/hardening_check.sh all",
+      "scope": [
+        "cmd",
+        "internal",
+        "api",
+        "sdk/python"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": ".deepdata-run/rehearsals/EVIDENCE-d5b2d3a.md",
+        "ci_run": null
+      },
+      "note": "four findings closed at d5b2d3a itself"
+    },
+    {
+      "id": "REV-01",
+      "statement": "every open gate has a named owner decision recorded in tasks/todo.md before freeze",
+      "command": "python3 scripts/gates.py check",
+      "scope": [
+        "tasks/gates.json",
+        "tasks/todo.md"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "REV-02..04 (status-doc parity, stale-box audit, evidence-sha audit) retired: subsumed by gates.py check rules 3 and 5"
+    },
+    {
+      "id": "RCV-01",
+      "statement": "journal replay streams records with bounded memory instead of loading the file",
+      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 -run Replay ./internal/collection",
+      "scope": [
+        "internal/collection/journal.go",
+        "internal/collection/durable_store.go"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "39bfe4279b1c5eb3206304878eac344b82fa654c",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "session-verified: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt"
+    },
+    {
+      "id": "RCV-02",
+      "statement": "snapshot coverage verification reads headers only, never whole payloads",
+      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 -run Coverage ./internal/collection",
+      "scope": [
+        "internal/collection/snapshot.go",
+        "internal/collection/snapshot_stream_test.go"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "39bfe4279b1c5eb3206304878eac344b82fa654c",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "session-verified: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt"
+    },
+    {
+      "id": "RCV-03",
+      "statement": "unified snapshots load with bounded memory",
+      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 -run Snapshot ./internal/collection",
+      "scope": [
+        "internal/collection/snapshot.go",
+        "internal/collection/durable_store.go"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "todo.md 2026-08-28 checklist item still open"
+    },
+    {
+      "id": "RCV-04",
+      "statement": "generated small-journal tests fail closed on truncated and corrupt records",
+      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 -run Corrupt ./internal/collection",
+      "scope": [
+        "internal/collection"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "RCV-05",
+      "statement": "replay rehearsal passes under a cgroup memory hard cap on the disposable probe root only",
+      "command": "systemd-run -p MemoryMax=... deepdata --data-dir /home/omen/var/deepdata-recovery-probe-iBoWBE",
+      "scope": [
+        "internal/collection",
+        "cmd/deepdata"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "never against /home/omen/var/deepdata or the miniexa journals"
+    },
+    {
+      "id": "RCV-06",
+      "statement": "internal/index/segmented.go measured under the cold-start memory envelope",
+      "command": "GOTOOLCHAIN=go1.25.12 go test -run Segmented -benchmem ./internal/index ./internal/collection",
+      "scope": [
+        "internal/index/segmented.go",
+        "internal/collection/segmented_topology_test.go"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "todo.md:425 review box closed by reading, not by measurement"
+    },
+    {
+      "id": "DOC-01",
+      "statement": "docs contract linter passes on the tree (scripts/check_docs_contract.py)",
+      "command": "python3 scripts/check_docs_contract.py",
+      "scope": [
+        "README.md",
+        "CHANGELOG.md",
+        "docs",
+        "internal/collection/API.md",
+        "sdk/python/README.md",
+        "benchmarks/README.md",
+        "tasks/todo.md",
+        "tasks/PROTOCOL.md",
+        "scripts/check_docs_contract.py"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "fails on the current drifted tree by design; S3 fixes prose"
+    },
+    {
+      "id": "DOC-02",
+      "statement": "tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing at the ledger",
+      "command": "python3 scripts/check_docs_contract.py",
+      "scope": [
+        "tasks/todo.md",
+        "tasks/PROTOCOL.md",
+        "tasks/lessons.md"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "promoted when the S3 slice is committed"
+    },
+    {
+      "id": "DOC-03",
+      "statement": "HTTP route table in internal/collection/API.md is generated from the routes subcommand",
+      "command": "GOTOOLCHAIN=go1.25.12 go run ./cmd/deepdata routes",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection/API.md"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "depends on CTL-04; the linter prints R3 SKIP until the subcommand exists"
+    },
+    {
+      "id": "PUB-01",
+      "statement": "branch pushed to origin and CI green on the pushed head",
+      "command": "git push origin develop && gh run watch",
+      "scope": [
+        ".github/workflows/ci.yml"
+      ],
+      "release_gate": false,
+      "status": "blocked",
+      "evidence": null,
+      "note": "push needs explicit owner authority for this session"
+    },
+    {
+      "id": "PUB-02",
+      "statement": "release tag created and pushed",
+      "command": "git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1",
+      "scope": [
+        "internal/releaseinfo/version.txt",
+        "CHANGELOG.md"
+      ],
+      "release_gate": false,
+      "status": "blocked",
+      "evidence": null,
+      "note": "tagging needs explicit owner authority"
+    },
+    {
+      "id": "PUB-03",
+      "statement": "container image and Python package published",
+      "command": "docker push && python -m twine upload",
+      "scope": [
+        "Dockerfile",
+        "sdk/python/pyproject.toml"
+      ],
+      "release_gate": false,
+      "status": "blocked",
+      "evidence": null,
+      "note": "publication and private credentials were never authorized"
+    },
+    {
+      "id": "CTL-01",
+      "statement": "errors are prompts: every API error carries code, hint and docs pointer via internal/apierror",
+      "command": "GOTOOLCHAIN=go1.25.12 go test ./internal/apierror ./cmd/deepdata -run Error",
+      "scope": [
+        "cmd/deepdata",
+        "internal/apierror"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "plan 9.2: package does not exist yet"
+    },
+    {
+      "id": "CTL-02",
+      "statement": "text in, text out: server-side embeddings, Ollama first, hash embedder only when named explicitly",
+      "command": "GOTOOLCHAIN=go1.25.12 go test ./internal/embed ./cmd/deepdata -run Embed",
+      "scope": [
+        "cmd/deepdata",
+        "internal/embed",
+        "docs/ARCHITECTURE.md"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "remove the server-managed-embeddings non-goal from docs/ARCHITECTURE.md when this lands"
+    },
+    {
+      "id": "CTL-03",
+      "statement": "MCP server rewritten on the shared api/contract package and covered by CI-05",
+      "command": "GOTOOLCHAIN=go1.25.12 go test ./cmd/deepdata-mcp ./api/contract",
+      "scope": [
+        "cmd/deepdata-mcp",
+        "api"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "CTL-04",
+      "statement": "server self-description: routes subcommand and per-result confidence",
+      "command": "GOTOOLCHAIN=go1.25.12 go run ./cmd/deepdata routes && go test ./cmd/deepdata -run Routes",
+      "scope": [
+        "cmd/deepdata"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "unblocks DOC-03"
+    },
+    {
+      "id": "CTL-05",
+      "statement": "durable usage records survive restart",
+      "command": "GOTOOLCHAIN=go1.25.12 go test ./cmd/deepdata ./internal/collection -run Usage",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "SYS-01",
+      "statement": "serverRuntime extracted from cmd/deepdata main; NewVectorStore has zero callers",
+      "command": "GOTOOLCHAIN=go1.25.12 go vet ./cmd/deepdata && grep -rn NewVectorStore cmd internal",
+      "scope": [
+        "cmd/deepdata",
+        "internal"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "SYS-02",
+      "statement": "one IndexTypes vocabulary shared by server, SDK and docs",
+      "command": "GOTOOLCHAIN=go1.25.12 go test ./internal/index ./cmd/deepdata -run IndexTypes",
+      "scope": [
+        "internal/index",
+        "cmd/deepdata",
+        "sdk/python"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "SYS-03",
+      "statement": "archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, shard and sqlite",
+      "command": "git tag -l archive/pre-narrowing-v2 && GOTOOLCHAIN=go1.25.12 go mod tidy -diff",
+      "scope": [
+        "go.mod",
+        "go.sum",
+        "internal",
+        "cmd"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "tagging needs owner authority (see PUB gates)"
+    },
+    {
+      "id": "SYS-04",
+      "statement": "Canonical prefix dropped; every live package has a doc.go",
+      "command": "grep -rn Canonical cmd internal sdk; find cmd internal -name doc.go",
+      "scope": [
+        "cmd",
+        "internal",
+        "sdk/python"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "MEM-01",
+      "statement": "ADR recorded for graph and extraction revival before any code returns",
+      "command": "test -f docs/decisions/*graph*",
+      "scope": [
+        "docs/decisions",
+        "internal/graph"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "MEM-02",
+      "statement": "POST /docs/{id}/feedback stores feedback durably and is covered by tests",
+      "command": "GOTOOLCHAIN=go1.25.12 go test ./cmd/deepdata -run Feedback",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    }
+  ]
+}

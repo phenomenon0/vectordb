@@ -18,7 +18,7 @@ export GOTOOLCHAIN="$GO_TOOLCHAIN"
 
 list_checks() {
     printf '%s\n' \
-        state-json \
+        gates-check \
         benchmark-unit \
         go-storage \
         go-short \
@@ -48,9 +48,9 @@ if [[ -z "$CHECK_NAME" ]] || [[ -n "$FORCE" && "$FORCE" != "--force" ]]; then
 fi
 
 case "$CHECK_NAME" in
-    state-json)
+    gates-check)
         CHECK_CWD="$REPO_ROOT"
-        CHECK_DESCRIPTION="python -m json.tool tasks/autonomy/STATE.json"
+        CHECK_DESCRIPTION="python3 scripts/gates.py check"
         ;;
     benchmark-unit)
         CHECK_CWD="$REPO_ROOT"
@@ -97,8 +97,8 @@ esac
 
 run_check() {
     case "$CHECK_NAME" in
-        state-json)
-            timeout 30s python -m json.tool tasks/autonomy/STATE.json
+        gates-check)
+            timeout 30s python3 scripts/gates.py check
             ;;
         benchmark-unit)
             timeout 60s python -m unittest -q benchmarks/test_mega_bench.py
