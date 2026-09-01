@@ -15,7 +15,7 @@ All 29 tracked code trees. LoC counts tracked source at a443cd0 (a443cd0 changed
 
 | path | LoC | reached from RC | CI job | verdict (gate) | evidence |
 |---|---|---|---|---|---|
-| cmd/deepdata | 27756 | yes, the RC binary | RC Go contract; RC race; Compile proof | live; embedders REVIVE (CTL-02); `cmd/deepdata/embedder_providers.go` and `cmd/deepdata/cost_tracker.go` retired under SYS-03 | `cmd/deepdata/main.go:3198`, `cmd/deepdata/server.go:3414` [^1] |
+| cmd/deepdata | 27756 | yes, the RC binary | RC Go contract; RC race; Compile proof | live; embedders REVIVE (CTL-02); cmd/deepdata/embedder_providers.go and cmd/deepdata/cost_tracker.go retired under SYS-03 | `cmd/deepdata/main.go:3198`, `cmd/deepdata/server.go:3414` [^1] |
 | cmd/deepdata-mcp | 703 | separate binary; not imported, in no CI list | none | live; rewrite (CTL-03); CI coverage (CI-05) | `cmd/deepdata-mcp/main.go:147` forwards the HTTP body verbatim |
 | cmd/cli | 990 | no: every path is legacy V1/V2, removed at 9d1672b | none | retired under SYS-03 | 9d1672b (1344 deletions) |
 | cmd/gentoken | 153 | separate binary | none | live | prints a curl against a legacy route (§5 row 7) |
@@ -87,7 +87,7 @@ Source: journal §1.2 and the plan's §7.1. Every row that names a non-goal carr
 
 | tree | LoC | why dead | serves the agent-memory thesis? | verdict and gate |
 |---|---|---|---|---|
-| cmd/deepdata embedders (`cmd/deepdata/embedder_providers.go` 476, `cmd/deepdata/embedder_mode.go` 418, `cmd/deepdata/onnx_impl.go` 399) | ~1.3k | behind the wall: `cmd/deepdata/main.go:3275` hard-wires NewHashEmbedder(1); the /api/embed handler (`cmd/deepdata/server.go:2577`) is not registered on the RC surface | yes, need 2 (text in, text out) | REVIVE (CTL-02): Ollama default, OpenAI-compatible kept, ONNX opt-in build tag, hash only when named; embedder_providers.go (Gemini, cost ledger) retired under SYS-03 |
+| cmd/deepdata embedders (cmd/deepdata/embedder_providers.go 476, `cmd/deepdata/embedder_mode.go` 418, `cmd/deepdata/onnx_impl.go` 399) | ~1.3k | behind the wall: `cmd/deepdata/main.go:3275` hard-wires NewHashEmbedder(1); the /api/embed handler (`cmd/deepdata/server.go:2577`) is not registered on the RC surface | yes, need 2 (text in, text out) | REVIVE (CTL-02): Ollama default, OpenAI-compatible kept, ONNX opt-in build tag, hash only when named; embedder_providers.go (Gemini, cost ledger) retired under SYS-03 |
 | internal/feedback | 1.5k | gated behind not-canonicalOnly, `cmd/deepdata/server.go:2102` | the accretive loop, but UsageTracker already is the ranking signal | retired under SYS-03 (journal §5.3 feedback row); MEM-02 adds POST /docs/{id}/feedback fresh |
 | internal/graph | 0.6k | EnableGraphRAG has zero callers (`cmd/deepdata/collection_http.go:112`, :337); PageRank is not reached | later, as a class-C signal over text-in | KEEP-DORMANT (MEM-01): no code returns before the ADR |
 | internal/extraction (LLM entity and relation extraction, temporal graph) | 2.1k | gated behind not-canonicalOnly, `cmd/deepdata/server.go:2111` | later, class B/C over text-in | KEEP-DORMANT (MEM-01): no code returns before the ADR |

@@ -1,10 +1,9 @@
 """Exception hierarchy for the DeepData Python SDK.
 
-Mirrors the Go client's error classification (client/errors.go). Servers that
-speak the structured error envelope (internal/collection/API.md, section
-Errors) populate ``code``, ``hint``, ``field``, ``request_id``, ``docs`` and
-``retryable`` on every :class:`APIError`; older plain-text servers leave the
-envelope fields empty.
+Servers that speak the structured error envelope
+(internal/collection/API.md, section Errors) populate ``code``, ``hint``,
+``field``, ``request_id``, ``docs`` and ``retryable`` on every
+:class:`APIError`; older plain-text servers leave the envelope fields empty.
 """
 
 from __future__ import annotations
@@ -111,7 +110,8 @@ class ServerError(APIError):
         super().__init__(status_code, message, retryable=True, **envelope)
 
 
-# Retryable status codes — matches Go client/errors.go
+# Retryable status codes — the transport-level fallback when the server sends
+# no structured envelope.
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 

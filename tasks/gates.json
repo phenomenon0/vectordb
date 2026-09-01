@@ -873,17 +873,19 @@
     {
       "id": "SYS-03",
       "statement": "archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, shard and sqlite",
-      "command": "git tag -l archive/pre-narrowing-v2 && GOTOOLCHAIN=go1.25.12 go mod tidy -diff",
+      "command": "scripts/hardening_check.sh go-retire",
       "scope": [
         "go.mod",
         "go.sum",
+        "cmd",
         "internal",
-        "cmd"
+        ".github/workflows/ci.yml",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": "tagging needs owner authority (see PUB gates)"
+      "note": "tag archive/pre-narrowing-v2 exists locally at e4583ef (owner authority 2026-09-01); it is not pushed"
     },
     {
       "id": "SYS-04",

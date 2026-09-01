@@ -93,7 +93,7 @@ are rejected.
 
 `GET /livez`, `GET /healthz`, and `GET /readyz` are unauthenticated probes.
 `GET /metrics` sits behind the same authentication guard as the API routes
-when authentication is required (cmd/deepdata/server.go:1503-1507,
+when authentication is required (cmd/deepdata/server.go:1320-1324,
 `TestMetricsEndpointRequiresAuthWhenEnabled`). Restrict all four at the
 network boundary.
 
@@ -277,7 +277,7 @@ Three optional agent-retrieval request fields (bde4f94) refine a search:
 
 - `score_floor` — confidence filter on raw scores in the field's metric
   direction: a maximum distance on dense fields, a minimum score on sparse
-  and fused scores; `0` disables it (internal/collection/types.go:385-393).
+  and fused scores; `0` disables it (internal/collection/types.go:474-482).
 - `fallback` — `{"primary": "...", "secondary": "...", "threshold": 0.0}`
   searches the secondary field when the primary yields no confident hit
   (zero hits, or best score worse than `threshold` when set). Both named
@@ -308,7 +308,7 @@ table's status and sets `Retry-After` when `retry_after_ms` is set
 `field`, `request_id`, `docs`) and a `RetryInfo` detail when retryable
 (:147). `request_id` is the caller's `X-Request-ID` header or `x-request-id`
 metadata, else one the server mints; both transports echo it back
-(cmd/deepdata/server.go:3375, cmd/deepdata/main.go:3950-3965).
+(cmd/deepdata/server.go:2504-2514, cmd/deepdata/main.go:3704-3717).
 
 ```json
 {

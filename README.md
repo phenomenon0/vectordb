@@ -56,9 +56,9 @@ gRPC returns the mapped status code with the same fields as an `ErrorInfo` detai
 beside its `isError` text. `rate_limited` (429, `Retry-After: 1`) and `unavailable` (503) are the retryable codes; tenant and
 collection limits are `quota_exceeded`, 409 / `FailedPrecondition`, never retryable. Codes and an example: [internal/collection/API.md#errors](internal/collection/API.md#errors).
 
-Probes GET /healthz, /livez and /readyz answer without credentials (`cmd/deepdata/server.go:1537-1541`); /metrics sits
-behind the same auth guard as the API (`cmd/deepdata/server.go:1503-1507`). `const canonicalOnly = true` (`cmd/deepdata/main.go:3198`)
-wraps the mux in an allowlist (`cmd/deepdata/server.go:3414-3423`): every other path is a 404 on the RC binary.
+Probes GET /healthz, /livez and /readyz answer without credentials (`cmd/deepdata/server.go:1390-1394`); /metrics sits
+behind the same auth guard as the API (`cmd/deepdata/server.go:1324`). `const canonicalOnly = true` (`cmd/deepdata/main.go:3166`)
+wraps the mux in an allowlist (`cmd/deepdata/server.go:2554-2565`): every other path is a 404 on the RC binary.
 
 ## What it does not do
 
@@ -77,8 +77,8 @@ Non-goals of the release candidate, rendered from the block in [docs/ARCHITECTUR
 <!-- /generated -->
 
 Also outside the RC: switching embedding providers at runtime, follower restore, and streaming snapshots to other
-nodes. The provider-switch handler is still registered (`cmd/deepdata/server.go:2142`) but sits outside that allowlist, so
-the RC binary answers it 404; follower restore and snapshot streaming live in `internal/cluster`, which `cmd/deepdata` does not import.
+nodes. The provider-switch handler is still registered (`cmd/deepdata/server.go:1962`) but sits outside that allowlist, so
+the RC binary answers it 404; follower restore and snapshot streaming were deleted outright under SYS-03, together with the internal/cluster tree.
 
 ## Run from source
 

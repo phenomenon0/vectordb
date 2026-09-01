@@ -1,20 +1,20 @@
 # Prometheus and Grafana for the release candidate
 
 DeepData serves `GET /metrics` on the HTTP listener (default `PORT` 8080,
-`cmd/deepdata/main.go:3373`). The RC binary is canonical-only
-(`const canonicalOnly = true`, `cmd/deepdata/main.go:3198`);
-`canonicalRCSurface` (`cmd/deepdata/server.go:3414-3423`) lets `/metrics`
+`cmd/deepdata/main.go:3284`). The RC binary is canonical-only
+(`const canonicalOnly = true`, `cmd/deepdata/main.go:3166`);
+`canonicalRCSurface` (`cmd/deepdata/server.go:2554-2565`) lets `/metrics`
 through together with `/v3/tenants/`, `/healthz`, `/readyz` and `/livez`,
 and answers 404 for every other registered route.
 
 ## Authentication
 
 `/metrics` is registered as `mux.Handle("/metrics", guard(...))`
-(`cmd/deepdata/server.go:1507`). `guard` is the same closure that fronts the
-API routes (`cmd/deepdata/server.go:195`): when authentication is required
+(`cmd/deepdata/server.go:1324`). `guard` is the same closure that fronts the
+API routes (`cmd/deepdata/server.go:160`): when authentication is required
 (`REQUIRE_AUTH=1`, or a JWT secret or API token is configured,
-`cmd/deepdata/main.go:151`) a scrape needs the same bearer token as an API
-call. The comment at `cmd/deepdata/server.go:1503-1506` records why:
+`cmd/deepdata/runtime.go:35`) a scrape needs the same bearer token as an API
+call. The comment at `cmd/deepdata/server.go:1320-1323` records why:
 request-volume and operation detail leak through this endpoint, so it is
 gated exactly like the API. The gate landed in 043ad5d.
 
@@ -112,8 +112,8 @@ Use the probes as the release signals; `/metrics` reachability is secondary.
 
 | Endpoint | Meaning |
 |---|---|
-| `/livez`, `/healthz` | The process answers its liveness check (`cmd/deepdata/server.go:1537-1538`) |
-| `/readyz` | Named checks `collection_snapshot`, `mutation_journal`, `lifetime_lock` (`cmd/deepdata/server.go:1577`) |
+| `/livez`, `/healthz` | The process answers its liveness check (`cmd/deepdata/server.go:1390-1391`) |
+| `/readyz` | Named checks `collection_snapshot`, `mutation_journal`, `lifetime_lock` (`cmd/deepdata/server.go:1432`) |
 | `/metrics` | Exposition endpoint reachable with credentials |
 
 A `200` from `/livez` is not sufficient for traffic admission. Alert on a

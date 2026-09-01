@@ -38,35 +38,33 @@ go test ./benchmarks/competitive/scenarios/ -run '^$' -bench BenchmarkDense_HNSW
 ```
 
 Index types other than HNSW and FLAT are not in the RC (non-RC; see the
-non-goals in [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)); rows that
-still exercise them are marked non-RC.
+non-goals in [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)); the rows that
+exercised IVF and DiskANN were deleted under SYS-03 together with those index
+types, so every row below runs on an RC index type.
 
 | Benchmark (`competitive/scenarios/`) | Measures |
 |---|---|
-| `BenchmarkDense` | search qps by dimension x index type x quantizer; iterates non-RC index types and quantization |
+| `BenchmarkDense` | search qps by dimension x index type x quantizer; HNSW across the fp16 and uint8 quantizers, which are non-RC |
 | `BenchmarkDense_HNSW_128d_100K` | one HNSW configuration, 128d, 100K vectors |
 | `BenchmarkRecall_HNSW_EfSweep` | recall vs throughput across `ef_search` |
-| `BenchmarkInsert_Single`, `_Batch`, `_Parallel` | insert throughput; sub-benchmarks include non-RC index types |
+| `BenchmarkInsert_Single`, `_Batch`, `_Parallel` | insert throughput on HNSW |
 | `BenchmarkSparse_BM25_Insert`, `_Search`, `BenchmarkSparse_Corpus` | BM25 inverted index |
 | `BenchmarkHybrid_RRF`, `_Weighted`, `_WeightSweep` | dense+sparse fusion overhead |
 | `BenchmarkFiltered_HNSW` | metadata filter selectivity on HNSW |
-| `BenchmarkFiltered_IVF` | the same on IVF, a non-RC index type |
 | `BenchmarkConcurrent_SearchScale`, `_MixedReadWrite`, `_LatencyUnderLoad` | goroutine scaling and mixed load |
 | `BenchmarkMemory` | bytes per vector |
 
 | Test (`competitive/scenarios/`) | Checks |
 |---|---|
 | `TestRecall_HNSW` | recall@1/10/100 across `ef_search` |
-| `TestRecall_IVF` | IVF nprobe recall; non-RC index type |
-| `TestRecall_DiskANN` | DiskANN recall; non-RC index type |
 | `TestMemoryFootprint` | memory per configuration |
 
 | Persona review (`review/`) | File | Checks |
 |---|---|---|
 | `TestDBEngineerReview` | `db_engineer_test.go` | insert/search/delete correctness, concurrent R/W, export/import, NaN/Inf, zero vector, duplicate id, stats |
-| `TestMLResearcherReview` | `ml_researcher_test.go` | recall monotonicity and stability, cosine correctness; also quantization degradation and IVF nprobe, both non-RC |
+| `TestMLResearcherReview` | `ml_researcher_test.go` | recall monotonicity and stability, cosine correctness, and quantization degradation; quantization is non-RC |
 | `TestDevOpsSREReview` | `devops_sre_test.go` | latency shape, memory growth, GC pressure, goroutine leaks, sustained load |
-| `TestProductManagerReview` | `product_manager_test.go` | index and quantizer coverage (non-RC types included), export/import and stats APIs, this README, GAP_ANALYSIS |
+| `TestProductManagerReview` | `product_manager_test.go` | index coverage (HNSW and FLAT) and quantizer coverage (non-RC), export/import and stats APIs, this README, GAP_ANALYSIS |
 | `TestSecurityAuditorReview` | `security_auditor_test.go` | negative/large k, NaN query, nil params, metadata injection, concurrent delete |
 
 ## Go: equal-effort clients (server-side truth)
