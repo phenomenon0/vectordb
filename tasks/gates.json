@@ -15,7 +15,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "74b9e6559f6ac1e0e06951eb7e4eeec8e78a7d05",
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-vet-cgo0/receipt.json",
@@ -57,7 +57,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "74b9e6559f6ac1e0e06951eb7e4eeec8e78a7d05",
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-short/receipt.json",
@@ -79,7 +79,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "74b9e6559f6ac1e0e06951eb7e4eeec8e78a7d05",
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-race/receipt.json",
@@ -110,7 +110,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "9a307586dd2bd7506a162b3bb882af7deffb2c15",
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/python-unit/receipt.json",
@@ -444,8 +444,14 @@
         "cmd/deepdata-mcp"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": ".deepdata-run/checks/go-mcp/receipt.json",
+        "ci_run": null
+      },
       "note": "the go-mcp check greps ci.yml for deepdata-mcp before running the package tests; landed with CTL-03"
     },
     {
@@ -639,7 +645,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "9a307586dd2bd7506a162b3bb882af7deffb2c15",
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": null,
@@ -659,13 +665,13 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "9a307586dd2bd7506a162b3bb882af7deffb2c15",
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": null,
         "ci_run": null
       },
-      "note": "promoted with the S3 slice (c07a47b), re-run at 9a30758 after todo.md's next action moved to CTL-02; the three files carry no checkboxes and point at the ledger"
+      "note": "promoted with the S3 slice (c07a47b), re-run at 9a30758 and 0cdf4a7 as todo.md's next action moved to CTL-02 then CTL-04; the three files carry no checkboxes and point at the ledger"
     },
     {
       "id": "DOC-03",
@@ -731,7 +737,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "74b9e6559f6ac1e0e06951eb7e4eeec8e78a7d05",
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-apierror/receipt.json",
@@ -755,7 +761,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "74b9e6559f6ac1e0e06951eb7e4eeec8e78a7d05",
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-embed/receipt.json",
@@ -772,8 +778,14 @@
         "api"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": ".deepdata-run/checks/go-mcp/receipt.json",
+        "ci_run": null
+      },
       "note": "plan 5.7; six verbs whose inputSchema/outputSchema are the api/contract/v3 schema files verbatim (TestToolSchemasAreTheContractFiles); the check runs against an httptest stand-in, never a live server"
     },
     {
