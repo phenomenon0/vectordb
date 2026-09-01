@@ -15,7 +15,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-vet-cgo0/receipt.json",
@@ -35,7 +35,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "74b9e6559f6ac1e0e06951eb7e4eeec8e78a7d05",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-storage/receipt.json",
@@ -57,7 +57,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-short/receipt.json",
@@ -79,7 +79,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-race/receipt.json",
@@ -110,7 +110,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/python-unit/receipt.json",
@@ -294,13 +294,13 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "f5d45827baed2776827ea3ac1f3cb162041a352e",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-07-22",
+        "date": "2026-09-01",
         "receipt": null,
-        "ci_run": "https://github.com/phenomenon0/vectordb/actions/runs/29977008196"
+        "ci_run": null
       },
-      "note": "CI run on PR #4 checked out f5d4582; fingerprint is the clean-tree constant because CI builds the committed tree"
+      "note": "CI run https://github.com/phenomenon0/vectordb/actions/runs/29977008196 on PR #4 checked out f5d4582; re-run locally at 7db4878 (exit 0) after CTL-02/CTL-04 changed api/ (texts, embedding, score_direction, query_time_ms, request_id; operations.json); fingerprint is the clean-tree constant"
     },
     {
       "id": "REL-02",
@@ -315,13 +315,13 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "b1f28bef6f11f2154266a3c8a27db378e55d4d03",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-08-21",
+        "date": "2026-09-01",
         "receipt": null,
         "ci_run": null
       },
-      "note": "todo.md:198 box closed at b1f28be; re-verified 2026-09-01 with git cat-file -e b1f28be:LICENSE (Apache License 2.0)"
+      "note": "todo.md:198 box closed at b1f28be; re-verified 2026-09-01 with git cat-file -e b1f28be:LICENSE (Apache License 2.0); re-run at 7db4878 (command exit 0) after the docs phase and CTL-04 rewrote README.md"
     },
     {
       "id": "REL-03",
@@ -337,13 +337,13 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "442cdb68c23e2de9b40767f8ffd514e4b6b664bd",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-08-21",
+        "date": "2026-09-01",
         "receipt": null,
         "ci_run": null
       },
-      "note": "todo.md:212 cowrie box closed at 442cdb6; re-verified 2026-09-01: tidy -diff exit 0 on a git archive of 442cdb6 (clean by construction). cowrie/shard/sqlite modules still listed: SYS-03"
+      "note": "todo.md:212 cowrie box closed at 442cdb6; re-verified 2026-09-01: tidy -diff exit 0 on a git archive of 442cdb6 (clean by construction). cowrie/shard/sqlite modules still listed: SYS-03; re-run at 7db4878: tidy -diff exit 0"
     },
     {
       "id": "REL-04",
@@ -446,7 +446,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-mcp/receipt.json",
@@ -548,13 +548,13 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "9a307586dd2bd7506a162b3bb882af7deffb2c15",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": null,
         "ci_run": null
       },
-      "note": "session-verified at 9a30758 (command exit 0) after CTL-01 wrapped durable_store.go errors in sentinels; earlier at 39bfe42: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt"
+      "note": "session-verified at 9a30758 (command exit 0) after CTL-01 wrapped durable_store.go errors in sentinels; earlier at 39bfe42: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt; re-run at 7db4878 (exit 0) after CTL-05's usage sidecar and SYS-02's index vocabulary changed durable_store.go"
     },
     {
       "id": "RCV-02",
@@ -629,7 +629,7 @@
     {
       "id": "DOC-01",
       "statement": "docs contract linter passes on the tree (scripts/check_docs_contract.py)",
-      "command": "DOC_ALLOW_R3_SKIP=1 python3 scripts/check_docs_contract.py",
+      "command": "python3 scripts/check_docs_contract.py",
       "scope": [
         "README.md",
         "CHANGELOG.md",
@@ -645,18 +645,18 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": null,
         "ci_run": null
       },
-      "note": "R3 (generated route table) is a SKIP until DOC-03 lands the routes subcommand; .github/workflows/ci.yml runs this same command. Scope excludes the generated render: every promotion rewrites it, and gates.py check already proves it equals a fresh render."
+      "note": "R3 (generated route table) is live since CTL-04/DOC-03 landed the routes subcommand; .github/workflows/ci.yml runs this same command. Scope excludes the generated render: every promotion rewrites it, and gates.py check already proves it equals a fresh render."
     },
     {
       "id": "DOC-02",
       "statement": "tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing at the ledger",
-      "command": "DOC_ALLOW_R3_SKIP=1 python3 scripts/check_docs_contract.py",
+      "command": "python3 scripts/check_docs_contract.py",
       "scope": [
         "tasks/todo.md",
         "tasks/PROTOCOL.md",
@@ -665,13 +665,13 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": null,
         "ci_run": null
       },
-      "note": "promoted with the S3 slice (c07a47b), re-run at 9a30758 and 0cdf4a7 as todo.md's next action moved to CTL-02 then CTL-04; the three files carry no checkboxes and point at the ledger"
+      "note": "promoted with the S3 slice (c07a47b), re-run at 9a30758, 0cdf4a7 and 7db4878 as todo.md's next action moved to CTL-02, CTL-04 then SYS-03; the three files carry no checkboxes and point at the ledger"
     },
     {
       "id": "DOC-03",
@@ -682,9 +682,15 @@
         "internal/collection/API.md"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
-      "note": "the route table in internal/collection/API.md is the generated:http-routes block, rendered from `go run ./cmd/deepdata routes` via api/contract/v3/operations.json; R3 no longer skips, so the linter run without DOC_ALLOW_R3_SKIP is the receipt"
+      "status": "pass",
+      "evidence": {
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "the route table in internal/collection/API.md is the generated:http-routes block, rendered from `go run ./cmd/deepdata routes` via api/contract/v3/operations.json; R3 no longer skips, so the linter run without DOC_ALLOW_R3_SKIP is the receipt; linter exit 0 at 7db4878"
     },
     {
       "id": "PUB-01",
@@ -737,7 +743,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-apierror/receipt.json",
@@ -761,7 +767,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-embed/receipt.json",
@@ -780,7 +786,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "0cdf4a784f96664b8ab18c83ff974aa745f800e8",
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-01",
         "receipt": ".deepdata-run/checks/go-mcp/receipt.json",
@@ -796,8 +802,14 @@
         "cmd/deepdata"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": ".deepdata-run/checks/go-contract/receipt.json",
+        "ci_run": null
+      },
       "note": "api/contract/v3/operations.json is the operation list; GET /v3/status and `go run ./cmd/deepdata routes` are its runtime projections; search answers carry score_direction, query_time_ms and request_id; collection reads carry per-field score_direction; collection list and get are read-gated. The check runs the drift, status, routes and permission tests plus the Python contract test. Unblocks DOC-03."
     },
     {
@@ -809,22 +821,34 @@
         "internal/collection"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": ".deepdata-run/checks/go-usage/receipt.json",
+        "ci_run": null
+      },
       "note": "DurableStore persists the usage tracker to a <basePath>.usage.json sidecar with each snapshot and on close, and reloads it at open (internal/collection/durable_store.go). Durability class B: an unreadable, corrupt or version-mismatched sidecar is logged and discarded whole, the tracker starts empty and the collection stays up with no fault latched; DurableStore.UsageLoaded reports the loss for a later status signal and is false only when a sidecar existed and was discarded. The check runs the internal/collection Usage tests plain and under -race."
     },
     {
       "id": "SYS-01",
-      "statement": "serverRuntime extracted from cmd/deepdata main; NewVectorStore has zero callers",
+      "statement": "serverRuntime extracted from cmd/deepdata main; func main() constructs no VectorStore and NewVectorStore has no live caller",
       "command": "scripts/hardening_check.sh go-runtime",
       "scope": [
         "cmd/deepdata",
         "internal"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
-      "note": "cmd/deepdata/runtime.go holds serverRuntime, the process-wide auth and limit state (api token, JWT manager, require-auth flag, ACL, tenant quotas, global limiter, canonical tenant limiter, failed-auth limiter) that the V3 HTTP handler and the gRPC interceptor now take directly, so func main() never constructs the legacy VectorStore."
+      "status": "pass",
+      "evidence": {
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": ".deepdata-run/checks/go-runtime/receipt.json",
+        "ci_run": null
+      },
+      "note": "cmd/deepdata/runtime.go holds serverRuntime, the process-wide auth and limit state (api token, JWT manager, require-auth flag, ACL, tenant quotas, global limiter, canonical tenant limiter, failed-auth limiter) that the V3 HTTP handler and the gRPC interceptor now take directly, so func main() never constructs the legacy VectorStore. NewVectorStore itself and loadOrInitStore (main.go) survive for the offline migration tests that call them; both go with SYS-03."
     },
     {
       "id": "SYS-02",
@@ -836,8 +860,14 @@
         "sdk/python"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": ".deepdata-run/checks/go-indextypes/receipt.json",
+        "ci_run": null
+      },
       "note": "collection.IndexTypes in internal/collection/types.go is the one vocabulary; ParseIndexType, both schema validators, the index constructors, capabilities.index_types and the contract enum all derive from or are drift-tested against it."
     },
     {
@@ -878,9 +908,15 @@
         "internal/graph"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
-      "note": ""
+      "status": "pass",
+      "evidence": {
+        "commit": "7db4878debe1fa90972da778996560f21af5d3dc",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-01",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "docs/decisions/0008-graph-and-extraction-return-as-signals-over-text-in.md (f4a929f) records the decision; internal/graph and internal/extraction stay dormant behind the canonical wall until a gate schedules them"
     },
     {
       "id": "MEM-02",
