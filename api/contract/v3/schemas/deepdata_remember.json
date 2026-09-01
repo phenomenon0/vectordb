@@ -1,0 +1,70 @@
+{
+ "input": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Store 1-100 items in a collection. Give each item text (the server embeds it for every embedding-bound field and it is kept at metadata.text) or vectors you computed. Items with an id replace that document; items without one get a server-assigned id.",
+  "properties": {
+   "items": {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": 100,
+    "items": {
+     "type": "object",
+     "properties": {
+      "text": {
+       "type": "string",
+       "minLength": 1
+      },
+      "vectors": {
+       "type": "object",
+       "description": "Field name to vector: a dense float array, or a sparse {indices, values, dim} object. A schema field appears in vectors or is covered by text, never both.",
+       "minProperties": 1
+      },
+      "metadata": {
+       "type": "object",
+       "description": "Arbitrary JSON metadata stored with the document. Keep the text under the 'text' key if you want it back from recall."
+      },
+      "id": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "Insert-or-replace at this id; omit to let the server assign one."
+      }
+     },
+     "additionalProperties": false,
+     "description": "Exactly one of text and vectors."
+    }
+   },
+   "collection": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9_-]{1,64}$",
+    "description": "Collection name; defaults to DEEPDATA_COLLECTION (default 'memory')."
+   }
+  },
+  "required": [
+   "items"
+  ],
+  "additionalProperties": false
+ },
+ "output": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "ids": {
+    "type": "array",
+    "items": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "description": "Stored document ids, in item order."
+   },
+   "count": {
+    "type": "integer"
+   }
+  },
+  "required": [
+   "ids",
+   "count"
+  ],
+  "additionalProperties": false
+ }
+}

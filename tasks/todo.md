@@ -1,6 +1,6 @@
 # DeepData — plan
 
-Next action: CTL-03 — MCP server rewritten on the shared api/contract package.
+Next action: CTL-04 — self-description: routes subcommand and per-result confidence.
 
 Status lives only in [tasks/gates.json](gates.json), rendered to [docs/PRE_RELEASE_STATUS.md](../docs/PRE_RELEASE_STATUS.md).
 This file holds ordering and dependencies; it has no checkboxes. Gate ids below name the ledger row.

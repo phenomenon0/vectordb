@@ -1,0 +1,94 @@
+{
+ "input": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Describe one collection (name) or list every collection of this tenant (no arguments; listing needs the admin permission until CTL-04, describing one needs only read).",
+  "properties": {
+   "name": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+   }
+  },
+  "additionalProperties": false
+ },
+ "output": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "collections": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+         },
+         "type": {
+          "type": "string",
+          "enum": [
+           "dense",
+           "sparse",
+           "binary"
+          ]
+         },
+         "dim": {
+          "type": "integer"
+         },
+         "index": {
+          "type": "object"
+         },
+         "embedding": {
+          "type": "object",
+          "properties": {
+           "provider": {
+            "type": "string"
+           },
+           "model": {
+            "type": "string"
+           }
+          },
+          "additionalProperties": false,
+          "required": [
+           "provider"
+          ]
+         }
+        },
+        "additionalProperties": true,
+        "required": [
+         "name",
+         "type",
+         "dim"
+        ]
+       }
+      },
+      "doc_count": {
+       "type": "integer"
+      },
+      "description": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": true,
+     "required": [
+      "name",
+      "fields"
+     ]
+    }
+   }
+  },
+  "required": [
+   "collections"
+  ],
+  "additionalProperties": false
+ }
+}

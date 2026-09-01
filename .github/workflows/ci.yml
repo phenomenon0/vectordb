@@ -52,9 +52,11 @@ jobs:
       - name: Vet the supported server surface
         run: |
           go vet \
+            ./api/contract \
             ./api/gen/deepdata/v1 \
             ./api/gen/deepdata/v3 \
             ./cmd/deepdata \
+            ./cmd/deepdata-mcp \
             ./internal/collection \
             ./internal/security \
             ./internal/storage \
@@ -64,9 +66,11 @@ jobs:
       - name: Test the supported server surface
         run: |
           go test -short -timeout 600s -count=1 \
+            ./api/contract \
             ./api/gen/deepdata/v1 \
             ./api/gen/deepdata/v3 \
             ./cmd/deepdata \
+            ./cmd/deepdata-mcp \
             ./internal/collection \
             ./internal/cowrieutil \
             ./internal/encoding \

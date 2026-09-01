@@ -1,0 +1,36 @@
+{
+ "input": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Delete one document by id. Deleting an id that is already gone succeeds.",
+  "properties": {
+   "id": {
+    "type": "integer",
+    "minimum": 1
+   },
+   "collection": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9_-]{1,64}$",
+    "description": "Collection name; defaults to DEEPDATA_COLLECTION (default 'memory')."
+   }
+  },
+  "required": [
+   "id"
+  ],
+  "additionalProperties": false
+ },
+ "output": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "deleted": {
+    "type": "integer",
+    "minimum": 1
+   }
+  },
+  "required": [
+   "deleted"
+  ],
+  "additionalProperties": false
+ }
+}

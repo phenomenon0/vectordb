@@ -24,6 +24,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHECKED_GLOBS = [
     "README.md",
     "CHANGELOG.md",
+    "api/contract/v3/CONTRACT.md",
     "docs/**/*.md",
     "internal/collection/API.md",
     "sdk/python/README.md",

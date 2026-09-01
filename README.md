@@ -9,13 +9,14 @@ rendered from `tasks/gates.json` by `scripts/gates.py`. Map: [docs/ARCHITECTURE.
 ## Connect an agent (MCP)
 
 `cmd/deepdata-mcp` is a stdio MCP server that forwards tool calls to a running DeepData server over the HTTP
-contract. It exposes five tools — `search`, `insert`, `upsert`, `get_document`, `list_collections` — and the three
-that carry vectors (`search`, `insert`, `upsert`) take `vectors` the caller has computed or `texts` for fields that bind an embedding (`fieldMaps`, `cmd/deepdata-mcp/main.go:346`, `:442`).
-It is configured by `DEEPDATA_URL`, `DEEPDATA_TENANT` and `DEEPDATA_API_KEY` (`cmd/deepdata-mcp/main.go:117-129`). Build, Claude
-Desktop configuration, per-tool arguments and the error shape: [docs/mcp.md](docs/mcp.md). The rewrite of the MCP server onto a shared
-contract package with the six memory verbs deepdata_recall, deepdata_remember, deepdata_forget, deepdata_get,
-deepdata_collections, deepdata_create_collection and the resources deepdata://contract and deepdata://status
-is a plan (gate CTL-03).
+contract. It exposes six memory verbs — `deepdata_recall`, `deepdata_remember`, `deepdata_forget`, `deepdata_get`,
+`deepdata_collections`, `deepdata_create_collection` — whose `inputSchema`/`outputSchema` are the JSON Schema files under
+`api/contract/v3/schemas/` verbatim, and two resources, `deepdata://contract` (the agent contract, `api/contract/v3/CONTRACT.md`)
+and `deepdata://status` (the server's `/readyz`). An agent speaks text: `deepdata_recall` and `deepdata_remember` embed it on
+every field of the collection that binds an embedding, and the `memory` preset of `deepdata_create_collection` builds such a
+collection from the server's own embedder. It is configured by `DEEPDATA_URL`, `DEEPDATA_TENANT`, `DEEPDATA_COLLECTION` and
+`DEEPDATA_API_KEY` (`cmd/deepdata-mcp/main.go:213-216`); the tenant is never a tool argument. Build, Claude Desktop
+configuration, per-verb arguments and the error shape: [docs/mcp.md](docs/mcp.md).
 
 ## Contract in one screen
 

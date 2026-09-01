@@ -26,6 +26,7 @@ list_checks() {
         go-vet-cgo0 \
         go-apierror \
         go-embed \
+        go-mcp \
         python-unit \
         python-mypy \
         python-build \
@@ -81,6 +82,10 @@ case "$CHECK_NAME" in
     go-embed)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="DEEPDATA_EMBEDDER=hash GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 300s -run 'Embed|Text' ./internal/collection ./cmd/deepdata ./cmd/deepdata-mcp"
+        ;;
+    go-mcp)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="grep -q deepdata-mcp .github/workflows/ci.yml && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 300s ./cmd/deepdata-mcp ./api/contract"
         ;;
     python-unit)
         CHECK_CWD="$REPO_ROOT/sdk/python"
@@ -145,6 +150,12 @@ run_check() {
             timeout 360s env DEEPDATA_EMBEDDER=hash GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
                 go test -count=1 -timeout 300s -run 'Embed|Text' \
                 ./internal/collection ./cmd/deepdata ./cmd/deepdata-mcp
+            ;;
+        go-mcp)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            grep -q deepdata-mcp .github/workflows/ci.yml && \
+                timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 300s ./cmd/deepdata-mcp ./api/contract
             ;;
         python-unit)
             timeout 360s python -m pytest tests -q

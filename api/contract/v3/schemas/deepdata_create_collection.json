@@ -1,0 +1,156 @@
+{
+ "input": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Create a collection. preset 'memory' builds the text-in/text-out shape from the server's embedder (a dense hnsw field 'text' bound to it, plus a sparse bm25 field 'keywords' as fallback); explicit fields give full control. Exactly one of preset and fields.",
+  "properties": {
+   "name": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+   },
+   "preset": {
+    "type": "string",
+    "enum": [
+     "memory"
+    ]
+   },
+   "fields": {
+    "type": "array",
+    "minItems": 1,
+    "items": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "type": {
+       "type": "string",
+       "enum": [
+        "dense",
+        "sparse"
+       ]
+      },
+      "dim": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "Omit on a dense embedding-bound field to take the embedder's dim."
+      },
+      "index": {
+       "type": "object",
+       "properties": {
+        "type": {
+         "type": "string",
+         "enum": [
+          "hnsw",
+          "flat",
+          "inverted"
+         ]
+        },
+        "params": {
+         "type": "object"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "type"
+       ]
+      },
+      "embedding": {
+       "type": "object",
+       "properties": {
+        "provider": {
+         "type": "string",
+         "description": "The server's embedder provider for dense fields; 'bm25' for sparse fields."
+        },
+        "model": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "provider"
+       ],
+       "description": "Bind the field to text embedding so callers can send text instead of vectors."
+      }
+     },
+     "additionalProperties": false,
+     "required": [
+      "name",
+      "type",
+      "index"
+     ]
+    }
+   },
+   "description": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "name"
+  ],
+  "additionalProperties": false
+ },
+ "output": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "created": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+   },
+   "fields": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "type": {
+       "type": "string",
+       "enum": [
+        "dense",
+        "sparse",
+        "binary"
+       ]
+      },
+      "dim": {
+       "type": "integer"
+      },
+      "index": {
+       "type": "object"
+      },
+      "embedding": {
+       "type": "object",
+       "properties": {
+        "provider": {
+         "type": "string"
+        },
+        "model": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "provider"
+       ]
+      }
+     },
+     "additionalProperties": true,
+     "required": [
+      "name",
+      "type",
+      "dim"
+     ]
+    },
+    "description": "The resolved schema (dim and embedding filled by the server)."
+   }
+  },
+  "required": [
+   "created"
+  ],
+  "additionalProperties": false
+ }
+}

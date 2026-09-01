@@ -438,7 +438,7 @@
     {
       "id": "CI-05",
       "statement": "cmd/deepdata-mcp is in the CI package list and its tests run",
-      "command": "grep -n deepdata-mcp .github/workflows/ci.yml",
+      "command": "scripts/hardening_check.sh go-mcp",
       "scope": [
         ".github/workflows/ci.yml",
         "cmd/deepdata-mcp"
@@ -446,7 +446,7 @@
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": "absent from every package list today; lands with CTL-03"
+      "note": "the go-mcp check greps ci.yml for deepdata-mcp before running the package tests; landed with CTL-03"
     },
     {
       "id": "CI-06",
@@ -766,7 +766,7 @@
     {
       "id": "CTL-03",
       "statement": "MCP server rewritten on the shared api/contract package and covered by CI-05",
-      "command": "GOTOOLCHAIN=go1.25.12 go test ./cmd/deepdata-mcp ./api/contract",
+      "command": "scripts/hardening_check.sh go-mcp",
       "scope": [
         "cmd/deepdata-mcp",
         "api"
@@ -774,7 +774,7 @@
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": ""
+      "note": "plan 5.7; six verbs whose inputSchema/outputSchema are the api/contract/v3 schema files verbatim (TestToolSchemasAreTheContractFiles); the check runs against an httptest stand-in, never a live server"
     },
     {
       "id": "CTL-04",

@@ -84,6 +84,18 @@ assembled.
   `embedded_by`; new codes `embedding_mismatch` (409) and
   `embedder_unavailable` (503); `/readyz` reports `embedder`; sparse `bm25`
   bindings use the deterministic `TextToSparse` (gate CTL-02).
+- `api/contract`: the v3 agent contract as embedded JSON Schema, one
+  `{input, output}` file per MCP verb plus the error envelope, and
+  `CONTRACT.md`. `cmd/deepdata-mcp` rewritten on it: six memory verbs
+  (`deepdata_recall`, `deepdata_remember`, `deepdata_forget`, `deepdata_get`,
+  `deepdata_collections`, `deepdata_create_collection`) whose
+  `inputSchema`/`outputSchema` are the contract files verbatim, `outputSchema`
+  plus `structuredContent` and safety annotations on every tool, resources
+  `deepdata://contract` and `deepdata://status`, text routed to every bound
+  field with a dense→sparse fallback by default, a `max_chars` token budget
+  with `truncated` plus a steering hint, `DEEPDATA_COLLECTION`, and a place in
+  the CI vet and test lists (gates CTL-03, CI-05). The five untyped tools
+  `search`, `insert`, `upsert`, `get_document`, `list_collections` are gone.
 - Normal startup exposes only the canonical V3 HTTP routes and V3 gRPC
   service. Legacy root/V2 mutation APIs and advanced recommendation,
   discovery, embedding-provider, GraphRAG, extraction, and feedback handlers
