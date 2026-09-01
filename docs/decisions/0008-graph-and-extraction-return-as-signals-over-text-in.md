@@ -1,7 +1,7 @@
 # 0008 — Graph and extraction return only as signals over text-in
 
 - Date: 2026-09-01
-- Status: proposed (accepted together with ADR 0006; until then both packages stay dormant)
+- Status: accepted (owner, 2026-09-01, together with ADR 0006); both packages stay dormant until the class-C graph signal is built
 - Supersedes: — (refines ADR 0006's "graph and extraction stay dormant until MEM-01 records their own ADR")
 - Evidence: tasks/journal/2026-09-01-redesign-architects.md — dormant-tree rows (:37-38), durability classes (:126-127), feedback row (:142), architect B on graph as class C built lazily (:680, :781) and extraction as an out-of-band client (:682)
 

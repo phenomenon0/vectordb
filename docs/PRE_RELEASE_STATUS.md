@@ -74,8 +74,8 @@ Readiness: 25 release gates, 10 pass and fresh, 7 pass (stale), 8 not passed. A 
 
 | DOC | status | commit | date | statement |
 |---|---|---|---|---|
-| DOC-01 | pass | 7db4878 | 2026-09-01 | docs contract linter passes on the tree (scripts/check_docs_contract.py) |
-| DOC-02 | pass | 7db4878 | 2026-09-01 | tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing… |
+| DOC-01 | pass (stale) | 7db4878 | 2026-09-01 | docs contract linter passes on the tree (scripts/check_docs_contract.py) |
+| DOC-02 | pass (stale) | 7db4878 | 2026-09-01 | tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing… |
 | DOC-03 | pass | 7db4878 | 2026-09-01 | HTTP route table in internal/collection/API.md is generated from the routes subcommand |
 
 | PUB | status | commit | date | statement |
@@ -101,7 +101,7 @@ Readiness: 25 release gates, 10 pass and fresh, 7 pass (stale), 8 not passed. A 
 
 | MEM | status | commit | date | statement |
 |---|---|---|---|---|
-| MEM-01 | pass | 7db4878 | 2026-09-01 | ADR recorded for graph and extraction revival before any code returns |
+| MEM-01 | pass (stale) | 7db4878 | 2026-09-01 | ADR recorded for graph and extraction revival before any code returns |
 | MEM-02 | open | — | — | POST /docs/{id}/feedback stores feedback durably and is covered by tests |
 
 | MED | status | commit | date | statement |

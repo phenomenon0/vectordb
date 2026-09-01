@@ -27,7 +27,7 @@ Control surface (journal 5.2, 5.4-5.9):
 8. CTL-05 — durable usage records survive restart · after CTL-04
 
 Systems tower (journal 5.10):
-9. SYS-01 — serverRuntime extracted from main; NewVectorStore has zero callers · after CTL-05
+9. SYS-01 — serverRuntime extracted from main; func main() constructs no VectorStore and NewVectorStore has no live caller · after CTL-05
 10. SYS-02 — one IndexTypes vocabulary shared by server, SDK and docs · after SYS-01
 11. SYS-03 — archive tag exists; retired packages deleted; cowrie, shard, sqlite removed from go.mod · after SYS-02
 12. SYS-04 — Canonical prefix dropped; every live package has a doc.go · after SYS-03
@@ -70,11 +70,11 @@ PUB-01..03 and SYS-03's archive tag need owner authority (gates.json notes); no 
 Each item names the decision or gate that owns it; none is scheduled:
 - Module rename to deepdata: not done; SYS-04 drops the Canonical prefix instead (journal 09-01, section 5.3).
 - OpenAPI: not generated until a human consumer exists; CTL-03's api/contract JSON Schema is the source (section 5.3).
-- GraphRAG, graph reranking and extraction revival: no code returns before MEM-01's ADR; internal/graph and internal/extraction stay dormant behind the canonical wall, internal/feedback goes with SYS-03's deletion (ADR 0006, proposed).
+- GraphRAG, graph reranking and extraction revival: no code returns before MEM-01's ADR; internal/graph and internal/extraction stay dormant behind the canonical wall, internal/feedback goes with SYS-03's deletion (ADR 0006, accepted 2026-09-01).
 - Benchmark reruns: none; benchmarks/results/ and benchmarks/competitive/live/ are frozen history, docs/BENCHMARKS.md holds the live numbers, [ADR 0005](../docs/decisions/0005-ingest-levers-segments-then-allocs-then-group-commit.md) fixes the ingest-lever order.
-- Code-tree deletion: no package is deleted before SYS-03's archive tag archive/pre-narrowing-v2 exists (the tag needs owner authority).
+- Code-tree deletion: no package is deleted before SYS-03's archive tag archive/pre-narrowing-v2 exists (owner authority granted 2026-09-01; the tag is local until a push is authorised).
 - Image and video: vectors-in today over ADR 0001 (frames embedded at the capture side, blobs stay outside, time-window collections dropped whole for retention); the ephemeral collection class is MED-01, after SYS-04 ([ADR 0009](../docs/decisions/0009-media-is-vectors-in-ephemeral-collections-next.md)).
-- desktop/, the web UI embed and tests/ui: retirement is [ADR 0006](../docs/decisions/0006-re-expand-to-agent-memory-platform.md), status proposed, awaiting the owner; until then they are dormant, not deleted.
+- desktop/, the web UI embed and tests/ui: retirement is [ADR 0006](../docs/decisions/0006-re-expand-to-agent-memory-platform.md), accepted by the owner on 2026-09-01 (no user of either UI exists yet; the platform is planned for agents); they are deleted under SYS-03.
 
 ## Where truth lives
 
