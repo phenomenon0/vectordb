@@ -101,7 +101,8 @@ collection is re-read on the next text call (main.go:272; test TestSchemaCacheDr
 
 - `deepdata://contract` — `api/contract/v3/CONTRACT.md` as `text/markdown`.
 - `deepdata://status` — the server's `GET /v3/status` body as `application/json` (version, the HTTP/gRPC/MCP
-  operation lists, the embedder, limits, capabilities); when the server is unreachable the error text is the
+  operation lists, the embedder, limits, capabilities, and `signals.usage.loaded`, false only when
+  persisted usage records were discarded); when the server is unreachable the error text is the
   content.
 - Any other URI is JSON-RPC error `-32002`.
 

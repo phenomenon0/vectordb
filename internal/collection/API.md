@@ -23,6 +23,18 @@ The server owns one data directory and holds a lifetime filesystem lock. A
 second writer is rejected. Persistent startup on Windows and macOS is rejected
 because their filesystem semantics are not release-qualified.
 
+Inside that directory the store keeps one file prefix and writes its artifacts
+beside it: `<prefix>.journal` and `<prefix>.snapshot` hold canonical state
+(durability class A, corruption fails the store closed), and
+`<prefix>.usage.json` holds the per-collection `UsageTracker` records that
+`usage_boost` reads (durability class B). The sidecar is rewritten atomically
+with every snapshot and on graceful close, and read once at open. It is a
+ranking hint, not data: no sidecar is a normal open, and one that is
+unreadable, corrupt, or of an unknown version is logged as an error and
+discarded whole — the collection stays up answering by similarity with an
+empty tracker, and no fault is latched. See the durability classes in
+[the architecture map](../../docs/ARCHITECTURE.md#durability-classes-journal-52).
+
 For production, configure either a static bearer token or JWT verification and
 require authentication:
 
@@ -69,8 +81,11 @@ checked against the dispatcher and the proto service by
 <!-- /generated -->
 
 `GET /v3/status` is the server's self-description: build version, the operation
-list above, the embedder it will use, its limits and its capabilities
-(cmd/deepdata/status.go:40).
+list above, the embedder it will use, its limits, its capabilities and its
+accreted-signal state (cmd/deepdata/status.go:41). `signals.usage.loaded` is
+always present and is false only when a usage sidecar existed and was
+discarded, so an operator can tell "these ranking hints were lost" from "this
+store never had any".
 
 Tenant and collection path identifiers must contain 1–64 ASCII letters,
 digits, hyphens, or underscores. JSON request bodies are strict; unknown fields

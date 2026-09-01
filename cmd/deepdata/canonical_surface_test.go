@@ -20,12 +20,19 @@ import (
 
 func newCanonicalSurfaceTestHandler(t *testing.T) http.Handler {
 	t.Helper()
+	return newCanonicalSurfaceTestHandlerAt(t, filepath.Join(t.TempDir(), "index.gob"))
+}
+
+// newCanonicalSurfaceTestHandlerAt is the same handler over a caller-chosen
+// data directory, so a test can seed on-disk state the server must find at
+// open.
+func newCanonicalSurfaceTestHandlerAt(t *testing.T, indexPath string) http.Handler {
+	t.Helper()
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "0")
 	store := NewVectorStore(8, 4)
 	embedder := NewHashEmbedder(4)
-	indexPath := filepath.Join(t.TempDir(), "index.gob")
 	handler, collections := newCanonicalHTTPHandler(store, embedder, nil, indexPath)
 	if err := collections.PersistenceError(); err != nil {
 		t.Fatalf("open canonical persistence: %v", err)

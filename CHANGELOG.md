@@ -111,6 +111,17 @@ assembled.
   Drift tests hold the operation list against the proto service, the HTTP
   dispatcher, the Go json tags, the `Canonical*` caps and the Python models
   (gates CTL-04, DOC-03).
+- Usage records now survive a restart. `DurableStore` writes every
+  collection's `UsageTracker` to a `<basePath>.usage.json` sidecar with each
+  snapshot and on close, atomically (temp file, rename, directory fsync), and
+  reloads it at open, so a `usage_boost` search reorders the same way after a
+  restart as before it. The sidecar is durability class B: an absent one is
+  normal, and one that is unreadable, corrupt, or of an unknown version is
+  logged as an error and discarded whole — the tracker starts empty, the
+  collection stays up answering by similarity, and no fault is latched.
+  `DurableStore.UsageLoaded` reports the loss, so it is false only when a
+  sidecar existed and was discarded, and `GET /v3/status` projects it as
+  `signals.usage.loaded` (gate CTL-05).
 - Normal startup exposes only the canonical V3 HTTP routes and V3 gRPC
   service. Legacy root/V2 mutation APIs and advanced recommendation,
   discovery, embedding-provider, GraphRAG, extraction, and feedback handlers

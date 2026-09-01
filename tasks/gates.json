@@ -803,7 +803,7 @@
     {
       "id": "CTL-05",
       "statement": "durable usage records survive restart",
-      "command": "GOTOOLCHAIN=go1.25.12 go test ./cmd/deepdata ./internal/collection -run Usage",
+      "command": "scripts/hardening_check.sh go-usage",
       "scope": [
         "cmd/deepdata",
         "internal/collection"
@@ -811,7 +811,7 @@
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": ""
+      "note": "DurableStore persists the usage tracker to a <basePath>.usage.json sidecar with each snapshot and on close, and reloads it at open (internal/collection/durable_store.go). Durability class B: an unreadable, corrupt or version-mismatched sidecar is logged and discarded whole, the tracker starts empty and the collection stays up with no fault latched; DurableStore.UsageLoaded reports the loss for a later status signal and is false only when a sidecar existed and was discarded. The check runs the internal/collection Usage tests plain and under -race."
     },
     {
       "id": "SYS-01",

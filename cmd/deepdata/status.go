@@ -38,7 +38,7 @@ var canonicalFilterOperators = []string{
 // limits from the Canonical* consts and the rate-limit environment, the
 // embedding block from the process embedder — so nothing here can drift
 // from the server that answers.
-func statusPayload(embedder *serverEmbedder, requestID string) (map[string]any, error) {
+func statusPayload(embedder *serverEmbedder, usageLoaded bool, requestID string) (map[string]any, error) {
 	ops, err := contract.Operations()
 	if err != nil {
 		return nil, err
@@ -115,9 +115,14 @@ func statusPayload(embedder *serverEmbedder, requestID string) (map[string]any, 
 				vcollection.IndexTypeInverted.String(),
 			},
 		},
-		// signals is the accreted-signal surface (durability class B). It is
-		// an empty object until a signal is durable enough to name (CTL-05).
-		"signals":    map[string]any{},
+		// signals is the accreted-signal surface (durability class B).
+		// usage.loaded is false only when a usage sidecar existed and was
+		// discarded, so an operator reading false knows ranking hints were
+		// lost and searches answer by similarity alone until they accrete
+		// again (CTL-05).
+		"signals": map[string]any{
+			"usage": map[string]any{"loaded": usageLoaded},
+		},
 		"request_id": requestID,
 	}, nil
 }

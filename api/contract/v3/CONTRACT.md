@@ -74,4 +74,5 @@ Failures return `isError` with a text line `code: message Hint: hint` and the fu
 
 - `deepdata://contract` — this document.
 - `deepdata://status` — the server's `GET /v3/status`: version, the operation list, the
-  embedder it will use, its limits and its capabilities.
+  embedder it will use, its limits, its capabilities, and `signals.usage.loaded`, which is
+  false only when persisted usage records were discarded.

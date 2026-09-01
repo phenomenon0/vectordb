@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"github.com/phenomenon0/vectordb/internal/logging"
 )
 
 const (
@@ -103,6 +106,10 @@ type DurableStore struct {
 	fault  error
 	closed bool
 
+	// usageLoaded records whether the class B usage sidecar was read and
+	// imported at open. It is written once during open and then only read.
+	usageLoaded bool
+
 	// apply is a per-store test seam. Production always points at
 	// applyMutationDirect; an error after append permanently faults the store.
 	apply func(context.Context, canonicalMutation) error
@@ -196,6 +203,9 @@ func openDurableStore(basePath, storagePath string, limits StoreLimits) (*Durabl
 	// consume persistence on every subsequent checkpoint.
 	store.tenants.pruneEmptyManagers()
 	store.activeTenants, store.collectionCount = store.tenants.resourceCounts()
+	// The usage sidecar is class B: it is restored after the canonical state
+	// it annotates, and a failure here can never reach the caller.
+	store.loadUsageSidecar()
 	// Keep the fully validated journal after recovery. Snapshot serialization is
 	// a separate bounded-memory track; invoking the current snapshot writer here
 	// would reintroduce an unbounded startup allocation before callers can choose
@@ -230,6 +240,18 @@ func (s *DurableStore) Err() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.stateErrorLocked()
+}
+
+// UsageLoaded reports whether this store opened with the usage hints it was
+// entitled to. It is false only when a sidecar existed and was discarded —
+// the one case that also logs an error. A store with no sidecar at all had
+// nothing to lose and reports true, so the signal never accuses a fresh
+// deployment of losing data. Transports project it as status
+// signals.usage.loaded.
+func (s *DurableStore) UsageLoaded() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.usageLoaded
 }
 
 func (s *DurableStore) stateErrorLocked() error {
@@ -895,6 +917,126 @@ func (s *DurableStore) commitSnapshotAndCleanupLocked(recovery bool) error {
 	}
 	if err := s.journal.cleanupAll(); err != nil {
 		return fmt.Errorf("clean covered collection journals: %w", err)
+	}
+	s.writeUsageSidecarLocked()
+	return nil
+}
+
+func usageSidecarPath(basePath string) string { return basePath + ".usage.json" }
+
+// usageSidecarDocument is the whole store's class B usage state: one
+// version for the file, then the tracker entries of every collection that
+// has any, keyed by the tenant and collection they belong to.
+type usageSidecarDocument struct {
+	Version     int                      `json:"version"`
+	Collections []usageSidecarCollection `json:"collections"`
+}
+
+type usageSidecarCollection struct {
+	TenantID   string        `json:"tenant_id"`
+	Collection string        `json:"collection"`
+	Entries    []UsageRecord `json:"entries"`
+}
+
+// writeUsageSidecarLocked commits the usage sidecar beside the snapshot
+// that was just written. Class B: every failure is logged and swallowed,
+// because a ranking hint that cannot be persisted must not fail a
+// checkpoint that already committed the canonical state. Caller holds mu.
+//
+// ponytail: whole-file rewrite of every tracked entry on every snapshot.
+// Each collection is capped at usageEntryCap entries, so the cost is
+// bounded but linear in tracked documents; past ~250k entries in a store,
+// move the records into the snapshot format as their own framed section
+// (snapshot.go:276) instead of growing a second full-file write.
+func (s *DurableStore) writeUsageSidecarLocked() {
+	doc := usageSidecarDocument{Version: usageDocumentVersion}
+	for _, tenantID := range s.tenants.listTenantsDirect() {
+		for _, name := range s.tenants.listCollectionsDirect(tenantID) {
+			coll, err := s.tenants.getCollectionDirect(tenantID, name)
+			if err != nil {
+				continue
+			}
+			entries := coll.usage.Export().Entries
+			if len(entries) == 0 {
+				continue
+			}
+			doc.Collections = append(doc.Collections, usageSidecarCollection{
+				TenantID:   tenantID,
+				Collection: name,
+				Entries:    entries,
+			})
+		}
+	}
+	path := usageSidecarPath(s.basePath)
+	data, err := json.Marshal(doc)
+	if err == nil {
+		err = writeCollectionFileAtomic(path, data, 0o600)
+	}
+	if err != nil {
+		logging.Default().Error("usage sidecar not written; ranking hints will be lost on restart",
+			"path", path, "error", err)
+	}
+}
+
+// loadUsageSidecar restores the class B usage state. An absent sidecar is
+// not an error — every data directory written before the sidecar existed
+// has none, and an empty tracker is exactly the right starting state. A
+// sidecar that is present but unreadable, corrupt, or of an unknown
+// version is logged and discarded whole: the collection stays up serving
+// correct-by-similarity answers with no ranking hints, and no fault is
+// latched.
+func (s *DurableStore) loadUsageSidecar() {
+	path := usageSidecarPath(s.basePath)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// Nothing was lost, so nothing is reported lost: a store with no
+		// sidecar had no hints to discard.
+		s.usageLoaded = true
+		return
+	}
+	if err == nil {
+		err = s.importUsageSidecar(data)
+	}
+	if err != nil {
+		logging.Default().Error("usage sidecar discarded; collection stays up without ranking hints",
+			"path", path, "error", err)
+		return
+	}
+	s.usageLoaded = true
+}
+
+// importUsageSidecar validates the whole document before importing any of
+// it, so one bad collection cannot leave the store half-restored.
+// Collections named by the sidecar that no longer exist are skipped: a
+// delete after the last checkpoint is ordinary, not corruption.
+func (s *DurableStore) importUsageSidecar(data []byte) error {
+	var doc usageSidecarDocument
+	if err := decodeCollectionJSON(data, &doc); err != nil {
+		return err
+	}
+	if doc.Version != usageDocumentVersion {
+		return fmt.Errorf("unsupported usage sidecar version %d", doc.Version)
+	}
+	type restore struct {
+		tracker *UsageTracker
+		doc     UsageDocument
+	}
+	pending := make([]restore, 0, len(doc.Collections))
+	for _, entry := range doc.Collections {
+		tracked := UsageDocument{Version: usageDocumentVersion, Entries: entry.Entries}
+		if err := validateUsageDocument(tracked); err != nil {
+			return fmt.Errorf("tenant %s collection %s: %w", entry.TenantID, entry.Collection, err)
+		}
+		coll, err := s.tenants.getCollectionDirect(entry.TenantID, entry.Collection)
+		if err != nil {
+			continue
+		}
+		pending = append(pending, restore{tracker: coll.usage, doc: tracked})
+	}
+	for _, item := range pending {
+		if err := item.tracker.Import(item.doc); err != nil {
+			return err
+		}
 	}
 	return nil
 }

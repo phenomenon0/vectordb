@@ -279,6 +279,19 @@ func (s *CollectionHTTPServer) IsDurable() bool {
 	return s.durableStore != nil
 }
 
+// UsageLoaded reports whether the class B usage records this server opened
+// with were the ones it was entitled to. A memory-only run has no sidecar to
+// lose, so it reports true for the same reason a durable store with no
+// sidecar does: the signal names a loss, not a file read (CTL-05).
+func (s *CollectionHTTPServer) UsageLoaded() bool {
+	s.persistenceMu.Lock()
+	defer s.persistenceMu.Unlock()
+	if s.durableStore == nil {
+		return true
+	}
+	return s.durableStore.UsageLoaded()
+}
+
 // Close checkpoints and releases the lifetime lock for a durable store. It is
 // called only after all HTTP and gRPC handlers have drained.
 func (s *CollectionHTTPServer) Close() error {

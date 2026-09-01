@@ -1525,10 +1525,12 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			return
 		}
 		var embedder *serverEmbedder
+		usageLoaded := true
 		if collectionHTTP != nil {
 			embedder = collectionHTTP.embedder
+			usageLoaded = collectionHTTP.UsageLoaded()
 		}
-		payload, err := statusPayload(embedder, requestIDFromContext(r.Context()))
+		payload, err := statusPayload(embedder, usageLoaded, requestIDFromContext(r.Context()))
 		if err != nil {
 			apierror.WriteHTTP(w, apierror.New(apierror.CodeInternal, "status unavailable"))
 			return

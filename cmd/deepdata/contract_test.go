@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -335,8 +336,12 @@ func TestStatusDescribesTheServerFromTheContract(t *testing.T) {
 			UsageBoost bool     `json:"usage_boost"`
 			IndexTypes []string `json:"index_types"`
 		} `json:"capabilities"`
-		Signals   map[string]any `json:"signals"`
-		RequestID string         `json:"request_id"`
+		Signals struct {
+			Usage struct {
+				Loaded *bool `json:"loaded"`
+			} `json:"usage"`
+		} `json:"signals"`
+		RequestID string `json:"request_id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -377,12 +382,70 @@ func TestStatusDescribesTheServerFromTheContract(t *testing.T) {
 	if !body.Capabilities.Fallback || !body.Capabilities.UsageBoost {
 		t.Error("fallback and usage_boost are engine capabilities and must be reported")
 	}
-	// signals is an object today and stays one when a signal is named.
-	if body.Signals == nil || len(body.Signals) != 0 {
-		t.Errorf("signals = %v, want an empty object", body.Signals)
+	// signals.usage.loaded is always present, so an operator never has to
+	// tell "no ranking hints were lost" apart from "this build cannot say".
+	// This handler opens a fresh store with no sidecar to discard, so the
+	// honest answer is true.
+	if body.Signals.Usage.Loaded == nil {
+		t.Fatal("signals.usage.loaded missing; the class B signal must always be emitted")
+	}
+	if !*body.Signals.Usage.Loaded {
+		t.Error("signals.usage.loaded = false on a store that had no sidecar to lose")
 	}
 	if body.RequestID == "" {
 		t.Error("status must echo the request id it answered under")
+	}
+}
+
+// A discarded usage sidecar is the one case signals.usage.loaded exists to
+// report. The server must come up and keep answering searches — class B is a
+// ranking hint, not data — while telling an operator, through the contract
+// surface and not just a log line, that the hints are gone (CTL-05).
+func TestStatusReportsDiscardedUsageSidecar(t *testing.T) {
+	indexPath := filepath.Join(t.TempDir(), "index.gob")
+	sidecar := indexPath + ".collections.usage.json"
+	if err := os.WriteFile(sidecar, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := newCanonicalSurfaceTestHandlerAt(t, indexPath)
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, req)
+		return resp
+	}
+
+	resp := call(http.MethodGet, "/v3/status", "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /v3/status returned %d: %s", resp.Code, resp.Body.String())
+	}
+	var status struct {
+		Signals struct {
+			Usage struct {
+				Loaded *bool `json:"loaded"`
+			} `json:"usage"`
+		} `json:"signals"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Signals.Usage.Loaded == nil || *status.Signals.Usage.Loaded {
+		t.Errorf("signals.usage.loaded = %v, want false after the sidecar was discarded", status.Signals.Usage.Loaded)
+	}
+
+	create := `{"name":"docs","fields":[{"name":"dense","type":"dense","dim":2,"index":{"type":"flat"}}]}`
+	if resp := call(http.MethodPost, "/v3/tenants/acme/collections", create); resp.Code != http.StatusCreated {
+		t.Fatalf("create returned %d: %s", resp.Code, resp.Body.String())
+	}
+	if resp := call(http.MethodPut, "/v3/tenants/acme/collections/docs/docs/1", `{"vectors":{"dense":[1,0]}}`); resp.Code != http.StatusOK {
+		t.Fatalf("upsert returned %d: %s", resp.Code, resp.Body.String())
+	}
+	if resp := call(http.MethodPost, "/v3/tenants/acme/collections/docs/search", `{"queries":{"dense":[1,0]},"top_k":1}`); resp.Code != http.StatusOK {
+		t.Fatalf("search returned %d after a discarded sidecar: %s", resp.Code, resp.Body.String())
+	}
+	if resp := call(http.MethodGet, "/readyz", ""); resp.Code != http.StatusOK {
+		t.Errorf("/readyz returned %d; a class B discard must not fault the store", resp.Code)
 	}
 }
 

@@ -1,6 +1,7 @@
 package collection
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -32,10 +33,13 @@ const usageMinScore = 1e-6
 // by recording document IDs that searches returned or GetDocument fetched,
 // weighting each hit by count × exponential time decay.
 //
-// Scope: session signal only. It is intentionally NOT durable — restarting
-// the server resets it, and it is never written to the journal, snapshots,
-// or any persisted artifact. It must therefore only ever *nudge* ranking
-// (bounded by UsageBoost), never *replace* the similarity signal.
+// Scope: accreted ranking hint. It is durability class B
+// (docs/ARCHITECTURE.md): DurableStore persists it beside the snapshot as
+// a usage.json sidecar and reloads it at open, but it is never written to
+// the journal or the snapshot itself, and a sidecar that cannot be read is
+// discarded loudly rather than failing the store closed. It must therefore
+// only ever *nudge* ranking (bounded by UsageBoost), never *replace* the
+// similarity signal.
 //
 // The tracker owns its own mutex and may be used while the caller holds
 // Collection.mu in read mode; it must never take Collection.mu.
@@ -132,6 +136,95 @@ func (t *UsageTracker) Len() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.entries)
+}
+
+// usageDocumentVersion is the schema version of an exported usage
+// document. Import accepts no other value: the document is a class B
+// ranking hint, so an unrecognized one is discarded loudly instead of
+// being guessed at or migrated in place.
+const usageDocumentVersion = 1
+
+// UsageRecord is one exported tracker entry. The timestamp is Unix
+// milliseconds so the document does not depend on Go's time encoding or
+// on the writer's location.
+type UsageRecord struct {
+	DocID     uint64 `json:"doc_id"`
+	Count     uint32 `json:"count"`
+	LastHitMS int64  `json:"last_hit_unix_ms"`
+}
+
+// UsageDocument is the versioned export of one tracker: exactly the two
+// fields Score reads (count and last hit), for every entry.
+type UsageDocument struct {
+	Version int           `json:"version"`
+	Entries []UsageRecord `json:"entries"`
+}
+
+// Export returns the tracker's full state, sorted by document ID so that
+// identical tracker state always produces identical bytes.
+func (t *UsageTracker) Export() UsageDocument {
+	doc := UsageDocument{Version: usageDocumentVersion}
+	if t == nil {
+		return doc
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	doc.Entries = make([]UsageRecord, 0, len(t.entries))
+	for id, entry := range t.entries {
+		doc.Entries = append(doc.Entries, UsageRecord{
+			DocID:     id,
+			Count:     entry.count,
+			LastHitMS: entry.lastHit.UnixMilli(),
+		})
+	}
+	sort.Slice(doc.Entries, func(a, b int) bool {
+		return doc.Entries[a].DocID < doc.Entries[b].DocID
+	})
+	return doc
+}
+
+// Import replaces the tracker's state with doc. It reports an error and
+// leaves the tracker untouched when the document is not one this build
+// wrote: a wrong version, an entry Record could never have produced, or
+// more entries than the cap the tracker enforces at runtime.
+func (t *UsageTracker) Import(doc UsageDocument) error {
+	if err := validateUsageDocument(doc); err != nil {
+		return err
+	}
+	if t == nil {
+		return nil
+	}
+	entries := make(map[uint64]*usageEntry, len(doc.Entries))
+	for _, record := range doc.Entries {
+		entries[record.DocID] = &usageEntry{
+			count:   record.Count,
+			lastHit: time.UnixMilli(record.LastHitMS),
+		}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.entries = entries
+	return nil
+}
+
+func validateUsageDocument(doc UsageDocument) error {
+	if doc.Version != usageDocumentVersion {
+		return fmt.Errorf("unsupported usage document version %d", doc.Version)
+	}
+	if len(doc.Entries) > usageEntryCap {
+		return fmt.Errorf("usage document has %d entries, cap is %d", len(doc.Entries), usageEntryCap)
+	}
+	seen := make(map[uint64]struct{}, len(doc.Entries))
+	for _, record := range doc.Entries {
+		if record.DocID == 0 || record.Count == 0 {
+			return fmt.Errorf("usage document entry for document %d has count %d", record.DocID, record.Count)
+		}
+		if _, duplicate := seen[record.DocID]; duplicate {
+			return fmt.Errorf("usage document repeats document %d", record.DocID)
+		}
+		seen[record.DocID] = struct{}{}
+	}
+	return nil
 }
 
 // decayFactor returns the harmonic decay 1/(1 + age/halfLife): 1 when
