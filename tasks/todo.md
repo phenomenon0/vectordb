@@ -284,7 +284,7 @@ Continue around non-blocking issues and defer them. Escalate only when progress 
 
 - Human plan: this file.
 - Machine orientation: [`tasks/autonomy/STATE.json`](autonomy/STATE.json).
-- Resume protocol: [`tasks/autonomy/PROTOCOL.md`](autonomy/PROTOCOL.md).
+- Resume protocol: [`tasks/PROTOCOL.md`](PROTOCOL.md).
 - Semantic checkpoint: cohesive Git commit whose targeted gate passed.
 - Runtime logs/evidence: `.deepdata-run/` (local and ignored unless sanitized).
 - After every correction, add a reusable rule to [`tasks/lessons.md`](lessons.md).

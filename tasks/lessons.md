@@ -103,6 +103,7 @@
 - Rule: format only the files you touched (list them explicitly); if you must
   format a whole package, check `git status` afterwards and revert unrelated
   reformatting before committing.
+
 ## 2026-08-28 recovery lessons
 
 - Index topology is durable semantics. Do not derive a missing `segments`
