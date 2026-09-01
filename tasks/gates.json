@@ -896,16 +896,18 @@
     {
       "id": "SYS-04",
       "statement": "Canonical prefix dropped; every live package has a doc.go",
-      "command": "grep -rn Canonical cmd internal sdk; find cmd internal -name doc.go",
+      "command": "scripts/hardening_check.sh go-canonical",
       "scope": [
         "cmd",
         "internal",
-        "sdk/python"
+        "api",
+        "sdk/python",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": ""
+      "note": "Prefix = exported Canonical<Name> identifiers: the eight admission limits in internal/collection/limits.go became Max<Name>, storage.CanonicalFormatVersion became StrictFormatVersion (version 3, the first strict checksum; CurrentFormatVersion stays 4). Lowercase canonical* identifiers, file names and the English word in SDK docstrings are not the prefix and stay. go-canonical asserts no \\bCanonical[A-Z] in Go/Python/proto under cmd, internal, api, sdk, a gofmt-clean doc.go in every go list ./cmd/... ./internal/... package, build and vet. The 14 gofmt-unclean files under cmd/internal predate SYS-04 and are out of its scope."
     },
     {
       "id": "MEM-01",

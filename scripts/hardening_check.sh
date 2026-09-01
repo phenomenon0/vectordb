@@ -34,7 +34,8 @@ list_checks() {
         python-unit \
         python-mypy \
         python-build \
-        go-retire
+        go-retire \
+        go-canonical
 }
 
 usage() {
@@ -123,6 +124,10 @@ case "$CHECK_NAME" in
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="assert_retired_trees_absent && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go build ./... && CGO_ENABLED=0 go vet ./... && go mod tidy -diff"
         ;;
+    go-canonical)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="assert_canonical_dropped && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go build ./... && CGO_ENABLED=0 go vet ./..."
+        ;;
     *)
         echo "unknown check: $CHECK_NAME" >&2
         list_checks >&2
@@ -194,6 +199,38 @@ assert_retired_trees_absent() {
         return 1
     fi
     echo "retired trees are absent and go.mod carries none of their dependencies"
+}
+
+assert_canonical_dropped() {
+    local hits
+    hits="$(grep -rnE '\bCanonical[A-Z]' --include='*.go' --include='*.py' --include='*.proto' \
+        "$REPO_ROOT/cmd" "$REPO_ROOT/internal" "$REPO_ROOT/api" "$REPO_ROOT/sdk")"
+    if [[ -n "$hits" ]]; then
+        echo "Canonical-prefixed identifiers remain:" >&2
+        echo "$hits" >&2
+        return 1
+    fi
+    local dir missing="" docs=()
+    while IFS= read -r dir; do
+        if [[ -f "$dir/doc.go" ]]; then
+            docs+=("$dir/doc.go")
+        else
+            missing+="${dir#"$REPO_ROOT"/}"$'\n'
+        fi
+    done < <(cd "$REPO_ROOT" && GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" go list -f '{{.Dir}}' ./cmd/... ./internal/...)
+    if [[ -n "$missing" ]]; then
+        echo "live packages without doc.go:" >&2
+        printf '%s' "$missing" >&2
+        return 1
+    fi
+    local unformatted
+    unformatted="$(gofmt -l "${docs[@]}")"
+    if [[ -n "$unformatted" ]]; then
+        echo "doc.go files not gofmt-clean:" >&2
+        echo "$unformatted" >&2
+        return 1
+    fi
+    echo "no Canonical-prefixed identifier under cmd, internal, api or sdk; ${#docs[@]} live packages each carry a gofmt-clean doc.go"
 }
 
 run_check() {
@@ -296,6 +333,14 @@ run_check() {
                 CGO_ENABLED=0 go vet ./... && \
             timeout 180s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
                 go mod tidy -diff
+            ;;
+        go-canonical)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            assert_canonical_dropped && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go build ./... && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                CGO_ENABLED=0 go vet ./...
             ;;
     esac
 }
