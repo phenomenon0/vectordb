@@ -6,7 +6,7 @@ The persistent release candidate supports Linux amd64 only. It is a headless,
 single-process, single-node server. Linux arm64 and non-Linux cross-builds are
 compile proofs, not persistence-supported release artifacts.
 
-The server exposes tenant-aware HTTP V3 on port 8080 and the matching nine
+The server exposes tenant-aware HTTP V3 on port 8080 and the matching eleven
 unary gRPC methods on port 50051. Clients provide vectors; the server does not
 initialize an embedding service.
 
@@ -195,5 +195,12 @@ exact candidate checkout:
 ./tests/smoke_test.sh
 ```
 
-It exercises HTTP V3 and all nine unary gRPC methods, restarts the process, and
-checks that unsupported legacy routes remain unavailable.
+It exercises HTTP V3 and every unary gRPC method except `Upsert` and `GetDoc`
+(`tests/smoke_test.sh:129-201`), restarts the process, and checks that
+unsupported legacy routes remain unavailable.
+
+At HEAD the post-restart assertion at `tests/smoke_test.sh:363` still expects
+the pre-bc1fa27 PascalCase key `DocCount`, while the server has emitted
+`doc_count` since bc1fa27 (`internal/collection/manager.go:186`), so that
+`jq -e` check exits non-zero against the current wire form. The script fix
+belongs to the tests owner; gates SDK-02 and CI-06 track the script.

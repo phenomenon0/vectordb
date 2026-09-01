@@ -132,9 +132,11 @@ The canonical allowlist includes:
 - `/readyz`
 - `/metrics`
 
-Health and metrics routes are intentionally unauthenticated so orchestrators
-can probe them. They can reveal availability and operational metadata, so
-restrict them with firewall, ingress, or service-mesh policy. A durable-store
+The health probes (`/healthz`, `/readyz`, `/livez`) are intentionally
+unauthenticated so orchestrators can probe them; they reveal availability, so
+restrict them with firewall, ingress, or service-mesh policy. `/metrics` is
+served behind the same auth guard as the API routes when `REQUIRE_AUTH=1`
+(`cmd/deepdata/server.go:1503-1507`). A durable-store
 fault makes `/readyz` return `503`; liveness alone is not proof that persisted
 data is safe to serve.
 
@@ -146,7 +148,7 @@ data is safe to serve.
 - [ ] Store `API_TOKEN` or `JWT_SECRET` in a secret manager, not source control or command history.
 - [ ] Use short-lived, tenant-scoped JWTs and the smallest required permissions.
 - [ ] Terminate TLS externally and isolate cleartext backend ports.
-- [ ] Restrict unauthenticated health and metrics endpoints by network policy.
+- [ ] Restrict the unauthenticated health probes by network policy; keep `/metrics` behind `REQUIRE_AUTH=1`.
 - [ ] Encrypt the data directory and backups outside the process.
 - [ ] Protect file ownership and deny a second process access to the data path.
 - [ ] Alert on readiness failure, authentication failures at the edge, and restart loops.

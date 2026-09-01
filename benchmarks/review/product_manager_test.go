@@ -134,13 +134,13 @@ func TestProductManagerReview(t *testing.T) {
 	// Check 6: GAP_ANALYSIS exists
 	t.Run("gap_analysis", func(t *testing.T) {
 		projectRoot := findProjectRoot()
-		gapPath := filepath.Join(projectRoot, "benchmarks", "GAP_ANALYSIS.md")
+		gapPath := filepath.Join(projectRoot, "docs", "GAP_ANALYSIS.md")
 		_, err := os.Stat(gapPath)
 		if err == nil {
 			review.Pass("gap_analysis", "GAP_ANALYSIS.md exists", SeverityMedium, gapPath)
 		} else {
 			review.Fail("gap_analysis", "GAP_ANALYSIS.md exists", SeverityLow,
-				"benchmarks/GAP_ANALYSIS.md not found — competitive positioning unclear")
+				"docs/GAP_ANALYSIS.md not found — competitive positioning unclear")
 		}
 	})
 
@@ -207,4 +207,3 @@ func findProjectRoot() string {
 		dir = parent
 	}
 }
-

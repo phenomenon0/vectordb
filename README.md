@@ -1,262 +1,199 @@
 # DeepData
 
-DeepData is a tenant-aware vector search server written in Go.
+Tenant-aware vector search server in Go: a persistent, headless, single-node Linux binary that takes
+caller-supplied vectors over an HTTP V3 contract and a matching unary gRPC service. Version `0.2.0-rc.1`
+(`internal/releaseinfo/version.txt`, checked against Python, Helm and image metadata by
+`scripts/check_version_contract.py` in CI). Gate status: [docs/PRE_RELEASE_STATUS.md](docs/PRE_RELEASE_STATUS.md),
+rendered from `tasks/gates.json` by `scripts/gates.py`. Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-The first release candidate is intentionally narrow: a persistent, headless,
-single-node server for Linux. It accepts caller-supplied vectors through one V3
-HTTP contract and a matching unary gRPC contract.
+## Connect an agent (MCP)
 
-Candidate version: `0.2.0-rc.1`. The value is embedded from
-`internal/releaseinfo/version.txt` and checked against Python, Helm, and image
-metadata in CI.
+`cmd/deepdata-mcp` is a stdio MCP server that forwards tool calls to a running DeepData server over the HTTP
+contract. It exposes five tools — `search`, `insert`, `upsert`, `get_document`, `list_collections` — and the three
+that carry vectors (`search`, `insert`, `upsert`) take vectors the caller has already computed (`cmd/deepdata-mcp/main.go:228-286`).
+It is configured by `DEEPDATA_URL`, `DEEPDATA_TENANT` and `DEEPDATA_API_KEY` (`cmd/deepdata-mcp/main.go:98-109`). Build, Claude
+Desktop configuration, per-tool arguments and the error shape: [docs/mcp.md](docs/mcp.md). Sending text instead of vectors is a plan (gate CTL-02), as is the rewrite of the MCP server onto a shared
+contract package with the six memory verbs deepdata_recall, deepdata_remember, deepdata_forget, deepdata_get,
+deepdata_collections, deepdata_create_collection and the resources deepdata://contract and deepdata://status
+(gate CTL-03).
 
-## RC support matrix
+## Contract in one screen
 
-| Area | Supported in RC1 |
-|---|---|
-| Runtime | Linux amd64, single process, one persistent node |
-| Dense indexes | HNSW and Flat |
-| Sparse index | Inverted/BM25 |
-| Retrieval | Dense, sparse, and two-field hybrid search |
-| Mutations | Create/delete collection, insert, atomic batch insert, delete document |
-| Reads | Tenant info, list/get collection, search |
-| Protocols | Tenant-aware V3 HTTP and the same nine unary gRPC operations |
-| Embeddings | Caller-supplied vectors only |
-| Auth | Static bearer token or scoped JWT |
-| Deployment | Linux binary, Docker/Compose, and Helm |
-| Client contract | Tenant-aware Python V3 client |
+<!-- generated:grpc-rpcs -->
+`deepdata.v3.DeepData` exposes 11 unary RPCs: `GetTenantInfo`, `ListCollections`, `GetCollection`, `CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `Search`, `DeleteDoc`, `Upsert`, `GetDoc`.
+<!-- /generated -->
 
-Published RC runtime evidence is Linux amd64 only. Linux arm64 and non-Linux
-cross-builds are compile proofs, not supported release artifacts. Persistent
-startup fails closed on macOS and Windows.
+Six of them are mutations (`CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `DeleteDoc`, `Upsert`)
+and all six go through one durable journal. Proto: [api/proto/deepdata/v3/deepdata.proto](api/proto/deepdata/v3/deepdata.proto).
+HTTP routes, dispatched in `cmd/deepdata/collection_http.go:389-514`:
 
-The RC does **not** include V2/root mutations, server-managed embedding
-providers, runtime provider switching, GraphRAG, extraction, recommendations,
-feedback loops, replication, clustering, follower restore, snapshot streaming,
-DiskANN, IVF, quantization, CUDA, desktop packages, or a supported web UI.
-Those source trees may remain for experimental research or offline migration,
-but the production server cannot enable their handlers.
+| Method | Path | Permission |
+|---|---|---|
+| GET | /v3/tenants/{tenant} | admin |
+| GET | /v3/tenants/{tenant}/collections | admin |
+| POST | /v3/tenants/{tenant}/collections | admin |
+| GET | /v3/tenants/{tenant}/collections/{collection} | read |
+| DELETE | /v3/tenants/{tenant}/collections/{collection} | admin |
+| POST | /v3/tenants/{tenant}/collections/{collection}/docs | write |
+| DELETE | /v3/tenants/{tenant}/collections/{collection}/docs (doc_id in the JSON body) | write |
+| POST | /v3/tenants/{tenant}/collections/{collection}/docs/batch | write |
+| PUT | /v3/tenants/{tenant}/collections/{collection}/docs/{doc_id} | write |
+| GET | /v3/tenants/{tenant}/collections/{collection}/docs/{doc_id} | read |
+| POST | /v3/tenants/{tenant}/collections/{collection}/search | read |
+
+Auth: `Authorization: Bearer <token>`, where the token is the static `API_TOKEN` (server-wide administrative
+access) or an HS256 JWT signed with `JWT_SECRET` that scopes a tenant, the permissions `read`/`write`/`admin`
+and optionally a collection allowlist; `cmd/gentoken` mints those JWTs (`cmd/gentoken/main.go:20-26`).
+
+Errors are plain text today: HTTP handlers answer with a status code and a one-line body via `http.Error`
+(`cmd/deepdata/collection_http.go:638-656`: invalid search argument 400, oversized response 413, tenant or
+collection limit 429, persistence unavailable 503), and `canonicalGRPCError` maps the same sentinels to status
+codes (`cmd/deepdata/collection_grpc.go:457-478`). A structured envelope with code, hint and docs pointer is gate CTL-01.
+
+Probes GET /healthz, /livez and /readyz answer without credentials (`cmd/deepdata/server.go:1537-1541`); /metrics sits
+behind the same auth guard as the API (`cmd/deepdata/server.go:1503-1507`). `const canonicalOnly = true` (`cmd/deepdata/main.go:3198`)
+wraps the mux in an allowlist (`cmd/deepdata/server.go:3414-3423`): every other path is a 404 on the RC binary.
+
+## What it does not do
+
+Non-goals of the release candidate, rendered from the block in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md):
+
+<!-- generated:non-goals -->
+- DiskANN
+- IVF
+- PQ/binary/scalar quantization
+- replication/cluster/shard/failover
+- GraphRAG/graph reranking
+- Tauri/desktop app
+- web UI
+- CUDA/GPU
+- built-in TLS/encryption-at-rest
+- server-managed embeddings (until CTL-02)
+<!-- /generated -->
+
+Also outside the RC: switching embedding providers at runtime, follower restore, and streaming snapshots to other
+nodes. The provider-switch handler is still registered (`cmd/deepdata/server.go:2137`) but sits outside that allowlist, so
+the RC binary answers it 404; follower restore and snapshot streaming live in `internal/cluster`, which `cmd/deepdata` does not import.
 
 ## Run from source
 
-Requirements: Linux and Go 1.25.12 or newer.
+Requirements: Linux and Go 1.25.12 (`go.mod:3`; CI pins the same version at `.github/workflows/ci.yml:10`).
+Persistent startup fails closed on every other OS (`internal/collection/store_lock_other.go`).
 
 ```bash
 go build -trimpath -o deepdata ./cmd/deepdata
-
 export VECTORDB_BASE_DIR="$PWD/.deepdata"
 export VECTORDB_DATA_DIR=local
 export API_TOKEN='replace-with-a-long-random-token'
-
 ./deepdata serve
 ```
 
-Persistent startup requires exactly one of `API_TOKEN` or `JWT_SECRET`. Setting
-both, setting neither, using fewer than 32 bytes, or including surrounding
-whitespace fails before the data directory is opened. The only
-credentialless mode is the explicit `DEEPDATA_INSECURE_DEV_MODE=1` local
-development escape hatch; never use it for persistent or network-accessible
-deployments. Compose and Helm keep this invariant enabled by default.
+Startup requires exactly one of `API_TOKEN` or `JWT_SECRET`. Setting both, setting neither, using fewer than
+32 bytes, or including surrounding whitespace exits before the data directory is opened
+(`cmd/deepdata/main.go:3884-3918`). The only credentialless mode is `DEEPDATA_INSECURE_DEV_MODE=1`, for isolated
+local development; never use it for persistent or network-accessible deployments. HTTP listens on port 8080 and
+gRPC on port 50051 by default (`PORT`, `GRPC_PORT`; `cmd/deepdata/main.go:3373-3374`). Liveness is GET /livez;
+readiness is GET /readyz.
 
-HTTP listens on `:8080` and gRPC on `:50051` by default. Liveness is
-`GET /livez`; readiness is `GET /readyz`.
-
-For Docker, Helm, systemd, filesystem ownership, and proxy TLS guidance, see
-[installation](docs/installation.md) and [Kubernetes](docs/kubernetes.md).
-Existing deployments must also read the explicit
-[0.2 RC migration policy](docs/upgrade-to-0.2-rc.md). Release operators use the
-[dry-run and publication process](docs/releasing.md).
+Docker, Helm, systemd, filesystem ownership, the full environment table and proxy TLS guidance:
+[installation](docs/installation.md) and [Kubernetes](docs/kubernetes.md). Existing deployments must read the
+[0.2 RC migration policy](docs/upgrade-to-0.2-rc.md); release operators use the [dry-run and publication process](docs/releasing.md).
 
 ## Canonical HTTP example
 
-Create a tenant collection:
+Create a tenant collection. Dense fields accept `hnsw` or `flat`; sparse fields require `inverted`
+(`internal/collection/durable_store.go:579-598`):
 
 ```bash
-curl --fail-with-body \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -X POST http://127.0.0.1:8080/v3/tenants/acme/collections \
-  -d '{
-    "name": "papers",
-    "fields": [
-      {
-        "name": "embedding",
-        "type": "dense",
-        "dim": 3,
-        "index": {"type": "hnsw", "params": {"m": 16, "ef_construction": 200}}
-      },
-      {
-        "name": "keywords",
-        "type": "sparse",
-        "dim": 10000,
-        "index": {"type": "inverted", "params": {"k1": 1.2, "b": 0.75}}
-      }
-    ]
-  }'
+curl --fail-with-body -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
+  -X POST http://127.0.0.1:8080/v3/tenants/acme/collections -d '{"name": "papers", "fields": [
+    {"name": "embedding", "type": "dense", "dim": 3,
+     "index": {"type": "hnsw", "params": {"m": 16, "ef_construction": 200}}},
+    {"name": "keywords", "type": "sparse", "dim": 10000,
+     "index": {"type": "inverted", "params": {"k1": 1.2, "b": 0.75}}}]}'
 ```
 
-Insert a document with vectors generated by the caller:
+Insert a document with vectors generated by the caller (id in the body), upsert by id (id in the path; body is
+`vectors` plus optional `metadata`, `cmd/deepdata/collection_http.go:891-939`), read it back, then search one field.
+A hybrid request supplies exactly two query fields plus `hybrid_params`; the [cookbook](docs/cookbook.md) has the
+complete V3 examples, including batch insert and delete.
 
 ```bash
-curl --fail-with-body \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -X POST http://127.0.0.1:8080/v3/tenants/acme/collections/papers/docs \
-  -d '{
-    "id": 1,
-    "vectors": {
-      "embedding": [0.1, 0.2, 0.3],
-      "keywords": {"indices": [7, 42], "values": [1.0, 0.5], "dim": 10000}
-    },
-    "metadata": {"title": "Crash-safe retrieval"}
-  }'
+H=(-H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json')
+C=http://127.0.0.1:8080/v3/tenants/acme/collections/papers
+curl --fail-with-body "${H[@]}" -X POST $C/docs -d '{"id": 1, "metadata": {"title": "Crash-safe retrieval"},
+    "vectors": {"embedding": [0.1, 0.2, 0.3], "keywords": {"indices": [7, 42], "values": [1.0, 0.5], "dim": 10000}}}'
+curl --fail-with-body "${H[@]}" -X PUT $C/docs/1 -d '{"vectors": {"embedding": [0.3, 0.2, 0.1]}, "metadata": {"title": "Revised"}}'
+curl --fail-with-body "${H[@]}" $C/docs/1
+curl --fail-with-body "${H[@]}" -X POST $C/search -d '{"queries": {"embedding": [0.1, 0.2, 0.3]}, "top_k": 10, "include_vectors": false}'
 ```
-
-Search one field:
-
-```bash
-curl --fail-with-body \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -X POST http://127.0.0.1:8080/v3/tenants/acme/collections/papers/search \
-  -d '{
-    "queries": {"embedding": [0.1, 0.2, 0.3]},
-    "top_k": 10,
-    "include_vectors": false
-  }'
-```
-
-A hybrid request supplies exactly two query fields plus `hybrid_params`. See
-the [cookbook](docs/cookbook.md) for the complete V3 examples.
 
 ## Agent retrieval
 
-Search accepts three opt-in fields that make the API easier to call from
-agents. All are zero-value-identical to classic search: absent = current
-behavior.
+Search accepts three opt-in fields (`internal/collection/types.go:385-404`; proto fields 9-11 of `SearchRequest`).
+All are zero-value-identical to classic search: absent = current behavior.
 
-- `score_floor` — a confidence filter on the returned raw scores. On dense
-  (distance) fields it is a maximum acceptable distance (hits keep
-  `score <= score_floor`); on sparse (BM25) and hybrid scores it is a minimum
-  acceptable score (`score >= score_floor`). When the floor drops every hit,
-  the response reports `weak_match: true` so the caller can say "no confident
-  answer" instead of consuming the (empty) results. The same response carries
-  `best_score` — the best raw score among returned hits — for calibrating the
-  floor.
-- `fallback` — an auto-fallback ladder (`{primary, secondary, threshold?}`)
-  for two-field collections. The primary field is searched first; when it is
-  weak (zero hits, or best score worse than `threshold` in the field's score
-  direction) the secondary field answers and the response reports
-  `fell_back_to`. Mutually exclusive with `hybrid_params`.
-- `usage_boost` — in `[0, 1)`, blends non-durable per-tenant usage (frecency:
-  recency-decayed counts of prior searches/reads of the same documents) into
-  ranking. Boosts never exceed `1`× and cannot displace an unboosted result
-  whose score is more than 2× worse. Reported scores stay raw; usage is a
-  session signal only — it is not persisted and resets on restart.
-
-```json
-{
-  "queries": {"embedding": [0.1, 0.2, 0.3], "keywords": {"indices": [7], "values": [1.0], "dim": 10000}},
-  "top_k": 5,
-  "score_floor": 0.4,
-  "fallback": {"primary": "embedding", "secondary": "keywords", "threshold": 0.6},
-  "usage_boost": 0.25
-}
-```
-
-## MCP server
-
-`deepdata-mcp` exposes a running DeepData server as MCP (Model Context
-Protocol) tools over stdio for Claude Desktop, pi, and other MCP hosts. It is
-self-contained (no engine build, stdlib only) and wraps the canonical tenant
-HTTP protocol.
-
-```bash
-go build -o deepdata-mcp ./cmd/deepdata-mcp
-# Claude Desktop config:
-# {
-#   "mcpServers": {
-#     "deepdata": {
-#       "command": "./deepdata-mcp",
-#       "env": {"DEEPDATA_URL": "http://127.0.0.1:8080",
-#               "DEEPDATA_TENANT": "acme",
-#               "DEEPDATA_API_KEY": "replace-me"}
-#     }
-#   }
-# }
-```
-
-Tools: `search` (supports `score_floor` / `fallback` / `usage_boost`),
-`insert`, `upsert`, `get_document`, `list_collections`.
-
-## gRPC contract
-
-The `deepdata.v3.DeepData` service exposes exactly:
-
-- `GetTenantInfo`, `ListCollections`, `GetCollection`
-- `CreateCollection`, `DeleteCollection`
-- `Insert`, `BatchInsert`, `DeleteDoc`
-- `Search`
-
-All methods use explicit tenant IDs and the same durable collection engine as
-HTTP. The protobuf source is
-[api/proto/deepdata/v3/deepdata.proto](api/proto/deepdata/v3/deepdata.proto).
+- `score_floor` — a confidence filter on the returned raw scores: on dense (distance) fields a maximum acceptable
+  distance (hits keep `score <= score_floor`), on sparse (BM25) and hybrid scores a minimum (`score >= score_floor`).
+  When the floor drops every hit the response reports `weak_match: true`, so the caller can say "no confident
+  answer" instead of consuming the empty results; `best_score` (best raw score among returned hits) calibrates
+  the floor (`internal/collection/types.go:466-478`).
+- `fallback` — an auto-fallback ladder (`{primary, secondary, threshold?}`) for two-field collections. The primary
+  field is searched first; when it is weak (zero hits, or best score worse than `threshold` in the field's score
+  direction) the secondary answers and the response reports `fell_back_to`. Mutually exclusive with `hybrid_params`.
+- `usage_boost` — in `[0, 1)`, blends non-durable per-tenant usage (frecency: recency-decayed counts of prior
+  searches/reads of the same documents) into ranking. The ordering key is `quality * (1 + usage_boost * use / max_use)`
+  (`internal/collection/usage.go:181-215`), so the multiplier stays below 2 and a result with less than half the
+  quality of an unboosted one can never overtake it. Reported scores stay raw; usage is not persisted and resets
+  on restart (durable usage is gate CTL-05).
 
 ## Python client
 
-The supported client entry point is tenant-aware:
+The supported entry point is tenant-aware (`sdk/python/deepdata/client.py:62-262`):
 
 ```python
 from deepdata import DeepDataClient
 
 with DeepDataClient("http://127.0.0.1:8080", api_token="replace-me") as client:
-    tenant = client.tenant("acme")
-    tenant.insert(
-        "papers",
-        id=2,
-        vectors={
-            "embedding": [0.3, 0.2, 0.1],
-            "keywords": {"indices": [7], "values": [1.0], "dim": 10000},
-        },
-        metadata={"title": "Tenant-safe search"},
-    )
+    client.tenant("acme").insert("papers", id=2, metadata={"title": "Tenant-safe search"},
+        vectors={"embedding": [0.3, 0.2, 0.1], "keywords": {"indices": [7], "values": [1.0], "dim": 10000}})
 ```
 
-See the [Python SDK guide](sdk/python/README.md). The package omits older
-unscoped and V1/V2 helpers so unsupported server routes cannot be selected by
-accident.
+See the [Python SDK guide](sdk/python/README.md). The package omits the older root and V1/V2 helpers so
+unsupported server routes cannot be selected by accident.
 
 ## Persistence and operations
 
-The acknowledged mutation boundary is the canonical collection journal.
-Graceful shutdown checkpoints it; restart replays acknowledged records. Corrupt,
-incompatible, locked, or legacy state causes startup/readiness failure instead
-of an empty replacement store.
+The acknowledged mutation boundary is the collection journal. Graceful shutdown checkpoints it; restart replays
+acknowledged records. Corrupt, incompatible, locked, or legacy state causes startup or readiness failure instead
+of an empty replacement store. Gates DUR-01 to DUR-05 and RCV-01 to RCV-06 track this. Back up or restore only
+while the server is stopped, and copy the complete configured state root: the legacy /export and /import routes
+are not RC backup mechanisms and are 404 on the RC binary. Follow the tested procedure in the
+[cookbook](docs/cookbook.md#offline-backup). Terminate TLS at a trusted reverse proxy or ingress and use encrypted
+disks/PVCs. The RC server itself exposes cleartext HTTP/h2c and gRPC; built-in TLS, encryption-at-rest, and
+compliance-grade audit claims are outside RC1.
 
-Back up or restore only while the server is stopped, and copy the complete
-configured state root. The legacy `/export` and `/import` routes are not RC
-backup mechanisms. Follow the tested procedure in the
-[cookbook](docs/cookbook.md#offline-backup).
+## Where truth lives
 
-Terminate TLS at a trusted reverse proxy or ingress and use encrypted
-disks/PVCs. The RC server itself exposes cleartext HTTP/h2c and gRPC; built-in
-TLS, encryption-at-rest, and compliance-grade audit claims are outside RC1.
+- `tasks/gates.json` — the only place a gate's status lives (52 gates).
+- [docs/PRE_RELEASE_STATUS.md](docs/PRE_RELEASE_STATUS.md) — rendered from the ledger; never hand-edited.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the system map and the non-goal block the linter reads.
+- [docs/GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) — live, dormant or retired, package by package.
+- [docs/decisions/](docs/decisions/) — one file per decision, each carrying its own Status line (proposed or accepted).
+- [tasks/PROTOCOL.md](tasks/PROTOCOL.md) and [tasks/todo.md](tasks/todo.md) — how work resumes; what is open.
 
 ## Development
 
-The release-gating checks are the Linux server contract, canonical Python
-client, container/Helm contract, crash/restart tests, and focused race suites.
-UI, desktop, distributed, provider, and advanced-index code is experimental and
-does not gate the RC.
+Release-gating CI jobs: the Linux RC Go contract and race contract, the canonical Python client, the container/Helm
+contract, and the five-target compile-proof matrix (`.github/workflows/ci.yml:17-269`). Source outside the RC package
+list compiles under a separate job marked `continue-on-error: true` (`.github/workflows/ci.yml:271-273`).
 
 ```bash
-go test -count=1 ./internal/collection
-go test -count=1 ./cmd/deepdata -run '^TestCanonical'
+GOTOOLCHAIN=go1.25.12 go test -count=1 ./internal/collection
+GOTOOLCHAIN=go1.25.12 go test -count=1 ./cmd/deepdata -run '^TestCanonical'
 cd sdk/python && python -m pytest -q && python -m mypy deepdata
+python3 scripts/check_docs_contract.py
 ```
-
-See [tasks/todo.md](tasks/todo.md) for the production-hardening gates and
-[docs/PRE_RELEASE_STATUS.md](docs/PRE_RELEASE_STATUS.md) for evidence status.
 
 ## License
 

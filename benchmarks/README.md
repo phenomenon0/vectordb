@@ -1,125 +1,108 @@
-# DeepData Benchmark Suite
+# DeepData benchmarks
 
-Competitive benchmarks, recall measurements, and persona-based quality reviews for DeepData vector database.
+Harnesses, generators and historical reports. Numbers live in one place,
+[docs/BENCHMARKS.md](../docs/BENCHMARKS.md); competitive positioning lives in
+[docs/GAP_ANALYSIS.md](../docs/GAP_ANALYSIS.md). This file restates neither.
 
-## Quick Start
-
-```bash
-# Run all benchmarks (short mode, ~5 min)
-cd DeepData && go test ./benchmarks/... -v -short
-
-# Run persona reviews only
-go test ./benchmarks/review/ -v -short
-
-# Run competitive dense search benchmarks
-go test ./benchmarks/competitive/scenarios/ -bench=BenchmarkDense -benchtime=3s -short
-
-# Run specific benchmark
-go test ./benchmarks/competitive/scenarios/ -bench=BenchmarkDense_HNSW_128d_100K -benchtime=3s
-```
-
-## Directory Structure
+## Layout
 
 ```
 benchmarks/
-  competitive/
-    runner.go                    # Core benchmark execution engine
-    results.go                   # JSON/markdown output, percentile calculations
-    competitor_baselines.go      # Published numbers from Qdrant/Milvus/Weaviate/Chroma/Pinecone
-    scenarios/
-      dense_test.go              # 128d/768d/1536d x HNSW/IVF/DiskANN x quantization
-      sparse_test.go             # BM25 inverted index benchmarks
-      hybrid_test.go             # Dense+sparse fusion (RRF, weighted)
-      filtered_test.go           # Metadata filter selectivity impact
-      insert_test.go             # Single/batch/parallel insert throughput
-      concurrent_test.go         # Multi-goroutine scaling (1-32 workers)
-      memory_test.go             # Memory footprint per configuration
-      recall_test.go             # Recall@1/10/100 vs brute-force ground truth
-  testdata/
-    vectors.go                   # Clustered synthetic vector generators
-    ground_truth.go              # FLAT-index brute-force for recall reference
-    corpus.go                    # Text generators (academic/code/product/legal/multilingual)
-    metadata.go                  # Metadata generators for filtered search
-  review/
-    framework.go                 # PersonaReview scoring infrastructure
-    db_engineer_test.go          # Data integrity, crash recovery, edge cases
-    ml_researcher_test.go        # Recall curves, statistical significance
-    devops_sre_test.go           # Latency shape, memory growth, GC pressure
-    product_manager_test.go      # Feature matrix, documentation completeness
-    security_auditor_test.go     # Input validation, resource boundaries
-  GAP_ANALYSIS.md                # DeepData vs competitors comparison
-  README.md                      # This file
+  README.md                    this file (review/product_manager_test.go:124 stats it)
+  ddload/main.go               equal-effort Go client against DeepData V3; the headline evidence
+  ddload-qdrant/main.go        same client shape against Qdrant
+  recall_test.py               real-dataset recall through the Python client
+  comprehensive_bench.py       feature sweep over HTTP/gRPC configs, optional Qdrant comparison
+  mega_bench.py                autonomous multi-VDB sweep with checkpoint/resume
+  test_mega_bench.py           unit tests for mega_bench.py
+  download_datasets.py         SIFT / GloVe / code datasets into ~/.vectordb_bench as .fvecs
+  competitive/                 Go testing.B scenarios on internal/index (runner.go, results.go, competitor_baselines.go, scenarios/*_test.go)
+    live/                      Python head-to-head harness: adapters/, compose file, results/
+  testdata/                    vectors.go, ground_truth.go, corpus.go, metadata.go
+  review/                      persona review tests: framework.go + five *_test.go
+  vectordbbench/               VectorDBBench plugin (deepdata/), install.sh, run_all.sh, results/
+  results/                     historical reports (2026-03-11_*.md, mega/); like live/results/ and vectordbbench/results/, records, not evidence
 ```
 
-## Benchmark Categories
+## Go: index-level scenarios (no server)
 
-### Competitive Benchmarks (`competitive/scenarios/`)
-
-Standard `testing.B` benchmarks compatible with `go test -bench` and `benchstat`.
-
-| Benchmark | What it measures |
-|-----------|-----------------|
-| `BenchmarkDense` | Search QPS across dimensions, index types, and quantization |
-| `BenchmarkRecall_HNSW_EfSweep` | Recall vs throughput tradeoff at varying ef_search |
-| `BenchmarkInsert_*` | Insert throughput: single, batch, parallel |
-| `BenchmarkSparse_BM25_*` | BM25 inverted index performance |
-| `BenchmarkHybrid_*` | Dense+sparse fusion overhead |
-| `BenchmarkFiltered_*` | Impact of metadata filter selectivity |
-| `BenchmarkConcurrent_*` | Multi-goroutine scaling and mixed workloads |
-| `BenchmarkMemory` | Memory footprint per vector |
-
-### Recall Tests (`competitive/scenarios/`)
-
-Standard `testing.T` tests that verify recall quality.
-
-| Test | What it checks |
-|------|---------------|
-| `TestRecall_HNSW` | Recall@1/10/100 at varying ef_search |
-| `TestRecall_IVF` | Recall at varying nprobe |
-| `TestRecall_DiskANN` | DiskANN recall quality |
-| `TestMemoryFootprint` | Memory overhead per configuration |
-
-### Persona Reviews (`review/`)
-
-Five expert personas review DeepData from different angles:
-
-| Persona | Focus Areas |
-|---------|-------------|
-| Database Engineer | Insert/search correctness, delete safety, concurrent R/W, export/import |
-| ML Researcher | Recall monotonicity, quantization degradation, distance metric correctness |
-| DevOps/SRE | P99/P50 ratio, memory growth, GC pressure, goroutine leaks, sustained load |
-| Product Manager | Feature completeness, API surface, documentation, competitive positioning |
-| Security Auditor | Input validation (oversized/NaN vectors), resource boundaries, concurrent safety |
-
-## Key Design Decisions
-
-1. **Clustered vectors** — Uniform random vectors make ANN trivially easy due to concentration of measure in high dimensions. Our generators use K-means clustered distributions for realistic recall/QPS tradeoffs.
-
-2. **Ground truth via FLAT** — DeepData's own `FLATIndex` provides exact nearest neighbors. No external dependencies needed.
-
-3. **Published baselines** — Competitor numbers are hard-coded from published benchmarks with URL citations. Self-contained and reproducible.
-
-4. **Direct internal API** — Benchmarks import `internal/index` directly, avoiding HTTP overhead for pure algorithm comparison.
-
-## Running Full Benchmarks
+`competitive/` and `review/` import `internal/index` directly
+(`competitive/runner.go:9`). Go commands need `GOTOOLCHAIN=go1.25.12`.
 
 ```bash
-# Full benchmark suite (30+ minutes at default scale)
-go test ./benchmarks/competitive/scenarios/ -bench=. -benchtime=5s -timeout=60m 2>&1 | tee results.txt
-
-# Compare with benchstat
-go test ./benchmarks/competitive/scenarios/ -bench=BenchmarkDense -benchtime=5s -count=5 > old.txt
-# ... make changes ...
-go test ./benchmarks/competitive/scenarios/ -bench=BenchmarkDense -benchtime=5s -count=5 > new.txt
-benchstat old.txt new.txt
+go test ./benchmarks/... -short                         # everything at reduced scales
+go test ./benchmarks/review/ -v -short                  # the five persona reviews
+# 27-cell sweep: 3 dims x 3 index types x 3 quantizers, 100K vectors each (dense_test.go:15-64); slow
+go test ./benchmarks/competitive/scenarios/ -run '^$' -bench BenchmarkDense -benchtime=3s -short
+go test ./benchmarks/competitive/scenarios/ -run '^$' -bench BenchmarkDense_HNSW_128d_100K -benchtime=3s
 ```
 
-## Output
+Index types other than HNSW and FLAT are not in the RC (non-RC; see the
+non-goals in [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)); rows that
+still exercise them are marked non-RC.
 
-Benchmarks report custom metrics via `b.ReportMetric()`:
-- `qps` — queries per second
-- `p50_us` / `p99_us` — latency percentiles in microseconds
-- `mem_mb` — memory usage in megabytes
-- `recall@10` — recall at k=10 vs ground truth
-- `insert_qps` — insert throughput
-- `bytes/vec` — memory per vector
+| Benchmark (`competitive/scenarios/`) | Measures |
+|---|---|
+| `BenchmarkDense` | search qps by dimension x index type x quantizer; iterates non-RC index types and quantization |
+| `BenchmarkDense_HNSW_128d_100K` | one HNSW configuration, 128d, 100K vectors |
+| `BenchmarkRecall_HNSW_EfSweep` | recall vs throughput across `ef_search` |
+| `BenchmarkInsert_Single`, `_Batch`, `_Parallel` | insert throughput; sub-benchmarks include non-RC index types |
+| `BenchmarkSparse_BM25_Insert`, `_Search`, `BenchmarkSparse_Corpus` | BM25 inverted index |
+| `BenchmarkHybrid_RRF`, `_Weighted`, `_WeightSweep` | dense+sparse fusion overhead |
+| `BenchmarkFiltered_HNSW` | metadata filter selectivity on HNSW |
+| `BenchmarkFiltered_IVF` | the same on IVF, a non-RC index type |
+| `BenchmarkConcurrent_SearchScale`, `_MixedReadWrite`, `_LatencyUnderLoad` | goroutine scaling and mixed load |
+| `BenchmarkMemory` | bytes per vector |
+
+| Test (`competitive/scenarios/`) | Checks |
+|---|---|
+| `TestRecall_HNSW` | recall@1/10/100 across `ef_search` |
+| `TestRecall_IVF` | IVF nprobe recall; non-RC index type |
+| `TestRecall_DiskANN` | DiskANN recall; non-RC index type |
+| `TestMemoryFootprint` | memory per configuration |
+
+| Persona review (`review/`) | File | Checks |
+|---|---|---|
+| `TestDBEngineerReview` | `db_engineer_test.go` | insert/search/delete correctness, concurrent R/W, export/import, NaN/Inf, zero vector, duplicate id, stats |
+| `TestMLResearcherReview` | `ml_researcher_test.go` | recall monotonicity and stability, cosine correctness; also quantization degradation and IVF nprobe, both non-RC |
+| `TestDevOpsSREReview` | `devops_sre_test.go` | latency shape, memory growth, GC pressure, goroutine leaks, sustained load |
+| `TestProductManagerReview` | `product_manager_test.go` | index and quantizer coverage (non-RC types included), export/import and stats APIs, this README, GAP_ANALYSIS |
+| `TestSecurityAuditorReview` | `security_auditor_test.go` | negative/large k, NaN query, nil params, metadata injection, concurrent delete |
+
+## Go: equal-effort clients (server-side truth)
+
+`ddload` drives a running DeepData through the canonical V3 HTTP API with
+4 workers and 2000-vector batches (`ddload/main.go:21-28`); it expects the
+server on 127.0.0.1:8093 with the bearer token hard-coded at
+`ddload/main.go:23`, tenant and collection `bench`. `ddload-qdrant` does the
+same against Qdrant on 127.0.0.1:6333 (`ddload-qdrant/main.go:24`).
+`-segments` sets the HNSW segment count; 0 keeps the server default
+(`ddload/main.go:95`).
+
+```bash
+go run ./benchmarks/ddload        -base ~/.vectordb_bench/dataset/sift/sift_base_100k_norm.fvecs [-segments N]
+go run ./benchmarks/ddload-qdrant -base ~/.vectordb_bench/dataset/sift/sift_base_100k_norm.fvecs
+```
+
+## Python harnesses (client cost included)
+
+```bash
+python3 benchmarks/download_datasets.py --dataset sift       # choices: sift, glove, code
+python3 benchmarks/recall_test.py --vdb deepdata --dataset sift-100k   # --json, --skip-build, --port, --n-search, --concurrency, --duration
+python3 benchmarks/comprehensive_bench.py --quick            # or --dataset, --config, --compare-qdrant, --json
+python3 benchmarks/mega_bench.py --quick                     # or --vdb, --dataset, --resume, --report-only
+python3 -m unittest -q benchmarks/test_mega_bench.py         # what scripts/hardening_check.sh benchmark-unit runs
+```
+
+`competitive/live/` is a five-phase pipeline: `prepare_data.py` chunks the
+repo's Go sources, `embed_data.py` embeds them through the OpenAI API
+(text-embedding-3-small), `compute_ground_truth.py` brute-forces top-100,
+`benchmark.py --all` (or `--suite`, `--vdb`) runs the suites against the
+adapters, `report.py` renders the report. `docker-compose.benchmark.yml`
+pins Weaviate 1.28.4, Milvus 2.5.4, Qdrant 1.12.5 and Chroma 1.0.12.
+
+`vectordbbench/` plugs DeepData into VectorDBBench: `install.sh` clones it to
+/tmp/VectorDBBench and registers `vectordbbench/deepdata/`, `run_all.sh`
+starts the competitor set with podman compose, `run_comprehensive.py --all`
+(or `--dataset`, `--vdb`, `--report-only`) runs the sweep, and
+`BENCHMARK_CONFIG.md` lists the environment variables a fair run must set.

@@ -1,13 +1,34 @@
 # DeepData changelog
 
 This changelog describes the headless, persistent, single-node DeepData
-server. The current candidate is `0.2.0-rc.1`; it does not yet have a legal
-license or published artifact.
+server. The current candidate is `0.2.0-rc.1` (`internal/releaseinfo/version.txt`),
+licensed under Apache-2.0 (root `LICENSE`, b1f28be). Push, tag, and package
+publication are tracked by gates PUB-01, PUB-02, and PUB-03 in `tasks/gates.json`.
 
-## Unreleased single-node release candidate
+## 0.2.0-rc.1 — unreleased single-node release candidate
+
+Entries with a commit sha landed after the upsert/get-document feature at
+a99fe53 (2026-08-07); entries without one describe the candidate as first
+assembled.
 
 ### Added
 
+- Upsert and get-document by caller-supplied ID across the durable engine, V3
+  gRPC (`Upsert`, `GetDoc`), V3 HTTP (`PUT`/`GET`
+  `/v3/tenants/{tenant_id}/collections/{name}/docs/{doc_id}`), and the Python
+  client (a99fe53).
+- Agent retrieval contract: `score_floor`, `fallback`, and `usage_boost`
+  request fields with `weak_match`, `best_score`, and `fell_back_to` response
+  fields on HTTP, gRPC, and the Python client, plus the `cmd/deepdata-mcp`
+  stdio server for MCP hosts (bde4f94).
+- Benchmark harness: `benchmarks/ddload`, a stdlib-only Go load client, and the
+  V3 port of `benchmarks/recall_test.py` (50fe829); `benchmarks/ddload-qdrant`,
+  an equal-effort comparison client whose results are in `docs/BENCHMARKS.md`
+  (6cc5ef0).
+- `scripts/backup_restore_drill.sh`: a bare-process offline backup/restore
+  drill with strict post-restore assertions (bc1fa27).
+- Apache-2.0 `LICENSE` at the repository root, declared by the Helm chart and
+  the Python SDK metadata (b1f28be).
 - Tenant-aware HTTP V3 and matching unary `deepdata.v3.DeepData` gRPC
   contracts for collection create/delete, single and atomic batch insert,
   document delete, collection get/list, tenant info, and search.
@@ -26,6 +47,24 @@ license or published artifact.
 
 ### Changed
 
+- `CollectionInfo` marshals snake_case keys (`name`, `fields`, `description`,
+  `metadata`, `doc_count`) on canonical V3 responses instead of PascalCase
+  (bc1fa27; internal/collection/manager.go:181-187).
+- Journal appends keep a persistent descriptor and sync the parent directory
+  once per open writer instead of on every record (6ce44e5).
+- The non-RC `internal/graph` package computes CSR/PageRank locally instead of
+  importing the retired cowrie gnn module; GraphRAG stays outside the RC and is
+  not a supported surface (442cdb6).
+- Recovery: journal replay streams records with bounded memory and snapshot
+  coverage verification reads headers only (gates RCV-01, RCV-02); HNSW
+  segment topology is persisted in the collection schema through the
+  `segments` index parameter and never derived from GOMAXPROCS
+  (internal/collection/collection.go:153-165); `DEEPDATA_BIND_HOST` binds both
+  listeners to one IP literal. Bounded-memory unified snapshot load is gate
+  RCV-03 (39bfe42).
+- Status is derived from evidence: `tasks/gates.json` truth ledger driven by
+  `scripts/gates.py`, the generated `docs/PRE_RELEASE_STATUS.md`, and the
+  `scripts/check_docs_contract.py` docs linter (a443cd0).
 - Normal startup exposes only the canonical V3 HTTP routes and V3 gRPC
   service. Legacy root/V2 mutation APIs and advanced recommendation,
   discovery, embedding-provider, GraphRAG, extraction, and feedback handlers
@@ -38,8 +77,20 @@ license or published artifact.
 - Historical `deepdata.v1` protobuf descriptors remain frozen; the breaking
   tenant-aware contract moved to `deepdata.v3`.
 
+### Removed
+
+- Legacy V2 HTTP surface: the handlers (bde4f94) and their registration with
+  `/v2/insert`, `/v2/import`, `/v2/recommend`, `/v2/discover`,
+  `/v2/collections`, and the associated benchmark harnesses; only the
+  canonical V3 handlers can be registered (9d1672b, breaking).
+- cmd/recalltest, superseded by `benchmarks/ddload` (39bfe42).
+
 ### Fixed
 
+- Sparse index import fails closed on unparsable document IDs instead of
+  collapsing them to ID 0 (59dc110).
+- Weighted hybrid fusion normalization scans min/max explicitly so unsorted
+  input cannot skew scores (9f45151).
 - Snapshot serialization now preserves tenant, vector, index, metadata, ID,
   and recovery semantics and fails closed on corrupt/incompatible state.
 - WAL and checkpoint ordering now preserve acknowledged mutations across
@@ -51,13 +102,15 @@ license or published artifact.
 
 ### Security and operational notes
 
-- TLS termination and encryption at rest remain deployment responsibilities.
+- Built-in TLS and encryption at rest are not provided; both remain deployment
+  responsibilities.
 - Distributed/HA behavior, compliance audit logging, the web UI, and desktop
   packaging are not release gates or supported production surfaces.
 - Python distribution metadata uses `deepdata-client` (the import remains
   `deepdata`) because the `deepdata` project on PyPI is unrelated. Claiming or
   publishing the selected name still requires explicit release authority.
-- Legal ownership and license text must be resolved before publication.
+- The license is Apache-2.0 (root `LICENSE`, b1f28be; gate REL-02). Tag,
+  registry, and signing authority are tracked by gates PUB-01..PUB-03.
 
 ## Historical tag warning
 

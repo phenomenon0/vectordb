@@ -7,9 +7,11 @@ release candidate. The production surface is deliberately small:
 - tenant-aware V3 HTTP plus the equivalent unary gRPC service;
 - caller-supplied dense and sparse vectors;
 - HNSW or Flat for dense fields and Inverted/BM25 for sparse fields;
-- one-field search or two-field hybrid search; and
-- five mutations: create/delete collection, insert, atomic batch insert, and
-  delete document.
+- one-field search or two-field hybrid search, plus single-document fetch by
+  caller-supplied ID; and
+- six mutations: create collection, delete collection, insert, atomic batch
+  insert, delete document, and upsert (`CreateCollection`, `DeleteCollection`,
+  `Insert`, `BatchInsert`, `DeleteDoc`, `Upsert`).
 
 Historical V2/root routes and advanced source packages are not part of this
 contract.
@@ -54,14 +56,19 @@ All canonical data routes are below `/v3/tenants/{tenant_id}`.
 | `POST` | `/v3/tenants/{tenant_id}/collections/{name}/docs` | `write` | Insert document |
 | `POST` | `/v3/tenants/{tenant_id}/collections/{name}/docs/batch` | `write` | Atomic batch insert |
 | `DELETE` | `/v3/tenants/{tenant_id}/collections/{name}/docs` | `write` | Delete document |
+| `PUT` | `/v3/tenants/{tenant_id}/collections/{name}/docs/{doc_id}` | `write` | Upsert document |
+| `GET` | `/v3/tenants/{tenant_id}/collections/{name}/docs/{doc_id}` | `read` | Get document |
 | `POST` | `/v3/tenants/{tenant_id}/collections/{name}/search` | `read` | Search |
 
 Tenant and collection path identifiers must contain 1–64 ASCII letters,
 digits, hyphens, or underscores. JSON request bodies are strict; unknown fields
 are rejected.
 
-The unauthenticated operational routes are `GET /livez`, `GET /healthz`,
-`GET /readyz`, and `GET /metrics`. Restrict them at the network boundary.
+`GET /livez`, `GET /healthz`, and `GET /readyz` are unauthenticated probes.
+`GET /metrics` sits behind the same authentication guard as the API routes
+when authentication is required (cmd/deepdata/server.go:1503-1507,
+`TestMetricsEndpointRequiresAuthWhenEnabled`). Restrict all four at the
+network boundary.
 
 ### Create a collection
 
@@ -129,7 +136,11 @@ Content-Type: application/json
 ```
 
 An explicitly supplied ID must be a positive `uint64`. Omit `id` to have the
-server assign one. V3 has no upsert or metadata-update mutation.
+server assign one. To replace a document under a caller-supplied ID, send
+`PUT .../docs/{doc_id}` with a body of `vectors` and optional `metadata` (the ID
+comes from the path and must be a non-zero `uint64`); `GET .../docs/{doc_id}`
+returns the stored `vectors` and `metadata`, or `404` when absent. There is no
+partial metadata-update mutation.
 
 ### Insert a batch
 
@@ -203,21 +214,38 @@ Two-field hybrid search requires explicit fusion parameters:
 Search accepts at most two query fields and `top_k` must be between 1 and
 1,000. Supported fusion strategies are `rrf`, `weighted`, and `linear`.
 
+Three optional agent-retrieval request fields (bde4f94) refine a search:
+
+- `score_floor` — confidence filter on raw scores in the field's metric
+  direction: a maximum distance on dense fields, a minimum score on sparse
+  and fused scores; `0` disables it (internal/collection/types.go:385-393).
+- `fallback` — `{"primary": "...", "secondary": "...", "threshold": 0.0}`
+  searches the secondary field when the primary yields no confident hit
+  (zero hits, or best score worse than `threshold` when set). Both named
+  fields must be present in `queries` and differ; `fallback` is mutually
+  exclusive with `hybrid_params` (types.go:395-398, 422-426).
+- `usage_boost` — blends tenant usage frecency into the ordering; `0`
+  disables it and values `>= 1` are rejected. Reported scores stay raw
+  (types.go:400-404; collection.go:533).
+
+The response adds `best_score` (best raw score among returned hits, `0` when
+none), `weak_match` (`true` when `score_floor` is set and nothing survived
+it), and `fell_back_to` (the secondary field name when the ladder fired,
+omitted otherwise) — types.go:466-478 and the HTTP struct in
+cmd/deepdata/collection_http.go:357-367.
+
 ## gRPC mirror
 
 The canonical protobuf is
 [`api/proto/deepdata/v3/deepdata.proto`](../../api/proto/deepdata/v3/deepdata.proto).
-`deepdata.v3.DeepData` exposes exactly nine unary RPCs:
 
-1. `GetTenantInfo`
-2. `ListCollections`
-3. `GetCollection`
-4. `CreateCollection`
-5. `DeleteCollection`
-6. `Insert`
-7. `BatchInsert`
-8. `Search`
-9. `DeleteDoc`
+<!-- generated:grpc-rpcs -->
+`deepdata.v3.DeepData` exposes 11 unary RPCs: `GetTenantInfo`, `ListCollections`, `GetCollection`, `CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `Search`, `DeleteDoc`, `Upsert`, `GetDoc`.
+<!-- /generated -->
+
+HTTP route table — generated once the routes subcommand exists (gate DOC-03):
+<!-- generated:http-routes -->
+<!-- /generated -->
 
 Pass the same bearer credential in gRPC `authorization` metadata. The gRPC
 methods use the same tenant manager, authorization decisions, validation, and
@@ -240,8 +268,8 @@ does not depend on graceful shutdown.
 
 ## Explicitly outside the RC
 
-- V2 and root writes, rename, metadata mutation, upsert, bulk-specialized
-  imports, document fetch/scan, and destructive “drop all” operations;
+- V2 and root writes, rename, metadata mutation, bulk-specialized imports,
+  document scan, and destructive “drop all” operations;
 - server-managed embeddings or provider hot-swapping;
 - GraphRAG, extraction, recommendation, discovery, and feedback APIs;
 - replication, clustering, follower restore, and snapshot streaming;

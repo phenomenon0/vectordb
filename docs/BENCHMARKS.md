@@ -9,7 +9,7 @@ here is a claim about deployments at scale; DeepData is a single-node RC
   ground truth precomputed
 - Config parity: HNSW `m=16`, `ef_construction=300` on both engines;
   DeepData searched at `ef_search=200`, Qdrant defaults
-- DeepData `0.2.0-rc`: canonical V3 contract, durable mode — every
+- DeepData `0.2.0-rc.1`: canonical V3 contract, durable mode — every
   acknowledged batch is fsynced to the journal AND the HNSW index build
   completes before the response returns
 - Qdrant 1.19.0: official container image, single node, default settings
@@ -39,8 +39,10 @@ DeepData recall@10 = 1.000, recall@100 = 0.997.
    segments and builds indexes asynchronously (~2 s optimizer catch-up
    here). On the honest common metric — time until everything is
    searchable — the gap is **~9x**, not ~29x. It remains our weakest axis
-   and the top engineering priority (`tasks/todo.md`: group-commit,
-   parallel index construction).
+   and the top engineering priority; the order of work is fixed in
+   [ADR 0005](decisions/0005-ingest-levers-segments-then-allocs-then-group-commit.md):
+   parallel segment builds first, allocation reduction second, group commit
+   deferred.
 2. **Search:** DeepData serves 7x more serial and 33x more concurrent
    queries per second against the same collection. Caveats before quoting:
    hot repeated query, top_k=10, no payload filtering, and the Qdrant side
