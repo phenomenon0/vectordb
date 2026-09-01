@@ -34,7 +34,7 @@ list_checks() {
         python-unit \
         python-mypy \
         python-build \
-        ui-build
+        go-retire
 }
 
 usage() {
@@ -119,9 +119,9 @@ case "$CHECK_NAME" in
         CHECK_CWD="$REPO_ROOT/sdk/python"
         CHECK_DESCRIPTION="python -m build --outdir <repo>/.deepdata-run/python-dist"
         ;;
-    ui-build)
-        CHECK_CWD="$REPO_ROOT/cmd/deepdata/web-ui"
-        CHECK_DESCRIPTION="npm run build"
+    go-retire)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="assert_retired_trees_absent && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go build ./... && CGO_ENABLED=0 go vet ./... && go mod tidy -diff"
         ;;
     *)
         echo "unknown check: $CHECK_NAME" >&2
@@ -154,6 +154,46 @@ assert_no_new_vector_store_callers() {
         return 1
     fi
     echo "NewVectorStore has no live-server callers and func main() is engine-free"
+}
+
+# SYS-03: the retired trees are gone for good. A tree that reappears — or a
+# dependency that creeps back into go.mod — silently re-widens the release
+# candidate's surface, so the check names every retired path explicitly and
+# reads the committed index rather than the working tree.
+assert_retired_trees_absent() {
+    local retired=(
+        client
+        cmd/cli
+        cmd/deepdata/web-ui
+        desktop
+        internal/cluster
+        internal/cowrieutil
+        internal/encoding
+        internal/feedback
+        internal/obsidian
+        internal/wal
+        tests/ui
+        vdb-test-suite
+    )
+    local path present=""
+    for path in "${retired[@]}"; do
+        if [[ -n "$(git -C "$REPO_ROOT" ls-files -- "$path")" ]]; then
+            present+="$path"$'\n'
+        fi
+    done
+    if [[ -n "$present" ]]; then
+        echo "retired trees are still tracked:" >&2
+        printf '%s' "$present" >&2
+        return 1
+    fi
+    local deps
+    deps="$(grep -n 'Neumenon/cowrie\|Neumenon/shard\|mattn/go-sqlite3' "$REPO_ROOT/go.mod" "$REPO_ROOT/go.sum")"
+    if [[ -n "$deps" ]]; then
+        echo "retired dependencies are still required:" >&2
+        echo "$deps" >&2
+        return 1
+    fi
+    echo "retired trees are absent and go.mod carries none of their dependencies"
 }
 
 run_check() {
@@ -247,8 +287,15 @@ run_check() {
             mkdir -p "$REPO_ROOT/.deepdata-run/python-dist"
             timeout 300s python -m build --outdir "$REPO_ROOT/.deepdata-run/python-dist"
             ;;
-        ui-build)
-            timeout 600s npm run build
+        go-retire)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            assert_retired_trees_absent && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go build ./... && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                CGO_ENABLED=0 go vet ./... && \
+            timeout 180s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go mod tidy -diff
             ;;
     esac
 }

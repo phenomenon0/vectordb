@@ -59,8 +59,7 @@ jobs:
             ./cmd/deepdata-mcp \
             ./internal/collection \
             ./internal/security \
-            ./internal/storage \
-            ./internal/wal
+            ./internal/storage
         env:
           CGO_ENABLED: '0'
       - name: Test the supported server surface
@@ -72,8 +71,6 @@ jobs:
             ./cmd/deepdata \
             ./cmd/deepdata-mcp \
             ./internal/collection \
-            ./internal/cowrieutil \
-            ./internal/encoding \
             ./internal/filter \
             ./internal/hybrid \
             ./internal/index/simd \
@@ -81,8 +78,7 @@ jobs:
             ./internal/security \
             ./internal/sparse \
             ./internal/storage \
-            ./internal/telemetry \
-            ./internal/wal
+            ./internal/telemetry
         env:
           CGO_ENABLED: '0'
       - name: Test the vendored HNSW graph module
@@ -105,8 +101,7 @@ jobs:
             ./cmd/deepdata \
             ./internal/collection \
             ./internal/security \
-            ./internal/storage \
-            ./internal/wal
+            ./internal/storage
         env:
           CGO_ENABLED: '1'
       - name: Run SIMD C reference correctness when AVX2 is available
@@ -285,10 +280,7 @@ jobs:
         run: |
           go test -short -timeout 300s -count=1 \
             ./internal/index/... \
-            ./internal/cluster \
             ./internal/extraction \
-            ./internal/feedback \
-            ./internal/graph \
-            ./internal/obsidian
+            ./internal/graph
         env:
           CGO_ENABLED: '0'
