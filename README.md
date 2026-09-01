@@ -202,7 +202,7 @@ compliance-grade audit claims are outside RC1.
 
 ## Where truth lives
 
-- `tasks/gates.json` — the only place a gate's status lives (52 gates).
+- `tasks/gates.json` — the only place a gate's status lives (53 gates).
 - [docs/PRE_RELEASE_STATUS.md](docs/PRE_RELEASE_STATUS.md) — rendered from the ledger; never hand-edited.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the system map and the non-goal block the linter reads.
 - [docs/GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) — live, dormant or retired, package by package.

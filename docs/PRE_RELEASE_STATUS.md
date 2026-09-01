@@ -104,4 +104,8 @@ Readiness: 25 release gates, 2 pass and fresh, 15 pass (stale), 8 not passed. A 
 | MEM-01 | open | — | — | ADR recorded for graph and extraction revival before any code returns |
 | MEM-02 | open | — | — | POST /docs/{id}/feedback stores feedback durably and is covered by tests |
 
+| MED | status | commit | date | statement |
+|---|---|---|---|---|
+| MED-01 | open | — | — | ephemeral collection class: documents write no journal record, the collection is empty after re… |
+
 Update a gate: run its command (receipt-backed gates: `scripts/hardening_check.sh` with the check name and `--force`), then `python3 scripts/gates.py promote CHECK GATE`, then commit `tasks/gates.json` and the regenerated `docs/PRE_RELEASE_STATUS.md` in the same commit. Process: `tasks/PROTOCOL.md`.

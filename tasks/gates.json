@@ -894,6 +894,20 @@
       "status": "open",
       "evidence": null,
       "note": ""
+    },
+    {
+      "id": "MED-01",
+      "statement": "ephemeral collection class: documents write no journal record, the collection is empty after restart, /v3/status capabilities report the class",
+      "command": "GOTOOLCHAIN=go1.25.12 go test ./internal/collection ./cmd/deepdata -run Ephemeral",
+      "scope": [
+        "internal/collection",
+        "cmd/deepdata",
+        "api/contract"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "ADR 0009 (accepted 2026-09-01); after SYS-04. Until it lands, media retention is time-window collections dropped whole with delete-collection."
     }
   ]
 }
