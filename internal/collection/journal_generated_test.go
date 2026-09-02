@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
 // These tests generate a small journal through the real DurableStore writer,
@@ -264,4 +266,72 @@ func TestGeneratedJournalTerminalPartialTailRepairsExactlyOnce(t *testing.T) {
 	if err := reopened.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestGeneratedJournalEmptySparseVectorReplays guards a record the live HTTP
+// path writes today: the handler turns a client's "indices": [] into a typed
+// *sparse.SparseVector, cloneDocumentValue copies its slices with
+// append([]uint32(nil), ...), which is nil, and the journal frame therefore
+// carries "indices":null. Replay decodes that as a nil interface and must read
+// it as the empty sparse vector it was; failing closed there lets one document
+// with no sparse terms make the whole store unopenable after a restart (RCV-05
+// hit this at LSN 480 of the preserved 4.71 GB journal).
+func TestGeneratedJournalEmptySparseVectorReplays(t *testing.T) {
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := CollectionSchema{Name: "docs", Fields: []VectorField{
+		{Name: "embedding", Type: VectorTypeDense, Dim: 4, Index: IndexConfig{Type: IndexTypeFLAT}},
+		{Name: "text", Type: VectorTypeSparse, Dim: 8, Index: IndexConfig{Type: IndexTypeInverted}},
+	}}
+	if _, err := store.Tenants().CreateCollection(ctx, "tenant", schema); err != nil {
+		t.Fatal(err)
+	}
+	// One term, then no terms at all, both as the typed vectors the HTTP layer hands the engine.
+	for _, sparseVec := range []*sparse.SparseVector{
+		mustSparseVector(t, []uint32{1}, []float32{1}, 8),
+		mustSparseVector(t, nil, nil, 8),
+	} {
+		doc := Document{Vectors: map[string]interface{}{"embedding": []float32{1, 0, 0, 0}, "text": sparseVec}}
+		if err := store.Tenants().AddDocument(ctx, "tenant", "docs", &doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	abandonDurableStoreForTest(t, store)
+
+	journal, err := os.ReadFile(base + ".journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(journal, []byte(`"indices":null`)) {
+		t.Fatal("writer no longer journals an empty sparse vector as null; inject the legacy encoding so this compatibility test keeps exercising it")
+	}
+
+	reopened, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("reopen refused a journal holding an empty sparse vector: %v", err)
+	}
+	if got := durableTestCollectionInfo(t, reopened, "tenant", "docs").DocCount; got != 2 {
+		t.Fatalf("recovered document count = %d, want 2", got)
+	}
+	doc, ok := durableTestStoredDocument(t, reopened, "tenant", "docs", 2)
+	if !ok {
+		t.Fatal("document 2 (empty sparse) missing after replay")
+	}
+	if sv, isSparse := doc.Vectors["text"].(*sparse.SparseVector); !isSparse || len(sv.Indices) != 0 || sv.Dim != 8 {
+		t.Fatalf("document 2 sparse field = %#v, want empty *sparse.SparseVector over dim 8", doc.Vectors["text"])
+	}
+	abandonDurableStoreForTest(t, reopened)
+}
+
+func mustSparseVector(t *testing.T, indices []uint32, values []float32, dim int) *sparse.SparseVector {
+	t.Helper()
+	v, err := sparse.NewSparseVector(indices, values, dim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }

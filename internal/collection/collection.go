@@ -281,6 +281,12 @@ func coerceDenseVector(vector interface{}) ([]float32, error) {
 
 func coerceUint32Slice(value interface{}) ([]uint32, error) {
 	switch v := value.(type) {
+	case nil:
+		// A nil index slice is the legacy ingest's encoding of an EMPTY sparse
+		// vector (a document with no terms). NewSparseVector treats an empty
+		// slice the same way, so accept nil here for journal format
+		// compatibility (see 2026-08-28-bounded-recovery journal).
+		return []uint32{}, nil
 	case []uint32:
 		out := make([]uint32, len(v))
 		copy(out, v)
@@ -307,6 +313,9 @@ func coerceUint32Slice(value interface{}) ([]uint32, error) {
 
 func coerceFloat32Slice(value interface{}) ([]float32, error) {
 	switch v := value.(type) {
+	case nil:
+		// Companion to coerceUint32Slice: a nil values slice is an empty sparse.
+		return []float32{}, nil
 	case []float32:
 		out := make([]float32, len(v))
 		copy(out, v)
