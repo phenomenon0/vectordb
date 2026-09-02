@@ -125,3 +125,10 @@
 - A snapshot writer must prove its own output can be reopened before rename.
   Validate the retained schema by reconstructing it, reject exhausted or
   regressed ID cursors, and never silently repair v2 durable semantics on load.
+- Score parity between two rebuilds of one store is exact only for dense
+  distances. BM25 scores inherit the corpus average document length, which
+  internal/sparse keeps as a float32 running total: added on insert, subtracted
+  on delete, re-summed in Go map order on snapshot load. A journal replay and a
+  snapshot cold start of the same 301,816 documents therefore disagree at the
+  sixth digit and swap tied hits. Compare sparse scores with a relative
+  tolerance, or make the accumulator float64 before asserting identity.

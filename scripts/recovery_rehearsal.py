@@ -283,8 +283,15 @@ def main():
                 # top_k sets may differ. The rule is: every document both starts returned scores the same
                 # (dense/sparse scores are per-document; hybrid fusion is set-relative, so hybrid is recorded
                 # only), and at least half the hits are shared. Served bytes are checked separately above.
-                parity[kind] = {"overlap": len(shared), "hits": len(r1["ids"]),
-                                "same_scores_shared": all(s1[i] == s2[i] for i in shared),
+                # "The same" is exact for dense distances. BM25 scores inherit the corpus average document
+                # length, which internal/sparse keeps as a float32 running total (added on insert, subtracted
+                # on delete, re-summed in Go map order on snapshot load), so two rebuilds of the same
+                # 301,816 documents differ at the sixth digit. A relative tolerance still catches a lost
+                # document or statistic; it only forgives summation order.
+                rtol = 1e-4 if kind == "sparse" else 0.0
+                parity[kind] = {"overlap": len(shared), "hits": len(r1["ids"]), "rtol": rtol,
+                                "same_scores_shared": all(abs(s1[i] - s2[i]) <= rtol * max(abs(s1[i]), abs(s2[i]))
+                                                          for i in shared),
                                 "same_set": set(s1) == set(s2), "same_order": r1 == r2}
                 if not r1["ids"] or len(shared) * 2 < len(r1["ids"]):
                     receipt["failures"].append(f"{kind} results share {len(shared)}/{len(r1['ids'])} hits between cold starts")
