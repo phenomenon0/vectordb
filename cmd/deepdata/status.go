@@ -110,6 +110,9 @@ func statusPayload(embedder *serverEmbedder, usageLoaded bool, requestID string)
 			"fallback":    true,
 			"usage_boost": true,
 			"index_types": vcollection.IndexTypeNames(),
+			// The durability classes a create-collection request may ask for
+			// (ADR 0009); an ephemeral collection's documents are memory only.
+			"durability_classes": []string{vcollection.DurabilityDurable, vcollection.DurabilityEphemeral},
 		},
 		// signals is the accreted-signal surface (durability class B).
 		// usage.loaded is false only when a usage sidecar existed and was

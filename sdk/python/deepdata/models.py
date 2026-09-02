@@ -153,6 +153,9 @@ class TenantCollectionSchema(_TenantRequestModel):
     fields: list[TenantVectorField] = Field(min_length=1, max_length=8)
     metadata: dict[str, Any] | None = None
     description: str | None = None
+    #: "ephemeral" keeps the documents in memory only: they write no journal
+    #: record and are gone after a restart, while the collection remains.
+    durability: Literal["durable", "ephemeral"] | None = None
 
 
 class TenantCollectionInfo(_TenantResponseModel):
@@ -175,6 +178,9 @@ class TenantCollectionInfo(_TenantResponseModel):
     )
     doc_count: int = Field(
         default=0, validation_alias=AliasChoices("doc_count", "DocCount"), ge=0
+    )
+    durability: Literal["durable", "ephemeral"] = Field(
+        default="durable", validation_alias=AliasChoices("durability", "Durability")
     )
 
 

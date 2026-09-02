@@ -317,12 +317,33 @@ func (vf *VectorField) Validate() error {
 	return nil
 }
 
+// Durability classes a collection's documents can be created with (ADR 0009).
+// The collection's existence is class A either way — create and delete are
+// journaled — but an ephemeral collection's documents are memory only: they
+// write no journal record and are gone after restart, and its upstream
+// rebuilds them.
+const (
+	DurabilityDurable   = "durable"
+	DurabilityEphemeral = "ephemeral"
+)
+
+// normalizeDurability maps the persisted zero value onto the default class so
+// every read reports a concrete one. Schemas written before ADR 0009 have no
+// durability and are durable.
+func normalizeDurability(durability string) string {
+	if durability == "" {
+		return DurabilityDurable
+	}
+	return durability
+}
+
 // CollectionSchema defines the schema for a multi-vector collection.
 type CollectionSchema struct {
 	Name        string                 `json:"name"`                  // Collection name
 	Fields      []VectorField          `json:"fields"`                // Vector fields
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`    // Collection-level metadata
 	Description string                 `json:"description,omitempty"` // Human-readable description
+	Durability  string                 `json:"durability,omitempty"`  // "durable" (default) or "ephemeral"
 }
 
 // Validate checks if the collection schema is valid.

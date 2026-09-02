@@ -30,6 +30,7 @@ list_checks() {
         go-contract \
         go-usage \
         go-indextypes \
+        go-ephemeral \
         go-runtime \
         python-unit \
         python-mypy \
@@ -103,6 +104,10 @@ case "$CHECK_NAME" in
     go-indextypes)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -timeout 300s -run 'IndexTypes' ./internal/collection ./cmd/deepdata && (cd sdk/python && python -m pytest tests/test_contract.py -q)"
+        ;;
+    go-ephemeral)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -timeout 300s -run 'Ephemeral' ./internal/collection ./cmd/deepdata && (cd sdk/python && python -m pytest tests/test_contract.py -q)"
         ;;
     go-runtime)
         CHECK_CWD="$REPO_ROOT"
@@ -303,6 +308,13 @@ run_check() {
             mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
             timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
                 go test -count=1 -p 1 -timeout 300s -run 'IndexTypes' \
+                ./internal/collection ./cmd/deepdata && \
+            (cd "$REPO_ROOT/sdk/python" && timeout 180s python -m pytest tests/test_contract.py -q)
+            ;;
+        go-ephemeral)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -timeout 300s -run 'Ephemeral' \
                 ./internal/collection ./cmd/deepdata && \
             (cd "$REPO_ROOT/sdk/python" && timeout 180s python -m pytest tests/test_contract.py -q)
             ;;

@@ -509,7 +509,36 @@ func (s *DurableStore) deleteDocument(ctx context.Context, tenantID, collectionN
 	return s.appendApplyLocked(ctx, mutation)
 }
 
+// ephemeralDocumentMutationLocked reports whether the mutation writes
+// documents into a collection created with durability "ephemeral". Only the
+// four document mutations qualify: create and delete-collection stay class A,
+// so the collection's existence survives a restart while its documents do not.
+// Caller holds mu.
+func (s *DurableStore) ephemeralDocumentMutationLocked(m canonicalMutation) bool {
+	switch m.typeName {
+	case mutationInsertDocument, mutationBatchInsert, mutationUpsertDocument, mutationDeleteDocument:
+	default:
+		return false
+	}
+	coll, err := s.tenants.getCollectionDirect(m.tenantID, m.collectionName)
+	if err != nil || coll == nil {
+		return false
+	}
+	return coll.isEphemeral()
+}
+
 func (s *DurableStore) appendApplyLocked(ctx context.Context, mutation canonicalMutation) error {
+	// Durability class E (ADR 0009): an ephemeral collection's documents are
+	// memory only, so the mutation is applied under the same store mutex but
+	// is neither encoded nor appended, costs no fsync, and does not advance
+	// AppliedLSN. Nothing durable was written, so a failed apply cannot split
+	// journal and memory and must not latch a store-wide fault.
+	if s.ephemeralDocumentMutationLocked(mutation) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return s.apply(context.WithoutCancel(ctx), mutation)
+	}
 	payload, err := encodeDurableMutation(mutation)
 	if err != nil {
 		return err
@@ -603,6 +632,12 @@ func validateCanonicalSchema(schema *CollectionSchema) error {
 	}
 	if !IsValidCanonicalIdentifier(schema.Name) {
 		return errors.New("collection name must be 1-64 alphanumeric/hyphen/underscore characters")
+	}
+	switch schema.Durability {
+	case "", DurabilityDurable, DurabilityEphemeral:
+	default:
+		return fmt.Errorf("%w: durability must be %q or %q, got %q",
+			ErrInvalidArgument, DurabilityDurable, DurabilityEphemeral, schema.Durability)
 	}
 	for _, field := range schema.Fields {
 		switch field.Type {

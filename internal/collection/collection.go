@@ -1569,6 +1569,14 @@ func (c *Collection) Schema() CollectionSchema {
 	return clone
 }
 
+// isEphemeral reports the collection's durability class without cloning the
+// whole schema, so the store can consult it on every document mutation.
+func (c *Collection) isEphemeral() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.schema.Durability == DurabilityEphemeral
+}
+
 // UpdateMetadata updates the collection schema's metadata map.
 func (c *Collection) UpdateMetadata(metadata map[string]interface{}) {
 	if c.isDurableReadOnly() {

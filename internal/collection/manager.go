@@ -155,6 +155,7 @@ func (cm *CollectionManager) GetCollectionInfo(name string) (*CollectionInfo, er
 		Description: schema.Description,
 		Metadata:    schema.Metadata,
 		DocCount:    coll.Count(),
+		Durability:  normalizeDurability(schema.Durability),
 	}, nil
 }
 
@@ -172,6 +173,7 @@ func (cm *CollectionManager) ListCollectionInfos() []CollectionInfo {
 			Description: schema.Description,
 			Metadata:    schema.Metadata,
 			DocCount:    coll.Count(),
+			Durability:  normalizeDurability(schema.Durability),
 		})
 	}
 	return infos
@@ -184,6 +186,10 @@ type CollectionInfo struct {
 	Description string                 `json:"description,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 	DocCount    int                    `json:"doc_count"`
+	// Durability is the normalized class (ADR 0009): "durable" for every
+	// collection created before or without the field, "ephemeral" for one
+	// whose documents are memory only.
+	Durability string `json:"durability"`
 }
 
 // FieldInfo is a schema field as a read reports it: the journaled

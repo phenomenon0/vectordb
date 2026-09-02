@@ -335,12 +335,22 @@ func writeCollectionSnapshotV2ManagerLocked(w io.Writer, manager *CollectionMana
 			if err := validateCollectionSnapshotV2RepresentableLocked(coll); err != nil {
 				return err
 			}
+			// Durability class E (ADR 0009): an ephemeral collection is
+			// captured as its schema and nothing else, so the reload finds it
+			// present and empty for its upstream to rebuild.
+			documentCount := uint64(len(coll.documents))
+			if coll.schema.Durability == DurabilityEphemeral {
+				documentCount = 0
+			}
 			if err := writeCollectionSnapshotV2Frame(w, collectionSnapshotV2Collection{
 				Schema:        coll.schema,
 				NextID:        coll.nextID,
-				DocumentCount: uint64(len(coll.documents)),
+				DocumentCount: documentCount,
 			}); err != nil {
 				return fmt.Errorf("write descriptor: %w", err)
+			}
+			if documentCount == 0 {
+				return nil
 			}
 			for id, doc := range coll.documents {
 				if doc == nil {

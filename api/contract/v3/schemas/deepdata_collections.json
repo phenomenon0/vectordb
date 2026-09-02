@@ -84,6 +84,14 @@
       },
       "description": {
        "type": "string"
+      },
+      "durability": {
+       "type": "string",
+       "enum": [
+        "durable",
+        "ephemeral"
+       ],
+       "description": "Durability class of this collection's documents: 'ephemeral' means they are memory only and do not survive a restart."
       }
      },
      "additionalProperties": true,

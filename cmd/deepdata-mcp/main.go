@@ -908,6 +908,7 @@ func (s *mcpServer) createCollection(raw json.RawMessage) (any, error) {
 		Preset      string            `json:"preset"`
 		Fields      []json.RawMessage `json:"fields"`
 		Description string            `json:"description"`
+		Durability  string            `json:"durability"`
 	}
 	if err := decodeArgs(raw, &a); err != nil {
 		return nil, err
@@ -949,6 +950,9 @@ func (s *mcpServer) createCollection(raw json.RawMessage) (any, error) {
 	body := map[string]any{"name": a.Name, "fields": fields}
 	if a.Description != "" {
 		body["description"] = a.Description
+	}
+	if a.Durability != "" {
+		body["durability"] = a.Durability
 	}
 	if _, _, err := s.doHTTP(http.MethodPost, fmt.Sprintf("/v3/tenants/%s/collections", s.tenant), body); err != nil {
 		return errorResult(err), nil

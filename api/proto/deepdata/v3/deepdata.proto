@@ -39,6 +39,8 @@ message CollectionInfo {
   string description = 3;
   google.protobuf.Struct metadata = 4;
   uint64 document_count = 5;
+  // Normalized durability class: "durable" or "ephemeral" (ADR 0009).
+  string durability = 6;
 }
 
 message CollectionStats {
@@ -81,6 +83,9 @@ message CreateCollectionRequest {
   string tenant_id = 3;
   google.protobuf.Struct metadata = 4;
   string description = 5;
+  // "durable" (default when empty) or "ephemeral": an ephemeral collection's
+  // documents write no journal record and do not survive restart (ADR 0009).
+  string durability = 6;
 }
 
 message CreateCollectionResponse {

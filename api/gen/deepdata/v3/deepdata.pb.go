@@ -179,6 +179,8 @@ type CollectionInfo struct {
 	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
 	Metadata      *structpb.Struct       `protobuf:"bytes,4,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	DocumentCount uint64                 `protobuf:"varint,5,opt,name=document_count,json=documentCount,proto3" json:"document_count,omitempty"`
+	// Normalized durability class: "durable" or "ephemeral" (ADR 0009).
+	Durability    string `protobuf:"bytes,6,opt,name=durability,proto3" json:"durability,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -246,6 +248,13 @@ func (x *CollectionInfo) GetDocumentCount() uint64 {
 		return x.DocumentCount
 	}
 	return 0
+}
+
+func (x *CollectionInfo) GetDurability() string {
+	if x != nil {
+		return x.Durability
+	}
+	return ""
 }
 
 type CollectionStats struct {
@@ -605,12 +614,15 @@ func (x *GetCollectionResponse) GetCollection() *CollectionInfo {
 }
 
 type CreateCollectionRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Fields        []*VectorFieldConfig   `protobuf:"bytes,2,rep,name=fields,proto3" json:"fields,omitempty"`
-	TenantId      string                 `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Metadata      *structpb.Struct       `protobuf:"bytes,4,opt,name=metadata,proto3" json:"metadata,omitempty"`
-	Description   string                 `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Fields      []*VectorFieldConfig   `protobuf:"bytes,2,rep,name=fields,proto3" json:"fields,omitempty"`
+	TenantId    string                 `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Metadata    *structpb.Struct       `protobuf:"bytes,4,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Description string                 `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	// "durable" (default when empty) or "ephemeral": an ephemeral collection's
+	// documents write no journal record and do not survive restart (ADR 0009).
+	Durability    string `protobuf:"bytes,6,opt,name=durability,proto3" json:"durability,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -676,6 +688,13 @@ func (x *CreateCollectionRequest) GetMetadata() *structpb.Struct {
 func (x *CreateCollectionRequest) GetDescription() string {
 	if x != nil {
 		return x.Description
+	}
+	return ""
+}
+
+func (x *CreateCollectionRequest) GetDurability() string {
+	if x != nil {
+		return x.Durability
 	}
 	return ""
 }
@@ -2118,13 +2137,16 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"index_type\x18\x04 \x01(\tR\tindexType\x12:\n" +
 	"\findex_params\x18\x05 \x01(\v2\x17.google.protobuf.StructR\vindexParams\x12:\n" +
 	"\tembedding\x18\x06 \x01(\v2\x1c.deepdata.v3.EmbeddingConfigR\tembedding\x12'\n" +
-	"\x0fscore_direction\x18\a \x01(\tR\x0escoreDirection\"\xda\x01\n" +
+	"\x0fscore_direction\x18\a \x01(\tR\x0escoreDirection\"\xfa\x01\n" +
 	"\x0eCollectionInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x126\n" +
 	"\x06fields\x18\x02 \x03(\v2\x1e.deepdata.v3.VectorFieldConfigR\x06fields\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x123\n" +
 	"\bmetadata\x18\x04 \x01(\v2\x17.google.protobuf.StructR\bmetadata\x12%\n" +
-	"\x0edocument_count\x18\x05 \x01(\x04R\rdocumentCount\"m\n" +
+	"\x0edocument_count\x18\x05 \x01(\x04R\rdocumentCount\x12\x1e\n" +
+	"\n" +
+	"durability\x18\x06 \x01(\tR\n" +
+	"durability\"m\n" +
 	"\x0fCollectionStats\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12%\n" +
 	"\x0edocument_count\x18\x02 \x01(\x04R\rdocumentCount\x12\x1f\n" +
@@ -2147,13 +2169,16 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\x15GetCollectionResponse\x12;\n" +
 	"\n" +
 	"collection\x18\x01 \x01(\v2\x1b.deepdata.v3.CollectionInfoR\n" +
-	"collection\"\xd9\x01\n" +
+	"collection\"\xf9\x01\n" +
 	"\x17CreateCollectionRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x126\n" +
 	"\x06fields\x18\x02 \x03(\v2\x1e.deepdata.v3.VectorFieldConfigR\x06fields\x12\x1b\n" +
 	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x123\n" +
 	"\bmetadata\x18\x04 \x01(\v2\x17.google.protobuf.StructR\bmetadata\x12 \n" +
-	"\vdescription\x18\x05 \x01(\tR\vdescription\".\n" +
+	"\vdescription\x18\x05 \x01(\tR\vdescription\x12\x1e\n" +
+	"\n" +
+	"durability\x18\x06 \x01(\tR\n" +
+	"durability\".\n" +
 	"\x18CreateCollectionResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"J\n" +
 	"\x17DeleteCollectionRequest\x12\x12\n" +

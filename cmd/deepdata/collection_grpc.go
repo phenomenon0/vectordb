@@ -173,6 +173,7 @@ func (s *CollectionGRPCServer) CreateCollection(ctx context.Context, req *deepda
 		Fields:      fields,
 		Metadata:    structToMap(req.Metadata),
 		Description: req.Description,
+		Durability:  req.Durability,
 	}
 	if aerr := resolveSchemaEmbedding(&schema, s.embedder); aerr != nil {
 		return nil, aerr.GRPC(ctx)
@@ -641,6 +642,7 @@ func collectionInfoToProto(info vcollection.CollectionInfo) (*deepdatav3.Collect
 		Description:   info.Description,
 		Metadata:      metadata,
 		DocumentCount: nonNegativeUint64(info.DocCount),
+		Durability:    info.Durability,
 	}, nil
 }
 

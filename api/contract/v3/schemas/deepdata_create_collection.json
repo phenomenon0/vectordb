@@ -84,6 +84,14 @@
    },
    "description": {
     "type": "string"
+   },
+   "durability": {
+    "type": "string",
+    "enum": [
+     "durable",
+     "ephemeral"
+    ],
+    "description": "Durability class of the collection's documents. 'durable' (the default) journals every write; 'ephemeral' keeps documents in memory only, so they write no journal record and are gone after a restart while the collection itself remains."
    }
   },
   "required": [
