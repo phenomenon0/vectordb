@@ -21,6 +21,7 @@ list_checks() {
         gates-check \
         benchmark-unit \
         go-storage \
+        go-persistence \
         go-short \
         go-race \
         go-vet-cgo0 \
@@ -68,6 +69,10 @@ case "$CHECK_NAME" in
     go-storage)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -short -count=1 -timeout 300s ./internal/storage ./internal/collection ./cmd/deepdata"
+        ;;
+    go-persistence)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -count=1 -p 1 -timeout 900s ./internal/collection ./cmd/deepdata"
         ;;
     go-short)
         CHECK_CWD="$REPO_ROOT"
@@ -251,6 +256,12 @@ run_check() {
             timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
                 go test -short -count=1 -timeout 300s \
                 ./internal/storage ./internal/collection ./cmd/deepdata
+            ;;
+        go-persistence)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 960s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
+                go test -count=1 -p 1 -timeout 900s \
+                ./internal/collection ./cmd/deepdata
             ;;
         go-short)
             mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"

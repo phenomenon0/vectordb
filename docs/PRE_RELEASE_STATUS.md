@@ -96,8 +96,8 @@ Readiness: 25 release gates, 10 pass and fresh, 7 pass (stale), 8 not passed. A 
 |---|---|---|---|---|
 | SYS-01 | pass | 7db98dd | 2026-09-01 | serverRuntime extracted from cmd/deepdata main; func main() constructs no VectorStore and NewVe… |
 | SYS-02 | pass | 7db98dd | 2026-09-01 | one IndexTypes vocabulary shared by server, SDK and docs |
-| SYS-03 | pass | 7db98dd | 2026-09-01 | archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, sha… |
-| SYS-04 | pass | 7db98dd | 2026-09-01 | Canonical prefix dropped; every live package has a doc.go |
+| SYS-03 | pass (stale) | 7db98dd | 2026-09-01 | archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, sha… |
+| SYS-04 | pass (stale) | 7db98dd | 2026-09-01 | Canonical prefix dropped; every live package has a doc.go |
 
 | MEM | status | commit | date | statement |
 |---|---|---|---|---|
@@ -106,6 +106,6 @@ Readiness: 25 release gates, 10 pass and fresh, 7 pass (stale), 8 not passed. A 
 
 | MED | status | commit | date | statement |
 |---|---|---|---|---|
-| MED-01 | pass | 7db98dd | 2026-09-01 | ephemeral collection class: documents write no journal record, the collection is empty after re… |
+| MED-01 | pass (stale) | 7db98dd | 2026-09-01 | ephemeral collection class: documents write no journal record, the collection is empty after re… |
 
 Update a gate: run its command (receipt-backed gates: `scripts/hardening_check.sh` with the check name and `--force`), then `python3 scripts/gates.py promote CHECK GATE`, then commit `tasks/gates.json` and the regenerated `docs/PRE_RELEASE_STATUS.md` in the same commit. Process: `tasks/PROTOCOL.md`.

@@ -90,15 +90,16 @@
     {
       "id": "DUR-05",
       "statement": "focused persistence matrices pass serially (go test -count=1 -p 1 ./internal/collection ./cmd/deepdata)",
-      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 ./internal/collection ./cmd/deepdata",
+      "command": "scripts/hardening_check.sh go-persistence",
       "scope": [
         "internal/collection",
-        "cmd/deepdata"
+        "cmd/deepdata",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
       "status": "open",
       "evidence": null,
-      "note": "ece6f23 prose claims a run; no receipt or fingerprint recorded, so it stays open until promoted from a receipt"
+      "note": "ece6f23 prose claimed a run with no receipt; go-persistence (added 2026-09-01) runs the full serial matrix of both packages, no -short, and writes a receipt for promotion"
     },
     {
       "id": "SDK-01",
