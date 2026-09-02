@@ -439,6 +439,9 @@ func (j *collectionJournal) validateAndRepair(appliedLSN uint64, validate collec
 		if tailErr := validateCollectionJournalPartialTail(partial, j.storeID, expectedLSN, j.maxPayload); tailErr != nil {
 			return collectionJournalReplayPlan{}, fmt.Errorf("refuse collection journal partial-tail repair: %w", tailErr)
 		}
+		if tailErr := rejectCompleteFrameAsPartialTail(partial); tailErr != nil {
+			return collectionJournalReplayPlan{}, fmt.Errorf("refuse collection journal partial-tail repair: %w", tailErr)
+		}
 		if tailErr := j.repairCurrentPartialTail(partial); tailErr != nil {
 			return collectionJournalReplayPlan{}, tailErr
 		}
@@ -643,6 +646,52 @@ func validateCollectionJournalPartialTail(
 		if minimumPayloadLength := binary.BigEndian.Uint32(payloadLengthPrefix[:]); minimumPayloadLength > maxPayload {
 			return fmt.Errorf("partial journal header cannot encode a payload within maximum %d", maxPayload)
 		}
+	}
+	return nil
+}
+
+// rejectCompleteFrameAsPartialTail guards truncation against an acknowledged
+// frame whose payload-length field was corrupted upward past EOF. By framing
+// alone that is indistinguishable from a torn write, so the body is checked:
+// if the stored checksum verifies for a candidate length ending at EOF or at a
+// successor frame's magic, the frame was complete and truncating it would
+// discard acknowledged records. The body is bounded by maxPayload because the
+// scanner already rejected larger claimed lengths.
+func rejectCompleteFrameAsPartialTail(tail *collectionJournalPartialTailError) error {
+	if !tail.partialBody {
+		return nil
+	}
+	f, err := os.Open(tail.path)
+	if err != nil {
+		return fmt.Errorf("open partial journal tail body: %w", err)
+	}
+	defer f.Close()
+	bodyOffset := tail.offset + int64(collectionJournalHeaderSize)
+	body := make([]byte, tail.fileSize-bodyOffset)
+	if _, err := f.ReadAt(body, bodyOffset); err != nil {
+		return fmt.Errorf("read partial journal tail body: %w", err)
+	}
+
+	header := append([]byte(nil), tail.header[:collectionJournalChecksumOffset]...)
+	stored := tail.header[collectionJournalChecksumOffset:int(collectionJournalHeaderSize)]
+	h := sha256.New()
+	completeWithLength := func(payloadLen int) bool {
+		binary.BigEndian.PutUint32(header[collectionJournalPayloadLenOffset:], uint32(payloadLen))
+		h.Reset()
+		_, _ = h.Write(header)
+		_, _ = h.Write(body[:payloadLen])
+		return equalCollectionJournalChecksum(stored, h.Sum(nil))
+	}
+	candidate := len(body)
+	for candidate >= 0 {
+		if completeWithLength(candidate) {
+			return fmt.Errorf("partial journal tail at offset %d is a complete frame with a corrupt payload length", tail.offset)
+		}
+		next := bytes.LastIndex(body[:candidate], collectionJournalMagic[:])
+		if next < 0 {
+			break
+		}
+		candidate = next
 	}
 	return nil
 }
