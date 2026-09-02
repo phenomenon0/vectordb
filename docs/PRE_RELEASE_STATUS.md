@@ -50,7 +50,7 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 | CI-02 | pass (stale) | f5d4582 | 2026-07-22 | race job green on the RC package list |
 | CI-03 | pass (stale) | f5d4582 | 2026-07-22 | deployment manifests, Python client and cross-compile proof jobs green |
 | CI-04 | retired | — | — | browser UI end-to-end job runs in CI |
-| CI-05 | pass | a36faa4 | 2026-09-02 | cmd/deepdata-mcp is in the CI package list and its tests run |
+| CI-05 | pass (stale) | a36faa4 | 2026-09-02 | cmd/deepdata-mcp is in the CI package list and its tests run |
 | CI-06 | open | — | — | RC smoke test job runs tests/smoke_test.sh against a built binary in CI |
 
 | EVID | status | commit | date | statement |
@@ -74,8 +74,8 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 
 | DOC | status | commit | date | statement |
 |---|---|---|---|---|
-| DOC-01 | pass | a3b4cfb | 2026-09-02 | docs contract linter passes on the tree (scripts/check_docs_contract.py) |
-| DOC-02 | pass | a3b4cfb | 2026-09-02 | tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing… |
+| DOC-01 | pass (stale) | a3b4cfb | 2026-09-02 | docs contract linter passes on the tree (scripts/check_docs_contract.py) |
+| DOC-02 | pass (stale) | a3b4cfb | 2026-09-02 | tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing… |
 | DOC-03 | pass | a3b4cfb | 2026-09-02 | HTTP route table in internal/collection/API.md is generated from the routes subcommand |
 
 | PUB | status | commit | date | statement |
@@ -96,7 +96,7 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 |---|---|---|---|---|
 | SYS-01 | pass | a36faa4 | 2026-09-02 | serverRuntime extracted from cmd/deepdata main; func main() constructs no VectorStore and NewVe… |
 | SYS-02 | pass | a36faa4 | 2026-09-02 | one IndexTypes vocabulary shared by server, SDK and docs |
-| SYS-03 | pass | a36faa4 | 2026-09-02 | archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, sha… |
+| SYS-03 | pass (stale) | a36faa4 | 2026-09-02 | archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, sha… |
 | SYS-04 | pass | a36faa4 | 2026-09-02 | Canonical prefix dropped; every live package has a doc.go |
 
 | MEM | status | commit | date | statement |

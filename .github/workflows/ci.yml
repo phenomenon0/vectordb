@@ -114,6 +114,20 @@ jobs:
         env:
           CGO_ENABLED: '1'
 
+  smoke-rc:
+    name: Linux RC smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run the RC smoke test
+        timeout-minutes: 20
+        run: tests/smoke_test.sh
+        env:
+          CGO_ENABLED: '0'
+
   test-python-sdk:
     name: Canonical Python client
     runs-on: ubuntu-latest

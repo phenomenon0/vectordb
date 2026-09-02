@@ -1,0 +1,27 @@
+# gitleaks per-fingerprint ignore list (commit:path:rule:line). Working tree is clean: "gitleaks detect --no-git" finds nothing;
+# every entry below is a historical synthetic fixture or documentation placeholder that no longer exists as a live value at HEAD.
+# Any NEW finding must be triaged against git (does the file/line still exist, is it a real credential) before a line is added here. Never append blind.
+
+# already marked gitleaks:allow at HEAD (internal/logging/logging_test.go:236); value is a synthetic request id passed as a context value in a unit test
+0221e20baee3110c163242ba51dc366196fd393c:internal/logging/logging_test.go:generic-api-key:236
+
+# rewritten; line now prose (docs/troubleshooting.md:80 at HEAD describes grpcurl without server reflection); original was a curl example with a placeholder bearer token in a "set your token" fix snippet
+487e3a9559200c51ae42fd1d11f49763a87cad25:docs/troubleshooting.md:curl-auth-header:80
+
+# rewritten; line now prose (docs/security.md:68 at HEAD describes tenant-scoped JWT permissions); original was a curl health-check example with a generic "insert your key here" style placeholder bearer token
+a6788df2415f14e48da830b6c335b6a7b437f48c:docs/security.md:curl-auth-header:68
+
+# deleted file (root multitenant_test.go removed in 6234207; content moved to cmd/deepdata/multitenant_test.go where the constant is already marked gitleaks:allow at HEAD); value is a deterministic test-only JWT signing secret constant
+787c8da37aa17838c7581959ffc9530fc0ad07c7:multitenant_test.go:generic-api-key:19
+
+# deleted file (PRODUCTION_FEATURES.md removed in ea76820, docs consolidated into DEV_GUIDE.md); curl example passing a truncated, obviously fake placeholder api token in an Authorization header
+44d6e17435ed7a04e905dbd58b13a7aa1d5ffacd:PRODUCTION_FEATURES.md:curl-auth-header:410
+
+# deleted file (PRODUCTION_FEATURES.md removed in ea76820); curl example passing the same truncated placeholder api token as a ?token= query parameter
+44d6e17435ed7a04e905dbd58b13a7aa1d5ffacd:PRODUCTION_FEATURES.md:curl-auth-header:414
+
+# deleted file (QUICKSTART.md removed in 93492ee repo cleanup); curl usage example with a placeholder bearer token in a documentation walkthrough
+bb46d97f168ac007cd54b5281ea5287948d00765:QUICKSTART.md:curl-auth-header:1164
+
+# deleted file (QUICKSTART.md removed in 93492ee); shell variable assignment holding a truncated placeholder token for reuse across the quickstart examples
+bb46d97f168ac007cd54b5281ea5287948d00765:QUICKSTART.md:generic-api-key:1199

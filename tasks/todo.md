@@ -65,6 +65,23 @@ MEM-01 and MEM-02 fork after CTL-02; DOC-03 lands with CTL-04; CI-05 lands with 
 The paths share only the tree: a change inside a DUR gate's scope (cmd, internal, api, go.mod, go.sum for DUR-01/03/04) turns that gate stale (gates.py is_stale; DUR-01 note), so freeze last.
 PUB-01..03 and SYS-03's archive tag need owner authority (gates.json notes); no other gate does.
 
+## Owner decisions
+
+Recorded 2026-09-02 by the owner (git user phenomenon0) for REV-01; a decision here changes only when the owner says so.
+- CI-06 — not a release gate: the smoke job is written into .github/workflows/ci.yml now and is bound only after CI has actually run it (needs a push).
+- EVID-02 — terminal: passes when every release gate passes; no separate work.
+- MEM-02 — deferred past the RC: not a release gate; built when a harness asks (matches line 3 and slice 14).
+- PUB-01 — blocked on owner authority: the owner pushes develop when EVID-02 passes; that CI run rebinds the stale CI-bound gates CI-01/02/03; the stale local release gates EVID-01/03, OPS-01/02/03, PKG-01/02 are re-run and promoted at the frozen head before REL-04.
+- PUB-02 — blocked on owner authority: tag after PUB-01's CI is green on the pushed head.
+- PUB-03 — blocked on owner authority: publish after PUB-02; publication credentials were never authorised.
+- RCV-05 — in flight: the Phase B rerun is armed on the probe root at a 6656M cap and binds when the memory gate clears; never against the preserved journals.
+- REL-04 — run at freeze, after REV-01.
+- REV-01 — this section.
+- SDK-02 — run before freeze (release gate): first of SDK-02, SOAK-01, SOAK-02, SEC-01, in that order once RCV-05 binds.
+- SEC-01 — run before freeze (release gate): fourth, after SOAK-02; its gitleaks history hits are per-fingerprint allowlisted in .gitleaksignore (all synthetic fixtures; the working tree is clean).
+- SOAK-01 — run before freeze (release gate): second, after SDK-02.
+- SOAK-02 — run before freeze (release gate): third, after SOAK-01.
+
 ## Parked
 
 Each item names the decision or gate that owns it; none is scheduled:
