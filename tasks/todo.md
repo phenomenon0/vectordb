@@ -1,6 +1,6 @@
 # DeepData — plan
 
-Next action: MED-01 — ephemeral collection class: documents write no journal record, memory only, empty after restart, /v3/status capabilities report the class (ADR 0009).
+Next action: RCV-03 — unified snapshots load with bounded memory (head of the RC critical path; the platform slices CTL-01..05, SYS-01..04 and MED-01 all pass, MEM-02 waits for a harness).
 
 Status lives only in [tasks/gates.json](gates.json), rendered to [docs/PRE_RELEASE_STATUS.md](../docs/PRE_RELEASE_STATUS.md).
 This file holds ordering and dependencies; it has no checkboxes. Gate ids below name the ledger row.
@@ -73,7 +73,7 @@ Each item names the decision or gate that owns it; none is scheduled:
 - GraphRAG, graph reranking and extraction revival: no code returns before MEM-01's ADR; internal/graph and internal/extraction stay dormant behind the canonical wall, internal/feedback goes with SYS-03's deletion (ADR 0006, accepted 2026-09-01).
 - Benchmark reruns: none; benchmarks/results/ and benchmarks/competitive/live/ are frozen history, docs/BENCHMARKS.md holds the live numbers, [ADR 0005](../docs/decisions/0005-ingest-levers-segments-then-allocs-then-group-commit.md) fixes the ingest-lever order.
 - Code-tree deletion: no package is deleted before SYS-03's archive tag archive/pre-narrowing-v2 exists (owner authority granted 2026-09-01; the tag is local until a push is authorised).
-- Image and video: vectors-in today over ADR 0001 (frames embedded at the capture side, blobs stay outside, time-window collections dropped whole for retention); the ephemeral collection class is MED-01, the next action ([ADR 0009](../docs/decisions/0009-media-is-vectors-in-ephemeral-collections-next.md)).
+- Image and video: vectors-in today over ADR 0001 (frames embedded at the capture side, blobs stay outside, time-window collections dropped whole for retention); the ephemeral collection class is MED-01, landed 2026-09-01 ([ADR 0009](../docs/decisions/0009-media-is-vectors-in-ephemeral-collections-next.md)).
 - desktop/, the web UI embed and tests/ui: retirement is [ADR 0006](../docs/decisions/0006-re-expand-to-agent-memory-platform.md), accepted by the owner on 2026-09-01 (no user of either UI exists yet; the platform is planned for agents); they are deleted under SYS-03.
 
 ## Where truth lives
