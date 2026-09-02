@@ -559,7 +559,7 @@
     {
       "id": "RCV-02",
       "statement": "snapshot coverage verification reads headers only, never whole payloads",
-      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 -run Coverage ./internal/collection",
+      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 -run 'Checkpoint|UnifiedCollectionSnapshot' ./internal/collection",
       "scope": [
         "internal/collection/snapshot.go",
         "internal/collection/snapshot_stream_test.go"
@@ -573,7 +573,7 @@
         "receipt": null,
         "ci_run": null
       },
-      "note": "session-verified: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt; re-run at 6869b5e (exit 0) after MED-01 taught writeCollectionSnapshotV2ManagerLocked to write ephemeral collections with zero documents"
+      "note": "session-verified: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt; the earlier command (-run Coverage) matched no test at any commit since 39bfe42, so its exit 0 proved nothing. verifyCovered (internal/collection/journal.go:530) streams both artifacts with one reused payload buffer and is reached only through DurableStore.Checkpoint; the command now runs every Checkpoint-named test plus the snapshot-stream tests (header before payload: V1OversizeFailsBeforeAllocation, V2ChecksMarkerBeforeBuild). No test asserts a memory bound for coverage verification itself; that assertion belongs to RCV-03. Re-run at 6869b5e (exit 0) after MED-01 changed snapshot.go"
     },
     {
       "id": "RCV-03",
