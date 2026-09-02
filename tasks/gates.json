@@ -579,27 +579,30 @@
     {
       "id": "RCV-03",
       "statement": "unified snapshots load with bounded memory",
-      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 -run Snapshot ./internal/collection",
+      "command": "scripts/hardening_check.sh go-recovery-snapshot",
       "scope": [
         "internal/collection/snapshot.go",
-        "internal/collection/durable_store.go"
+        "internal/collection/durable_store.go",
+        "internal/collection/snapshot_memory_test.go",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
       "status": "open",
       "evidence": null,
-      "note": "todo.md 2026-08-28 checklist item still open"
+      "note": "internal/collection/snapshot_memory_test.go (8a3e186) proves it with GC disabled: validating an 11.3 MB / 2049-frame v2 snapshot retains ~0 B (bound 1 MiB), loading retains 0.84x the file size (bound: less than the file), the manager reader's largest single Read is 5.5 KB (bound 64 KiB), and an oversize frame is rejected after 2.2 KB of allocation (bound 16 MiB). No production change: v2 has streamed both ways since 39bfe42/356495f. Not proven: peak in-flight heap under a hard cap (RCV-05); a transient whole-file read inside readUnifiedCollectionSnapshotV2File would be caught only by the manager-reader test"
     },
     {
       "id": "RCV-04",
       "statement": "generated small-journal tests fail closed on truncated and corrupt records",
-      "command": "GOTOOLCHAIN=go1.25.12 go test -count=1 -p 1 -run Corrupt ./internal/collection",
+      "command": "scripts/hardening_check.sh go-recovery-journal",
       "scope": [
-        "internal/collection"
+        "internal/collection",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": ""
+      "note": "internal/collection/journal_generated_test.go (e207149) writes a 4-record journal through the real DurableStore writer, mutates bytes at computed frame offsets and reopens: payload/checksum flips, zero length, length above the 16 MiB maximum, length past EOF, truncated/removed/duplicated interior records all fail closed with both artifacts byte-identical; a terminal torn frame repairs exactly once. The same commit ships a production fix in journal.go (rejectCompleteFrameAsPartialTail): a complete acknowledged frame whose length field was corrupted past EOF was indistinguishable from a torn tail and validateAndRepair truncated it, silently discarding that record and every later one (measured before the fix: 984-byte 4-frame journal -> 249 bytes, LSN 1, 0 documents, no error). Not covered by design: an external truncation at a frame boundary or mid-payload is indistinguishable from a torn write and is still repaired (docs/troubleshooting.md). The earlier command (-run Corrupt) matched 3 tests"
     },
     {
       "id": "RCV-05",
@@ -617,15 +620,17 @@
     {
       "id": "RCV-06",
       "statement": "internal/index/segmented.go measured under the cold-start memory envelope",
-      "command": "GOTOOLCHAIN=go1.25.12 go test -run Segmented -benchmem ./internal/index ./internal/collection",
+      "command": "scripts/hardening_check.sh go-segmented-envelope",
       "scope": [
         "internal/index/segmented.go",
-        "internal/collection/segmented_topology_test.go"
+        "internal/index/segmented_coldstart_test.go",
+        "internal/collection/segmented_topology_test.go",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": "todo.md:425 review box closed by reading, not by measurement"
+      "note": "internal/index/segmented_coldstart_test.go (94da608, 79adcce): BenchmarkSegmentedColdStart builds 4000 x 64-dim documents (half Add, half BatchAdd of 100, fixed seed) into plain HNSW and Segmented(4); TestSegmentedColdStartEnvelope asserts segmented allocates and retains at most 1.25x HNSW. Measured on a Ryzen 7 7700X: HNSW 1.14 s/op, 820 MB allocated, 3.04 MB retained; Segmented(4) 0.81 s/op, 494 MB allocated, 3.05 MB retained (ratios 0.60 allocated, 1.01 retained). The earlier command had -benchmem without -bench and ran no benchmark. Not measured: merge-on-export peak, because no cold-start or checkpoint path calls Index.Export (call-site inventory in 79adcce)"
     },
     {
       "id": "DOC-01",

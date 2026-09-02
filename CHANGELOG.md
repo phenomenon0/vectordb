@@ -183,6 +183,10 @@ assembled.
   behind the journal or fault the store until restart.
 - Python mutations are single-attempt after an ambiguous transport failure;
   only safe reads and explicitly read-only search requests are retried.
+- Journal recovery refuses to repair a complete frame whose payload-length
+  field was corrupted past end of file. Before, startup treated it as a torn
+  tail and truncated it, silently discarding that record and every later one
+  (e207149).
 
 ### Security and operational notes
 

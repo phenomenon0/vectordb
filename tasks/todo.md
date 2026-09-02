@@ -1,6 +1,6 @@
 # DeepData — plan
 
-Next action: RCV-03 — unified snapshots load with bounded memory (head of the RC critical path; the platform slices CTL-01..05, SYS-01..04 and MED-01 all pass, MEM-02 waits for a harness).
+Next action: RCV-05 — replay rehearsal under a cgroup memory hard cap, probe root only (RCV-03, RCV-04 and RCV-06 gained tests and hardening cases on 2026-09-01; the platform slices CTL-01..05, SYS-01..04 and MED-01 all pass, MEM-02 waits for a harness).
 
 Status lives only in [tasks/gates.json](gates.json), rendered to [docs/PRE_RELEASE_STATUS.md](../docs/PRE_RELEASE_STATUS.md).
 This file holds ordering and dependencies; it has no checkboxes. Gate ids below name the ledger row.

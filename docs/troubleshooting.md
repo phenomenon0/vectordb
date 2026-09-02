@@ -158,8 +158,9 @@ startup truncates it back to the last completely verified record, synchronizes
 the repair, reparses the journal, and resumes at the next sequence number.
 
 Every other recovery error fails closed: a partial frozen journal, complete
-frame with a bad checksum, unknown version/store ID, sequence gap, non-prefix
-junk, or corrupt/truncated snapshot. Keep the server stopped and preserve a
+frame with a bad checksum, complete frame whose length field was corrupted
+past end of file, unknown version/store ID, sequence gap, non-prefix junk, or
+corrupt/truncated snapshot. Keep the server stopped and preserve a
 copy of the whole configured state root. Do not edit or delete snapshot,
 journal, or lock artifacts, because doing so can discard acknowledged writes
 or destroy diagnostic evidence.
