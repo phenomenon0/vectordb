@@ -31,6 +31,17 @@ With `query` text and two bound fields (the `memory` preset: dense `text` + spar
 recall searches the dense field first and falls back to the sparse field automatically,
 reporting `fell_back_to` when that happened. Pass your own `fallback` to override.
 
+## Durability
+
+`deepdata_create_collection` takes an optional `durability`: `durable` (the default) or
+`ephemeral`. A durable collection journals every document write, so everything you stored is
+there after a restart. An ephemeral collection writes no journal record for its documents:
+they are held in memory only, cost no fsync, and are gone after a restart — the collection
+itself comes back, empty, because create and delete are journaled either way. Use it for
+data an upstream can replay (frames off a live stream), not for anything you cannot rebuild.
+`deepdata_collections` reports the class of every collection it lists, and `GET /v3/status`
+lists the classes this server accepts under `capabilities.durability_classes`.
+
 ## Reading a recall result
 
 - `hits` are best-first; `score` is the raw engine score. `score_direction` names how to

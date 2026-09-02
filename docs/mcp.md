@@ -86,11 +86,12 @@ collections are `readOnlyHint` + `idempotentHint`; remember and create_collectio
 - `deepdata_collections` — optional `name`. With a name, GET …/collections/{name}; without, GET
   /v3/tenants/{tenant}/collections. Both need only the `read` permission, so a least-privilege agent can find
   out what it may search. Output: `collections [{name, fields [{name, type, dim, index, score_direction,
-  embedding}], doc_count, description}]`; `score_direction` says which way that field's scores read
-  (main.go:874).
+  embedding}], doc_count, description, durability}]`; `score_direction` says which way that field's scores
+  read, `durability` names the class (main.go:874).
 - `deepdata_create_collection` — `name` (`[A-Za-z0-9_-]{1,64}`) and exactly one of `preset: "memory"` or
-  explicit `fields`; optional `description`. POST …/collections, then GET the result so the output carries the
-  server-resolved `fields` (main.go:916).
+  explicit `fields`; optional `description` and `durability` (`durable`, the default, or `ephemeral`, whose
+  documents are never journaled and are gone after a restart). POST …/collections, then GET the result so the
+  output carries the server-resolved `fields` (main.go:916).
 
 Collection schemas are cached per process; any 4xx for a collection drops its entry, so a deleted or recreated
 collection is re-read on the next text call (main.go:272; test TestSchemaCacheDropsOn4xx).

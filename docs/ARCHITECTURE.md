@@ -11,7 +11,7 @@ L4 Clients     sdk/python (pydantic models, CI-tested) · api/gen gRPC stubs (ge
 L3 Transports  HTTP /v3 + gRPC deepdata.v3 — thin; share internal/apierror (the error envelope) and cmd/deepdata/embed_text.go (texts → vectors, above the engine); auth+limits are serverRuntime in cmd/deepdata/runtime.go
 L2 Contract    api/contract/v3/{schemas/*.json, operations.json, CONTRACT.md} (embedded by api/contract) beside the proto + Go request structs + Max* limits; GET /v3/status and `deepdata routes` are its runtime projections
 L1 Engine      internal/collection: Collection (hnsw|flat|inverted, fusion, filters, UsageTracker) · typed sentinels in limits.go · vectors only (texts are resolved above it, in L3)
-L0 Durability  DurableStore: journal + snapshot v2 (class A) · <basePath>.usage.json sidecar (class B, written with each snapshot, discarded loudly on corruption) · indexes (class C)
+L0 Durability  DurableStore: journal + snapshot v2 (class A) · <basePath>.usage.json sidecar (class B, written with each snapshot, discarded loudly on corruption) · indexes (class C) · ephemeral-collection documents, memory only, never journaled (class E)
 ```
 
 ## Layers: truth, proof, docs, plan
@@ -33,6 +33,7 @@ L0 Durability  DurableStore: journal + snapshot v2 (class A) · <basePath>.usage
 | A canonical | six journal mutations, snapshot v2, schema including the `embedding` binding (`internal/collection/types.go:207`) | fail closed: `TestDurableStoreRejectsCorruptJournalFrame` (`internal/collection/durable_store_test.go:730`), `TestUnifiedCollectionSnapshotRejectsChecksumCorruption` (`internal/collection/snapshot_test.go:87`) | `internal/collection/journal.go`, `internal/collection/snapshot.go` |
 | B accreted signal | UsageTracker frecency (later: feedback weights, MEM-02) | loud discard: the sidecar is dropped whole with an error log, the tracker starts empty and no fault is latched (`loadUsageSidecar` `internal/collection/durable_store.go:988`; `TestUsageSidecarCorruptionKeepsCollectionUp` `internal/collection/usage_durability_test.go:143`) | `<basePath>.usage.json`, written with every snapshot and on close (`internal/collection/durable_store.go:921`), read at open; `DurableStore.UsageLoaded` (`:251`) is false only when one was discarded, and `GET /v3/status` projects it as `signals.usage.loaded` (`cmd/deepdata/status.go:41`) |
 | C derived | HNSW / flat / inverted indexes | rebuilt from A on load (`internal/collection/snapshot.go:76`; `TestUnifiedCollectionSnapshotV2RebuildsDenseAndSparseIndexes` `internal/collection/snapshot_stream_test.go:201`) | memory |
+| E ephemeral | documents of a collection created with `durability: "ephemeral"` — its schema stays class A | nothing to corrupt: nothing is written | insert/batch-insert/upsert/delete-doc skip the journal in `appendApplyLocked` (`internal/collection/durable_store.go:530`) and the snapshot writes the collection with zero documents (`internal/collection/snapshot.go:325`); `internal/collection/ephemeral_test.go` |
 
 Why B ≠ A: a ranking hint that fails closed takes correct-by-similarity answers down with it.
 

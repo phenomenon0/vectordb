@@ -13,6 +13,11 @@ assembled.
 
 ### Added
 
+- Ephemeral collections: `durability` on create (`durable`, the default, or
+  `ephemeral`) makes a collection's documents memory-only — they write no
+  journal record and are empty after a restart, while the collection itself
+  stays journaled. Reported by every read and by
+  `capabilities.durability_classes` on `GET /v3/status` (MED-01, ADR 0009).
 - Upsert and get-document by caller-supplied ID across the durable engine, V3
   gRPC (`Upsert`, `GetDoc`), V3 HTTP (`PUT`/`GET`
   `/v3/tenants/{tenant_id}/collections/{name}/docs/{doc_id}`), and the Python

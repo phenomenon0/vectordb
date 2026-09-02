@@ -950,16 +950,20 @@
     {
       "id": "MED-01",
       "statement": "ephemeral collection class: documents write no journal record, the collection is empty after restart, /v3/status capabilities report the class",
-      "command": "GOTOOLCHAIN=go1.25.12 go test ./internal/collection ./cmd/deepdata -run Ephemeral",
+      "command": "scripts/hardening_check.sh go-ephemeral",
       "scope": [
         "internal/collection",
         "cmd/deepdata",
-        "api/contract"
+        "api/contract",
+        "api/proto",
+        "api/gen",
+        "sdk/python",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": false,
       "status": "open",
       "evidence": null,
-      "note": "ADR 0009 (accepted 2026-09-01); after SYS-04. Until it lands, media retention is time-window collections dropped whole with delete-collection."
+      "note": "ADR 0009 (accepted 2026-09-01). The ephemeral class is per collection: CollectionSchema.durability is \"durable\" (default when empty) or \"ephemeral\", and an ephemeral collection's insert/batch-insert/upsert/delete-doc apply under the store mutex but append no journal record, cost no fsync and do not advance AppliedLSN (DurableStore.appendApplyLocked), while snapshot v2 writes the collection with zero documents. Create-collection and delete-collection stay class A, so the collection's existence survives a restart and only its documents are lost; its upstream rebuilds them. Surface: durability on CollectionInfo, on the create and collections contract schemas, on CreateCollectionRequest/CollectionInfo in the proto (tag 6 each), on the Python TenantCollectionSchema/TenantCollectionInfo, and capabilities.durability_classes on GET /v3/status. Tests are internal/collection/ephemeral_test.go (no journal growth, empty after Close+reopen and after Checkpoint+reopen, unknown value rejected) and cmd/deepdata/ephemeral_test.go (HTTP round trip, status capabilities, gRPC mirror)."
     }
   ]
 }
