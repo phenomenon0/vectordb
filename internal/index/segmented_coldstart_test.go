@@ -8,8 +8,15 @@ package index
 // per record (internal/collection/durable_store.go applyMutationDirect ->
 // Collection.addPreparedDocumentsLocked). Neither path calls Export: a v2
 // snapshot persists documents, not index blobs (snapshot.go
-// validateCollectionSnapshotV2RepresentableLocked), so merge-on-export is off
-// the cold-start path and is not measured here.
+// validateCollectionSnapshotV2RepresentableLocked). The three non-test
+// Index.Export call sites are all off that path: manager.go
+// capturePersistedState (legacy state file; a Collection there can hold a
+// SegmentedIndex, but its only entry points CollectionManager.Save and
+// TenantManager.Save have no non-test callers), collection.go ExportIndexes
+// (no callers), and cmd/deepdata/main.go VectorStore.Save (its indexes come
+// from NewHNSWIndex or the index.Create factory, which registers only
+// hnsw/flat/sparse, so it never holds a SegmentedIndex). Merge-on-export is
+// therefore not measured here.
 
 import (
 	"context"
