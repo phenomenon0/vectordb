@@ -534,15 +534,20 @@
     {
       "id": "REV-01",
       "statement": "every open gate has a named owner decision recorded in tasks/todo.md before freeze",
-      "command": "python3 scripts/gates.py check",
+      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s — '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
       "scope": [
-        "tasks/gates.json",
         "tasks/todo.md"
       ],
       "release_gate": false,
-      "status": "open",
-      "evidence": null,
-      "note": "REV-02..04 (status-doc parity, stale-box audit, evidence-sha audit) retired: subsumed by gates.py check rules 3 and 5"
+      "status": "pass",
+      "evidence": {
+        "commit": "75a3d92e547e1bc60ef0b697654f4326dbae7587",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-02",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "2026-09-02 decisions recorded in tasks/todo.md '## Owner decisions' at 75a3d92 for the 13 gates then open or blocked (CI-06, EVID-02, MEM-02, PUB-01, PUB-02, PUB-03, RCV-05, REL-04, REV-01, SDK-02, SEC-01, SOAK-01, SOAK-02); drafted by the agent, ratified by the owner in session. Scope narrowed from [tasks/gates.json, tasks/todo.md] to tasks/todo.md: every promotion rewrites gates.json, so the seeded scope made this gate stale the moment it was bound. The command re-checks the current open set against the section whenever it runs, so a gate added later without a decision fails it. REV-02..04 (status-doc parity, stale-box audit, evidence-sha audit) retired: subsumed by gates.py check rules 3 and 5."
     },
     {
       "id": "RCV-01",

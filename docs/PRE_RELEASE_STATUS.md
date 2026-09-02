@@ -61,7 +61,7 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 
 | REV | status | commit | date | statement |
 |---|---|---|---|---|
-| REV-01 | open | — | — | every open gate has a named owner decision recorded in tasks/todo.md before freeze |
+| REV-01 | pass | 75a3d92 | 2026-09-02 | every open gate has a named owner decision recorded in tasks/todo.md before freeze |
 
 | RCV | status | commit | date | statement |
 |---|---|---|---|---|
