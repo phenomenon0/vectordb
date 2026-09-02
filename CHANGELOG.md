@@ -187,6 +187,11 @@ assembled.
   field was corrupted past end of file. Before, startup treated it as a torn
   tail and truncated it, silently discarding that record and every later one
   (e207149).
+- Journal replay accepts an empty sparse vector recorded as `"indices": null`.
+  The HTTP path hands the engine a typed sparse vector, an empty one is
+  cloned with nil slices and journaled as null, and replay refused it as an
+  invalid index list, so one document with no sparse terms made the whole
+  store unopenable after a restart (e910a6b).
 
 ### Security and operational notes
 

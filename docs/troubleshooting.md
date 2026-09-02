@@ -165,6 +165,11 @@ copy of the whole configured state root. Do not edit or delete snapshot,
 journal, or lock artifacts, because doing so can discard acknowledged writes
 or destroy diagnostic evidence.
 
+A replay error reading `invalid sparse indices: expected []uint32-compatible
+value, got <nil>` is not corruption: a document with no sparse terms was
+journaled with null index and value arrays, which binaries before e910a6b
+refused. Upgrade the binary and start again; do not edit the journal.
+
 Restore a previously verified whole-root backup with the
 [offline procedure](cookbook.md#offline-restore-with-rollback). Restore is not
 successful until its mandatory assertion checks expected V3 tenant/schema,
