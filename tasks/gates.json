@@ -284,7 +284,7 @@
       "release_gate": true,
       "status": "open",
       "evidence": null,
-      "note": "ece6f23 prose records a clean rerun; no receipt or fingerprint"
+      "note": "ece6f23 prose records a clean rerun; no receipt or fingerprint. 2026-09-02 dry run at 75a3d92 (each scanner under a 3G cgroup, outputs /tmp/*-75a3d92.*; tree not frozen, no receipt): gitleaks full-history scan clean with the 8-fingerprint .gitleaksignore. govulncheck rc=3, 7 vulnerabilities reached from code: 6 in the go1.25.12 standard library (GO-2026-6218 net/url, GO-2026-6091 html/template, GO-2026-6090 crypto/tls, GO-2026-6089 and GO-2026-5026 net/http, GO-2026-5972 encoding/asn1), all fixed in go1.25.13, and GO-2026-5158 in go.opentelemetry.io/otel v1.43.0, fixed in v1.44.0 (reached via http.Server.Serve -> baggage). Both fixes touch go.mod/go.sum and the pinned toolchain, frozen until RCV-05 binds. gosec rc=1: 174 findings, 122 in cmd/ + internal/ (47 G115 integer conversions, 2 G404 math/rand, 2 G704 SSRF taint on the operator-configured Ollama URL probes in cmd/deepdata/main.go and embedder_mode.go, 11 G304, 2 G301, 46 G104, 12 G103); only the 2 G704 are HIGH severity and HIGH confidence; the other 52 are under benchmarks/ (incl. G101 on the synthetic ddload bench token). 'gosec clean' needs an owner policy (severity/confidence floor, #nosec with reasons, or a config) before this gate can bind. trivy image not run (needs a docker build)."
     },
     {
       "id": "REL-01",
