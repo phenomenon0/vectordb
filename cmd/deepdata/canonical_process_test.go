@@ -865,7 +865,12 @@ func TestCanonicalStartupRejectsCorruptCollectionJournalWithoutRewritingIt(t *te
 
 func TestCanonicalStartupBindFailureReleasesLifetimeLock(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "state")
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	// Occupy the wildcard, not loopback: an authenticated process binds the
+	// wildcard (canonicalListenerAddresses), and BSD/darwin honors the
+	// SO_REUSEADDR that Go sets by allowing a wildcard bind alongside a
+	// specific one. Only Linux calls that a conflict, so a loopback squatter
+	// would let the helper start and the test would fail off Linux.
+	occupied, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatal(err)
 	}
