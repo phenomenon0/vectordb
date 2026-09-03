@@ -1,6 +1,6 @@
 # DeepData RC Troubleshooting
 
-These procedures apply to the Linux-only, persistent, single-node release
+These procedures apply to the Linux amd64, persistent, single-node release
 candidate and its tenant-aware V3/gRPC contract.
 
 ## Startup failures

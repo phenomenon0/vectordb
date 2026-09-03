@@ -1,6 +1,6 @@
 # Kubernetes Deployment Guide
 
-This guide deploys the Linux-only, persistent, single-node release candidate.
+This guide deploys the Linux amd64, persistent, single-node release candidate.
 Keep `replicas: 1`; the RC has no supported clustering or failover path.
 
 ## StatefulSet
