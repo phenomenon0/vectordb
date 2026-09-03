@@ -40,7 +40,9 @@ list_checks() {
         python-mypy \
         python-build \
         go-retire \
-        go-canonical
+        go-canonical \
+        soak \
+        restart-reclaim
 }
 
 usage() {
@@ -152,6 +154,14 @@ case "$CHECK_NAME" in
     go-canonical)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="assert_canonical_dropped && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go build ./... && CGO_ENABLED=0 go vet ./..."
+        ;;
+    soak)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="SOAK_MINUTES=${SOAK_MINUTES:-25} SOAK_KILLS=${SOAK_KILLS:-5} python3 scripts/rehearsals/soak.py"
+        ;;
+    restart-reclaim)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="DRIFT_MINUTES=${DRIFT_MINUTES:-4} N_HNSW=${N_HNSW:-6000} python3 scripts/rehearsals/restart_reclaim_probe.py"
         ;;
     *)
         echo "unknown check: $CHECK_NAME" >&2
@@ -398,6 +408,26 @@ run_check() {
             timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
                 CGO_ENABLED=0 go vet ./...
             ;;
+        soak)
+            if [[ -n "${SOAK_BIN:-}" && -x "${SOAK_BIN}" ]]; then
+                echo "using prebuilt binary $SOAK_BIN"
+            else
+                mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            fi
+            timeout "${SOAK_TIMEOUT:-5400}s" env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                python3 scripts/rehearsals/soak.py
+            ;;
+        restart-reclaim)
+            RECLAIM_WORK="$REPO_ROOT/.deepdata-run/rehearsals/memdrift-fix"
+            if [[ -n "${BIN:-}" && -x "${BIN}" ]]; then
+                echo "using prebuilt binary $BIN"
+            else
+                mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE" "$RECLAIM_WORK"
+                env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                    go build -trimpath -o "$RECLAIM_WORK/deepdata" ./cmd/deepdata || return 1
+            fi
+            timeout "${RECLAIM_TIMEOUT:-2400}s" python3 scripts/rehearsals/restart_reclaim_probe.py
+            ;;
     esac
 }
 
@@ -520,9 +550,40 @@ import sys
     log_path,
 ) = sys.argv[1:]
 
+def host_facts():
+    """Record where the check ran.
+
+    Memory and timing evidence (soak, restart-reclaim, cold-start envelopes) is
+    only interpretable against the machine that produced it, and a receipt is
+    otherwise indistinguishable between hosts.
+    """
+    facts = {}
+    try:
+        uname = os.uname()
+        facts["hostname"] = uname.nodename
+        facts["kernel"] = uname.release
+        facts["arch"] = uname.machine
+    except (AttributeError, OSError):
+        pass
+    try:
+        facts["cpus"] = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        facts["cpus"] = os.cpu_count()
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    facts["mem_total_kb"] = int(line.split()[1])
+                    break
+    except (OSError, ValueError, IndexError):
+        pass
+    return facts
+
+
 receipt = {
-    "schema_version": 1,
+    "schema_version": 2,
     "check": name,
+    "host": host_facts(),
     "status": status,
     "exit_code": int(exit_code),
     "started_at": started_at,

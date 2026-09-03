@@ -245,29 +245,33 @@
     {
       "id": "SOAK-01",
       "statement": "sustained soak holds recall, restart-under-load and memory growth within envelope",
-      "command": ".deepdata-run/rehearsals/soak.py",
+      "command": "scripts/hardening_check.sh soak",
       "scope": [
         "cmd/deepdata",
-        "internal"
+        "internal",
+        "scripts/rehearsals/soak.py",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
       "status": "open",
       "evidence": null,
-      "note": "d5b2d3a soak FAILED on memory drift (109.7% growth) while recall and restart phases passed; not re-run after the 14d1442 fix"
+      "note": "d5b2d3a soak FAILED on memory drift (109.7% growth) while recall and restart phases passed; not re-run after the 14d1442 fix. The harness was untracked in the gitignored .deepdata-run tree until it moved to scripts/rehearsals/soak.py, so no earlier run had a fingerprint covering the script that produced the number; it is now a receipt-backed check (soak)"
     },
     {
       "id": "SOAK-02",
       "statement": "restart reclaims memory after the memory-drift fix",
-      "command": ".deepdata-run/rehearsals/restart_reclaim_probe.py",
+      "command": "scripts/hardening_check.sh restart-reclaim",
       "scope": [
         "cmd/deepdata",
         "internal/collection",
-        "internal/index"
+        "internal/index",
+        "scripts/rehearsals/restart_reclaim_probe.py",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
       "status": "open",
       "evidence": null,
-      "note": "fix landed at 14d1442 with local receipts (memdrift-fix/restart_reclaim_receipt.json) that carry no commit or fingerprint; cannot bind honestly"
+      "note": "fix landed at 14d1442 with local receipts (memdrift-fix/restart_reclaim_receipt.json) that carry no commit or fingerprint; cannot bind honestly. Now a receipt-backed check (restart-reclaim) with the probe tracked at scripts/rehearsals/restart_reclaim_probe.py"
     },
     {
       "id": "SEC-01",
@@ -534,7 +538,7 @@
     {
       "id": "REV-01",
       "statement": "every open gate has a named owner decision recorded in tasks/todo.md before freeze",
-      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s — '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
+      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s \u2014 '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
       "scope": [
         "tasks/todo.md"
       ],
