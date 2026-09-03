@@ -253,8 +253,14 @@
         "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "b91479d5b59583fe37cd9a5b7d695e6e6e27c7f9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/soak/receipt.json",
+        "ci_run": null
+      },
       "note": "d5b2d3a soak FAILED on memory drift (109.7% growth) while recall and restart phases passed; not re-run after the 14d1442 fix. The harness was untracked in the gitignored .deepdata-run tree until it moved to scripts/rehearsals/soak.py, so no earlier run had a fingerprint covering the script that produced the number; it is now a receipt-backed check (soak)"
     },
     {
