@@ -1537,6 +1537,11 @@ func (c *Collection) deleteDocumentDirect(ctx context.Context, docID uint64) err
 
 	// Remove from document storage
 	delete(c.documents, docID)
+	// The usage signal is keyed by document, so it dies with the document.
+	// Nothing else drops an entry, so a retained one is unreclaimable: it is
+	// persisted to the usage sidecar and restored on every open, growing the
+	// tracker with cumulative deletes instead of the live set.
+	c.usage.Forget(docID)
 
 	return nil
 }

@@ -102,6 +102,21 @@ func (t *UsageTracker) Score(docID uint64) float64 {
 	return float64(entry.count) * decayFactor(age)
 }
 
+// Forget drops docID's entry. A deleted document can never be returned
+// again, so its frecency is dead weight, and nothing else ever removes an
+// entry: it would outlive the document in memory, get written to the
+// sidecar, and be restored by every subsequent open. Forgetting also keeps
+// the signal honest when an ID is later reused, because the previous
+// document's hits must not nudge the new one.
+func (t *UsageTracker) Forget(docID uint64) {
+	if t == nil || docID == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.entries, docID)
+}
+
 // Prune removes entries whose decayed score has fallen to noise level.
 // Not required for memory safety — the cap eviction in Record bounds the
 // map — but callers that want to release decayed memory early (e.g. an

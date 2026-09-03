@@ -395,6 +395,40 @@ func TestSearchRecordsUsageForReturnedDocs(t *testing.T) {
 	}
 }
 
+// TestDeleteForgetsUsage pins the reclamation half of the usage signal.
+// Nothing else removes an entry, and DurableStore writes the tracker to the
+// usage sidecar and restores it at open, so an entry a delete leaves behind
+// is unreclaimable: it survives every restart and makes the tracker grow with
+// cumulative deletes instead of with the live set.
+func TestDeleteForgetsUsage(t *testing.T) {
+	ctx := context.Background()
+	coll := newAgentRetrievalCollection(t)
+	addVec(t, coll, 1, "dense", []float32{1, 0, 0, 0})
+	addVec(t, coll, 2, "dense", []float32{0, 1, 0, 0})
+	if _, err := coll.Search(ctx, SearchRequest{
+		CollectionName: "docs",
+		Queries:        map[string]interface{}{"dense": []float32{1, 0, 0, 0}},
+		TopK:           2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := coll.Delete(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := coll.usage.Score(1); got != 0 {
+		t.Fatalf("usage score for deleted document = %v, want 0", got)
+	}
+	if got := coll.usage.Len(); got != 1 {
+		t.Fatalf("usage entries = %d, want 1 (the surviving document)", got)
+	}
+	for _, record := range coll.usage.Export().Entries {
+		if record.DocID == 1 {
+			t.Fatal("deleted document reached the usage sidecar")
+		}
+	}
+}
+
 // TestSearchErrorsAreTypedSentinels pins the engine's error classification.
 // The transports (cmd/deepdata) map these sentinels to HTTP statuses and gRPC
 // codes through internal/apierror; a bare fmt.Errorf here reaches an agent
