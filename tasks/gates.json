@@ -692,7 +692,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "78a55fa55c7bfbea1be3930eaf83d3a359553d27",
+        "commit": "78429a9293d6bfe5194a4eed27808002d73ceda7",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": null,
@@ -712,7 +712,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "78a55fa55c7bfbea1be3930eaf83d3a359553d27",
+        "commit": "78429a9293d6bfe5194a4eed27808002d73ceda7",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": null,
@@ -731,7 +731,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "78a55fa55c7bfbea1be3930eaf83d3a359553d27",
+        "commit": "78429a9293d6bfe5194a4eed27808002d73ceda7",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": null,
