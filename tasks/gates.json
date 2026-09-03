@@ -15,8 +15,8 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "bc8a807c02f339fe61e77eaa253d003cb9d31910",
-        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "commit": "e5c07bc0fc00990e41252beef01487c6fd1ffe3e",
+        "tree_fingerprint": "631287513a0ffecf058988c0b1eca80ebb6d5fe1d0d1ffa46acb5211beb5197a",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-vet-cgo0/receipt.json",
         "ci_run": null
@@ -57,8 +57,8 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "bc8a807c02f339fe61e77eaa253d003cb9d31910",
-        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "commit": "e5c07bc0fc00990e41252beef01487c6fd1ffe3e",
+        "tree_fingerprint": "631287513a0ffecf058988c0b1eca80ebb6d5fe1d0d1ffa46acb5211beb5197a",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-short/receipt.json",
         "ci_run": null
@@ -79,8 +79,8 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "bc8a807c02f339fe61e77eaa253d003cb9d31910",
-        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "commit": "e5c07bc0fc00990e41252beef01487c6fd1ffe3e",
+        "tree_fingerprint": "631287513a0ffecf058988c0b1eca80ebb6d5fe1d0d1ffa46acb5211beb5197a",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-race/receipt.json",
         "ci_run": null
@@ -99,8 +99,8 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "bc8a807c02f339fe61e77eaa253d003cb9d31910",
-        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "commit": "e5c07bc0fc00990e41252beef01487c6fd1ffe3e",
+        "tree_fingerprint": "631287513a0ffecf058988c0b1eca80ebb6d5fe1d0d1ffa46acb5211beb5197a",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-persistence/receipt.json",
         "ci_run": null

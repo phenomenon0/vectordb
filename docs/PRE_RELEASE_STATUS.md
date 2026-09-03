@@ -6,11 +6,11 @@ Readiness: 25 release gates, 10 pass and fresh, 10 pass (stale), 5 not passed. A
 
 | DUR | status | commit | date | statement |
 |---|---|---|---|---|
-| DUR-01 | pass | bc8a807 | 2026-09-03 | go vet passes with CGO_ENABLED=0 across the RC package list |
+| DUR-01 | pass | e5c07bc | 2026-09-03 | go vet passes with CGO_ENABLED=0 across the RC package list |
 | DUR-02 | pass | bc8a807 | 2026-09-03 | storage tests pass: journal, snapshot, durable store, WAL recovery |
-| DUR-03 | pass | bc8a807 | 2026-09-03 | go test -short passes for cmd/deepdata and internal packages |
-| DUR-04 | pass | bc8a807 | 2026-09-03 | go test -race passes on the RC package list |
-| DUR-05 | pass | bc8a807 | 2026-09-03 | focused persistence matrices pass serially (go test -count=1 -p 1 ./internal/collection ./cmd/d… |
+| DUR-03 | pass | e5c07bc | 2026-09-03 | go test -short passes for cmd/deepdata and internal packages |
+| DUR-04 | pass | e5c07bc | 2026-09-03 | go test -race passes on the RC package list |
+| DUR-05 | pass | e5c07bc | 2026-09-03 | focused persistence matrices pass serially (go test -count=1 -p 1 ./internal/collection ./cmd/d… |
 
 | SDK | status | commit | date | statement |
 |---|---|---|---|---|
@@ -74,9 +74,9 @@ Readiness: 25 release gates, 10 pass and fresh, 10 pass (stale), 5 not passed. A
 
 | DOC | status | commit | date | statement |
 |---|---|---|---|---|
-| DOC-01 | pass | 78429a9 | 2026-09-03 | docs contract linter passes on the tree (scripts/check_docs_contract.py) |
+| DOC-01 | pass (stale) | 78429a9 | 2026-09-03 | docs contract linter passes on the tree (scripts/check_docs_contract.py) |
 | DOC-02 | pass | 78429a9 | 2026-09-03 | tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing… |
-| DOC-03 | pass | 78429a9 | 2026-09-03 | HTTP route table in internal/collection/API.md is generated from the routes subcommand |
+| DOC-03 | pass (stale) | 78429a9 | 2026-09-03 | HTTP route table in internal/collection/API.md is generated from the routes subcommand |
 
 | PUB | status | commit | date | statement |
 |---|---|---|---|---|
@@ -89,15 +89,15 @@ Readiness: 25 release gates, 10 pass and fresh, 10 pass (stale), 5 not passed. A
 | CTL-01 | pass (stale) | 1726127 | 2026-09-03 | errors are prompts: every API error carries code, hint and docs pointer via internal/apierror |
 | CTL-02 | pass (stale) | 1726127 | 2026-09-03 | text in, text out: server-side embeddings, Ollama first, hash embedder only when named explicit… |
 | CTL-03 | pass | a36faa4 | 2026-09-02 | MCP server rewritten on the shared api/contract package and covered by CI-05 |
-| CTL-04 | pass | a36faa4 | 2026-09-02 | server self-description: routes subcommand and per-result confidence |
+| CTL-04 | pass (stale) | a36faa4 | 2026-09-02 | server self-description: routes subcommand and per-result confidence |
 | CTL-05 | pass (stale) | 1726127 | 2026-09-03 | durable usage records survive restart |
 
 | SYS | status | commit | date | statement |
 |---|---|---|---|---|
-| SYS-01 | pass | bc8a807 | 2026-09-03 | serverRuntime extracted from cmd/deepdata main; func main() constructs no VectorStore and NewVe… |
-| SYS-02 | pass | bc8a807 | 2026-09-03 | one IndexTypes vocabulary shared by server, SDK and docs |
-| SYS-03 | pass | bc8a807 | 2026-09-03 | archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, sha… |
-| SYS-04 | pass | bc8a807 | 2026-09-03 | Canonical prefix dropped; every live package has a doc.go |
+| SYS-01 | pass (stale) | bc8a807 | 2026-09-03 | serverRuntime extracted from cmd/deepdata main; func main() constructs no VectorStore and NewVe… |
+| SYS-02 | pass (stale) | bc8a807 | 2026-09-03 | one IndexTypes vocabulary shared by server, SDK and docs |
+| SYS-03 | pass (stale) | bc8a807 | 2026-09-03 | archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, sha… |
+| SYS-04 | pass (stale) | bc8a807 | 2026-09-03 | Canonical prefix dropped; every live package has a doc.go |
 
 | MEM | status | commit | date | statement |
 |---|---|---|---|---|
