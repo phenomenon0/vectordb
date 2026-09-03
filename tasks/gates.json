@@ -742,7 +742,7 @@
     {
       "id": "PUB-01",
       "statement": "branch pushed to origin and CI green on the pushed head",
-      "command": "git push origin develop && gh run watch",
+      "command": "git push origin main && gh run watch",
       "scope": [
         ".github/workflows/ci.yml"
       ],
@@ -754,7 +754,7 @@
     {
       "id": "PUB-02",
       "statement": "release tag created and pushed",
-      "command": "git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1",
+      "command": "git tag deepdata-v0.2.0-rc.1 && git push origin deepdata-v0.2.0-rc.1",
       "scope": [
         "internal/releaseinfo/version.txt",
         "CHANGELOG.md"
