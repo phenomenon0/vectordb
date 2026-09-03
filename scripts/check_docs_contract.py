@@ -8,11 +8,13 @@
 
 Rules: R1 gRPC list/count, R2 mutation count, R3 HTTP route table, R4 known-false phrases,
 R5 dead relative links, R6 case collisions, R7 phantom backticked file refs, R8 non-goals
-claimed live, R9 dashboard metrics, R10 MCP tool list, R11 non-goals block, R12 checkboxes.
+claimed live, R9 dashboard metrics, R10 MCP tool list, R11 non-goals block, R12 checkboxes,
+R13 fences that do not parse, R14 documented SDK calls the SDK does not have.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
@@ -97,6 +99,12 @@ BAD_CHARS = set("*?[]{}|\\<>$\"' \t=@")
 METRIC_NAME = re.compile(r"\b(?:vectordb|deepdata)_[a-z_]+\b")
 MCP_TOOL = re.compile(r'^\s*Name:\s+"([a-z_]+)"', re.M)
 ROUTES_CMD = ["env", "GOTOOLCHAIN=go1.25.12", "go", "run", "./cmd/deepdata", "routes"]
+FENCE = re.compile(r"^\s*(?:```|~~~)\s*(\w*)")
+JSON_ELIDED = re.compile(r"^\s*(?:\.\.\.|//|/\*)", re.M)
+SDK_PKG = "sdk/python/deepdata"
+# Judged per exact class, never unioned: sync and async are separate promises, and a rename
+# in one of them is invisible if the other still carries the old name.
+TENANT_OF = {"DeepDataClient": "TenantClient", "AsyncDeepDataClient": "AsyncTenantClient"}
 
 
 def rel(path: pathlib.Path) -> str:
@@ -145,6 +153,21 @@ def fenced_mask(lines: list[str]) -> list[bool]:
         else:
             mask.append(inside)
     return mask
+
+
+def fences(lines: list[str]):
+    """Yield (lang, 1-based line of the opening fence, body) for each fenced block."""
+    lang, start, buf = None, 0, []
+    for i, line in enumerate(lines, 1):
+        m = FENCE.match(line)
+        if m is None:
+            if lang is not None:
+                buf.append(line)
+        elif lang is None:
+            lang, start, buf = m.group(1) or "none", i, []
+        else:
+            yield lang, start, "\n".join(buf)
+            lang = None
 
 
 def generated_blocks(lines: list[str]) -> dict[str, tuple[int, int]]:
@@ -231,6 +254,25 @@ def non_goals() -> list[dict]:
             label, regex = line.split("|", 1)
             out.append({"label": label.strip(), "regex": regex.strip()})
     return out
+
+
+def sdk_classes() -> dict[str, set[str]] | None:
+    """class name -> its public methods, for the python SDK; None if the SDK is gone."""
+    pkg = ROOT / SDK_PKG
+    if not pkg.is_dir():
+        return None
+    found: dict[str, set[str]] = {}
+    for py in sorted(pkg.rglob("*.py")):
+        for node in ast.walk(ast.parse(py.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ClassDef):
+                found[node.name] = {
+                    b.name
+                    for b in node.body
+                    if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and not b.name.startswith("_")
+                }
+    needed = set(TENANT_OF) | set(TENANT_OF.values())
+    return found if needed <= set(found) else None
 
 
 def emitted_metric_names() -> set[str]:
@@ -421,6 +463,77 @@ def check_prose(
                 rep.add(8, file, n, "non-goal claimed live: " + "; ".join(hits))
 
 
+def call_kind(func: ast.expr, kind: dict[str, str]) -> str | None:
+    """The SDK class this call returns, or None when the receiver is not ours."""
+    name = getattr(func, "id", None) or getattr(func, "attr", None)
+    if name in TENANT_OF or name in TENANT_OF.values():
+        return name
+    # Only <client>.tenant(...); a bare tenant(...) could be anyone's helper.
+    if (
+        name == "tenant"
+        and isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+    ):
+        return TENANT_OF.get(kind.get(func.value.id, ""))
+    return None
+
+
+def check_sdk_calls(rep: Report, file: str, start: int, tree: ast.AST, sdk: dict) -> None:
+    """R14: only receivers traceable to an SDK constructor are judged, so a fence that also
+    drives chromadb/pinecone/stdlib is left alone instead of reported as drift."""
+    kind: dict[str, str] = {}
+    for node in ast.walk(tree):
+        target = value = None
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            target, value = node.targets[0].id, node.value
+        elif isinstance(node, ast.withitem) and isinstance(node.optional_vars, ast.Name):
+            target, value = node.optional_vars.id, node.context_expr
+        if target and isinstance(value, ast.Call):
+            if cls := call_kind(value.func, kind):
+                kind[target] = cls
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        recv = node.func.value
+        if isinstance(recv, ast.Name):
+            cls = kind.get(recv.id)
+        elif isinstance(recv, ast.Call):
+            cls = call_kind(recv.func, kind)
+        else:
+            cls = None
+        if cls and node.func.attr not in sdk[cls]:
+            rep.add(
+                14,
+                file,
+                start,
+                f"{cls} has no method .{node.func.attr}(); it has "
+                + ", ".join(sorted(sdk[cls])),
+            )
+
+
+def check_fences(rep: Report, file: str, lines: list[str], sdk: dict | None) -> None:
+    """R13: the prose rules mask fences out, so a copy-paste example is the one claim nothing
+    reads. Parse them, then judge the SDK calls inside the ones that parsed."""
+    for lang, start, body in fences(lines):
+        if lang in ("python", "py"):
+            try:
+                tree = ast.parse(body)
+            except SyntaxError as e:
+                rep.add(13, file, start + (e.lineno or 0), f"python fence: {e.msg}")
+                continue
+            if sdk:
+                check_sdk_calls(rep, file, start, tree, sdk)
+        elif lang == "json" and not JSON_ELIDED.search(body):
+            try:
+                json.loads(body)
+            except ValueError as e:
+                rep.add(13, file, start, f"json fence: {e}")
+
+
 LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+\.)\s")
 
 
@@ -568,8 +681,10 @@ def run_check(write: bool) -> int:
         rep.add(8, ARCH, 1, "missing <!-- non-goals --> block (label | regex per line)")
     goals = [(g["label"], re.compile(g["regex"], re.I)) for g in facts["non_goals"]]
     check_blocks(rep, docs, facts, routes, r3_skip)
+    sdk = sdk_classes()
     for file, lines in docs.items():
         check_prose(rep, file, lines, facts, goals)
+        check_fences(rep, file, lines, sdk)
     check_case_collisions(rep, paths)
     check_dashboard(rep, facts, emitted_metric_names())
     check_checkboxes(rep)
@@ -651,6 +766,47 @@ def selftest() -> int:
     check_prose(rep, "x.md", lines, facts, goals)
     got = sorted((r, l) for r, _, l, _ in rep.items)
     assert got == [(1, 1), (2, 6), (4, 1), (8, 9), (8, 24)], got
+    sdk = {
+        "DeepDataClient": {"tenant", "close"},
+        "AsyncDeepDataClient": {"tenant", "close"},
+        "TenantClient": {"search", "insert"},
+        "AsyncTenantClient": {"insert"},
+    }
+    rep = Report()
+    lines = [
+        "```python",
+        "def broken(:",  # 2: R13
+        "```",
+        "```json",
+        '{"a": 1,}',  # 5: R13
+        "```",
+        "```json",
+        "{",  # elided -- not a claim about a whole document
+        '  "a": 1,',
+        "  ...",
+        "}",
+        "```",
+        "```python",
+        "client = DeepDataClient()",
+        "client.query('x')",  # R14, reported at the fence (13)
+        "client.tenant('t').search(q='x')",
+        "```",
+        "```python",
+        "a = AsyncDeepDataClient()",
+        "a.tenant('t').search(q='x')",  # R14: sync-only method, async class (18)
+        "```",
+        "```python",
+        "import chromadb",
+        "src = chromadb.PersistentClient()",
+        "src.get_collection('x').get()",  # foreign receiver, silent
+        "```",
+        "```text",
+        "def also_broken(:",  # not python, silent
+        "```",
+    ]
+    check_fences(rep, "x.md", lines, sdk)
+    got = sorted((r, l) for r, _, l, _ in rep.items)
+    assert got == [(13, 2), (13, 4), (14, 13), (14, 18)], got
     global TOP_LEVEL
     TOP_LEVEL = {"scripts", "docs", "api", "cmd"}
     assert exists_in_tree("bytes/vec", "README.md", tracked)
