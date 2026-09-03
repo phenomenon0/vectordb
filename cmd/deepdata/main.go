@@ -3094,6 +3094,9 @@ func main() {
 		}
 		return
 	}
+	if len(args) > 0 && args[0] == "replicate" {
+		os.Exit(runReplicate(args[1:], logging.Default()))
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}
@@ -3298,6 +3301,15 @@ func main() {
 		logger.Error("refusing to start without the complete API listener set", "error", err)
 		if closeErr := collectionHTTP.Abort(); closeErr != nil {
 			logger.Error("failed to release collection store after listener failure", "error", closeErr)
+		}
+		os.Exit(1)
+	}
+
+	handler, err = canonicalReplicationSurface(handler, collectionHTTP, indexPath, logger)
+	if err != nil {
+		logger.Error("refusing to start with an unusable replication configuration", "error", err)
+		if closeErr := collectionHTTP.Abort(); closeErr != nil {
+			logger.Error("failed to release collection store after replication refusal", "error", closeErr)
 		}
 		os.Exit(1)
 	}

@@ -272,6 +272,15 @@ func (s *CollectionHTTPServer) PersistenceError() error {
 	return s.persistenceErr
 }
 
+// DurableStore is the canonical store, or nil for a memory-only run. It is the
+// replication leader's source; nothing else outside this file should reach past
+// the accessors above for it.
+func (s *CollectionHTTPServer) DurableStore() *vcollection.DurableStore {
+	s.persistenceMu.Lock()
+	defer s.persistenceMu.Unlock()
+	return s.durableStore
+}
+
 // IsDurable reports whether the canonical journal and lifetime lock opened.
 func (s *CollectionHTTPServer) IsDurable() bool {
 	s.persistenceMu.Lock()
