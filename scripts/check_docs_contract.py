@@ -9,7 +9,8 @@
 Rules: R1 gRPC list/count, R2 mutation count, R3 HTTP route table, R4 known-false phrases,
 R5 dead relative links, R6 case collisions, R7 phantom backticked file refs, R8 non-goals
 claimed live, R9 dashboard metrics, R10 MCP tool list, R11 non-goals block, R12 checkboxes,
-R13 fences that do not parse, R14 documented SDK calls the SDK does not have.
+R13 fences that do not parse, R14 documented SDK calls the SDK does not have,
+R15 documented curl calls the v3 route table does not have.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHECKED_GLOBS = [
     "README.md",
     "CHANGELOG.md",
+    "SECURITY.md",
     "api/contract/v3/CONTRACT.md",
     "docs/**/*.md",
     "internal/collection/API.md",
@@ -105,6 +107,14 @@ SDK_PKG = "sdk/python/deepdata"
 # Judged per exact class, never unioned: sync and async are separate promises, and a rename
 # in one of them is invisible if the other still carries the old name.
 TENANT_OF = {"DeepDataClient": "TenantClient", "AsyncDeepDataClient": "AsyncTenantClient"}
+SHELL_LANGS = ("bash", "sh", "shell", "console")
+# A curl target is an absolute URL, a host:port, or a /v3 path standing on its own -- never
+# a relative path, so `-proto deepdata/v3/deepdata.proto` is not read as a call.
+CURL_TARGET = re.compile(
+    r"(?:https?://[^\s\"'`\\]+|[\w.-]+:\d+/[^\s\"'`\\]*|(?<![\w./-])/v3/[^\s\"'`\\]*)"
+)
+CURL_CALL = re.compile(r"\bcurl\b")  # not grpcurl, which speaks proto, not routes
+CURL_VERB = re.compile(r"-X\s+([A-Z]+)")
 
 
 def rel(path: pathlib.Path) -> str:
@@ -256,21 +266,34 @@ def non_goals() -> list[dict]:
     return out
 
 
-def sdk_classes() -> dict[str, set[str]] | None:
-    """class name -> its public methods, for the python SDK; None if the SDK is gone."""
+def sdk_classes() -> dict[str, dict[str, frozenset | None]] | None:
+    """class -> method -> its parameter names. None params means the method takes **kwargs and
+    its call sites cannot be judged. None overall if the SDK is gone."""
     pkg = ROOT / SDK_PKG
     if not pkg.is_dir():
         return None
-    found: dict[str, set[str]] = {}
+    found: dict[str, dict[str, frozenset | None]] = {}
     for py in sorted(pkg.rglob("*.py")):
         for node in ast.walk(ast.parse(py.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.ClassDef):
-                found[node.name] = {
-                    b.name
-                    for b in node.body
-                    if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and not b.name.startswith("_")
-                }
+            if not isinstance(node, ast.ClassDef):
+                continue
+            methods: dict[str, frozenset | None] = {}
+            for b in node.body:
+                if not isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if b.name.startswith("_"):
+                    continue
+                a = b.args
+                methods[b.name] = (
+                    None
+                    if a.kwarg is not None
+                    else frozenset(
+                        x.arg
+                        for x in a.posonlyargs + a.args + a.kwonlyargs
+                        if x.arg != "self"
+                    )
+                )
+            found[node.name] = methods
     needed = set(TENANT_OF) | set(TENANT_OF.values())
     return found if needed <= set(found) else None
 
@@ -505,14 +528,68 @@ def check_sdk_calls(rep: Report, file: str, start: int, tree: ast.AST, sdk: dict
             cls = call_kind(recv.func, kind)
         else:
             cls = None
-        if cls and node.func.attr not in sdk[cls]:
+        if not cls:
+            continue
+        methods = sdk[cls]
+        if node.func.attr not in methods:
             rep.add(
                 14,
                 file,
                 start,
                 f"{cls} has no method .{node.func.attr}(); it has "
-                + ", ".join(sorted(sdk[cls])),
+                + ", ".join(sorted(methods)),
             )
+            continue
+        allowed = methods[node.func.attr]
+        # A method taking **kwargs accepts anything, and a call splatting **mapping hides its
+        # own keys, so neither can be judged.
+        if allowed is None or any(k.arg is None for k in node.keywords):
+            continue
+        for kw in node.keywords:
+            if kw.arg not in allowed:
+                rep.add(
+                    14,
+                    file,
+                    start,
+                    f"{cls}.{node.func.attr}() has no parameter {kw.arg}=; it takes "
+                    + ", ".join(sorted(allowed)),
+                )
+
+
+def route_matcher(routes: list[list[str]] | None):
+    """(method, path) -> True when the v3 route table has it. A templated segment matches any
+    single value, which is exactly what a doc example fills in."""
+    if routes is None:
+        return None
+    table = [(row[0], row[1].split("/")) for row in routes[1:] if len(row) >= 2]
+
+    def known(method: str, path: str) -> bool:
+        parts = path.split("/")
+        return any(
+            m == method
+            and len(pat) == len(parts)
+            and all(p.startswith("{") or p == q for p, q in zip(pat, parts))
+            for m, pat in table
+        )
+
+    return known
+
+
+def check_curl(rep: Report, file: str, lines: list[str], known) -> None:
+    """R15: /v3 is the only surface with a generated route table, so it is the only surface a
+    curl example can be judged against; /livez, /metrics and clone URLs are left alone."""
+    for lang, start, body in fences(lines):
+        if lang not in SHELL_LANGS:
+            continue
+        for offset, line in enumerate(body.replace("\\\n", " ").splitlines()):
+            if not CURL_CALL.search(line):
+                continue
+            verb = CURL_VERB.search(line)
+            method = verb.group(1) if verb else "GET"
+            for target in CURL_TARGET.findall(line):
+                path = re.sub(r"^(?:https?://)?[^/]*", "", target).split("?")[0]
+                if path.startswith("/v3/") and not known(method, path):
+                    rep.add(15, file, start + offset + 1, f"no v3 route for {method} {path}")
 
 
 def check_fences(rep: Report, file: str, lines: list[str], sdk: dict | None) -> None:
@@ -682,9 +759,12 @@ def run_check(write: bool) -> int:
     goals = [(g["label"], re.compile(g["regex"], re.I)) for g in facts["non_goals"]]
     check_blocks(rep, docs, facts, routes, r3_skip)
     sdk = sdk_classes()
+    known_route = route_matcher(routes)
     for file, lines in docs.items():
         check_prose(rep, file, lines, facts, goals)
         check_fences(rep, file, lines, sdk)
+        if known_route:
+            check_curl(rep, file, lines, known_route)
     check_case_collisions(rep, paths)
     check_dashboard(rep, facts, emitted_metric_names())
     check_checkboxes(rep)
@@ -767,10 +847,13 @@ def selftest() -> int:
     got = sorted((r, l) for r, _, l, _ in rep.items)
     assert got == [(1, 1), (2, 6), (4, 1), (8, 9), (8, 24)], got
     sdk = {
-        "DeepDataClient": {"tenant", "close"},
-        "AsyncDeepDataClient": {"tenant", "close"},
-        "TenantClient": {"search", "insert"},
-        "AsyncTenantClient": {"insert"},
+        "DeepDataClient": {"tenant": frozenset({"name"}), "close": frozenset()},
+        "AsyncDeepDataClient": {"tenant": frozenset({"name"}), "close": frozenset()},
+        "TenantClient": {
+            "search": frozenset({"collection", "top_k"}),
+            "insert": None,  # takes **kwargs
+        },
+        "AsyncTenantClient": {"insert": None},
     }
     rep = Report()
     lines = [
@@ -789,11 +872,11 @@ def selftest() -> int:
         "```python",
         "client = DeepDataClient()",
         "client.query('x')",  # R14, reported at the fence (13)
-        "client.tenant('t').search(q='x')",
+        "client.tenant('t').search(collection='d', top_k=5)",
         "```",
         "```python",
         "a = AsyncDeepDataClient()",
-        "a.tenant('t').search(q='x')",  # R14: sync-only method, async class (18)
+        "a.tenant('t').search(collection='d')",  # R14: sync-only method, async class (18)
         "```",
         "```python",
         "import chromadb",
@@ -807,6 +890,51 @@ def selftest() -> int:
     check_fences(rep, "x.md", lines, sdk)
     got = sorted((r, l) for r, _, l, _ in rep.items)
     assert got == [(13, 2), (13, 4), (14, 13), (14, 18)], got
+
+    rep = Report()
+    lines = [
+        "```python",
+        "c = DeepDataClient()",
+        "c.tenant('t').search(collection='d', no_such=1)",  # R14: bad kwarg
+        "c.tenant('t').search(collection='d', top_k=5)",
+        "c.tenant('t').insert(anything=1)",  # **kwargs method, silent
+        "c.tenant('t').search(**opts)",  # splatted, silent
+        "```",
+    ]
+    check_fences(rep, "x.md", lines, sdk)
+    assert [(r, l, m) for r, _, l, m in rep.items] == [
+        (14, 1, "TenantClient.search() has no parameter no_such=; it takes collection, top_k")
+    ], rep.items
+
+    known = route_matcher(
+        [
+            ["method", "path"],
+            ["GET", "/v3/tenants/{tenant}/collections"],
+            ["POST", "/v3/tenants/{tenant}/collections/{collection}/search"],
+        ]
+    )
+    assert known("GET", "/v3/tenants/acme/collections")
+    assert not known("POST", "/v3/tenants/acme/collections")  # verb the route does not serve
+    assert not known("GET", "/v3/tenants/acme/collections/x")  # one segment too deep
+    rep = Report()
+    lines = [
+        "```bash",
+        "curl http://localhost:8080/v3/tenants/acme/collections",
+        "curl -X POST localhost:8080/v3/nope",  # 3: R15
+        "curl -X POST localhost:8080/v3/tenants/acme/collections",  # 4: R15, wrong verb
+        "curl localhost:8080/livez",  # not v3, silent
+        "grpcurl -proto deepdata/v3/deepdata.proto :50051 x/Y",  # not curl, silent
+        "curl -o o.json localhost:8080/v3/status && cat api/contract/v3/x.json",  # 7: R15
+        "curl \\",
+        "  http://localhost:8080/v3/tenants/a/collections?limit=2",  # continued, silent
+        "```",
+        "```text",
+        "curl localhost:8080/v3/nope",  # not a shell fence, silent
+        "```",
+    ]
+    check_curl(rep, "x.md", lines, known)
+    assert sorted((r, l) for r, _, l, _ in rep.items) == [(15, 3), (15, 4), (15, 7)], rep.items
+
     global TOP_LEVEL
     TOP_LEVEL = {"scripts", "docs", "api", "cmd"}
     assert exists_in_tree("bytes/vec", "README.md", tracked)
