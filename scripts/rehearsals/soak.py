@@ -462,7 +462,9 @@ phase_result(
     f"violations: {bad[:5] if bad else 'none'}; stats={stats}",
 )
 info = api_retry("GET", f"/v3/tenants/{TENANT}/collections/c_flat")
-server_count = info["collection"]["DocCount"]
+# Wire field is the json tag doc_count, not the Go field name; asserted by
+# cmd/deepdata/canonical_process_test.go against the real HTTP surface.
+server_count = info["collection"]["doc_count"]
 with ledger_lock:
     lo = len(acked) - len(indeterminate)
     hi = len(acked) + len(indeterminate)
