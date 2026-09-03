@@ -678,6 +678,7 @@
       "scope": [
         "README.md",
         "CHANGELOG.md",
+        "SECURITY.md",
         "docs",
         "internal/collection/API.md",
         "sdk/python/README.md",
@@ -691,13 +692,13 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "c20dbb0853388c6f5fbc74515cc10cda6ca8858a",
+        "commit": "78a55fa55c7bfbea1be3930eaf83d3a359553d27",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": null,
         "ci_run": null
       },
-      "note": "R3 (generated route table) is live since CTL-04/DOC-03 landed the routes subcommand; .github/workflows/ci.yml runs this same command. Scope excludes the generated render: every promotion rewrites it, and gates.py check already proves it equals a fresh render. R13/R14 landed at c20dbb0: fences are parsed and documented SDK calls resolved against sdk/python/deepdata, which is why that package joined the scope."
+      "note": "R3 (generated route table) is live since CTL-04/DOC-03 landed the routes subcommand; .github/workflows/ci.yml runs this same command. Scope excludes the generated render: every promotion rewrites it, and gates.py check already proves it equals a fresh render. R13/R14 landed at c20dbb0: fences are parsed and documented SDK calls resolved against sdk/python/deepdata, which is why that package joined the scope. R15 (curl calls judged against the generated v3 route table) and R14's parameter arm landed at 78a55fa, which also brought SECURITY.md into the checked corpus."
     },
     {
       "id": "DOC-02",
@@ -711,7 +712,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "c20dbb0853388c6f5fbc74515cc10cda6ca8858a",
+        "commit": "78a55fa55c7bfbea1be3930eaf83d3a359553d27",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": null,
@@ -730,7 +731,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "c20dbb0853388c6f5fbc74515cc10cda6ca8858a",
+        "commit": "78a55fa55c7bfbea1be3930eaf83d3a359553d27",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": null,
