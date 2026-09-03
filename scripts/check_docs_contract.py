@@ -114,7 +114,7 @@ CURL_TARGET = re.compile(
     r"(?:https?://[^\s\"'`\\]+|[\w.-]+:\d+/[^\s\"'`\\]*|(?<![\w./-])/v3/[^\s\"'`\\]*)"
 )
 CURL_CALL = re.compile(r"\bcurl\b")  # not grpcurl, which speaks proto, not routes
-CURL_VERB = re.compile(r"-X\s+([A-Z]+)")
+CURL_VERB = re.compile(r"-X\s+([A-Za-z]+)")  # curl accepts any case; the table is upper
 
 
 def rel(path: pathlib.Path) -> str:
@@ -578,23 +578,51 @@ def route_matcher(routes: list[list[str]] | None):
 def check_curl(rep: Report, file: str, lines: list[str], known) -> None:
     """R15: /v3 is the only surface with a generated route table, so it is the only surface a
     curl example can be judged against; /livez, /metrics and clone URLs are left alone."""
+
+    def judge(command: str, line_no: int) -> None:
+        if not CURL_CALL.search(command):
+            return
+        verb = CURL_VERB.search(command)
+        method = verb.group(1).upper() if verb else "GET"
+        for target in CURL_TARGET.findall(command):
+            path = re.sub(r"^(?:https?://)?[^/]*", "", target).split("?")[0]
+            if path.startswith("/v3/") and not known(method, path):
+                rep.add(15, file, line_no, f"no v3 route for {method} {path}")
+
     for lang, start, body in fences(lines):
         if lang not in SHELL_LANGS:
             continue
-        for offset, line in enumerate(body.replace("\\\n", " ").splitlines()):
-            if not CURL_CALL.search(line):
+        # Continuations are joined, but the reported line stays in source coordinates:
+        # collapsing the body first makes every later hit in the fence point upward.
+        pending, at = "", 0
+        for offset, raw in enumerate(body.splitlines()):
+            if not pending:
+                at = start + offset + 1
+            stripped = raw.rstrip()
+            if stripped.endswith("\\"):
+                pending += stripped[:-1] + " "
                 continue
-            verb = CURL_VERB.search(line)
-            method = verb.group(1) if verb else "GET"
-            for target in CURL_TARGET.findall(line):
-                path = re.sub(r"^(?:https?://)?[^/]*", "", target).split("?")[0]
-                if path.startswith("/v3/") and not known(method, path):
-                    rep.add(15, file, start + offset + 1, f"no v3 route for {method} {path}")
+            judge(pending + raw, at)
+            pending = ""
+        if pending:
+            judge(pending, at)
+
+
+def unclosed_fence(lines: list[str]) -> int | None:
+    """1-based line of a fence that is never closed, or None. Such a block is invisible to
+    every rule here and renders the rest of the file as code, so it is a defect on its own."""
+    opened = None
+    for i, line in enumerate(lines, 1):
+        if FENCE.match(line):
+            opened = None if opened else i
+    return opened
 
 
 def check_fences(rep: Report, file: str, lines: list[str], sdk: dict | None) -> None:
     """R13: the prose rules mask fences out, so a copy-paste example is the one claim nothing
     reads. Parse them, then judge the SDK calls inside the ones that parsed."""
+    if (opened := unclosed_fence(lines)) is not None:
+        rep.add(13, file, opened, "fence is never closed")
     for lang, start, body in fences(lines):
         if lang in ("python", "py"):
             try:
@@ -934,6 +962,26 @@ def selftest() -> int:
     ]
     check_curl(rep, "x.md", lines, known)
     assert sorted((r, l) for r, _, l, _ in rep.items) == [(15, 3), (15, 4), (15, 7)], rep.items
+
+    rep = Report()
+    lines = [
+        "```bash",
+        "curl -fsS \\",
+        "  -H 'a: b' \\",
+        "  http://h:8080/v3/tenants/a/collections",  # continued and known, silent
+        "curl -X post http://h:8080/v3/tenants/a/collections/c/search",  # lowercase, known
+        "curl -X delete http://h:8080/v3/tenants/a/collections",  # 6: R15, reported as DELETE
+        "```",
+    ]
+    check_curl(rep, "x.md", lines, known)
+    # The hit lands on its own source line, not shifted up by the joined continuation above.
+    assert [(r, l, m) for r, _, l, m in rep.items] == [
+        (15, 6, "no v3 route for DELETE /v3/tenants/a/collections")
+    ], rep.items
+
+    rep = Report()
+    check_fences(rep, "x.md", ["```bash", "echo hi"], None)
+    assert [(r, l) for r, _, l, _ in rep.items] == [(13, 1)], rep.items
 
     global TOP_LEVEL
     TOP_LEVEL = {"scripts", "docs", "api", "cmd"}
