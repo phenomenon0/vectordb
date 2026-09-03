@@ -544,7 +544,7 @@
     {
       "id": "REV-01",
       "statement": "every open gate has a named owner decision recorded in tasks/todo.md before freeze",
-      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s — '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
+      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s \u2014 '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
       "scope": [
         "tasks/todo.md"
       ],
@@ -681,6 +681,7 @@
         "docs",
         "internal/collection/API.md",
         "sdk/python/README.md",
+        "sdk/python/deepdata",
         "benchmarks/README.md",
         "tasks/todo.md",
         "tasks/PROTOCOL.md",
@@ -690,13 +691,13 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "a3b4cfbfda5b998028daa5ff6cd5bd2845c6143c",
+        "commit": "c20dbb0853388c6f5fbc74515cc10cda6ca8858a",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-02",
+        "date": "2026-09-03",
         "receipt": null,
         "ci_run": null
       },
-      "note": "R3 (generated route table) is live since CTL-04/DOC-03 landed the routes subcommand; .github/workflows/ci.yml runs this same command. Scope excludes the generated render: every promotion rewrites it, and gates.py check already proves it equals a fresh render."
+      "note": "R3 (generated route table) is live since CTL-04/DOC-03 landed the routes subcommand; .github/workflows/ci.yml runs this same command. Scope excludes the generated render: every promotion rewrites it, and gates.py check already proves it equals a fresh render. R13/R14 landed at c20dbb0: fences are parsed and documented SDK calls resolved against sdk/python/deepdata, which is why that package joined the scope."
     },
     {
       "id": "DOC-02",
@@ -710,9 +711,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "a3b4cfbfda5b998028daa5ff6cd5bd2845c6143c",
+        "commit": "c20dbb0853388c6f5fbc74515cc10cda6ca8858a",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-02",
+        "date": "2026-09-03",
         "receipt": null,
         "ci_run": null
       },
@@ -729,7 +730,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "7456427d7d09a33d247287fe688d2140e58029e6",
+        "commit": "c20dbb0853388c6f5fbc74515cc10cda6ca8858a",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": null,
