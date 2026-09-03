@@ -2,27 +2,41 @@
 """Restart-reclaim verification probe for the memory-drift fix.
 
 The memory-drift finding: canonical HNSW Delete() is soft-only and nothing
-reclaims tombstones online OR on restart, so cumulative deletes grow RSS and the
-on-disk snapshot without bound (only remedy: drop+recreate the collection).
+reclaims tombstones online, so cumulative deletes grow RSS without bound for as
+long as the process lives (only remedy: drop+recreate the collection).
 
-The fix makes Import() skip re-adding version-2 deleted entries (mirroring
-Compact()), so a restart rebuilds a clean graph. This probe proves the fix
-end-to-end against the real server binary:
+Restart is what reclaims. The canonical snapshot persists documents, not index
+bytes, so the reload rebuilds every index from the live documents alone;
+HNSWIndex.Import() carries the same version-2 deleted-entry skip for the legacy
+state-file path. This probe proves it end-to-end against the real server binary:
 
   Phase 1  seed a live set, then drive bounded-live-set delete+reinsert churn so
-           tombstones accumulate. RSS climbs; the shutdown snapshot bloats.
-  Restart  graceful SIGTERM (canonical Close() checkpoints the current, still-
-           tombstoned state -> S_before, large), then relaunch the SAME binary on
-           the SAME state dir. Startup Import drops the tombstones and the
-           recovery checkpoint rewrites a clean snapshot -> S_after, small.
-  Verify   PASS iff post-restart steady RSS is well below the pre-restart peak
-           AND the on-disk snapshot physically shrank AND the server is still
-           correct (deleted ids stay gone, live ids searchable, re-insert works).
+           tombstones accumulate. RSS climbs with the cumulative delete count.
+  Restart  graceful SIGTERM (canonical Close() checkpoints), then relaunch the
+           SAME binary on the SAME state dir. The reload rebuilds every index
+           from the persisted documents alone, so the tombstones are gone.
+  Verify   PASS iff post-restart steady RSS is well below the pre-restart steady
+           RSS AND the persisted snapshot holds exactly the live documents (not
+           the cumulative inserted set) AND the server is still correct (deleted
+           ids stay gone, live ids searchable, re-insert works).
 
 This is the honest test of THIS fix: it reclaims on restart, not online, so the
 old single-process drift probe (memdrift_probe.py) would still show online
-growth by design. That online growth is now bounded because every restart (and
-the periodic checkpoint that precedes it) folds and reclaims the tombstones.
+growth by design. That online growth is bounded because every restart folds and
+reclaims the tombstones.
+
+The on-disk check counts documents; it is deliberately not a before/after
+shrink. When this probe was written the snapshot was a JSON envelope of index
+Export() bytes, so it literally carried every tombstone with its full vector
+and halved across a restart. The canonical snapshot persists documents only
+(internal/collection/snapshot.go, writeCollectionSnapshotV2ManagerLocked) and
+Collection.deleteDocumentDirect drops the document immediately, leaving only an
+in-memory index tombstone. So there is no dead weight on disk to reclaim at any
+checkpoint, and a shrink is unreachable by construction: the live documents
+both checkpoints must contain are the overwhelming majority of the file.
+Counting them asserts the stronger property directly -- on-disk cost tracks the
+live set and never the churn -- and it binds the pre-restart checkpoint too,
+which a before/after ratio never did.
 """
 
 import json, os, random, signal, subprocess, sys, time, glob, urllib.request, urllib.error
@@ -43,9 +57,6 @@ N_HNSW = int(os.environ.get("N_HNSW", "6000"))
 DIM = 128
 MINUTES = float(os.environ.get("DRIFT_MINUTES", "4"))
 CAP = 2000
-# reclamation must bring RSS and snapshot down by at least this fraction of the
-# accumulated growth to count as a real reclaim (not noise).
-MARGIN = 0.50
 
 log_f = open(f"{WORK}/restart_reclaim.log", "a")
 
@@ -107,6 +118,50 @@ def snapshot_bytes():
     return total
 
 
+def snapshot_file():
+    matches = glob.glob(f"{STATE}/**/*.collections.snapshot", recursive=True)
+    if len(matches) != 1:
+        raise RuntimeError(f"expected exactly one canonical snapshot, found {matches}")
+    return matches[0]
+
+
+def persisted_documents():
+    """Count the documents the canonical snapshot actually holds.
+
+    Frame layout (internal/collection/snapshot.go): a 56-byte header whose last
+    two fields are the root collection count and the tenant count, then framed
+    JSON -- per manager one descriptor per collection carrying its
+    document_count, each followed by that many document frames.
+    """
+    with open(snapshot_file(), "rb") as f:
+
+        def frame():
+            size = int.from_bytes(f.read(4), "big")
+            return json.loads(f.read(size))
+
+        def skip_frame():
+            f.seek(int.from_bytes(f.read(4), "big"), 1)
+
+        def manager(collections):
+            total = 0
+            for _ in range(collections):
+                count = frame()["document_count"]
+                total += count
+                for _ in range(count):
+                    skip_frame()
+            return total
+
+        header = f.read(56)
+        if header[:8] != b"DDCOLSNP":
+            raise RuntimeError("state dir does not hold a v2 collection snapshot")
+        root = int.from_bytes(header[40:48], "big")
+        tenants = int.from_bytes(header[48:56], "big")
+        persisted = manager(root)
+        for _ in range(tenants):
+            persisted += manager(frame()["collection_count"])
+        return persisted
+
+
 def env_for():
     e = dict(os.environ)
     e.update(
@@ -157,7 +212,6 @@ result = {
     "corpus": N_HNSW,
     "cap": CAP,
     "minutes": MINUTES,
-    "margin": MARGIN,
 }
 
 log(f"PHASE 1: seed+churn  bin={BIN}  corpus={N_HNSW}  cap={CAP}  minutes={MINUTES}")
@@ -269,9 +323,14 @@ finally:
 
 S_before = snapshot_bytes()
 result["snapshot_before_bytes"] = S_before
-log(f"shutdown snapshot on disk = {S_before} bytes (holds tombstones)")
+result["snapshot_file_before_bytes"] = os.path.getsize(snapshot_file())
+result["persisted_docs_before"] = persisted_documents()
+log(
+    f"shutdown state on disk = {S_before} bytes; snapshot holds "
+    f"{result['persisted_docs_before']} documents"
+)
 
-log("PHASE 3: restart same binary + state dir; Import drops tombstones")
+log("PHASE 3: restart same binary + state dir; reload rebuilds from live docs")
 proc2 = start()
 try:
     api_retry("GET", "/readyz")
@@ -345,16 +404,20 @@ finally:
 
 S_after = snapshot_bytes()
 result["snapshot_after_bytes"] = S_after
+result["snapshot_file_after_bytes"] = os.path.getsize(snapshot_file())
+result["persisted_docs_after"] = persisted_documents()
 
 # verdicts.
-# Snapshot is the unambiguous, GC-immune proof of on-disk reclamation: each
-# tombstone carries a full 128-float vector, so dropping them shrinks the
-# persisted snapshot a lot (require >=50%). RSS reclamation is real but smaller
-# in fraction because the unchanged live-set working memory is a floor and Go's
-# scavenger returns freed pages lazily; require a conservative >=15% drop from
-# pre-restart steady, measured after the 90s settle. The raw rss series is kept
-# in the receipt so the number is auditable, not just the boolean.
-SNAP_MARGIN = 0.50
+# On disk: the snapshot is the GC-immune record of what a restart loads, and it
+# must hold the LIVE set, never the cumulative inserted set. This is exact (a
+# count, not a ratio) and it binds both checkpoints, so a tombstone that reached
+# disk at either one fails it. ever_inserted is asserted too, so a run that
+# churned nothing cannot pass vacuously.
+# RSS reclamation is real but smaller in fraction because the unchanged
+# live-set working memory is a floor and Go's scavenger returns freed pages
+# lazily; require a conservative >=15% drop from pre-restart steady, measured
+# after the 90s settle. The raw rss series is kept in the receipt so the number
+# is auditable, not just the boolean.
 RSS_MARGIN = 0.15
 rss_reclaimed = result["pre_restart_rss_kb"] - result["post_restart_rss_kb"]
 rss_ok = (
@@ -363,7 +426,14 @@ rss_ok = (
     if result["pre_restart_rss_kb"]
     else False
 )
-snap_ok = S_after < S_before * (1 - SNAP_MARGIN) if S_before else False
+live_docs = N_HNSW + result["live_at_end"]
+ever_inserted = N_HNSW + result["ops"]["insert"]
+snap_ok = (
+    result["persisted_docs_before"] == live_docs
+    # phase 3 adds exactly one fresh document after the restart.
+    and result["persisted_docs_after"] == live_docs + 1
+    and ever_inserted >= 2 * live_docs
+)
 correctness_ok = (
     result.get("deleted_leak", 1) == 0
     and result.get("live_hits", 0) >= 1
@@ -372,7 +442,8 @@ correctness_ok = (
 
 result.update(
     rss_reclaimed_kb=rss_reclaimed,
-    snap_margin=SNAP_MARGIN,
+    live_docs=live_docs,
+    ever_inserted=ever_inserted,
     rss_margin=RSS_MARGIN,
     rss_ok=rss_ok,
     snapshot_ok=snap_ok,
@@ -393,6 +464,10 @@ log(
                 "post_restart_rss_kb",
                 "snapshot_before_bytes",
                 "snapshot_after_bytes",
+                "persisted_docs_before",
+                "persisted_docs_after",
+                "live_docs",
+                "ever_inserted",
                 "deleted_leak",
                 "live_hits",
                 "fresh_insert_findable",
