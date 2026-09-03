@@ -117,6 +117,13 @@ type DurableStore struct {
 	// appended wakes journal followers. Zero value is usable and costs nothing
 	// until a follower waits on it.
 	appended journalNotifier
+
+	// replica marks the store a read replica: local writes are refused and it
+	// advances only through ApplyReplicated. Deliberately not persisted — which
+	// leader a store follows is configuration, re-supplied by MakeReplica on
+	// every open, so it never has to survive a snapshot format change.
+	replica  bool
+	leaderID [16]byte
 }
 
 // OpenDurableStore opens or initializes a durable unified collection store.
@@ -532,6 +539,11 @@ func (s *DurableStore) ephemeralDocumentMutationLocked(m canonicalMutation) bool
 }
 
 func (s *DurableStore) appendApplyLocked(ctx context.Context, mutation canonicalMutation) error {
+	// Every locally originated write funnels through here, so this one guard
+	// makes a read replica read-only on all six of them at once.
+	if s.replica {
+		return ErrReplicaReadOnly
+	}
 	// Durability class E (ADR 0009): an ephemeral collection's documents are
 	// memory only, so the mutation is applied under the same store mutex but
 	// is neither encoded nor appended, costs no fsync, and does not advance
@@ -547,6 +559,15 @@ func (s *DurableStore) appendApplyLocked(ctx context.Context, mutation canonical
 	if err != nil {
 		return err
 	}
+	return s.appendPayloadApplyLocked(ctx, payload, mutation)
+}
+
+// appendPayloadApplyLocked commits an already-encoded mutation: durable append
+// first, then the mandatory in-memory apply. Shared with the replica applier,
+// which appends the leader's exact payload bytes rather than re-encoding, so
+// both journals carry identical records and a replica can be streamed from in
+// turn.
+func (s *DurableStore) appendPayloadApplyLocked(ctx context.Context, payload []byte, mutation canonicalMutation) error {
 	// A request canceled while it was waiting for the store mutex has not
 	// crossed the commit point and must not be appended. Once append begins,
 	// however, cancellation can no longer be allowed to split durable and
