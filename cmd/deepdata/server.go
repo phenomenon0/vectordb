@@ -1342,11 +1342,15 @@ func newHTTPHandlerWithSurface(store *VectorStore, rt *serverRuntime, embedder E
 		}
 		var embedder *serverEmbedder
 		usageLoaded := true
+		readOnly := false
 		if collectionHTTP != nil {
 			embedder = collectionHTTP.embedder
 			usageLoaded = collectionHTTP.UsageLoaded()
+			if store := collectionHTTP.DurableStore(); store != nil {
+				readOnly = store.IsReplica()
+			}
 		}
-		payload, err := statusPayload(embedder, usageLoaded, requestIDFromContext(r.Context()))
+		payload, err := statusPayload(embedder, usageLoaded, readOnly, requestIDFromContext(r.Context()))
 		if err != nil {
 			apierror.WriteHTTP(w, apierror.New(apierror.CodeInternal, "status unavailable"))
 			return
@@ -1395,8 +1399,9 @@ func newHTTPHandlerWithSurface(store *VectorStore, rt *serverRuntime, embedder E
 		if canonicalOnly {
 			issues := []string{}
 			type canonicalHealth struct {
-				durable bool
-				err     error
+				durable  bool
+				readOnly bool
+				err      error
 			}
 			health := make(chan canonicalHealth, 1)
 			go func() {
@@ -1406,13 +1411,16 @@ func newHTTPHandlerWithSurface(store *VectorStore, rt *serverRuntime, embedder E
 				}
 				durable := collectionHTTP.IsDurable()
 				var err error
+				var readOnly bool
 				if durable {
 					err = collectionHTTP.PersistenceError()
+					readOnly = collectionHTTP.DurableStore().IsReplica()
 				}
-				health <- canonicalHealth{durable: durable, err: err}
+				health <- canonicalHealth{durable: durable, readOnly: readOnly, err: err}
 			}()
+			var state canonicalHealth
 			select {
-			case state := <-health:
+			case state = <-health:
 				if !state.durable {
 					issues = append(issues, "durable collection store not initialized")
 				} else if state.err != nil {
@@ -1428,10 +1436,15 @@ func newHTTPHandlerWithSurface(store *VectorStore, rt *serverRuntime, embedder E
 				// embedder names the process text embedder ("none" when
 				// callers must send vectors); no live embedding call here.
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"ready":    true,
-					"checks":   []string{"collection_snapshot", "mutation_journal", "lifetime_lock"},
-					"embedder": collectionHTTP.embedder.Label(),
-					"version":  releaseinfo.Version(),
+					"ready":  true,
+					"checks": []string{"collection_snapshot", "mutation_journal", "lifetime_lock"},
+					// A read replica is ready -- it answers reads correctly --
+					// so it stays 200 and stays in the pool. read_only is how
+					// it declines writes to a load balancer that would
+					// otherwise treat every ready backend as interchangeable.
+					"read_only": state.readOnly,
+					"embedder":  collectionHTTP.embedder.Label(),
+					"version":   releaseinfo.Version(),
 				})
 			} else {
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -1922,6 +1935,13 @@ func newHTTPHandlerWithSurface(store *VectorStore, rt *serverRuntime, embedder E
 		}
 		if err != nil {
 			collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
+		} else if canonicalOnly {
+			// Before a single route is registered: a replica directory that
+			// came up unbound would take one local write and fork its history
+			// from the leader's at the same LSN.
+			if err := bindReplicaReadOnly(collectionHTTP, collectionBasePath); err != nil {
+				collectionHTTP.setPersistenceError(err)
+			}
 		}
 	}
 	// Only the canonical tenant-aware V3 surface is served. Legacy V2/root

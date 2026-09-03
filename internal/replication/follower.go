@@ -133,7 +133,14 @@ func (f *Follower) Open(ctx context.Context, basePath, storagePath string) (*vco
 		return nil, err
 	}
 	if !occupied {
-		return f.bootstrap(ctx, basePath, storagePath, leaderID)
+		store, err := f.bootstrap(ctx, basePath, storagePath, leaderID)
+		if err != nil {
+			return nil, err
+		}
+		if err := markOrAbort(store, basePath, leaderID); err != nil {
+			return nil, err
+		}
+		return store, nil
 	}
 	store, err := vcollection.OpenDurableStore(basePath, storagePath)
 	if err != nil {
@@ -159,7 +166,28 @@ func (f *Follower) Open(ctx context.Context, basePath, storagePath string) (*vco
 	if err := store.MakeReplica(leaderID); err != nil {
 		return nil, errors.Join(fmt.Errorf("bind replica to leader %x: %w", leaderID, err), store.Abort())
 	}
+	if err := markOrAbort(store, basePath, leaderID); err != nil {
+		return nil, err
+	}
 	return store, nil
+}
+
+// markOrAbort persists the replica binding, or gives the directory up.
+//
+// Both of Open's paths end here, because both produce the same thing: a
+// directory that is a replica and whose next reader may be a `deepdata serve`
+// in another process. Returning a store whose marker did not land would leave
+// exactly the directory this marker exists to prevent -- one that looks
+// ordinary and takes writes.
+//
+// Abort rather than Close on failure: Close would checkpoint state we are
+// refusing to vouch for. The store artifacts stay behind, so the next run
+// takes Open's resume path and retries the marker.
+func markOrAbort(store *vcollection.DurableStore, basePath string, leaderID [16]byte) error {
+	if err := MarkReplica(basePath, leaderID); err != nil {
+		return errors.Join(err, store.Abort())
+	}
+	return nil
 }
 
 func (f *Follower) bootstrap(ctx context.Context, basePath, storagePath string, leaderID [16]byte) (*vcollection.DurableStore, error) {

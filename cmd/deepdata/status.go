@@ -38,7 +38,7 @@ var canonicalFilterOperators = []string{
 // limits from the Max* consts and the rate-limit environment, the
 // embedding block from the process embedder — so nothing here can drift
 // from the server that answers.
-func statusPayload(embedder *serverEmbedder, usageLoaded bool, requestID string) (map[string]any, error) {
+func statusPayload(embedder *serverEmbedder, usageLoaded, readOnly bool, requestID string) (map[string]any, error) {
 	ops, err := contract.Operations()
 	if err != nil {
 		return nil, err
@@ -113,6 +113,12 @@ func statusPayload(embedder *serverEmbedder, usageLoaded bool, requestID string)
 			// The durability classes a create-collection request may ask for
 			// (ADR 0009); an ephemeral collection's documents are memory only.
 			"durability_classes": []string{vcollection.DurabilityDurable, vcollection.DurabilityEphemeral},
+			// read_only is true when this node serves a read replica
+			// directory: every operation below with a write or admin
+			// permission is refused with permission_denied here, whatever
+			// claim the caller's token carries. It is the same fact /readyz
+			// reports under the same name.
+			"read_only": readOnly,
 		},
 		// signals is the accreted-signal surface (durability class B).
 		// usage.loaded is false only when a usage sidecar existed and was

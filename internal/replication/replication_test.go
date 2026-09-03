@@ -388,3 +388,81 @@ func TestOpenRefusesAStoreThatIsNotThisLeadersReplica(t *testing.T) {
 		t.Fatalf("refused bootstrap destroyed the existing store's data: %v", err)
 	}
 }
+
+// Replica-ness has to outlive the process that established it.
+//
+// DurableStore.replica is in-memory by design, so a directory synced here and
+// opened later by `deepdata serve` would come up as an ordinary store and
+// accept writes -- forking the two histories at the same LSN. The marker the
+// follower leaves is the only thing standing between a read replica and that
+// split brain, so it must be there the moment Open returns, name the right
+// leader, and still be there after a resume.
+func TestASyncedDirectoryDeclaresItsLeaderOnDisk(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	follower := serveLeader(t, leader)
+	base := storePath(t, dir, "replica")
+	replica, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatalf("bootstrap replica: %v", err)
+	}
+
+	leaderID := leader.Metadata().StoreID
+	id, isReplica, err := ReplicaLeaderID(base)
+	if err != nil {
+		t.Fatalf("read replica marker: %v", err)
+	}
+	if !isReplica {
+		t.Fatal("a bootstrapped replica directory does not say so on disk; serving it would accept writes")
+	}
+	if id != leaderID {
+		t.Fatalf("marker names leader %x, store follows %x", id, leaderID)
+	}
+	if err := replica.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resuming must not lose it either: the second run takes Open's other path.
+	resumed, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatalf("resume replica: %v", err)
+	}
+	t.Cleanup(func() { _ = resumed.Close() })
+	if _, isReplica, err = ReplicaLeaderID(base); err != nil || !isReplica {
+		t.Fatalf("resume dropped the replica marker: isReplica=%v err=%v", isReplica, err)
+	}
+
+	// A directory nobody replicated must not claim a leader; that is the
+	// difference between "serve read-only" and "serve".
+	if _, isReplica, err := ReplicaLeaderID(storePath(t, dir, "unrelated")); err != nil || isReplica {
+		t.Fatalf("a plain directory reported itself a replica: isReplica=%v err=%v", isReplica, err)
+	}
+}
+
+// The marker must not look like store state.
+//
+// Every durable artifact is basePath+"."+suffix, and both BootstrapReplica's
+// emptiness scan and storeArtifactsExist read any such name as "a store lives
+// here". A dotted marker would make a directory holding only a stale marker
+// look occupied, sending a fresh sync down the resume path -- where it would
+// open an empty store under a new random ID and fail with a store mismatch
+// instead of bootstrapping.
+func TestTheReplicaMarkerIsNotMistakenForStoreState(t *testing.T) {
+	base := storePath(t, t.TempDir(), "replica")
+	if err := MarkReplica(base, [16]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	occupied, err := storeArtifactsExist(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if occupied {
+		t.Fatal("the replica marker counts as a durable store artifact; a re-sync would take the resume path over an empty directory")
+	}
+}

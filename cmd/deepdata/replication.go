@@ -77,13 +77,42 @@ func (w replicationLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// bindReplicaReadOnly re-applies the replica binding a directory carries.
+//
+// DurableStore.IsReplica is in-memory, so a plain `deepdata serve` learns a
+// directory is a replica the only way it can: from the marker the follower
+// left beside the store. Serve calls this on every open, and there is no flag
+// to forget -- the data directory is the evidence.
+//
+// A marker that cannot be honored is a startup failure, never a shrug. Serving
+// the directory as an ordinary store is the one outcome that must not happen:
+// a single local write consumes the LSN the leader's next record needs and
+// forks the two histories at the same position.
+func bindReplicaReadOnly(collections *CollectionHTTPServer, basePath string) error {
+	leaderID, isReplica, err := replication.ReplicaLeaderID(basePath)
+	if err != nil {
+		return err
+	}
+	if !isReplica {
+		return nil
+	}
+	store := collections.DurableStore()
+	if store == nil {
+		return fmt.Errorf("%q is a read replica of leader %x but this process has no durable store to serve it read-only", basePath, leaderID)
+	}
+	if err := store.MakeReplica(leaderID); err != nil {
+		return fmt.Errorf("serve %q read-only as a replica of leader %x: %w", basePath, leaderID, err)
+	}
+	return nil
+}
+
 // runReplicate is the `deepdata replicate` subcommand: keep a local replica
 // directory in step with a leader.
 //
-// It only syncs. The replica is not served: a DurableStore refuses local
-// writes, so pointing the client surface at one would answer every insert with
-// a 500 rather than a 403, and readiness would still report a writable node.
-// Serving replicas is the next piece of work, not a flag on this one.
+// It only syncs. Serving the directory it maintains is a separate `deepdata
+// serve` against the same path: that process finds the replica marker, opens
+// the store read-only, answers reads normally, refuses every write with a 403,
+// and reports read_only on /readyz so a load balancer stops sending it writes.
 func runReplicate(args []string, logger *logging.Logger) int {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	leaderURL := fs.String("leader", "", "leader base URL, e.g. http://leader.internal:8080")

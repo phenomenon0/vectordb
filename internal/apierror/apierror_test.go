@@ -74,6 +74,7 @@ func TestErrorFromEngineClassifiesWrappedSentinels(t *testing.T) {
 		{fmt.Errorf("create: %w", vcollection.ErrTenantLimitExceeded), CodeQuotaExceeded},
 		{fmt.Errorf("create: %w", vcollection.ErrCollectionLimitExceeded), CodeQuotaExceeded},
 		{fmt.Errorf("search: %w", vcollection.ErrSearchResponseBudgetExceeded), CodePayloadTooLarge},
+		{fmt.Errorf("insert: %w", vcollection.ErrReplicaReadOnly), CodePermissionDenied},
 		{vcollection.ErrDurableStoreClosed, CodeUnavailable},
 		{vcollection.ErrDurableStoreFaulted, CodeUnavailable},
 		{errors.New("disk on fire"), CodeInternal},
@@ -91,6 +92,16 @@ func TestErrorFromEngineClassifiesWrappedSentinels(t *testing.T) {
 	}
 	if got := FromEngine(vcollection.ErrTenantLimitExceeded, CodeInternal); got.Retryable {
 		t.Fatalf("quota limits are fixed for the process lifetime; reporting them retryable makes every SDK retry forever")
+	}
+	// A read replica refuses writes for a reason no credential can fix, so the
+	// generic permission_denied hint -- "mint a token with the write claim" --
+	// would send an operator down a road with no end.
+	replica := FromEngine(vcollection.ErrReplicaReadOnly, CodeInternal)
+	if replica.Hint == New(CodePermissionDenied, "m").Hint {
+		t.Error("a replica refusal must not tell the caller to mint a better token")
+	}
+	if HTTPStatus(replica.Code) != http.StatusForbidden || GRPCCode(replica.Code) != codes.PermissionDenied {
+		t.Errorf("replica refusal maps to %d/%v, want 403/PermissionDenied", HTTPStatus(replica.Code), GRPCCode(replica.Code))
 	}
 }
 

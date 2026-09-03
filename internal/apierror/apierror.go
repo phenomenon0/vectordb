@@ -102,6 +102,14 @@ func FromEngine(err error, fallback string) *Error {
 	switch {
 	case errors.Is(err, vcollection.ErrInvalidArgument), errors.Is(err, vcollection.ErrInvalidSearchArgument):
 		return New(CodeInvalidArgument, err.Error())
+	case errors.Is(err, vcollection.ErrReplicaReadOnly):
+		// A read replica refuses every local write, permanently. The default
+		// hint would send the caller to mint a better token; no token on this
+		// node will ever be accepted for a write, so it names the leader
+		// instead.
+		e := New(CodePermissionDenied, err.Error())
+		e.Hint = "this node serves a read replica directory and never accepts writes; send them to the leader it follows"
+		return e
 	case errors.Is(err, vcollection.ErrCollectionNotFound), errors.Is(err, vcollection.ErrDocumentNotFound):
 		return New(CodeNotFound, err.Error())
 	case errors.Is(err, vcollection.ErrCollectionExists), errors.Is(err, vcollection.ErrDocumentExists):

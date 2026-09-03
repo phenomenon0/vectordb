@@ -35,8 +35,12 @@ the RC surface.
 
 What it does, and only this: a leader exposes its own journal and a snapshot of
 its own state, and `deepdata replicate` keeps a second directory in step by
-applying that journal in LSN order. The second directory is a read-only copy
-that no process serves while it is syncing.
+applying that journal in LSN order. A separate `deepdata serve` may then serve
+that directory read-only. Nothing tells it to: the sync writes a marker beside
+the store, so the data directory is the evidence and there is no flag to forget.
+Reads answer normally, every write is refused with `403` `permission_denied`
+before it reaches the journal, and `GET /readyz` and `GET /v3/status` both
+report `read_only` so a load balancer stops sending it writes.
 
 What it does not do: it never elects, promotes, fences, or fails over; it has no
 membership list; it does not resync itself when it falls too far behind, because
