@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 )
 
@@ -163,6 +164,18 @@ func (s *DurableStore) StreamJournal(cursor JournalCursor, visit func(JournalRec
 			return pos, err
 		}
 	}
+	// Nothing readable is left, yet the cursor is still behind the position
+	// sampled before the scan: a checkpoint removed the records in between.
+	// The gap check inside deliver only fires when a record is actually read,
+	// so without this the caller is told everything is fine and FollowJournal
+	// parks on an idle leader forever -- the silent stall the legacy cluster
+	// shipped, where replication stopped permanently and nothing was logged.
+	// It cannot false-positive: LatestLSN is only advanced after a frame is
+	// written and fsynced, so every LSN up to it is a complete frame on disk,
+	// and records appended during the scan only push lastSeen above it.
+	if lastSeen < pos.LatestLSN {
+		return pos, fmt.Errorf("%w: cursor at LSN %d, leader at LSN %d, nothing retained in between", ErrJournalGap, lastSeen, pos.LatestLSN)
+	}
 	return pos, nil
 }
 
@@ -204,4 +217,48 @@ func (s *DurableStore) journalLastLSN() uint64 {
 	s.journal.mu.Lock()
 	defer s.journal.mu.Unlock()
 	return s.journal.lastLSN
+}
+
+// WriteSnapshot streams one complete snapshot generation of this store to w and
+// reports the position those bytes capture.
+//
+// It is the other half of replica bootstrap: a leader that has checkpointed no
+// longer retains the journal records a new follower would need, so the follower
+// has to be handed state instead of history. The bytes are exactly what
+// Checkpoint commits to disk -- same encoder, same header, same trailing
+// checksum -- so BootstrapReplica can hand them straight to the normal open
+// path and inherit every validation it does.
+//
+// LatestLSN is the AppliedLSN encoded in the header, which is the counter the
+// receiving store's journal is seeded with, so the first record the follower
+// can accept is LatestLSN+1.
+//
+// The store's write barrier is held for the whole write: w must be a local sink
+// (an *os.File, a *bytes.Buffer), never a socket.
+//
+// ponytail: a remote-paced writer would block every local write for the length
+// of the transfer. Upgrade trigger is the first bootstrap that must stream
+// straight to a peer -- then snapshot to a temp file under the lock and ship
+// the file unlocked.
+func (s *DurableStore) WriteSnapshot(w io.Writer) (JournalPosition, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return JournalPosition{}, err
+	}
+	// Unwritten precondition of the encoder: it ranges both maps and bakes
+	// their sizes into the header before writing any frame, so the counts and
+	// the frames disagree if either map moves. Same acquisition order as
+	// saveUnifiedCollectionSnapshot, under the same s.mu, so no inversion.
+	s.manager.mu.RLock()
+	defer s.manager.mu.RUnlock()
+	s.tenants.mu.RLock()
+	defer s.tenants.mu.RUnlock()
+	if err := writeUnifiedCollectionSnapshotV2(w, s.manager, s.tenants, s.metadata); err != nil {
+		return JournalPosition{}, fmt.Errorf("write collection store snapshot: %w", err)
+	}
+	// AppliedLSN, not journalLastLSN: it is the value just written into the
+	// header. Reporting the journal counter would promise a record the snapshot
+	// does not contain and open the follower one record short.
+	return JournalPosition{StoreID: s.metadata.StoreID, LatestLSN: s.metadata.AppliedLSN}, nil
 }
