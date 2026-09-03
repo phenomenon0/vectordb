@@ -1,4 +1,13 @@
-//go:build linux
+//go:build linux || darwin
+
+// flock(2), O_NOFOLLOW and O_CLOEXEC are POSIX and behave identically on Linux
+// and Darwin, so one implementation covers both.
+//
+// Durability note: (*os.File).Sync is sufficient here on Darwin too. Go's
+// runtime already issues fcntl(F_FULLFSYNC) for File.Sync on Darwin (golang
+// issue #26650), with a plain-fsync fallback on ENOTSUP (#64215). Do not add a
+// hand-rolled F_FULLFSYNC layer on top; it would duplicate the runtime, skip
+// its EINTR retry, and bypass the fd refcount that File.Sync holds.
 
 package collection
 

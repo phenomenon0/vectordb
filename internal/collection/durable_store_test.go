@@ -99,8 +99,8 @@ func TestDurableStoreSubprocessLockExclusion(t *testing.T) {
 }
 
 func TestDurableStoreRejectsSymlinkLockWithoutTouchingTarget(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Linux persistence contract")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("persistence contract covers linux and darwin")
 	}
 	dir := t.TempDir()
 	base := filepath.Join(dir, "collections")
