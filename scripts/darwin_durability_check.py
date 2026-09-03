@@ -8,7 +8,7 @@ Exercises the ONLY durable HTTP surface (/v3/tenants/...) through:
   phase 3  SIGTERM (graceful) -> checkpoint into snapshot -> cold restart
            from that snapshot must restore the same state
 
-Run on the Mac. Usage: python3 macport_lifecycle_test.py <binary> <scratchdir> <port>
+Run on the Mac. Usage: python3 scripts/darwin_durability_check.py <binary> <scratchdir> <port>
 """
 
 import json
