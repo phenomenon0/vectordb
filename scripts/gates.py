@@ -359,8 +359,26 @@ def cmd_promote(args: argparse.Namespace) -> int:
         )
     save_ledger(args.ledger, ledger)
     args.render_path.write_text(render(root, ledger), encoding="utf-8")
+    # Receipts are host-blind before schema_version 2; memory and timing evidence
+    # means nothing without the machine, so name it rather than let it pass silently.
+    host = receipt.get("host") or {}
+    if host:
+        memory = host.get("mem_total_kb")
+        where = " ".join(
+            str(part)
+            for part in (
+                host.get("hostname"),
+                host.get("kernel"),
+                f"{host.get('cpus')}cpu",
+                f"{round(memory / 1048576, 1)}GiB" if memory else None,
+            )
+            if part is not None
+        )
+    else:
+        where = "host unrecorded (receipt predates schema_version 2)"
     print(
-        f"gates: {gate['id']} <- {args.check} @ {receipt['git_commit'][:7]} ({gate['status']}); rendered"
+        f"gates: {gate['id']} <- {args.check} @ {receipt['git_commit'][:7]} "
+        f"({gate['status']}) on {where}; rendered"
     )
     return 0
 
