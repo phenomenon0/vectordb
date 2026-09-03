@@ -2,9 +2,13 @@
 
 ## Supported runtime
 
-The persistent release candidate supports Linux amd64 only. It is a headless,
-single-process, single-node server. Linux arm64 and non-Linux cross-builds are
-compile proofs, not persistence-supported release artifacts.
+The persistent release candidate ships as a Linux amd64 artifact: a headless,
+single-process, single-node server. The store also builds and runs persistently
+on macOS — `internal/collection/store_lock_unix.go` carries the `linux || darwin`
+build tag — but no gate or CI test job covers it, so macOS is a development
+target, not a release artifact; `scripts/darwin_durability_check.py` is the
+hand-run lifecycle check. Linux arm64 and Windows are compile proofs only, and
+persistent startup fails closed there.
 
 The server exposes tenant-aware HTTP V3 on port 8080 and the matching eleven
 unary gRPC methods on port 50051. Clients provide vectors; when `DEEPDATA_EMBEDDER`
@@ -48,9 +52,10 @@ export API_TOKEN='replace-with-a-long-random-token'
 ./deepdata serve
 ```
 
-Source-built persistent deployments are supported only on Linux amd64. A
-production build should be tied to an exact source commit and the evidence
-generated for that commit.
+Production source builds are supported only on Linux amd64; a macOS source
+build runs persistently but carries no release evidence. A production build
+should be tied to an exact source commit and the evidence generated for that
+commit.
 
 ## Canonical Python client
 

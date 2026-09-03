@@ -82,8 +82,9 @@ the RC binary answers it 404; follower restore and snapshot streaming were delet
 
 ## Run from source
 
-Requirements: Linux and Go 1.25.12 (`go.mod:3`; CI pins the same version at `.github/workflows/ci.yml:10`).
-Persistent startup fails closed on every other OS (`internal/collection/store_lock_other.go`).
+Requirements: Linux or macOS and Go 1.25.12 (`go.mod:3`; CI pins the same version at `.github/workflows/ci.yml:10`).
+Persistent startup fails closed on every other OS (`internal/collection/store_lock_other.go`). Linux amd64 is the only
+gated release target; macOS persistence is checked by hand with `scripts/darwin_durability_check.py`.
 
 ```bash
 go build -trimpath -o deepdata ./cmd/deepdata

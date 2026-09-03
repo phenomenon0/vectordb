@@ -6,8 +6,8 @@ can test end to end.
 
 ## What the RC is
 
-- A Linux-only, single-node persistent service with one process holding the
-  data-directory lock.
+- A single-node persistent service on Linux or macOS, with one process holding
+  the data-directory lock. Linux amd64 is the released artifact.
 - A tenant-aware V3 HTTP API and eleven equivalent unary gRPC methods.
 - Caller-supplied vectors, or texts for fields that bind an embedding when the
   server runs one (`DEEPDATA_EMBEDDER`; the default `none` leaves embedding to

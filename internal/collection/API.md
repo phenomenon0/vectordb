@@ -3,7 +3,8 @@
 This document describes the supported collection contract for the DeepData
 release candidate. The production surface is deliberately small:
 
-- persistent, single-node operation on Linux only;
+- persistent, single-node operation on Linux and macOS (`store_lock_unix.go`,
+  build tag `linux || darwin`); Linux amd64 is the only gated release target;
 - tenant-aware V3 HTTP plus the equivalent unary gRPC service;
 - caller-supplied dense and sparse vectors, or `texts` for fields that bind an
   `embedding`, embedded server-side by the process embedder (`DEEPDATA_EMBEDDER`);

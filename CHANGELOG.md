@@ -13,6 +13,14 @@ assembled.
 
 ### Added
 
+- macOS support for the persistent store. The Linux-only store lock became
+  `internal/collection/store_lock_unix.go` under the `linux || darwin` build
+  tag: flock(2),
+  `O_NOFOLLOW` and `O_CLOEXEC` behave identically on Darwin, and Go's runtime
+  already issues `fcntl(F_FULLFSYNC)` for `(*os.File).Sync` there, so no
+  separate full-barrier path is needed. Linux amd64 stays the only gated
+  release target; `scripts/darwin_durability_check.py` is the hand-run
+  kill -9 / SIGTERM / cold-restart lifecycle check (cb8fa6e).
 - Ephemeral collections: `durability` on create (`durable`, the default, or
   `ephemeral`) makes a collection's documents memory-only — they write no
   journal record and are empty after a restart, while the collection itself
