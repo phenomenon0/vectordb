@@ -122,7 +122,11 @@ def doc_count():
     st, body = req("GET", f"/v3/tenants/{TENANT}/collections/{COLL}")
     if st != 200:
         return f"HTTP {st}: {body}"
-    return body.get("collection", {}).get("DocCount", f"unparsed:{body}")
+    # Wire field is the json tag doc_count, not the Go field name (see
+    # internal/collection/manager.go CollectionInfo). Reading the Go name made
+    # every phase return the same "unparsed" sentinel, so the post-crash and
+    # post-cold-start comparisons against it passed without checking anything.
+    return body.get("collection", {}).get("doc_count", f"unparsed:{body}")
 
 
 def search(qi=7, k=5):
