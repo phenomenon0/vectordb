@@ -943,7 +943,7 @@ func scanCollectionJournalArtifact(
 		previousInArtifact    uint64
 		hasPreviousInArtifact bool
 	)
-	return scanCollectionJournalFile(path, storeID, maxPayload, expected, payloadBuffer, func(record collectionJournalRecord) error {
+	return scanCollectionJournalFile(path, storeID, maxPayload, expected, payloadBuffer, false, func(record collectionJournalRecord) error {
 		if err := state.accept(path, record, previousInArtifact, hasPreviousInArtifact); err != nil {
 			return err
 		}
@@ -959,12 +959,17 @@ func scanCollectionJournalArtifact(
 // scanCollectionJournalFile validates one artifact with constant aggregate
 // state and one caller-owned payload buffer. The visitor must consume payload
 // synchronously because the next frame overwrites the same backing storage.
+// allowGrowth relaxes the quiescence guards for a follower reading a journal
+// that its own process is still appending to. The scan still stops at the size
+// stat'd when the file was opened, so it always returns a consistent prefix;
+// only the "nothing changed while I read" assertions are skipped.
 func scanCollectionJournalFile(
 	path string,
 	storeID [16]byte,
 	maxPayload uint32,
 	expected *collectionJournalFileSummary,
 	payloadBuffer *[]byte,
+	allowGrowth bool,
 	visit collectionJournalRecordVisitor,
 ) (collectionJournalFileSummary, error) {
 	var summary collectionJournalFileSummary
@@ -1093,6 +1098,14 @@ func scanCollectionJournalFile(
 			}
 		}
 		offset += int64(collectionJournalHeaderSize) + int64(payloadLen)
+	}
+
+	if allowGrowth {
+		// A follower expects growth and expects rotation to rename the path out
+		// from under it; both are normal, and the prefix just parsed is still
+		// exactly what the writer committed.
+		setDigest()
+		return summary, nil
 	}
 
 	// Guard against external growth between Stat and parsing. The journal's own

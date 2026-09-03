@@ -113,6 +113,10 @@ type DurableStore struct {
 	// apply is a per-store test seam. Production always points at
 	// applyMutationDirect; an error after append permanently faults the store.
 	apply func(context.Context, canonicalMutation) error
+
+	// appended wakes journal followers. Zero value is usable and costs nothing
+	// until a follower waits on it.
+	appended journalNotifier
 }
 
 // OpenDurableStore opens or initializes a durable unified collection store.
@@ -567,6 +571,8 @@ func (s *DurableStore) appendApplyLocked(ctx context.Context, mutation canonical
 		return s.latchFaultLocked(fmt.Errorf("apply LSN %d after durable append: %w", record.LSN, err))
 	}
 	s.metadata.AppliedLSN = record.LSN
+	// The record is durable and applied, so followers may read it now.
+	s.appended.notify()
 	return nil
 }
 
