@@ -780,3 +780,40 @@ func TestBootstrapReplicaRejectsDegenerateArguments(t *testing.T) {
 		})
 	}
 }
+
+// The leader's data directory gets cold-restored from an older backup, so its
+// LSN goes backwards while its StoreID — which lives in the snapshot header and
+// survives the restore — stays the same. The store-mismatch check therefore
+// cannot see it. Reporting "caught up" here is D2 in its exact original shape:
+// the follower blocks on a tail that can never reach it, delivers nothing, and
+// logs nothing, while continuing to serve reads that nothing will correct.
+// Reverting the cursor-ahead branch in StreamJournal to `>=` makes this fail.
+func TestStreamJournalRejectsACursorAheadOfTheLeader(t *testing.T) {
+	ctx := context.Background()
+	leader, _ := openBootstrapTestLeader(t)
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	status, err := leader.JournalStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ahead := JournalCursor{StoreID: status.StoreID, LSN: status.LatestLSN + 5}
+	delivered := 0
+	pos, err := leader.StreamJournal(ahead, func(JournalRecord) error {
+		delivered++
+		return nil
+	})
+	if !errors.Is(err, ErrJournalGap) {
+		t.Fatalf("cursor %d against a leader at %d: error = %v, want ErrJournalGap", ahead.LSN, status.LatestLSN, err)
+	}
+	if delivered != 0 {
+		t.Errorf("diverged stream still delivered %d records", delivered)
+	}
+	// The position must still be reported so the caller can see how far back the
+	// leader actually is instead of guessing at the size of the divergence.
+	if pos.LatestLSN != status.LatestLSN {
+		t.Errorf("reported leader position %d, want %d", pos.LatestLSN, status.LatestLSN)
+	}
+}

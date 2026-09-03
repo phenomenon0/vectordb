@@ -121,7 +121,18 @@ func (s *DurableStore) StreamJournal(cursor JournalCursor, visit func(JournalRec
 	if cursor.StoreID != ([16]byte{}) && cursor.StoreID != pos.StoreID {
 		return pos, fmt.Errorf("%w: cursor %x, store %x", ErrJournalStoreMismatch, cursor.StoreID, pos.StoreID)
 	}
-	if cursor.LSN >= pos.LatestLSN {
+	// A follower strictly ahead of its leader has diverged, and "caught up" is
+	// the one answer that is certainly wrong. StoreID survives a cold restore of
+	// the leader's data directory from an older backup, so the mismatch check
+	// above cannot see it; answering nil parks the follower on a tail that will
+	// never reach it while it serves reads nothing will ever correct, and the
+	// per-record successor check never runs because no record is delivered.
+	// ErrJournalGap is the right signal even though nothing was pruned: the
+	// caller's recovery is identical either way -- stop and re-bootstrap.
+	if cursor.LSN > pos.LatestLSN {
+		return pos, fmt.Errorf("%w: cursor at LSN %d is ahead of the leader at LSN %d", ErrJournalGap, cursor.LSN, pos.LatestLSN)
+	}
+	if cursor.LSN == pos.LatestLSN {
 		return pos, nil
 	}
 
