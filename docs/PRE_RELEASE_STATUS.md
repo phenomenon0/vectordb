@@ -6,11 +6,11 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 
 | DUR | status | commit | date | statement |
 |---|---|---|---|---|
-| DUR-01 | pass | 0c4cff8 | 2026-09-03 | go vet passes with CGO_ENABLED=0 across the RC package list |
-| DUR-02 | pass | 0c4cff8 | 2026-09-03 | storage tests pass: journal, snapshot, durable store, WAL recovery |
-| DUR-03 | pass | 0c4cff8 | 2026-09-03 | go test -short passes for cmd/deepdata and internal packages |
-| DUR-04 | pass | 0c4cff8 | 2026-09-03 | go test -race passes on the RC package list |
-| DUR-05 | pass | 0c4cff8 | 2026-09-03 | focused persistence matrices pass serially (go test -count=1 -p 1 ./internal/collection ./cmd/d… |
+| DUR-01 | pass | 1726127 | 2026-09-03 | go vet passes with CGO_ENABLED=0 across the RC package list |
+| DUR-02 | pass | 1726127 | 2026-09-03 | storage tests pass: journal, snapshot, durable store, WAL recovery |
+| DUR-03 | pass | 1726127 | 2026-09-03 | go test -short passes for cmd/deepdata and internal packages |
+| DUR-04 | pass | 1726127 | 2026-09-03 | go test -race passes on the RC package list |
+| DUR-05 | pass | 1726127 | 2026-09-03 | focused persistence matrices pass serially (go test -count=1 -p 1 ./internal/collection ./cmd/d… |
 
 | SDK | status | commit | date | statement |
 |---|---|---|---|---|
@@ -40,8 +40,8 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 | REL | status | commit | date | statement |
 |---|---|---|---|---|
 | REL-01 | pass | a3b4cfb | 2026-09-02 | version parity across version.txt, Python SDK, Helm chart and Dockerfile; generated proto is fr… |
-| REL-02 | pass | 6c01620 | 2026-09-01 | repository carries an Apache-2.0 LICENSE and the chart, SDK and README declare it |
-| REL-03 | pass | 0c4cff8 | 2026-09-03 | go.mod and go.sum are tidy (go mod tidy -diff is empty) |
+| REL-02 | pass | 7456427 | 2026-09-03 | repository carries an Apache-2.0 LICENSE and the chart, SDK and README declare it |
+| REL-03 | pass | 1726127 | 2026-09-03 | go.mod and go.sum are tidy (go mod tidy -diff is empty) |
 | REL-04 | open | — | — | release candidate SHA frozen; manifests and changelog name the same version and commit |
 
 | CI | status | commit | date | statement |
@@ -68,7 +68,7 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 | RCV-01 | pass | a3b4cfb | 2026-09-02 | journal replay streams records with bounded memory instead of loading the file |
 | RCV-02 | pass | a3b4cfb | 2026-09-02 | snapshot coverage verification reads headers only, never whole payloads |
 | RCV-03 | pass | a36faa4 | 2026-09-02 | unified snapshots load with bounded memory |
-| RCV-04 | pass | 0c4cff8 | 2026-09-03 | generated small-journal tests fail closed on truncated and corrupt records |
+| RCV-04 | pass | 1726127 | 2026-09-03 | generated small-journal tests fail closed on truncated and corrupt records |
 | RCV-05 | open | — | — | replay rehearsal passes under a cgroup memory hard cap on the disposable probe root only |
 | RCV-06 | pass | a36faa4 | 2026-09-02 | internal/index/segmented.go measured under the cold-start memory envelope |
 
@@ -76,7 +76,7 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 |---|---|---|---|---|
 | DOC-01 | pass (stale) | a3b4cfb | 2026-09-02 | docs contract linter passes on the tree (scripts/check_docs_contract.py) |
 | DOC-02 | pass (stale) | a3b4cfb | 2026-09-02 | tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing… |
-| DOC-03 | pass | a3b4cfb | 2026-09-02 | HTTP route table in internal/collection/API.md is generated from the routes subcommand |
+| DOC-03 | pass | 7456427 | 2026-09-03 | HTTP route table in internal/collection/API.md is generated from the routes subcommand |
 
 | PUB | status | commit | date | statement |
 |---|---|---|---|---|
@@ -86,18 +86,18 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 
 | CTL | status | commit | date | statement |
 |---|---|---|---|---|
-| CTL-01 | pass | 0c4cff8 | 2026-09-03 | errors are prompts: every API error carries code, hint and docs pointer via internal/apierror |
-| CTL-02 | pass | 0c4cff8 | 2026-09-03 | text in, text out: server-side embeddings, Ollama first, hash embedder only when named explicit… |
+| CTL-01 | pass | 1726127 | 2026-09-03 | errors are prompts: every API error carries code, hint and docs pointer via internal/apierror |
+| CTL-02 | pass | 1726127 | 2026-09-03 | text in, text out: server-side embeddings, Ollama first, hash embedder only when named explicit… |
 | CTL-03 | pass | a36faa4 | 2026-09-02 | MCP server rewritten on the shared api/contract package and covered by CI-05 |
 | CTL-04 | pass | a36faa4 | 2026-09-02 | server self-description: routes subcommand and per-result confidence |
-| CTL-05 | pass | 0c4cff8 | 2026-09-03 | durable usage records survive restart |
+| CTL-05 | pass | 1726127 | 2026-09-03 | durable usage records survive restart |
 
 | SYS | status | commit | date | statement |
 |---|---|---|---|---|
-| SYS-01 | pass | 0c4cff8 | 2026-09-03 | serverRuntime extracted from cmd/deepdata main; func main() constructs no VectorStore and NewVe… |
-| SYS-02 | pass | 0c4cff8 | 2026-09-03 | one IndexTypes vocabulary shared by server, SDK and docs |
+| SYS-01 | pass | 1726127 | 2026-09-03 | serverRuntime extracted from cmd/deepdata main; func main() constructs no VectorStore and NewVe… |
+| SYS-02 | pass | 1726127 | 2026-09-03 | one IndexTypes vocabulary shared by server, SDK and docs |
 | SYS-03 | pass (stale) | a36faa4 | 2026-09-02 | archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, sha… |
-| SYS-04 | pass | 0c4cff8 | 2026-09-03 | Canonical prefix dropped; every live package has a doc.go |
+| SYS-04 | pass | 1726127 | 2026-09-03 | Canonical prefix dropped; every live package has a doc.go |
 
 | MEM | status | commit | date | statement |
 |---|---|---|---|---|
@@ -106,6 +106,6 @@ Readiness: 25 release gates, 12 pass and fresh, 7 pass (stale), 6 not passed. A 
 
 | MED | status | commit | date | statement |
 |---|---|---|---|---|
-| MED-01 | pass | 0c4cff8 | 2026-09-03 | ephemeral collection class: documents write no journal record, the collection is empty after re… |
+| MED-01 | pass | 1726127 | 2026-09-03 | ephemeral collection class: documents write no journal record, the collection is empty after re… |
 
 Update a gate: run its command (receipt-backed gates: `scripts/hardening_check.sh` with the check name and `--force`), then `python3 scripts/gates.py promote CHECK GATE`, then commit `tasks/gates.json` and the regenerated `docs/PRE_RELEASE_STATUS.md` in the same commit. Process: `tasks/PROTOCOL.md`.
