@@ -116,12 +116,30 @@ export KUBECONFIG="$kubecfg"
 # under, so containerd has to be told where that name really lives.
 "$runtime" network connect kind "$registry_name" >/dev/null 2>&1 || true
 node="${cluster}-control-plane"
+
+# Address the registry by IP, not by container name. The node resolves DNS
+# through podman's resolver, which does not reliably answer for a container
+# attached to the kind network after the fact -- the pull then fails with
+# "lookup deepdata-rehearsal-registry ... server misbehaving" and the only
+# visible symptom is ImagePullBackOff, which reads like a bad digest.
+registry_ip=$("$runtime" inspect -f \
+  '{{ (index .NetworkSettings.Networks "kind").IPAddress }}' "$registry_name" 2>/dev/null || true)
+[[ "$registry_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || fail "registry has no IPv4 address on the kind network: '${registry_ip:-<empty>}'"
+log "registry reachable at $registry_ip:5000 from the node"
+
 "$runtime" exec "$node" mkdir -p "/etc/containerd/certs.d/localhost:${registry_port}"
 "$runtime" exec "$node" sh -c \
-  "printf '[host.\"http://%s:5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n' '$registry_name' \
+  "printf '[host.\"http://%s:5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n' '$registry_ip' \
    > '/etc/containerd/certs.d/localhost:${registry_port}/hosts.toml'"
 "$runtime" exec "$node" systemctl restart containerd
 kubectl wait --for=condition=Ready "node/$node" --timeout=120s >/dev/null
+
+# Prove the node can actually reach the registry before asking Helm to pull
+# through it; otherwise a network fault surfaces 5 minutes later as an
+# install timeout with no cause attached.
+"$runtime" exec "$node" curl -fsS --max-time 10 "http://${registry_ip}:5000/v2/" >/dev/null \
+  || fail "the kind node cannot reach the rehearsal registry at $registry_ip:5000"
 
 kubectl create namespace "$namespace" >/dev/null
 kubectl create secret generic deepdata-auth \
