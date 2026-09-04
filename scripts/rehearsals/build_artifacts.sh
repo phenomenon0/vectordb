@@ -62,9 +62,34 @@ ROUTES="$(grep -c . "$OUT/routes.txt")"
 [ "$ROUTES" -gt 0 ] || fail "deepdata routes printed nothing"
 echo "binary runs: routes listed $ROUTES lines"
 
+# The released binary must name the commit it came from. Go stamps this from
+# git automatically, so the assertion is that the stamp is present, points at
+# the frozen commit, and does not say the tree was modified.
+VCS_REV="$(go version -m "$OUT/a/deepdata" | awk '$1=="build" && $2=="vcs.revision"{print $3}')"
+VCS_MOD="$(go version -m "$OUT/a/deepdata" | awk '$1=="build" && $2=="vcs.modified"{print $3}')"
+[ -n "$VCS_REV" ] || fail "released binary carries no vcs.revision stamp; it cannot be traced to a commit"
+[ "$VCS_REV" = "$COMMIT" ] || fail "binary stamped $VCS_REV but the frozen commit is $COMMIT"
+[ "$VCS_MOD" = "false" ] || fail "binary stamped vcs.modified=$VCS_MOD; it was built from a dirty tree"
+echo "binary stamped at $VCS_REV (vcs.modified=false)"
+
 cp -- "$OUT/a/deepdata" "$OUT/deepdata-linux-amd64"
-rm -rf -- "$OUT/a" "$OUT/b"
 printf '%s  deepdata-linux-amd64\n' "$SUM_A" > "$OUT/SHA256SUMS"
+
+# The Dockerfile COPYs api, cmd and internal but not .git, so the in-image
+# build has no repository to stamp from and Go silently drops the VCS fields.
+# That is one differing input, not a differing source tree: comparing the image
+# against the stamped build would fail forever and prove nothing. The honest
+# comparison is against a build given the same inputs the image had, which is
+# what -buildvcs=false reproduces. Both claims are then real -- the shipped
+# binary is traceable to the commit, and the image is byte-reproducible.
+echo "--- image-equivalent build (-buildvcs=false, matching the Dockerfile context)"
+env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$OUT/b/deepdata" ./cmd/deepdata/ \
+  || fail "go build -buildvcs=false failed"
+SUM_IMG_EXPECTED="$(sha256sum "$OUT/b/deepdata" | cut -d' ' -f1)"
+echo "image-equivalent: $SUM_IMG_EXPECTED"
+rm -rf -- "$OUT/a" "$OUT/b"
 
 command -v "$RUNTIME" >/dev/null || fail "$RUNTIME not found"
 echo "--- container image ($RUNTIME)"
@@ -73,11 +98,12 @@ echo "--- container image ($RUNTIME)"
 IMAGE_ID="$("$RUNTIME" image inspect --format '{{.Id}}' "$IMAGE")"
 echo "image: $IMAGE $IMAGE_ID"
 
-# The image must carry the same binary the reproducibility check just pinned;
-# otherwise the SBOM describes something the SHA256SUMS file does not cover.
+# The image must carry a binary this machine can rebuild bit for bit;
+# otherwise the SBOM describes something no tracked source produces.
 IN_IMAGE="$("$RUNTIME" run --rm --entrypoint sha256sum "$IMAGE" /usr/local/bin/deepdata | cut -d' ' -f1)"
-[[ "$IN_IMAGE" == "$SUM_A" ]] || fail "image binary $IN_IMAGE != reproducible build $SUM_A"
-echo "image binary matches the reproducible build"
+[[ "$IN_IMAGE" == "$SUM_IMG_EXPECTED" ]] \
+  || fail "image binary $IN_IMAGE != image-equivalent build $SUM_IMG_EXPECTED"
+echo "image binary reproduces bit for bit"
 
 command -v trivy >/dev/null || fail "trivy not found (needed for the SBOM)"
 echo "--- SBOM"
@@ -90,6 +116,8 @@ echo "sbom: $COMPONENTS components"
 {
   echo "commit=$COMMIT"
   echo "binary_sha256=$SUM_A"
+  echo "image_binary_sha256=$SUM_IMG_EXPECTED"
+  echo "vcs_revision=$VCS_REV"
   echo "image=$IMAGE"
   echo "image_id=$IMAGE_ID"
   echo "sbom_components=$COMPONENTS"
