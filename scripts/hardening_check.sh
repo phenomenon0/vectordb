@@ -69,7 +69,7 @@ case "$CHECK_NAME" in
         ;;
     benchmark-unit)
         CHECK_CWD="$REPO_ROOT"
-        CHECK_DESCRIPTION="python -m unittest -q benchmarks/test_mega_bench.py"
+        CHECK_DESCRIPTION="PYTHONPATH=benchmarks python3 -m unittest -q test_mega_bench"
         ;;
     go-storage)
         CHECK_CWD="$REPO_ROOT"
@@ -274,7 +274,7 @@ run_check() {
             timeout 30s python3 scripts/gates.py check
             ;;
         benchmark-unit)
-            timeout 60s python -m unittest -q benchmarks/test_mega_bench.py
+            timeout 60s env PYTHONPATH=benchmarks python3 -m unittest -q test_mega_bench
             ;;
         go-storage)
             mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"

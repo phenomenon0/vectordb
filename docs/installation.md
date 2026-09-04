@@ -213,8 +213,9 @@ It exercises HTTP V3 and every unary gRPC method except `Upsert` and `GetDoc`
 (`tests/smoke_test.sh:129-201`), restarts the process, and checks that
 unsupported legacy routes remain unavailable.
 
-At HEAD the post-restart assertion at `tests/smoke_test.sh:363` still expects
-the pre-bc1fa27 PascalCase key `DocCount`, while the server has emitted
-`doc_count` since bc1fa27 (`internal/collection/manager.go:186`), so that
-`jq -e` check exits non-zero against the current wire form. The script fix
-belongs to the tests owner; gates SDK-02 and CI-06 track the script.
+Its collection assertions read the snake_case keys `CollectionInfo` has
+emitted since bc1fa27 (`internal/collection/manager.go:186`). Three of them,
+and one each in `tests/compose_contract_test.sh` and
+`tests/container_contract_test.sh`, still named the pre-bc1fa27 PascalCase
+keys until 2026-09-03; `jq` read the absent key as null, so every one of those
+scripts failed at HEAD. Gates SDK-02, CI-06 and OPS-03 track the scripts.
