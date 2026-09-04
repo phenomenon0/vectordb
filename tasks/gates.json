@@ -594,7 +594,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "e46dc55074afa926b7a047d3e038250d9eec4ff8",
+        "commit": "329b20a09ae8ca72876c5bb471fb69a5b52a0fea",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/adversarial-review/receipt.json",
