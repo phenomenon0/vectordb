@@ -15,9 +15,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-vet-cgo0/receipt.json",
         "ci_run": null
       },
@@ -35,9 +35,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-storage/receipt.json",
         "ci_run": null
       },
@@ -57,9 +57,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-short/receipt.json",
         "ci_run": null
       },
@@ -79,9 +79,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-race/receipt.json",
         "ci_run": null
       },
@@ -99,9 +99,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-persistence/receipt.json",
         "ci_run": null
       },
@@ -117,9 +117,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/python-unit/receipt.json",
         "ci_run": null
       },
@@ -137,9 +137,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/sdk-smoke/receipt.json",
         "ci_run": null
       },
@@ -155,9 +155,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/python-build/receipt.json",
         "ci_run": null
       },
@@ -181,9 +181,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/build-artifacts/receipt.json",
         "ci_run": null
       },
@@ -201,9 +201,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/backup-restore/receipt.json",
         "ci_run": null
       },
@@ -222,9 +222,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-legacy-migration/receipt.json",
         "ci_run": null
       },
@@ -245,9 +245,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/deploy-lifecycle/receipt.json",
         "ci_run": null
       },
@@ -266,7 +266,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/soak/receipt.json",
@@ -288,9 +288,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/restart-reclaim/receipt.json",
         "ci_run": null
       },
@@ -313,9 +313,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/security-scan/receipt.json",
         "ci_run": null
       },
@@ -336,9 +336,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/release-contract/receipt.json",
         "ci_run": null
       },
@@ -357,9 +357,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/license/receipt.json",
         "ci_run": null
       },
@@ -379,9 +379,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-mod-tidy/receipt.json",
         "ci_run": null
       },
@@ -398,8 +398,14 @@
         "docs/releasing.md"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-04",
+        "receipt": ".deepdata-run/checks/release-tag/receipt.json",
+        "ci_run": null
+      },
       "note": "candidate moved from a99fe53 to 14d1442 and then past it; freeze again after RCV-03 closes"
     },
     {
@@ -488,9 +494,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-mcp/receipt.json",
         "ci_run": null
       },
@@ -523,8 +529,14 @@
         "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-04",
+        "receipt": ".deepdata-run/checks/evidence-report/receipt.json",
+        "ci_run": null
+      },
       "note": "previous command .deepdata-run/rehearsals/generate_evidence_report.py was never tracked and its report named a tree sha that does not resolve here. Replaced by a tracked stdlib-only generator that refuses a dirty tree and fails unless at least one receipt was taken at the frozen head on a clean tree. It reports which release gates meet the bar but does not enforce it: that is EVID-02's claim, and requiring it here would make this gate a precondition of itself."
     },
     {
@@ -554,9 +566,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/adversarial-review/receipt.json",
         "ci_run": null
       },
@@ -591,9 +603,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-replay/receipt.json",
         "ci_run": null
       },
@@ -610,9 +622,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-checkpoint/receipt.json",
         "ci_run": null
       },
@@ -631,9 +643,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-recovery-snapshot/receipt.json",
         "ci_run": null
       },
@@ -650,9 +662,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-recovery-journal/receipt.json",
         "ci_run": null
       },
@@ -684,9 +696,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-segmented-envelope/receipt.json",
         "ci_run": null
       },
@@ -811,9 +823,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-apierror/receipt.json",
         "ci_run": null
       },
@@ -835,9 +847,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-embed/receipt.json",
         "ci_run": null
       },
@@ -854,9 +866,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "a36faa457912ac9eeba42dc05826691fec3093bf",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-02",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-mcp/receipt.json",
         "ci_run": null
       },
@@ -872,9 +884,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-contract/receipt.json",
         "ci_run": null
       },
@@ -891,9 +903,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-usage/receipt.json",
         "ci_run": null
       },
@@ -910,9 +922,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-runtime/receipt.json",
         "ci_run": null
       },
@@ -930,9 +942,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-indextypes/receipt.json",
         "ci_run": null
       },
@@ -953,9 +965,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-retire/receipt.json",
         "ci_run": null
       },
@@ -975,9 +987,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-canonical/receipt.json",
         "ci_run": null
       },
@@ -1045,9 +1057,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "commit": "5a2d82a2cf2b7de16041b3bdeea509e4e3802f11",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-03",
+        "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/go-ephemeral/receipt.json",
         "ci_run": null
       },
