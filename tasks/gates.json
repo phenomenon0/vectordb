@@ -160,7 +160,7 @@
     {
       "id": "PKG-02",
       "statement": "Linux binaries, container image and SBOM build reproducibly from the frozen tree",
-      "command": ".deepdata-run/rehearsals/build_artifacts.sh",
+      "command": "scripts/hardening_check.sh build-artifacts",
       "scope": [
         "Dockerfile",
         "cmd",
@@ -168,18 +168,14 @@
         "go.mod",
         "go.sum",
         ".goreleaser.yaml",
-        "deploy"
+        "deploy",
+        "scripts/rehearsals/build_artifacts.sh",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "pass",
-      "evidence": {
-        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
-        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-07-22",
-        "receipt": ".deepdata-run/rehearsals/EVIDENCE-d5b2d3a.md",
-        "ci_run": null
-      },
-      "note": "evidence report states worktree clean at generation; artifacts under .deepdata-run/rehearsals/artifacts-d5b2d3a"
+      "status": "open",
+      "evidence": null,
+      "note": "previous command .deepdata-run/rehearsals/build_artifacts.sh was never tracked and no longer exists, so the pass could not be re-derived. Replaced by a tracked rehearsal that builds ./cmd/deepdata twice into separate trees and fails unless the two digests match, then asserts the in-image binary is that same digest before taking the SBOM."
     },
     {
       "id": "OPS-01",
@@ -204,43 +200,34 @@
     {
       "id": "OPS-02",
       "statement": "legacy export/import round-trips a pre-0.2 data directory",
-      "command": "tests/smoke_test.sh (legacy migration phase)",
+      "command": "scripts/hardening_check.sh go-legacy-migration",
       "scope": [
         "cmd/deepdata",
         "internal/collection",
-        "docs/upgrade-to-0.2-rc.md"
+        "docs/upgrade-to-0.2-rc.md",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "pass",
-      "evidence": {
-        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
-        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-07-22",
-        "receipt": ".deepdata-run/rehearsals/legacy-migration-d5b2d3a",
-        "ci_run": null
-      },
-      "note": ""
+      "status": "open",
+      "evidence": null,
+      "note": "previous command named a legacy-migration phase of tests/smoke_test.sh that the script does not contain. Replaced by cmd/deepdata/legacy_migration_test.go, which builds a pre-0.2 root in-process with NewCollectionManager/NewTenantManager, exports it, replays it into a canonical RC over /v3, restarts, and asserts every document is retrievable by its own vector with identical metadata -- then that the legacy artifacts are byte-identical."
     },
     {
       "id": "OPS-03",
       "statement": "container, Compose and kind+Helm lifecycle contracts pass",
-      "command": "tests/container_contract_test.sh && tests/compose_contract_test.sh && .deepdata-run/rehearsals/kind_helm_rehearsal.sh",
+      "command": "scripts/hardening_check.sh deploy-lifecycle",
       "scope": [
         "Dockerfile",
         "docker-compose.yml",
         "deploy/helm/deepdata",
-        "tests"
+        "tests",
+        "scripts/rehearsals/kind_helm_rehearsal.sh",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "pass",
-      "evidence": {
-        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
-        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-07-22",
-        "receipt": ".deepdata-run/rehearsals/kind-helm-d5b2d3a",
-        "ci_run": null
-      },
-      "note": ""
+      "status": "open",
+      "evidence": null,
+      "note": "previous command chained two tracked contract tests with an untracked .deepdata-run/rehearsals/kind_helm_rehearsal.sh that no longer exists. Replaced by a tracked rehearsal that runs both contract tests, then pushes the image to a local registry by digest and installs the chart on kind, deletes the pod, and requires the replacement to still answer for the document written before the kill."
     },
     {
       "id": "SOAK-01",
@@ -282,19 +269,21 @@
     {
       "id": "SEC-01",
       "statement": "gitleaks, govulncheck, gosec and trivy scans are clean on the frozen tree",
-      "command": "gitleaks detect && govulncheck ./... && gosec ./... && trivy image",
+      "command": "scripts/hardening_check.sh security-scan",
       "scope": [
         "cmd",
         "internal",
         "go.mod",
         "go.sum",
         "Dockerfile",
-        "sdk/python"
+        "sdk/python",
+        "scripts/rehearsals/security_scan.sh",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
       "status": "open",
       "evidence": null,
-      "note": "ece6f23 prose records a clean rerun; no receipt or fingerprint. 2026-09-02 dry run at 75a3d92 (each scanner under a 3G cgroup, outputs /tmp/*-75a3d92.*; tree not frozen, no receipt): gitleaks full-history scan clean with the 8-fingerprint .gitleaksignore. govulncheck rc=3, 7 vulnerabilities reached from code: 6 in the go1.25.12 standard library (GO-2026-6218 net/url, GO-2026-6091 html/template, GO-2026-6090 crypto/tls, GO-2026-6089 and GO-2026-5026 net/http, GO-2026-5972 encoding/asn1), all fixed in go1.25.13, and GO-2026-5158 in go.opentelemetry.io/otel v1.43.0, fixed in v1.44.0 (reached via http.Server.Serve -> baggage). Both fixes touch go.mod/go.sum and the pinned toolchain, frozen until RCV-05 binds. gosec rc=1: 174 findings, 122 in cmd/ + internal/ (47 G115 integer conversions, 2 G404 math/rand, 2 G704 SSRF taint on the operator-configured Ollama URL probes in cmd/deepdata/main.go and embedder_mode.go, 11 G304, 2 G301, 46 G104, 12 G103); only the 2 G704 are HIGH severity and HIGH confidence; the other 52 are under benchmarks/ (incl. G101 on the synthetic ddload bench token). 'gosec clean' needs an owner policy (severity/confidence floor, #nosec with reasons, or a config) before this gate can bind. trivy image not run (needs a docker build)."
+      "note": "the four scanners now run from one tracked script that writes its bar down: gitleaks over full history, govulncheck with nothing reachable, gosec with no HIGH-severity HIGH-confidence finding, trivy with no fixable HIGH/CRITICAL in the image. gosec reports 'found: 0' for a package it failed to load, so the script fails on any load error other than the amd64 assembly stubs rather than reading that as clean."
     },
     {
       "id": "REL-01",
@@ -487,59 +476,49 @@
     {
       "id": "EVID-01",
       "statement": "evidence report generated for the frozen candidate with rehearsal receipts",
-      "command": ".deepdata-run/rehearsals/generate_evidence_report.py",
+      "command": "scripts/hardening_check.sh evidence-report",
       "scope": [
         "cmd",
         "internal",
         "deploy",
         "Dockerfile",
-        "sdk/python"
+        "sdk/python",
+        "scripts/generate_evidence_report.py",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "pass",
-      "evidence": {
-        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
-        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-07-22",
-        "receipt": ".deepdata-run/rehearsals/EVIDENCE-d5b2d3a.md",
-        "ci_run": null
-      },
-      "note": "report tree sha 982daf0 does not resolve locally; binding uses the commit it names"
+      "status": "open",
+      "evidence": null,
+      "note": "previous command .deepdata-run/rehearsals/generate_evidence_report.py was never tracked and its report named a tree sha that does not resolve here. Replaced by a tracked stdlib-only generator that refuses a dirty tree and fails unless at least one receipt was taken at the frozen head on a clean tree. It reports which release gates meet the bar but does not enforce it: that is EVID-02's claim, and requiring it here would make this gate a precondition of itself."
     },
     {
       "id": "EVID-02",
       "statement": "the truth ledger passes gates.py check --release",
       "command": "python3 scripts/gates.py check --release",
       "scope": [
-        "tasks/gates.json",
-        "scripts/gates.py",
-        "docs/PRE_RELEASE_STATUS.md"
+        "scripts/gates.py"
       ],
       "release_gate": true,
       "status": "open",
       "evidence": null,
-      "note": "cannot pass while any release gate is open or stale"
+      "note": "scope narrowed to the checker itself. tasks/gates.json and docs/PRE_RELEASE_STATUS.md both change whenever any gate is promoted, so keeping them in scope made this gate stale by the act of recording it; check --release re-reads both from disk at run time anyway. gates.py now skips this gate inside the --release loop for the same reason: it records that the command passed and so cannot also be a precondition of it."
     },
     {
       "id": "EVID-03",
       "statement": "adversarial review (Stage F) findings closed against the frozen candidate",
-      "command": "scripts/hardening_check.sh all",
+      "command": "scripts/hardening_check.sh adversarial-review",
       "scope": [
         "cmd",
         "internal",
         "api",
-        "sdk/python"
+        "sdk/python",
+        "benchmarks/review",
+        "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "pass",
-      "evidence": {
-        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
-        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-07-22",
-        "receipt": ".deepdata-run/rehearsals/EVIDENCE-d5b2d3a.md",
-        "ci_run": null
-      },
-      "note": "four findings closed at d5b2d3a itself"
+      "status": "open",
+      "evidence": null,
+      "note": "previous command 'scripts/hardening_check.sh all' is not a check the script accepts; there is no 'all'. Replaced by the tracked persona suites under benchmarks/review, which fail the run on any unpassed check at High or Critical severity."
     },
     {
       "id": "REV-01",

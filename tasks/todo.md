@@ -69,8 +69,13 @@ PUB-01..03 and SYS-03's archive tag need owner authority (gates.json notes); no 
 
 Recorded 2026-09-02 by the owner (git user phenomenon0) for REV-01; a decision here changes only when the owner says so.
 - CI-06 — not a release gate: the smoke job is written into .github/workflows/ci.yml now and is bound only after CI has actually run it (needs a push).
+- EVID-01 — re-run at the frozen head (release gate): the owner ruled on 2026-09-03 to write tracked replacements for all five phantom-command gates; open until the tracked evidence generator has produced a receipt.
 - EVID-02 — terminal: passes when every release gate passes; no separate work.
+- EVID-03 — re-run at the frozen head (release gate): the owner ruled on 2026-09-03 to write tracked replacements for all five phantom-command gates; open until benchmarks/review has produced a receipt.
 - MEM-02 — deferred past the RC: not a release gate; built when a harness asks (matches line 3 and slice 14).
+- OPS-02 — re-run at the frozen head (release gate): the owner ruled on 2026-09-03 to write tracked replacements for all five phantom-command gates; open until the tracked legacy-migration test has produced a receipt.
+- OPS-03 — re-run at the frozen head (release gate): the owner ruled on 2026-09-03 to write tracked replacements for all five phantom-command gates; open until the tracked kind+Helm rehearsal has produced a receipt.
+- PKG-02 — re-run at the frozen head (release gate): the owner ruled on 2026-09-03 to write tracked replacements for all five phantom-command gates; open until the tracked reproducible-build rehearsal has produced a receipt.
 - PUB-01 — blocked on owner authority: the owner pushes develop when EVID-02 passes; that CI run rebinds the stale CI-bound gates CI-01/02/03; the stale local release gates EVID-01/03, OPS-01/02/03, PKG-01/02 are re-run and promoted at the frozen head before REL-04.
 - PUB-02 — blocked on owner authority: tag after PUB-01's CI is green on the pushed head.
 - PUB-03 — blocked on owner authority: publish after PUB-02; publication credentials were never authorised.

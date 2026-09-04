@@ -27,6 +27,12 @@ ID_RE = re.compile(r"^[A-Z]{2,4}-\d{2}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# EVID-02 records that `check --release` passed. It is graded by this very
+# loop, so requiring it to already be `pass` makes it unreachable: it can
+# only be promoted from a run that returned 0, and it cannot return 0 until
+# it is promoted. It is excluded here and nowhere else -- every other rule,
+# including evidence binding and the freshness check, still applies to it.
+RELEASE_META_GATE = "EVID-02"
 STATUSES = ("open", "pass", "blocked", "deferred", "retired")
 GATE_FIELDS = (
     "id",
@@ -268,7 +274,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         infos.append(f"{gate_id}: pass (stale) — scope changed since evidence commit")
     if args.release:
         for gate in ledger["gates"]:
-            if not gate["release_gate"]:
+            if not gate["release_gate"] or gate["id"] == RELEASE_META_GATE:
                 continue
             if gate["status"] != "pass":
                 failures.append(f"{gate['id']}: release gate is {gate['status']}")
