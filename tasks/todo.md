@@ -72,6 +72,7 @@ Recorded 2026-09-02 by the owner (git user phenomenon0) for REV-01; a decision h
 - EVID-01 — re-run at the frozen head (release gate): the owner ruled on 2026-09-03 to write tracked replacements for all five phantom-command gates; open until the tracked evidence generator has produced a receipt.
 - EVID-02 — terminal: passes when every release gate passes; no separate work.
 - EVID-03 — re-run at the frozen head (release gate): the owner ruled on 2026-09-03 to write tracked replacements for all five phantom-command gates; open until benchmarks/review has produced a receipt.
+- MAC-01 — not a release gate: Linux amd64 stays the only gated release target, so proving the darwin claim does not widen what a release must pass; open until scripts/darwin_durability_check.py has run on real Apple hardware and written its own receipt.
 - MEM-02 — deferred past the RC: not a release gate; built when a harness asks (matches line 3 and slice 14).
 - OPS-02 — re-run at the frozen head (release gate): the owner ruled on 2026-09-03 to write tracked replacements for all five phantom-command gates; open until the tracked legacy-migration test has produced a receipt.
 - OPS-03 — re-run at the frozen head (release gate): the owner ruled on 2026-09-03 to write tracked replacements for all five phantom-command gates; open until the tracked kind+Helm rehearsal has produced a receipt.
