@@ -184,8 +184,12 @@ func (f *EmbedderFactory) tryOllamaEmbedder() Embedder {
 		ollamaModel = "nomic-embed-text"
 	}
 
-	// Test if Ollama is available
+	// Test if Ollama is available.
+	// Same reasoning as the probe in main.go: ollamaURL comes from the OLLAMA_URL
+	// environment variable, defaulted to loopback above, and is never influenced by
+	// a request. The taint analyser cannot see that os.Getenv is a trust boundary.
 	client := &http.Client{Timeout: 3 * time.Second}
+	// #nosec G704 -- URL is operator configuration (OLLAMA_URL env), not attacker-controlled input.
 	resp, err := client.Get(ollamaURL + "/api/tags")
 	if err != nil {
 		return nil

@@ -2995,8 +2995,13 @@ func initEmbedder(defaultDim int) Embedder {
 	if ollamaModel == "" {
 		ollamaModel = "nomic-embed-text" // Default to nomic-embed-text
 	}
-	// Test if Ollama is available
+	// Test if Ollama is available.
+	// ollamaURL is process environment (OLLAMA_URL), defaulted to loopback above.
+	// It is never derived from a request body, header, or path, so a client cannot
+	// steer this probe at an internal address. Anyone able to set the server's
+	// environment already runs code as this user; SSRF is not the marginal risk.
 	client := &http.Client{Timeout: 5 * time.Second}
+	// #nosec G704 -- URL is operator configuration (OLLAMA_URL env), not attacker-controlled input.
 	if resp, err := client.Get(ollamaURL + "/api/tags"); err == nil {
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
