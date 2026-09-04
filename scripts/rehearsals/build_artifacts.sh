@@ -47,9 +47,20 @@ echo "build a: $SUM_A"
 echo "build b: $SUM_B"
 [[ "$SUM_A" == "$SUM_B" ]] || fail "binary is not reproducible: $SUM_A != $SUM_B"
 
-# A binary that does not run is not an artifact.
-"$OUT/a/deepdata" --version >"$OUT/version.txt" 2>&1 || fail "built binary will not report --version"
-echo "version: $(cat "$OUT/version.txt")"
+# A binary that does not run is not an artifact. `routes` is the check: it is
+# the one subcommand that needs no data directory, no environment and no
+# server, so it exercises the real binary without standing anything up. There
+# is deliberately no --version assertion -- the CLI has no such flag, and
+# inventing one at RC freeze would widen the canonical surface to satisfy a
+# test. The version claim is REL-04's, and it is made against the tracked
+# files, not against the binary.
+"$OUT/a/deepdata" routes >"$OUT/routes.txt" 2>&1 || {
+  tail -n 20 "$OUT/routes.txt" >&2
+  fail "built binary will not run: deepdata routes"
+}
+ROUTES="$(grep -c . "$OUT/routes.txt")"
+[ "$ROUTES" -gt 0 ] || fail "deepdata routes printed nothing"
+echo "binary runs: routes listed $ROUTES lines"
 
 cp -- "$OUT/a/deepdata" "$OUT/deepdata-linux-amd64"
 rm -rf -- "$OUT/a" "$OUT/b"
