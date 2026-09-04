@@ -34,6 +34,14 @@ for tool in gitleaks govulncheck gosec trivy "$RUNTIME" jq; do require "$tool"; 
 [[ -z "$(git status --porcelain)" ]] || fail "worktree is dirty; scan only a frozen tree"
 COMMIT="$(git rev-parse --short HEAD)"
 mkdir -p "$OUT" "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+
+# trivy exports the whole image through TMPDIR to scan it. The default /tmp
+# here is a 16G tmpfs shared with everything else on the box, and an image
+# export is large enough to hit "disk quota exceeded" mid-scan -- which trivy
+# reports as an analysis failure, not as a full disk. Keep the scratch beside
+# the other run artifacts, on real disk.
+export TMPDIR="$OUT/tmp"
+mkdir -p "$TMPDIR"
 echo "frozen at $COMMIT"
 
 echo "--- gitleaks (full history)"
