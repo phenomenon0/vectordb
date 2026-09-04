@@ -41,6 +41,13 @@ list_checks() {
         python-build \
         go-retire \
         go-canonical \
+        go-replay \
+        go-checkpoint \
+        release-contract \
+        license \
+        go-mod-tidy \
+        sdk-smoke \
+        backup-restore \
         soak \
         restart-reclaim \
         go-legacy-migration \
@@ -172,6 +179,34 @@ case "$CHECK_NAME" in
     go-legacy-migration)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -count=1 -timeout 240s -run 'TestLegacyV2ExportImportRoundTrip' ./cmd/deepdata"
+        ;;
+    go-replay)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -run Replay ./internal/collection"
+        ;;
+    go-checkpoint)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -run 'Checkpoint|UnifiedCollectionSnapshot' ./internal/collection"
+        ;;
+    release-contract)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="python3 scripts/check_version_contract.py && scripts/check_proto_generated.sh"
+        ;;
+    license)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="git cat-file -e HEAD:LICENSE && grep -q Apache LICENSE"
+        ;;
+    go-mod-tidy)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go mod tidy -diff"
+        ;;
+    sdk-smoke)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="tests/smoke_test.sh"
+        ;;
+    backup-restore)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="scripts/backup_restore_drill.sh"
         ;;
     adversarial-review)
         CHECK_CWD="$REPO_ROOT"
@@ -463,6 +498,41 @@ run_check() {
             timeout 300s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
                 go test -count=1 -timeout 240s \
                 -run 'TestLegacyV2ExportImportRoundTrip' ./cmd/deepdata
+            ;;
+        go-replay)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 600s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -run Replay ./internal/collection
+            ;;
+        go-checkpoint)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 600s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -run 'Checkpoint|UnifiedCollectionSnapshot' ./internal/collection
+            ;;
+        release-contract)
+            timeout 300s python3 scripts/check_version_contract.py &&
+                timeout 300s scripts/check_proto_generated.sh
+            ;;
+        license)
+            # A release that ships without its licence is a legal defect, not a
+            # cosmetic one. This asserts the file is committed -- not merely
+            # present in the worktree -- and that it is the licence the project
+            # claims everywhere else.
+            git cat-file -e HEAD:LICENSE && grep -q Apache LICENSE
+            ;;
+        go-mod-tidy)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 300s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go mod tidy -diff
+            ;;
+        sdk-smoke)
+            # Builds its own binary into a temp directory and runs a real
+            # server, so it needs no prebuilt artifact and leaves the worktree
+            # untouched.
+            timeout "${SMOKE_TIMEOUT:-900}s" tests/smoke_test.sh
+            ;;
+        backup-restore)
+            timeout "${BACKUP_TIMEOUT:-900}s" scripts/backup_restore_drill.sh
             ;;
         adversarial-review)
             mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"

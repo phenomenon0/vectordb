@@ -128,7 +128,7 @@
     {
       "id": "SDK-02",
       "statement": "live authenticated SDK contract passes against a running server, including restart persistence",
-      "command": "tests/smoke_test.sh (live SDK phase)",
+      "command": "scripts/hardening_check.sh sdk-smoke",
       "scope": [
         "sdk/python",
         "cmd/deepdata",
@@ -180,7 +180,7 @@
     {
       "id": "OPS-01",
       "statement": "backup and restore rehearsal passes, including disk-full and permission-denied paths",
-      "command": "scripts/backup_restore_drill.sh",
+      "command": "scripts/hardening_check.sh backup-restore",
       "scope": [
         "scripts/backup_restore_drill.sh",
         "internal/collection",
@@ -306,7 +306,7 @@
     {
       "id": "REL-01",
       "statement": "version parity across version.txt, Python SDK, Helm chart and Dockerfile; generated proto is fresh",
-      "command": "python3 scripts/check_version_contract.py && scripts/check_proto_generated.sh",
+      "command": "scripts/hardening_check.sh release-contract",
       "scope": [
         "internal/releaseinfo/version.txt",
         "sdk/python/pyproject.toml",
@@ -329,7 +329,7 @@
     {
       "id": "REL-02",
       "statement": "repository carries an Apache-2.0 LICENSE and the chart, SDK and README declare it",
-      "command": "git cat-file -e HEAD:LICENSE && grep -q Apache LICENSE",
+      "command": "scripts/hardening_check.sh license",
       "scope": [
         "LICENSE",
         "README.md",
@@ -350,7 +350,7 @@
     {
       "id": "REL-03",
       "statement": "go.mod and go.sum are tidy (go mod tidy -diff is empty)",
-      "command": "GOTOOLCHAIN=go1.25.13 go mod tidy -diff",
+      "command": "scripts/hardening_check.sh go-mod-tidy",
       "scope": [
         "go.mod",
         "go.sum",
@@ -565,7 +565,7 @@
     {
       "id": "RCV-01",
       "statement": "journal replay streams records with bounded memory instead of loading the file",
-      "command": "GOTOOLCHAIN=go1.25.13 go test -count=1 -p 1 -run Replay ./internal/collection",
+      "command": "scripts/hardening_check.sh go-replay",
       "scope": [
         "internal/collection/journal.go",
         "internal/collection/durable_store.go"
@@ -584,7 +584,7 @@
     {
       "id": "RCV-02",
       "statement": "snapshot coverage verification reads headers only, never whole payloads",
-      "command": "GOTOOLCHAIN=go1.25.13 go test -count=1 -p 1 -run 'Checkpoint|UnifiedCollectionSnapshot' ./internal/collection",
+      "command": "scripts/hardening_check.sh go-checkpoint",
       "scope": [
         "internal/collection/snapshot.go",
         "internal/collection/snapshot_stream_test.go"
