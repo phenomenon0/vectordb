@@ -60,7 +60,7 @@ Readiness: 26 release gates, 26 pass and fresh, 0 pass (stale), 0 not passed. A 
 | EVID | status | commit | date | statement |
 |---|---|---|---|---|
 | EVID-01 | pass | e46dc55 | 2026-09-04 | evidence report generated for the frozen candidate with rehearsal receipts |
-| EVID-02 | pass | a0161b5 | 2026-09-04 | the truth ledger passes gates.py check --release |
+| EVID-02 | pass | 23ca734 | 2026-09-04 | the truth ledger passes gates.py check --release |
 | EVID-03 | pass | e46dc55 | 2026-09-04 | adversarial review (Stage F) findings closed against the frozen candidate |
 
 | REV | status | commit | date | statement |

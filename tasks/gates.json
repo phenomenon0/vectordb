@@ -571,7 +571,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "a0161b53dda050d7aaac9b3041a0f08691500900",
+        "commit": "23ca7344c6ae53b9e4dad78ec67a348ee4cd399e",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/gates-release/receipt.json",
