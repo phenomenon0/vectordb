@@ -76,11 +76,39 @@ CONTAINER_RUNTIME="$runtime" DEEPDATA_IMAGE="$image" "$repo_root/tests/compose_c
 
 log "leg 3/3: kind + Helm lifecycle contract"
 
-# The chart refuses a tag-only image, so the rehearsal has to produce a real
-# manifest digest. A throwaway registry is the only way to get one without
-# publishing anything.
+# The cluster is created before the registry because the registry has to be a
+# member of kind's network from the moment it starts. Rootless podman puts a
+# port-publishing container under pasta, and `podman network connect` rejects a
+# pasta container outright ("pasta" is not supported: invalid network mode), so
+# a registry started first can never be attached afterwards. Nothing about that
+# is visible at the time -- it surfaces minutes later as ImagePullBackOff,
+# which reads like a bad digest.
+cat >"$work_dir/kind.yaml" <<KIND
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+KIND
+
+KIND_EXPERIMENTAL_PROVIDER="$runtime" kind create cluster \
+  --name "$cluster" --config "$work_dir/kind.yaml" --wait 120s ||
+  fail "kind create cluster (provider=$runtime)"
+cluster_created=1
+node="${cluster}-control-plane"
+kubecfg="$work_dir/kubeconfig"
+KIND_EXPERIMENTAL_PROVIDER="$runtime" kind get kubeconfig --name "$cluster" >"$kubecfg"
+export KUBECONFIG="$kubecfg"
+
+# The chart refuses a tag-only image, so the rehearsal has to mint a real
+# manifest digest, and a throwaway registry is the only way to get one without
+# publishing anything. --network puts it where the node can reach it; -p still
+# publishes to the host, which is what the push below goes through.
 "$runtime" rm -f "$registry_name" >/dev/null 2>&1 || true
-"$runtime" run -d --name "$registry_name" -p "127.0.0.1:${registry_port}:5000" "$registry_image" >/dev/null
+"$runtime" run -d --name "$registry_name" --network kind \
+  -p "127.0.0.1:${registry_port}:5000" "$registry_image" >/dev/null ||
+  fail "starting the rehearsal registry on kind's network"
 registry_ref="localhost:${registry_port}/deepdata"
 for _ in $(seq 1 30); do
   curl -fsS "http://127.0.0.1:${registry_port}/v2/" >/dev/null 2>&1 && break
@@ -95,33 +123,11 @@ digest=$(cat "$work_dir/digest")
 [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "unusable manifest digest: $digest"
 log "manifest digest $digest"
 
-cat >"$work_dir/kind.yaml" <<KIND
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-containerdConfigPatches:
-  - |-
-    [plugins."io.containerd.grpc.v1.cri".registry]
-      config_path = "/etc/containerd/certs.d"
-KIND
-
-KIND_EXPERIMENTAL_PROVIDER="$runtime" kind create cluster \
-  --name "$cluster" --config "$work_dir/kind.yaml" --wait 120s ||
-  fail "kind create cluster (provider=$runtime)"
-cluster_created=1
-kubecfg="$work_dir/kubeconfig"
-KIND_EXPERIMENTAL_PROVIDER="$runtime" kind get kubeconfig --name "$cluster" >"$kubecfg"
-export KUBECONFIG="$kubecfg"
-
 # The node pulls by the same localhost:PORT reference the digest was minted
-# under, so containerd has to be told where that name really lives.
-"$runtime" network connect kind "$registry_name" >/dev/null 2>&1 || true
-node="${cluster}-control-plane"
-
-# Address the registry by IP, not by container name. The node resolves DNS
-# through podman's resolver, which does not reliably answer for a container
-# attached to the kind network after the fact -- the pull then fails with
-# "lookup deepdata-rehearsal-registry ... server misbehaving" and the only
-# visible symptom is ImagePullBackOff, which reads like a bad digest.
+# under, so containerd has to be told where that name really lives. Address the
+# registry by IP and not by container name: the node resolves DNS through
+# podman's resolver, which does not reliably answer for it ("lookup
+# deepdata-rehearsal-registry ... server misbehaving").
 registry_ip=$("$runtime" inspect -f \
   '{{ (index .NetworkSettings.Networks "kind").IPAddress }}' "$registry_name" 2>/dev/null || true)
 [[ "$registry_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
@@ -136,9 +142,12 @@ log "registry reachable at $registry_ip:5000 from the node"
 kubectl wait --for=condition=Ready "node/$node" --timeout=120s >/dev/null
 
 # Prove the node can actually reach the registry before asking Helm to pull
-# through it; otherwise a network fault surfaces 5 minutes later as an
-# install timeout with no cause attached.
-"$runtime" exec "$node" curl -fsS --max-time 10 "http://${registry_ip}:5000/v2/" >/dev/null \
+# through it; otherwise a network fault surfaces 5 minutes later as an install
+# timeout with no cause attached. /dev/tcp rather than curl: the node image is
+# not required to carry an HTTP client, but it does run bash.
+"$runtime" exec "$node" bash -c \
+  "exec 3<>/dev/tcp/${registry_ip}/5000 && printf 'GET /v2/ HTTP/1.0\r\n\r\n' >&3 && head -n 1 <&3" \
+  2>/dev/null | grep -q ' 200 ' \
   || fail "the kind node cannot reach the rehearsal registry at $registry_ip:5000"
 
 kubectl create namespace "$namespace" >/dev/null
