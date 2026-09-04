@@ -42,7 +42,13 @@ list_checks() {
         go-retire \
         go-canonical \
         soak \
-        restart-reclaim
+        restart-reclaim \
+        go-legacy-migration \
+        adversarial-review \
+        build-artifacts \
+        security-scan \
+        deploy-lifecycle \
+        evidence-report
 }
 
 usage() {
@@ -162,6 +168,30 @@ case "$CHECK_NAME" in
     restart-reclaim)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="DRIFT_MINUTES=${DRIFT_MINUTES:-4} N_HNSW=${N_HNSW:-6000} python3 scripts/rehearsals/restart_reclaim_probe.py"
+        ;;
+    go-legacy-migration)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -count=1 -timeout 240s -run 'TestLegacyV2ExportImportRoundTrip' ./cmd/deepdata"
+        ;;
+    adversarial-review)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 1080s ./benchmarks/review/..."
+        ;;
+    build-artifacts)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="scripts/rehearsals/build_artifacts.sh"
+        ;;
+    security-scan)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="scripts/rehearsals/security_scan.sh"
+        ;;
+    deploy-lifecycle)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="scripts/rehearsals/kind_helm_rehearsal.sh"
+        ;;
+    evidence-report)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="python3 scripts/generate_evidence_report.py"
         ;;
     *)
         echo "unknown check: $CHECK_NAME" >&2
@@ -427,6 +457,31 @@ run_check() {
                     go build -trimpath -o "$RECLAIM_WORK/deepdata" ./cmd/deepdata || return 1
             fi
             timeout "${RECLAIM_TIMEOUT:-2400}s" python3 scripts/rehearsals/restart_reclaim_probe.py
+            ;;
+        go-legacy-migration)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 300s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
+                go test -count=1 -timeout 240s \
+                -run 'TestLegacyV2ExportImportRoundTrip' ./cmd/deepdata
+            ;;
+        adversarial-review)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 1200s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 1080s ./benchmarks/review/...
+            ;;
+        build-artifacts)
+            timeout "${ARTIFACTS_TIMEOUT:-1800}s" scripts/rehearsals/build_artifacts.sh
+            ;;
+        security-scan)
+            # needs the image build-artifacts produces, so run that first
+            timeout "${SECURITY_TIMEOUT:-1800}s" scripts/rehearsals/security_scan.sh
+            ;;
+        deploy-lifecycle)
+            timeout "${DEPLOY_TIMEOUT:-2400}s" scripts/rehearsals/kind_helm_rehearsal.sh
+            ;;
+        evidence-report)
+            # reads every other receipt, so it is the last check of a run
+            timeout 120s python3 scripts/generate_evidence_report.py
             ;;
     esac
 }
