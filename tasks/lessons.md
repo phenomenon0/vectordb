@@ -132,3 +132,48 @@
   snapshot cold start of the same 301,816 documents therefore disagree at the
   sixth digit and swap tied hits. Compare sparse scores with a relative
   tolerance, or make the accumulator float64 before asserting identity.
+
+## 2026-09-03 two-node lessons
+
+The `spike/multinode` branch recorded three two-node failures and was parked
+unmerged. All three were re-run against `internal/replication` as two live
+processes, a leader and a `deepdata replicate` follower over HTTP, because an
+argument for why current code should be immune is not a result.
+
+- A presence check is answered by the wrong document. Finding 3 was "both nodes
+  report 201 active documents with different documents behind that number". The
+  same hazard invalidated the *test written for finding 2*: a leader that loses
+  its place re-mints IDs from 1, collides with a document the replica already
+  holds, and `GetDocument(id) -> ok` returns true off the stale document while
+  the write under test was never delivered. Assert content between the two
+  nodes, never presence; an ID is a claim about identity that both sides can
+  satisfy while disagreeing.
+- Count equality is not agreement, and a test has to be built so it cannot
+  accidentally rely on it. Pair one delete with one insert: the document count
+  is unchanged, so a replica that applied neither still passes every
+  count-based health probe, and only a document-for-document comparison fails.
+  A divergence test whose mutations move the count is testing the count.
+- Two findings that "should be structurally impossible" both proved fixed, and
+  the live run still cost nothing wasted: it found two defects unit tests
+  cannot see, both in the space between two processes rather than inside one.
+- A store lock is a topology constraint. `runReplicate` and
+  `docs/distributed-architecture.md` both described serving a replica with a
+  `deepdata serve` against the directory `deepdata replicate` is syncing. The
+  collection store takes `LOCK_EX`, so the second process is refused with
+  "collection store is already open". Nothing in the package tests could catch
+  it because the claim is about two processes; only running them did. A replica
+  is a directory kept current for a later read, not a live member of a read
+  fleet.
+- A streaming endpoint defeats graceful shutdown. `http.Server.Shutdown` waits
+  for connections to go idle, and a follow stream never does, so a leader with
+  one follower attached takes the full 30s deadline on every SIGTERM before
+  forcing the close. The Helm chart's 90s grace period covers it; a shorter one
+  would SIGKILL the leader mid-checkpoint. Any long-lived stream added to the
+  server surface has to be counted against the shutdown budget.
+- Never merge `spike/multinode`. Beyond the archived code it restores, its
+  `go.mod` re-admits `github.com/Neumenon/cowrie/go` at
+  `v0.0.0-20260306181650-7d62141ec1de` -- the dependency SYS-03 deliberately
+  removed -- and rolls the toolchain from 1.25.13 back to 1.25.12 with otel from
+  1.44.0/0.69.0 back to 1.43.0/0.68.0. That reverts the bump that closed
+  SEC-01's stdlib CVEs, and a merge would present it as an unrelated cluster
+  spike. Mine the branch for findings; take nothing from its module graph.

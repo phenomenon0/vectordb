@@ -15,7 +15,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-vet-cgo0/receipt.json",
@@ -57,7 +57,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-short/receipt.json",
@@ -79,7 +79,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-race/receipt.json",
@@ -99,7 +99,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-persistence/receipt.json",
@@ -135,8 +135,14 @@
         "tests/smoke_test.sh"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/sdk-smoke/receipt.json",
+        "ci_run": null
+      },
       "note": "d5b2d3a live-sdk rehearsal PASS is in the evidence report but the SDK has changed since; re-run and promote"
     },
     {
@@ -173,8 +179,14 @@
         "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/build-artifacts/receipt.json",
+        "ci_run": null
+      },
       "note": "previous command .deepdata-run/rehearsals/build_artifacts.sh was never tracked and no longer exists, so the pass could not be re-derived. Replaced by a tracked rehearsal that builds ./cmd/deepdata twice into separate trees and fails unless the two digests match, then asserts the in-image binary is that same digest before taking the SBOM."
     },
     {
@@ -189,10 +201,10 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "d5b2d3a4b9e83e2111d93aa9f2cfa477dd779fda",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-07-22",
-        "receipt": ".deepdata-run/rehearsals/backup-restore-d5b2d3a/rehearsal.log",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/backup-restore/receipt.json",
         "ci_run": null
       },
       "note": "todo.md:142 drill box closed at bc1fa27 (2026-08-21) by prose only; the receipt-backed run is d5b2d3a"
@@ -210,7 +222,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "c1dfcfb3cadf43804edbba03acfa690f14d2e04d",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-legacy-migration/receipt.json",
@@ -254,7 +266,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "b91479d5b59583fe37cd9a5b7d695e6e6e27c7f9",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/soak/receipt.json",
@@ -274,8 +286,14 @@
         "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/restart-reclaim/receipt.json",
+        "ci_run": null
+      },
       "note": "fix landed at 14d1442 with local receipts (memdrift-fix/restart_reclaim_receipt.json) that carry no commit or fingerprint; cannot bind honestly. Now a receipt-backed check (restart-reclaim) with the probe tracked at scripts/rehearsals/restart_reclaim_probe.py"
     },
     {
@@ -295,7 +313,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "c1dfcfb3cadf43804edbba03acfa690f14d2e04d",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/security-scan/receipt.json",
@@ -361,10 +379,10 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "1726127f786f9f396c88b8fd65903b49f129e2e2",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
-        "receipt": null,
+        "receipt": ".deepdata-run/checks/go-mod-tidy/receipt.json",
         "ci_run": null
       },
       "note": "todo.md:212 cowrie box closed at 442cdb6; re-verified 2026-09-01: tidy -diff exit 0 on a git archive of 442cdb6 (clean by construction). cowrie/shard/sqlite modules still listed: SYS-03; re-run at 7db4878: tidy -diff exit 0; re-run at 6c01620: tidy -diff exit 0; re-run at 835aaf4: tidy -diff exit 0; re-run at 6869b5e: tidy -diff exit 0; re-run at 4ec2dcc: tidy -diff exit 0; re-run at a3b4cfb: tidy -diff exit 0; re-run at 0c4cff8: tidy -diff exit 0; re-run at 1726127: tidy -diff exit 0"
@@ -470,9 +488,9 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "a36faa457912ac9eeba42dc05826691fec3093bf",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-02",
+        "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-mcp/receipt.json",
         "ci_run": null
       },
@@ -536,7 +554,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "c1dfcfb3cadf43804edbba03acfa690f14d2e04d",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/adversarial-review/receipt.json",
@@ -632,7 +650,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-recovery-journal/receipt.json",
@@ -666,7 +684,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-segmented-envelope/receipt.json",
@@ -793,7 +811,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-apierror/receipt.json",
@@ -817,7 +835,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-embed/receipt.json",
@@ -854,7 +872,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-contract/receipt.json",
@@ -873,7 +891,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-usage/receipt.json",
@@ -892,7 +910,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-runtime/receipt.json",
@@ -912,7 +930,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-indextypes/receipt.json",
@@ -935,7 +953,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-retire/receipt.json",
@@ -957,7 +975,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "bc8a807c02f339fe61e77eaa253d003cb9d31910",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-canonical/receipt.json",
@@ -1013,7 +1031,7 @@
       "release_gate": false,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-ephemeral/receipt.json",
