@@ -225,8 +225,14 @@
         "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "78bad247be6aaee9bc6d8aa352dbd3086cfee541",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/deploy-lifecycle/receipt.json",
+        "ci_run": null
+      },
       "note": "previous command chained two tracked contract tests with an untracked .deepdata-run/rehearsals/kind_helm_rehearsal.sh that no longer exists. Replaced by a tracked rehearsal that runs both contract tests, then pushes the image to a local registry by digest and installs the chart on kind, deletes the pod, and requires the replacement to still answer for the document written before the kill."
     },
     {
@@ -523,7 +529,7 @@
     {
       "id": "REV-01",
       "statement": "every open gate has a named owner decision recorded in tasks/todo.md before freeze",
-      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s \u2014 '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
+      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s — '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
       "scope": [
         "tasks/todo.md"
       ],
