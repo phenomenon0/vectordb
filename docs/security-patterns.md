@@ -1,5 +1,9 @@
 # Security & Correctness Patterns
 
+Written for the March 2026 audit; the rules still apply when reviewing new code.
+The replication follower example (section 3), the desktop-app sidecar example (section 4, lib.rs) and the DiskANN example (section 5) describe code that was retired under SYS-03 and now survives only in git history; see the non-goals in [ARCHITECTURE.md](ARCHITECTURE.md). The patterns they illustrate still apply to the code that remains.
+This file is excluded from linter rule R8 by name (scripts/check_docs_contract.py:416).
+
 Recurring anti-patterns found during the March 2026 audit, with fixes applied.
 Use this as a checklist when reviewing new code.
 

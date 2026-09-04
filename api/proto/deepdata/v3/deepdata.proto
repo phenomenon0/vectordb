@@ -12,12 +12,25 @@ import "google/protobuf/struct.proto";
 
 // ── Collection Management ────────────────────────────────────────────
 
+// EmbeddingConfig binds a field to a text embedder so requests may send
+// `texts` for it. Dense fields bind the server's DEEPDATA_EMBEDDER
+// (provider, plus model when set; the server fills model and dim at create).
+// Sparse fields may bind only provider "bm25" (deterministic term hashing).
+message EmbeddingConfig {
+  string provider = 1;
+  string model = 2;
+}
+
 message VectorFieldConfig {
   string name = 1;
   int32 type = 2;  // 0=dense, 1=sparse
-  int32 dim = 3;
+  int32 dim = 3;   // 0 at create takes the bound embedder's dimension
   string index_type = 4;  // RC: "hnsw", "flat", or "inverted"
   google.protobuf.Struct index_params = 5;
+  EmbeddingConfig embedding = 6;
+  // output only: "lower_is_better" on dense fields, "higher_is_better" on
+  // sparse fields; ignored on create
+  string score_direction = 7;
 }
 
 message CollectionInfo {
@@ -26,6 +39,8 @@ message CollectionInfo {
   string description = 3;
   google.protobuf.Struct metadata = 4;
   uint64 document_count = 5;
+  // Normalized durability class: "durable" or "ephemeral" (ADR 0009).
+  string durability = 6;
 }
 
 message CollectionStats {
@@ -68,6 +83,9 @@ message CreateCollectionRequest {
   string tenant_id = 3;
   google.protobuf.Struct metadata = 4;
   string description = 5;
+  // "durable" (default when empty) or "ephemeral": an ephemeral collection's
+  // documents write no journal record and do not survive restart (ADR 0009).
+  string durability = 6;
 }
 
 message CreateCollectionResponse {
@@ -110,6 +128,9 @@ message InsertRequest {
   reserved "text";
   string tenant_id = 5;
   uint64 id = 6;  // optional caller-supplied id; zero assigns one
+  // texts: field name -> text, embedded server-side for fields with an
+  // embedding binding; a field may not appear in both texts and vectors.
+  map<string, string> texts = 7;
 }
 
 message InsertResponse {
@@ -124,6 +145,7 @@ message BatchDoc {
   reserved 3;
   reserved "text";
   uint64 id = 4;  // optional caller-supplied id; zero assigns one
+  map<string, string> texts = 5;  // as InsertRequest.texts
 }
 
 message BatchInsertRequest {
@@ -145,6 +167,16 @@ message HybridSearchParams {
   float rrf_constant = 3;
 }
 
+// FallbackParams configures the auto-fallback ladder: the primary field is
+// searched first; if it is weak (zero hits, or best score worse than
+// threshold in the field's score direction) the secondary field answers.
+// Mutually exclusive with hybrid_params.
+message FallbackParams {
+  string primary = 1;
+  string secondary = 2;
+  double threshold = 3;  // 0 = only fall back on zero hits
+}
+
 message SearchRequest {
   string collection = 1;
   map<string, VectorData> queries = 2;
@@ -154,6 +186,18 @@ message SearchRequest {
   google.protobuf.Struct filters = 6;
   string tenant_id = 7;
   HybridSearchParams hybrid_params = 8;
+  // score_floor: confidence filter on returned raw scores. On dense
+  // (distance) fields keep score <= floor; on sparse (BM25) and hybrid
+  // scores keep score >= floor. 0 disables; when set and nothing survives,
+  // weak_match is reported.
+  double score_floor = 9;
+  FallbackParams fallback = 10;
+  // usage_boost: blend non-durable tenant usage (frecency) into ranking,
+  // 0 disables, [0, 1) enforced; reported scores stay raw.
+  double usage_boost = 11;
+  // texts: field name -> query text, embedded server-side (EmbedQuery) for
+  // fields with an embedding binding; may combine with queries on other fields.
+  map<string, string> texts = 12;
 }
 
 message SearchHit {
@@ -166,6 +210,21 @@ message SearchHit {
 message SearchResponse {
   repeated SearchHit results = 1;
   int32 candidates_examined = 2;
+  // best raw score among returned hits (0 when none); calibrates score_floor
+  float best_score = 3;
+  // true when score_floor > 0 and no hit survived it
+  bool weak_match = 4;
+  // secondary field name when the fallback ladder fired ("" otherwise)
+  string fell_back_to = 5;
+  // embedded_by: field -> "provider:model" for each query embedded from texts
+  map<string, string> embedded_by = 6;
+  // how to read results[].score and best_score: "lower_is_better" (dense
+  // distances) or "higher_is_better" (sparse BM25, fused hybrid)
+  string score_direction = 7;
+  // server-side wall time of the search
+  double query_time_ms = 8;
+  // the request id this answer was produced under
+  string request_id = 9;
 }
 
 // ── Delete ───────────────────────────────────────────────────────────
@@ -177,6 +236,39 @@ message DeleteDocRequest {
 }
 
 message DeleteDocResponse {}
+
+// ── Upsert ───────────────────────────────────────────────────────────
+
+message UpsertRequest {
+  string collection = 1;
+  map<string, VectorData> vectors = 2;
+  google.protobuf.Struct metadata = 3;
+  reserved 4;
+  reserved "text";
+  string tenant_id = 5;
+  // Upsert is caller-addressed: id is required and, unlike Insert's optional
+  // id, zero is rejected rather than auto-assigned.
+  uint64 id = 6;
+  map<string, string> texts = 7;  // as InsertRequest.texts
+}
+
+message UpsertResponse {
+  uint64 id = 1;
+}
+
+// ── GetDoc ───────────────────────────────────────────────────────────
+
+message GetDocRequest {
+  string tenant_id = 1;
+  string collection = 2;
+  uint64 doc_id = 3;
+}
+
+message GetDocResponse {
+  uint64 id = 1;
+  map<string, VectorData> vectors = 2;
+  google.protobuf.Struct metadata = 3;
+}
 
 // ── Service ──────────────────────────────────────────────────────────
 
@@ -190,4 +282,6 @@ service DeepData {
   rpc BatchInsert      (BatchInsertRequest)      returns (BatchInsertResponse);
   rpc Search           (SearchRequest)           returns (SearchResponse);
   rpc DeleteDoc        (DeleteDocRequest)        returns (DeleteDocResponse);
+  rpc Upsert           (UpsertRequest)           returns (UpsertResponse);
+  rpc GetDoc           (GetDocRequest)           returns (GetDocResponse);
 }

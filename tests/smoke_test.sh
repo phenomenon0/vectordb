@@ -305,9 +305,9 @@ response=$(api POST "/v3/tenants/$TENANT/collections" "$CREATE_BODY")
 assert_json "HTTP create collection" "$response" '.status == "success"'
 
 response=$(api GET "/v3/tenants/$TENANT/collections")
-assert_json "HTTP list collections" "$response" '.count == 1 and .collections[0].Name == "http_docs"'
+assert_json "HTTP list collections" "$response" '.count == 1 and .collections[0].name == "http_docs"'
 response=$(api GET "/v3/tenants/$TENANT/collections/http_docs")
-assert_json "HTTP get collection" "$response" '.collection.Name == "http_docs"'
+assert_json "HTTP get collection" "$response" '.collection.name == "http_docs"'
 
 response=$(api POST "/v3/tenants/$TENANT/collections/http_docs/docs" '{
   "id":101,
@@ -360,7 +360,7 @@ stop_server
 start_server
 
 response=$(api GET "/v3/tenants/$TENANT/collections/http_docs")
-assert_json "HTTP collection survived restart" "$response" '.collection.DocCount == 2'
+assert_json "HTTP collection survived restart" "$response" '.collection.doc_count == 2'
 response=$(api POST "/v3/tenants/$TENANT/collections/http_docs/search" '{
   "queries":{"embedding":[0,1,0]},"top_k":10
 }')

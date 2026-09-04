@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 
 	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/sparse"
@@ -35,14 +35,15 @@ type CollectionGRPCServer struct {
 	deepdatav3.UnimplementedDeepDataServer
 	tenants           *vcollection.TenantManager
 	persistenceHealth func() error
+	embedder          *serverEmbedder // process text embedder for `texts`; nil = none
 }
 
 func (s *CollectionGRPCServer) GetTenantInfo(ctx context.Context, req *deepdatav3.GetTenantInfoRequest) (*deepdatav3.GetTenantInfoResponse, error) {
-	if err := s.requirePersistenceHealthy(); err != nil {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "request required").GRPC(ctx)
 	}
 	if err := authorizeCanonicalGRPC(ctx, req.TenantId, "", "admin"); err != nil {
 		return nil, err
@@ -50,7 +51,7 @@ func (s *CollectionGRPCServer) GetTenantInfo(ctx context.Context, req *deepdatav
 
 	listed, err := s.tenants.ListCollectionInfosChecked(req.TenantId)
 	if err != nil {
-		return nil, canonicalGRPCError(err, codes.Internal)
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
 	}
 	infos := append([]vcollection.CollectionInfo(nil), listed...)
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
@@ -74,19 +75,21 @@ func (s *CollectionGRPCServer) GetTenantInfo(ctx context.Context, req *deepdatav
 }
 
 func (s *CollectionGRPCServer) ListCollections(ctx context.Context, req *deepdatav3.ListCollectionsRequest) (*deepdatav3.ListCollectionsResponse, error) {
-	if err := s.requirePersistenceHealthy(); err != nil {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "request required").GRPC(ctx)
 	}
-	if err := authorizeCanonicalGRPC(ctx, req.TenantId, "", "admin"); err != nil {
+	// Discovery is read-gated: listing collection names and schemas is the
+	// same class of read as searching them (CTL-04).
+	if err := authorizeCanonicalGRPC(ctx, req.TenantId, "", "read"); err != nil {
 		return nil, err
 	}
 
 	listed, err := s.tenants.ListCollectionInfosChecked(req.TenantId)
 	if err != nil {
-		return nil, canonicalGRPCError(err, codes.Internal)
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
 	}
 	infos := append([]vcollection.CollectionInfo(nil), listed...)
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
@@ -94,7 +97,7 @@ func (s *CollectionGRPCServer) ListCollections(ctx context.Context, req *deepdat
 	for i := range infos {
 		converted, err := collectionInfoToProto(infos[i])
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "encode collection %q: %v", infos[i].Name, err)
+			return nil, apierror.New(apierror.CodeInternal, fmt.Sprintf("encode collection %q: %v", infos[i].Name, err)).GRPC(ctx)
 		}
 		collections[i] = converted
 	}
@@ -102,54 +105,54 @@ func (s *CollectionGRPCServer) ListCollections(ctx context.Context, req *deepdat
 }
 
 func (s *CollectionGRPCServer) GetCollection(ctx context.Context, req *deepdatav3.GetCollectionRequest) (*deepdatav3.GetCollectionResponse, error) {
-	if err := s.requirePersistenceHealthy(); err != nil {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "collection name required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection name required").GRPC(ctx)
 	}
 	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Name, "read"); err != nil {
 		return nil, err
 	}
 	info, err := s.tenants.GetCollectionInfo(req.TenantId, req.Name)
 	if err != nil {
-		return nil, canonicalGRPCError(err, codes.NotFound)
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeNotFound)
 	}
 	converted, err := collectionInfoToProto(*info)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "encode collection %q: %v", req.Name, err)
+		return nil, apierror.New(apierror.CodeInternal, fmt.Sprintf("encode collection %q: %v", req.Name, err)).GRPC(ctx)
 	}
 	return &deepdatav3.GetCollectionResponse{Collection: converted}, nil
 }
 
 func (s *CollectionGRPCServer) CreateCollection(ctx context.Context, req *deepdatav3.CreateCollectionRequest) (*deepdatav3.CreateCollectionResponse, error) {
-	if err := s.requirePersistenceHealthy(); err != nil {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "request required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "request required").GRPC(ctx)
 	}
 	if !vcollection.IsValidCanonicalIdentifier(req.Name) {
-		return nil, status.Error(codes.InvalidArgument, "collection name must be 1-64 alphanumeric/hyphen/underscore characters")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection name must be 1-64 alphanumeric/hyphen/underscore characters").GRPC(ctx)
 	}
 	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Name, "admin"); err != nil {
 		return nil, err
 	}
 	if req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "collection name required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection name required").GRPC(ctx)
 	}
 	if len(req.Fields) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "at least one vector field required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "at least one vector field required").GRPC(ctx)
 	}
 
 	fields := make([]vcollection.VectorField, len(req.Fields))
 	for i, field := range req.Fields {
 		if field == nil {
-			return nil, status.Errorf(codes.InvalidArgument, "field %d is required", i)
+			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("field %d is required", i)).GRPC(ctx)
 		}
 		idxType, err := parseIndexType(field.IndexType)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "field %d index_type: %v", i, err)
+			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("field %d index_type: %v", i, err)).GRPC(ctx)
 		}
 		fields[i] = vcollection.VectorField{
 			Name: field.Name,
@@ -160,6 +163,9 @@ func (s *CollectionGRPCServer) CreateCollection(ctx context.Context, req *deepda
 				Params: structToMap(field.IndexParams),
 			},
 		}
+		if field.Embedding != nil {
+			fields[i].Embedding = &vcollection.EmbeddingConfig{Provider: field.Embedding.Provider, Model: field.Embedding.Model}
+		}
 	}
 
 	schema := vcollection.CollectionSchema{
@@ -167,96 +173,114 @@ func (s *CollectionGRPCServer) CreateCollection(ctx context.Context, req *deepda
 		Fields:      fields,
 		Metadata:    structToMap(req.Metadata),
 		Description: req.Description,
+		Durability:  req.Durability,
+	}
+	if aerr := resolveSchemaEmbedding(&schema, s.embedder); aerr != nil {
+		return nil, aerr.GRPC(ctx)
 	}
 	if _, err := s.tenants.CreateCollection(ctx, req.TenantId, schema); err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			return nil, canonicalGRPCError(err, codes.AlreadyExists)
-		}
-		return nil, canonicalGRPCError(err, codes.InvalidArgument)
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInvalidArgument)
 	}
 	return &deepdatav3.CreateCollectionResponse{Name: req.Name}, nil
 }
 
 func (s *CollectionGRPCServer) DeleteCollection(ctx context.Context, req *deepdatav3.DeleteCollectionRequest) (*deepdatav3.DeleteCollectionResponse, error) {
-	if err := s.requirePersistenceHealthy(); err != nil {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil || req.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "collection name required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection name required").GRPC(ctx)
 	}
 	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Name, "admin"); err != nil {
 		return nil, err
 	}
 	if err := s.tenants.DeleteCollection(ctx, req.TenantId, req.Name); err != nil {
-		return nil, canonicalGRPCError(err, codes.NotFound)
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeNotFound)
 	}
 	return &deepdatav3.DeleteCollectionResponse{}, nil
 }
 
 func (s *CollectionGRPCServer) Insert(ctx context.Context, req *deepdatav3.InsertRequest) (*deepdatav3.InsertResponse, error) {
-	if err := s.requirePersistenceHealthy(); err != nil {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil || req.Collection == "" {
-		return nil, status.Error(codes.InvalidArgument, "collection required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection required").GRPC(ctx)
 	}
 	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Collection, "write"); err != nil {
 		return nil, err
 	}
-	if err := requireCanonicalGRPCMutationSize(req); err != nil {
+	if err := requireCanonicalGRPCMutationSize(ctx, req); err != nil {
 		return nil, err
 	}
-	if len(req.Vectors) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "at least one vector required")
+	if len(req.Vectors) == 0 && len(req.Texts) == 0 {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "at least one vector or text required").GRPC(ctx)
 	}
 
 	vectors, err := protoVectorsToInterface(req.Vectors)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("%v", err)).GRPC(ctx)
+	}
+	if _, err := s.applyTexts(ctx, req.TenantId, req.Collection, req.Texts, vectors, false); err != nil {
+		return nil, err
 	}
 	doc := &vcollection.Document{ID: req.Id, Vectors: vectors, Metadata: structToMap(req.Metadata)}
 	if err := s.tenants.AddDocument(ctx, req.TenantId, req.Collection, doc); err != nil {
-		return nil, canonicalGRPCError(err, codes.Internal)
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
 	}
 	return &deepdatav3.InsertResponse{Id: doc.ID}, nil
 }
 
 func (s *CollectionGRPCServer) BatchInsert(ctx context.Context, req *deepdatav3.BatchInsertRequest) (*deepdatav3.BatchInsertResponse, error) {
-	if err := s.requirePersistenceHealthy(); err != nil {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil || req.Collection == "" {
-		return nil, status.Error(codes.InvalidArgument, "collection required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection required").GRPC(ctx)
 	}
 	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Collection, "write"); err != nil {
 		return nil, err
 	}
 	if len(req.Docs) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "at least one document required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "at least one document required").GRPC(ctx)
 	}
-	if len(req.Docs) > vcollection.CanonicalMaxBatchDocuments {
-		return nil, status.Errorf(codes.ResourceExhausted, "batch too large: maximum is %d documents", vcollection.CanonicalMaxBatchDocuments)
+	if len(req.Docs) > vcollection.MaxBatchDocuments {
+		return nil, apierror.New(apierror.CodePayloadTooLarge, fmt.Sprintf("batch too large: maximum is %d documents", vcollection.MaxBatchDocuments)).GRPC(ctx)
 	}
-	if err := requireCanonicalGRPCMutationSize(req); err != nil {
+	if err := requireCanonicalGRPCMutationSize(ctx, req); err != nil {
 		return nil, err
 	}
 
 	docs := make([]vcollection.Document, len(req.Docs))
+	var fields []vcollection.FieldInfo // schema, loaded once if any document sends texts
 	for i, batchDoc := range req.Docs {
 		if batchDoc == nil {
-			return nil, status.Errorf(codes.InvalidArgument, "document %d is required", i)
+			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d is required", i)).GRPC(ctx)
 		}
-		if len(batchDoc.Vectors) == 0 {
-			return nil, status.Errorf(codes.InvalidArgument, "document %d requires at least one vector", i)
+		if len(batchDoc.Vectors) == 0 && len(batchDoc.Texts) == 0 {
+			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d requires at least one vector or text", i)).GRPC(ctx)
 		}
 		vectors, err := protoVectorsToInterface(batchDoc.Vectors)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "document %d: %v", i, err)
+			return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d: %v", i, err)).GRPC(ctx)
+		}
+		if len(batchDoc.Texts) > 0 {
+			if fields == nil {
+				info, err := s.tenants.GetCollectionInfo(req.TenantId, req.Collection)
+				if err != nil {
+					return nil, canonicalGRPCError(ctx, err, apierror.CodeNotFound)
+				}
+				fields = info.Fields
+			}
+			if _, aerr := resolveTexts(fields, s.embedder, batchDoc.Texts, vectors, false); aerr != nil {
+				aerr.Message = fmt.Sprintf("document %d: %s", i, aerr.Message)
+				return nil, aerr.GRPC(ctx)
+			}
 		}
 		docs[i] = vcollection.Document{ID: batchDoc.Id, Vectors: vectors, Metadata: structToMap(batchDoc.Metadata)}
 	}
 	if err := s.tenants.BatchAddDocuments(ctx, req.TenantId, req.Collection, docs); err != nil {
-		return nil, canonicalGRPCError(err, codes.Internal)
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
 	}
 
 	ids := make([]uint64, len(docs))
@@ -267,37 +291,22 @@ func (s *CollectionGRPCServer) BatchInsert(ctx context.Context, req *deepdatav3.
 }
 
 func (s *CollectionGRPCServer) Search(ctx context.Context, req *deepdatav3.SearchRequest) (*deepdatav3.SearchResponse, error) {
-	if err := s.requirePersistenceHealthy(); err != nil {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil || req.Collection == "" {
-		return nil, status.Error(codes.InvalidArgument, "collection required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection required").GRPC(ctx)
 	}
 	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Collection, "read"); err != nil {
 		return nil, err
 	}
-	if req.TopK <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "top_k must be positive")
-	}
-	if req.TopK > vcollection.CanonicalMaxSearchTopK {
-		return nil, status.Errorf(codes.InvalidArgument, "top_k must not exceed %d", vcollection.CanonicalMaxSearchTopK)
-	}
-	if req.EfSearch < 0 {
-		return nil, status.Error(codes.InvalidArgument, "ef_search cannot be negative")
-	}
-	if len(req.Queries) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "at least one query vector required")
-	}
-	if len(req.Queries) > vcollection.CanonicalMaxSearchFields {
-		return nil, status.Errorf(codes.InvalidArgument, "at most %d query fields are supported", vcollection.CanonicalMaxSearchFields)
-	}
-	if len(req.Queries) > 1 && req.HybridParams == nil {
-		return nil, status.Error(codes.InvalidArgument, "multiple query fields require hybrid_params")
-	}
-
 	queries, err := protoVectorsToInterface(req.Queries)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("%v", err)).GRPC(ctx)
+	}
+	embeddedBy, err := s.applyTexts(ctx, req.TenantId, req.Collection, req.Texts, queries, true)
+	if err != nil {
+		return nil, err
 	}
 	searchReq := vcollection.SearchRequest{
 		CollectionName: req.Collection,
@@ -317,20 +326,29 @@ func (s *CollectionGRPCServer) Search(ctx context.Context, req *deepdatav3.Searc
 			RRFConstant: req.HybridParams.RrfConstant,
 		}
 	}
+	searchReq.ScoreFloor = req.ScoreFloor
+	searchReq.UsageBoost = req.UsageBoost
+	if req.Fallback != nil {
+		searchReq.Fallback = &vcollection.FallbackParams{
+			Primary:   req.Fallback.Primary,
+			Secondary: req.Fallback.Secondary,
+			Threshold: req.Fallback.Threshold,
+		}
+	}
 
 	resp, err := s.tenants.SearchCollection(ctx, req.TenantId, searchReq)
 	if err != nil {
-		return nil, canonicalGRPCError(err, codes.Internal)
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
 	}
 	hits := make([]*deepdatav3.SearchHit, len(resp.Documents))
 	for i, doc := range resp.Documents {
 		metadata, err := mapToStruct(doc.Metadata)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "encode result %d metadata: %v", i, err)
+			return nil, apierror.New(apierror.CodeInternal, fmt.Sprintf("encode result %d metadata: %v", i, err)).GRPC(ctx)
 		}
 		vectors, err := interfaceVectorsToProto(doc.Vectors)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "encode result %d vectors: %v", i, err)
+			return nil, apierror.New(apierror.CodeInternal, fmt.Sprintf("encode result %d vectors: %v", i, err)).GRPC(ctx)
 		}
 		hit := &deepdatav3.SearchHit{Id: doc.ID, Metadata: metadata, Vectors: vectors}
 		if i < len(resp.Scores) {
@@ -338,46 +356,118 @@ func (s *CollectionGRPCServer) Search(ctx context.Context, req *deepdatav3.Searc
 		}
 		hits[i] = hit
 	}
-	return &deepdatav3.SearchResponse{Results: hits, CandidatesExamined: int32(resp.CandidatesExamined)}, nil
+	return &deepdatav3.SearchResponse{
+		Results:            hits,
+		CandidatesExamined: int32(resp.CandidatesExamined),
+		BestScore:          resp.BestScore,
+		WeakMatch:          resp.WeakMatch,
+		FellBackTo:         resp.FellBackTo,
+		EmbeddedBy:         embeddedBy,
+		ScoreDirection:     resp.ScoreDirection,
+		QueryTimeMs:        resp.QueryTimeMs,
+		RequestId:          requestIDFromContext(ctx),
+	}, nil
 }
 
 func (s *CollectionGRPCServer) DeleteDoc(ctx context.Context, req *deepdatav3.DeleteDocRequest) (*deepdatav3.DeleteDocResponse, error) {
-	if err := s.requirePersistenceHealthy(); err != nil {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
 	}
 	if req == nil || req.Collection == "" || req.DocId == 0 {
-		return nil, status.Error(codes.InvalidArgument, "collection and non-zero doc_id required")
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection and non-zero doc_id required").GRPC(ctx)
 	}
 	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Collection, "write"); err != nil {
 		return nil, err
 	}
 	if err := s.tenants.DeleteDocument(ctx, req.TenantId, req.Collection, req.DocId); err != nil {
-		return nil, canonicalGRPCError(err, codes.NotFound)
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeNotFound)
 	}
 	return &deepdatav3.DeleteDocResponse{}, nil
 }
 
-func (s *CollectionGRPCServer) requirePersistenceHealthy() error {
+func (s *CollectionGRPCServer) Upsert(ctx context.Context, req *deepdatav3.UpsertRequest) (*deepdatav3.UpsertResponse, error) {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil || req.Collection == "" {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection required").GRPC(ctx)
+	}
+	if req.Id == 0 {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "upsert requires a caller-supplied non-zero id").GRPC(ctx)
+	}
+	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Collection, "write"); err != nil {
+		return nil, err
+	}
+	if err := requireCanonicalGRPCMutationSize(ctx, req); err != nil {
+		return nil, err
+	}
+	if len(req.Vectors) == 0 && len(req.Texts) == 0 {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "at least one vector or text required").GRPC(ctx)
+	}
+
+	vectors, err := protoVectorsToInterface(req.Vectors)
+	if err != nil {
+		return nil, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("%v", err)).GRPC(ctx)
+	}
+	if _, err := s.applyTexts(ctx, req.TenantId, req.Collection, req.Texts, vectors, false); err != nil {
+		return nil, err
+	}
+	doc := &vcollection.Document{ID: req.Id, Vectors: vectors, Metadata: structToMap(req.Metadata)}
+	if err := s.tenants.UpsertDocument(ctx, req.TenantId, req.Collection, doc); err != nil {
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
+	}
+	return &deepdatav3.UpsertResponse{Id: req.Id}, nil
+}
+
+func (s *CollectionGRPCServer) GetDoc(ctx context.Context, req *deepdatav3.GetDocRequest) (*deepdatav3.GetDocResponse, error) {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil || req.Collection == "" || req.DocId == 0 {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "collection and non-zero doc_id required").GRPC(ctx)
+	}
+	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Collection, "read"); err != nil {
+		return nil, err
+	}
+	doc, ok := s.tenants.GetDocument(req.TenantId, req.Collection, req.DocId)
+	if !ok {
+		return nil, apierror.New(apierror.CodeNotFound, fmt.Sprintf("document %d not found in collection %s", req.DocId, req.Collection)).GRPC(ctx)
+	}
+	vectors, err := interfaceVectorsToProto(doc.Vectors)
+	if err != nil {
+		return nil, apierror.New(apierror.CodeInternal, fmt.Sprintf("encode document vectors: %v", err)).GRPC(ctx)
+	}
+	metadata, err := mapToStruct(doc.Metadata)
+	if err != nil {
+		return nil, apierror.New(apierror.CodeInternal, fmt.Sprintf("encode document metadata: %v", err)).GRPC(ctx)
+	}
+	return &deepdatav3.GetDocResponse{Id: doc.ID, Vectors: vectors, Metadata: metadata}, nil
+}
+
+func (s *CollectionGRPCServer) requirePersistenceHealthy(ctx context.Context) error {
 	if s == nil || s.tenants == nil || s.persistenceHealth == nil {
-		return status.Error(codes.Unavailable, "collection persistence unavailable")
+		return apierror.New(apierror.CodeUnavailable, "collection persistence unavailable").GRPC(ctx)
 	}
 	if err := s.persistenceHealth(); err != nil {
-		return status.Error(codes.Unavailable, "collection persistence unavailable")
+		return apierror.New(apierror.CodeUnavailable, "collection persistence unavailable").GRPC(ctx)
 	}
 	return nil
 }
 
-func requireCanonicalGRPCMutationSize(message proto.Message) error {
+func requireCanonicalGRPCMutationSize(ctx context.Context, message proto.Message) error {
 	if message == nil {
-		return status.Error(codes.InvalidArgument, "request required")
+		return apierror.New(apierror.CodeInvalidArgument, "request required").GRPC(ctx)
 	}
 	if size := proto.Size(message); size > canonicalGRPCMutationMaxProtoBytes {
-		return status.Errorf(codes.ResourceExhausted, "mutation request is %d bytes; maximum is %d", size, canonicalGRPCMutationMaxProtoBytes)
+		return apierror.New(apierror.CodePayloadTooLarge, fmt.Sprintf("mutation request is %d bytes; maximum is %d", size, canonicalGRPCMutationMaxProtoBytes)).GRPC(ctx)
 	}
 	return nil
 }
 
-func canonicalGRPCError(err error, fallback codes.Code) error {
+// canonicalGRPCError projects an engine error onto the wire. A cancelled or
+// expired caller context stays a plain status; everything else goes through
+// apierror.FromEngine, with fallback as the code for the unclassified rest.
+func canonicalGRPCError(ctx context.Context, err error, fallback string) error {
 	if err == nil {
 		return nil
 	}
@@ -386,15 +476,8 @@ func canonicalGRPCError(err error, fallback codes.Code) error {
 		return status.Error(codes.Canceled, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
-	case errors.Is(err, vcollection.ErrDurableStoreClosed), errors.Is(err, vcollection.ErrDurableStoreFaulted):
-		return status.Error(codes.Unavailable, "collection persistence unavailable")
-	case errors.Is(err, vcollection.ErrTenantLimitExceeded),
-		errors.Is(err, vcollection.ErrCollectionLimitExceeded),
-		errors.Is(err, vcollection.ErrSearchResponseBudgetExceeded):
-		return status.Error(codes.ResourceExhausted, err.Error())
-	default:
-		return status.Error(fallback, err.Error())
 	}
+	return apierror.FromEngine(err, fallback).GRPC(ctx)
 }
 
 func protoVectorsToInterface(vectors map[string]*deepdatav3.VectorData) (map[string]interface{}, error) {
@@ -542,6 +625,11 @@ func collectionInfoToProto(info vcollection.CollectionInfo) (*deepdatav3.Collect
 			Dim:         int32(field.Dim),
 			IndexType:   field.Index.Type.String(),
 			IndexParams: params,
+
+			ScoreDirection: field.ScoreDirection,
+		}
+		if field.Embedding != nil {
+			fields[i].Embedding = &deepdatav3.EmbeddingConfig{Provider: field.Embedding.Provider, Model: field.Embedding.Model}
 		}
 	}
 	metadata, err := mapToStruct(info.Metadata)
@@ -554,6 +642,7 @@ func collectionInfoToProto(info vcollection.CollectionInfo) (*deepdatav3.Collect
 		Description:   info.Description,
 		Metadata:      metadata,
 		DocumentCount: nonNegativeUint64(info.DocCount),
+		Durability:    info.Durability,
 	}, nil
 }
 
@@ -699,7 +788,7 @@ func parseIndexType(value string) (vcollection.IndexType, error) {
 
 func authorizeCanonicalGRPC(ctx context.Context, tenantID, collection, permission string) error {
 	if !isValidTenantID(tenantID) {
-		return status.Error(codes.InvalidArgument, "valid tenant_id required")
+		return apierror.New(apierror.CodeInvalidArgument, "valid tenant_id required").GRPC(ctx)
 	}
 	tenantCtx, _ := security.GetTenantContextFromContext(ctx)
 	err := security.AuthorizeTenantAccess(tenantCtx, tenantID, collection, permission)
@@ -707,7 +796,7 @@ func authorizeCanonicalGRPC(ctx context.Context, tenantID, collection, permissio
 		return nil
 	}
 	if security.IsAuthorizationFailure(err, security.AuthorizationUnauthenticated) {
-		return status.Error(codes.Unauthenticated, err.Error())
+		return apierror.New(apierror.CodeUnauthenticated, err.Error()).GRPC(ctx)
 	}
-	return status.Error(codes.PermissionDenied, err.Error())
+	return apierror.New(apierror.CodePermissionDenied, err.Error()).GRPC(ctx)
 }

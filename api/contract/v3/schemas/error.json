@@ -1,0 +1,52 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "type": "object",
+ "description": "DeepData error envelope; rides as structuredContent on isError tool results.",
+ "properties": {
+  "code": {
+   "type": "string",
+   "enum": [
+    "invalid_argument",
+    "not_found",
+    "already_exists",
+    "unauthenticated",
+    "permission_denied",
+    "quota_exceeded",
+    "embedding_mismatch",
+    "payload_too_large",
+    "rate_limited",
+    "embedder_unavailable",
+    "unavailable",
+    "method_not_allowed",
+    "internal"
+   ]
+  },
+  "message": {
+   "type": "string"
+  },
+  "hint": {
+   "type": "string",
+   "description": "What to do next; treat it as a prompt."
+  },
+  "field": {
+   "type": "string"
+  },
+  "request_id": {
+   "type": "string"
+  },
+  "retryable": {
+   "type": "boolean"
+  },
+  "retry_after_ms": {
+   "type": "integer"
+  },
+  "docs": {
+   "type": "string"
+  }
+ },
+ "required": [
+  "code",
+  "message",
+  "retryable"
+ ]
+}

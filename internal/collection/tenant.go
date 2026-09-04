@@ -24,7 +24,7 @@ type TenantManager struct {
 	storagePath string
 
 	// durable is set once, before the manager is returned from OpenDurableStore.
-	// Canonical mutation methods delegate to it; reads keep their stable pointer.
+	// Mutation methods delegate to it; reads keep their stable pointer.
 	durable *DurableStore
 }
 
@@ -113,12 +113,12 @@ func (tm *TenantManager) getCollectionDirect(tenantID, collectionName string) (*
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return nil, fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return nil, fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.GetCollection(collectionName)
 }
 
-// ListCollections is the compatibility no-error form. Canonical callers must
+// ListCollections is the compatibility no-error form. Callers must
 // use ListCollectionsChecked so a fault cannot be mistaken for an empty list.
 func (tm *TenantManager) ListCollections(tenantID string) []string {
 	names, _ := tm.ListCollectionsChecked(tenantID)
@@ -187,7 +187,7 @@ func (tm *TenantManager) deleteCollectionDirect(ctx context.Context, tenantID, c
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.deleteCollectionDirect(ctx, collectionName)
 }
@@ -206,7 +206,7 @@ func (tm *TenantManager) getCollectionInfoDirect(tenantID, collectionName string
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return nil, fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return nil, fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.GetCollectionInfo(collectionName)
 }
@@ -222,7 +222,7 @@ func (tm *TenantManager) AddDocument(ctx context.Context, tenantID, collectionNa
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.AddDocument(ctx, collectionName, doc)
 }
@@ -239,7 +239,7 @@ func (tm *TenantManager) BatchAddDocuments(ctx context.Context, tenantID, collec
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.BatchAddDocuments(ctx, collectionName, docs)
 }
@@ -258,7 +258,7 @@ func (tm *TenantManager) searchCollectionDirect(ctx context.Context, tenantID st
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return nil, fmt.Errorf("collection %s not found for tenant %s", req.CollectionName, tenantID)
+		return nil, fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, req.CollectionName, tenantID)
 	}
 	return mgr.SearchCollection(ctx, req)
 }
@@ -273,12 +273,50 @@ func (tm *TenantManager) DeleteDocument(ctx context.Context, tenantID, collectio
 	}
 	mgr := tm.getManager(tenantID)
 	if mgr == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	return mgr.DeleteDocument(ctx, collectionName, docID)
 }
 
-// ListTenants is the compatibility no-error form. Canonical callers must use
+// UpsertDocument inserts or replaces a caller-addressed document in a tenant's
+// collection. In a DurableStore the upsert is journaled so a replace survives
+// crash and replay; the caller's ID is preserved verbatim.
+func (tm *TenantManager) UpsertDocument(ctx context.Context, tenantID, collectionName string, doc *Document) error {
+	if store := tm.durableStore(); store != nil {
+		return store.upsertDocument(ctx, tenantID, collectionName, doc)
+	}
+	if tenantID == "" {
+		return fmt.Errorf("tenant ID cannot be empty")
+	}
+	mgr := tm.getManager(tenantID)
+	if mgr == nil {
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
+	}
+	return mgr.UpsertDocument(ctx, collectionName, doc)
+}
+
+// GetDocument returns a single document by caller-supplied ID. Shared-barrier
+// durable stores serve the read under an RLock so it cannot observe a
+// partially-applied mutation or a store fault.
+func (tm *TenantManager) GetDocument(tenantID, collectionName string, docID uint64) (*Document, bool) {
+	if store := tm.durableStore(); store != nil {
+		return store.getDocument(tenantID, collectionName, docID)
+	}
+	if tenantID == "" {
+		return nil, false
+	}
+	mgr := tm.getManager(tenantID)
+	if mgr == nil {
+		return nil, false
+	}
+	doc, err := mgr.GetDocument(collectionName, docID)
+	if err != nil {
+		return nil, false
+	}
+	return doc, true
+}
+
+// ListTenants is the compatibility no-error form. Callers must use
 // ListTenantsChecked so a fault cannot be mistaken for an empty tenant set.
 func (tm *TenantManager) ListTenants() []string {
 	ids, _ := tm.ListTenantsChecked()
@@ -306,7 +344,7 @@ func (tm *TenantManager) listTenantsDirect() []string {
 	return ids
 }
 
-// TenantCount is the compatibility no-error form. Canonical callers must use
+// TenantCount is the compatibility no-error form. Callers must use
 // TenantCountChecked so a fault cannot be mistaken for an empty store.
 func (tm *TenantManager) TenantCount() int {
 	count, _ := tm.TenantCountChecked()
@@ -409,7 +447,7 @@ func (tm *TenantManager) attachDurableStore(store *DurableStore) {
 func (tm *TenantManager) addPreparedDocumentsDirect(ctx context.Context, tenantID, collectionName string, docs []Document, nextID uint64) error {
 	manager := tm.getManager(tenantID)
 	if manager == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	coll, err := manager.GetCollection(collectionName)
 	if err != nil {
@@ -418,10 +456,27 @@ func (tm *TenantManager) addPreparedDocumentsDirect(ctx context.Context, tenantI
 	return coll.addPreparedDocuments(ctx, docs, nextID)
 }
 
+// upsertPreparedDocumentsDirect applies a prepared canonical upsert mutation
+// (already validated and ID-placed by prepareCanonicalUpsert) to the live
+// collection. It is the durable-store apply seam for the upsert journal op.
+func (tm *TenantManager) upsertPreparedDocumentsDirect(ctx context.Context, tenantID, collectionName string, docs []Document, nextID uint64) error {
+	manager := tm.getManager(tenantID)
+	if manager == nil {
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
+	}
+	coll, err := manager.GetCollection(collectionName)
+	if err != nil {
+		return err
+	}
+	coll.mu.Lock()
+	defer coll.mu.Unlock()
+	return coll.upsertPreparedLocked(ctx, docs, nextID)
+}
+
 func (tm *TenantManager) deleteDocumentDirect(ctx context.Context, tenantID, collectionName string, docID uint64) error {
 	manager := tm.getManager(tenantID)
 	if manager == nil {
-		return fmt.Errorf("collection %s not found for tenant %s", collectionName, tenantID)
+		return fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
 	}
 	coll, err := manager.GetCollection(collectionName)
 	if err != nil {

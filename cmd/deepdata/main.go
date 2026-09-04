@@ -27,9 +27,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	"github.com/phenomenon0/vectordb/internal/index"
 	"github.com/phenomenon0/vectordb/internal/logging"
-	"github.com/phenomenon0/vectordb/internal/obsidian"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/storage"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
@@ -39,9 +39,7 @@ import (
 
 	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
 	"net"
 )
@@ -61,28 +59,27 @@ type VectorStore struct {
 	next    int64
 	nextSeq uint64
 	// Index abstraction - the single source of truth for vector search
-	indexes            map[string]index.Index // Collection -> Index mapping
-	idToIx             map[uint64]int
-	Meta               map[uint64]map[string]string
-	Deleted            map[uint64]bool
-	Coll               map[uint64]string
-	NumMeta            map[uint64]map[string]float64
-	TimeMeta           map[uint64]map[string]time.Time
-	numIndex           map[string][]numEntry
-	timeIndex          map[string][]timeEntry
-	walPath            string
-	walMu              sync.Mutex
-	walMaxBytes        int64
-	walMaxOps          int
-	walOps             int
-	walRotate          int64
-	walHook            func(walEntry) // Optional hook to forward WAL events (e.g., to replication stream)
-	walFault           error          // Latched after an append may have partially reached durable storage
-	nextWALSeq         uint64         // Next monotonic WAL sequence to allocate (starts at 1)
-	appliedWALSeq      uint64         // Highest WAL sequence represented in logical state
-	apiToken           string
-	rl                 *rateLimiter
-	authFailureRL      *authFailureLimiter // shared HTTP/gRPC failed-auth budget keyed by peer IP
+	indexes       map[string]index.Index // Collection -> Index mapping
+	idToIx        map[uint64]int
+	Meta          map[uint64]map[string]string
+	Deleted       map[uint64]bool
+	Coll          map[uint64]string
+	NumMeta       map[uint64]map[string]float64
+	TimeMeta      map[uint64]map[string]time.Time
+	numIndex      map[string][]numEntry
+	timeIndex     map[string][]timeEntry
+	walPath       string
+	walMu         sync.Mutex
+	walMaxBytes   int64
+	walMaxOps     int
+	walOps        int
+	walRotate     int64
+	walHook       func(walEntry) // Optional hook to forward WAL events (e.g., to replication stream)
+	walFault      error          // Latched after an append may have partially reached durable storage
+	nextWALSeq    uint64         // Next monotonic WAL sequence to allocate (starts at 1)
+	appliedWALSeq uint64         // Highest WAL sequence represented in logical state
+	// Authentication and limit state, shared with the V3 surface (runtime.go).
+	*serverRuntime
 	checksum           string
 	lastSaved          time.Time
 	lastSnapshotWALSeq uint64 // WAL high-water in the last successfully renamed snapshot
@@ -92,14 +89,9 @@ type VectorStore struct {
 	df      map[string]int
 	sumDocL int
 	// Multi-tenancy support
-	TenantID          map[uint64]string     // vector hash -> tenant ID
-	acl               *security.ACL         // access control lists
-	quotas            *security.TenantQuota // storage quotas per tenant
-	tenantRL          *tenantRateLimiter    // per-tenant rate limiting
-	canonicalTenantRL *rateLimiter          // shared V3 HTTP/gRPC limiter keyed by authenticated tenant
-	jwtMgr            *security.JWTManager  // JWT token manager
-	requireAuth       bool                  // Require JWT authentication
-	// Storage format (gob, cowrie, cowrie-zstd)
+	TenantID map[uint64]string  // vector hash -> tenant ID
+	tenantRL *tenantRateLimiter // per-tenant rate limiting
+	// Storage format (gob)
 	storageFormat storage.Format
 	// Metadata bitmap index for fast pre-filtering
 	// Metadata bitmap index for fast pre-filtering
@@ -128,18 +120,7 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		os.Exit(1)
 	}
 
-	// Initialize JWT manager if configured
-	var jwtMgr *security.JWTManager
-	if secret := os.Getenv("JWT_SECRET"); secret != "" {
-		issuer := os.Getenv("JWT_ISSUER")
-		if issuer == "" {
-			issuer = "vectordb"
-		}
-		jwtMgr = security.NewJWTManager(secret, issuer)
-	}
-
-	// Select storage format (default: gob for backward compatibility)
-	// Options: "gob", "cowrie", "cowrie-zstd"
+	// Select storage format (gob is the only format the RC ships)
 	storageFormat := storage.Default()
 	if formatName := os.Getenv("STORAGE_FORMAT"); formatName != "" {
 		if f := storage.Get(formatName); f != nil {
@@ -147,38 +128,32 @@ func NewVectorStore(capacity int, dim int) *VectorStore {
 		}
 	}
 
-	apiToken := os.Getenv("API_TOKEN")
-	requireAuth := os.Getenv("REQUIRE_AUTH") == "1" || jwtMgr != nil || apiToken != ""
-
 	return &VectorStore{
-		Data:        make([]float32, 0, capacity*dim),
-		Dim:         dim,
-		Count:       0,
-		indexes:     map[string]index.Index{"default": defaultIdx},
-		idToIx:      make(map[uint64]int),
-		Meta:        make(map[uint64]map[string]string),
-		Deleted:     make(map[uint64]bool),
-		Coll:        make(map[uint64]string),
-		Seqs:        make([]uint64, 0, capacity),
-		NumMeta:     make(map[uint64]map[string]float64),
-		TimeMeta:    make(map[uint64]map[string]time.Time),
-		numIndex:    make(map[string][]numEntry),
-		timeIndex:   make(map[string][]timeEntry),
-		walMaxBytes: 0,
-		walMaxOps:   0,
-		nextWALSeq:  1,
-		apiToken:    apiToken,
-		requireAuth: requireAuth,
-		lexTF:       make(map[uint64]map[string]int),
-		docLen:      make(map[uint64]int),
-		df:          make(map[string]int),
-		sumDocL:     0,
+		// Authentication and limits, read from the same environment as before.
+		serverRuntime: newServerRuntime(),
+		Data:          make([]float32, 0, capacity*dim),
+		Dim:           dim,
+		Count:         0,
+		indexes:       map[string]index.Index{"default": defaultIdx},
+		idToIx:        make(map[uint64]int),
+		Meta:          make(map[uint64]map[string]string),
+		Deleted:       make(map[uint64]bool),
+		Coll:          make(map[uint64]string),
+		Seqs:          make([]uint64, 0, capacity),
+		NumMeta:       make(map[uint64]map[string]float64),
+		TimeMeta:      make(map[uint64]map[string]time.Time),
+		numIndex:      make(map[string][]numEntry),
+		timeIndex:     make(map[string][]timeEntry),
+		walMaxBytes:   0,
+		walMaxOps:     0,
+		nextWALSeq:    1,
+		lexTF:         make(map[uint64]map[string]int),
+		docLen:        make(map[uint64]int),
+		df:            make(map[string]int),
+		sumDocL:       0,
 		// Multi-tenancy
 		TenantID: make(map[uint64]string),
-		acl:      security.NewACL(),
-		quotas:   security.NewTenantQuota(),
 		tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), envInt("MAX_TENANTS", 100_000), time.Minute),
-		jwtMgr:   jwtMgr,
 		// Storage
 		storageFormat: storageFormat,
 		// Metadata index for fast pre-filtering
@@ -1021,15 +996,9 @@ func getStorageFormat() storage.Format {
 }
 
 func persistedIndexType(name string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "hnsw", "ivf", "flat", "diskann", "sparse", "binary", "ivf_binary", "ivf-binary":
-		return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "-", "_"), nil
-	case "pq-adc":
-		return "pq", nil
-	case "ivf-pq-adc":
-		return "ivf_pq", nil
-	case "pq4-adc":
-		return "pq4", nil
+	switch normalized := strings.ToLower(strings.TrimSpace(name)); normalized {
+	case "hnsw", "flat", "sparse":
+		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported index type %q", name)
 	}
@@ -1044,7 +1013,7 @@ func indexBlobChecksum(data []byte) string {
 // decoder errors. An existing file that no codec can verify is corrupt state,
 // not permission to initialize an empty database.
 func tryLoadPayload(path string) (*storage.Payload, storage.Format, error) {
-	formatNames := []string{"gob", "cowrie", "cowrie-zstd", "cowrie-delta-zstd"}
+	formatNames := []string{"gob"}
 	loadErrors := make([]error, 0, len(formatNames))
 	for _, formatName := range formatNames {
 		format := storage.Get(formatName)
@@ -1095,7 +1064,7 @@ func validateStoragePayload(payload *storage.Payload) error {
 	if payload.FormatVersion < 0 || payload.FormatVersion > storage.CurrentFormatVersion {
 		return fmt.Errorf("unsupported format version %d", payload.FormatVersion)
 	}
-	if payload.FormatVersion >= storage.CanonicalFormatVersion && payload.Checksum == "" {
+	if payload.FormatVersion >= storage.StrictFormatVersion && payload.Checksum == "" {
 		return fmt.Errorf("canonical snapshot format %d is missing a checksum", payload.FormatVersion)
 	}
 	if payload.FormatVersion < storage.CurrentFormatVersion && payload.WALHighWater != 0 {
@@ -1113,7 +1082,7 @@ func validateStoragePayload(payload *storage.Payload) error {
 	if payload.Count != len(payload.IDs) {
 		return fmt.Errorf("count/id length mismatch: %d != %d", payload.Count, len(payload.IDs))
 	}
-	if payload.FormatVersion >= storage.CanonicalFormatVersion {
+	if payload.FormatVersion >= storage.StrictFormatVersion {
 		if payload.VectorType != 0 || len(payload.VectorData) != 0 {
 			return fmt.Errorf("current server does not support persisted VectorData payloads")
 		}
@@ -1238,16 +1207,9 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 		}
 		logging.Default().Info("loaded snapshot", "format", loadedFormat.Name(), "path", path)
 		// Initialize JWT manager if configured
-		var jwtMgr *security.JWTManager
-		if secret := os.Getenv("JWT_SECRET"); secret != "" {
-			issuer := os.Getenv("JWT_ISSUER")
-			if issuer == "" {
-				issuer = "vectordb"
-			}
-			jwtMgr = security.NewJWTManager(secret, issuer)
-		}
-
 		vs := &VectorStore{
+			// Authentication and limits, read from the same environment as before.
+			serverRuntime:      newServerRuntime(),
 			Data:               payload.Data,
 			Dim:                payload.Dim,
 			Count:              payload.Count,
@@ -1269,8 +1231,6 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 			walMu:              sync.Mutex{},
 			walMaxBytes:        0,
 			walMaxOps:          0,
-			apiToken:           os.Getenv("API_TOKEN"),
-			requireAuth:        os.Getenv("REQUIRE_AUTH") == "1" || jwtMgr != nil || os.Getenv("API_TOKEN") != "",
 			checksum:           payload.Checksum,
 			lastSaved:          payload.LastSaved,
 			lexTF:              payload.LexTF,
@@ -1283,10 +1243,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 			numIndex:  make(map[string][]numEntry),
 			timeIndex: make(map[string][]timeEntry),
 			// Multi-tenancy support (TenantID already set from payload above)
-			acl:      security.NewACL(),
-			quotas:   security.NewTenantQuota(),
 			tenantRL: newTenantRateLimiter(envInt("TENANT_RPS", 100), envInt("TENANT_BURST", 100), envInt("MAX_TENANTS", 100_000), time.Minute),
-			jwtMgr:   jwtMgr,
 			// Storage format
 			storageFormat: getStorageFormat(),
 			// Metadata index (rebuilt below)
@@ -1327,7 +1284,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 			for collName, data := range payload.Indexes {
 				indexType := "hnsw"
 				indexDim := vs.Dim
-				if payload.FormatVersion >= storage.CanonicalFormatVersion {
+				if payload.FormatVersion >= storage.StrictFormatVersion {
 					indexType = payload.IndexTypes[collName]
 					indexDim = payload.IndexDims[collName]
 				}
@@ -1342,7 +1299,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 				if stats.Dim != vs.Dim {
 					return nil, false, fmt.Errorf("imported index %q dimension mismatch: got %d, want %d", collName, stats.Dim, vs.Dim)
 				}
-				if payload.FormatVersion >= storage.CanonicalFormatVersion {
+				if payload.FormatVersion >= storage.StrictFormatVersion {
 					expectedActive := 0
 					for _, id := range vs.IDs {
 						hid := hashID(id)
@@ -1394,7 +1351,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 			}
 		}
 
-		if payload.FormatVersion < storage.CanonicalFormatVersion && len(vs.Seqs) == 0 {
+		if payload.FormatVersion < storage.StrictFormatVersion && len(vs.Seqs) == 0 {
 			vs.Seqs = make([]uint64, len(vs.IDs))
 			for i := range vs.Seqs {
 				vs.Seqs[i] = uint64(i)
@@ -1403,18 +1360,18 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 		if len(vs.Seqs) != len(vs.IDs) {
 			return nil, false, fmt.Errorf("sequence/id length mismatch after migration: %d != %d", len(vs.Seqs), len(vs.IDs))
 		}
-		if payload.FormatVersion < storage.CanonicalFormatVersion {
+		if payload.FormatVersion < storage.StrictFormatVersion {
 			if len(vs.Seqs) > 0 {
 				vs.nextSeq = vs.Seqs[len(vs.Seqs)-1] + 1
 			} else {
 				vs.nextSeq = 0
 			}
 		}
-		if payload.FormatVersion < storage.CanonicalFormatVersion && vs.next == 0 {
+		if payload.FormatVersion < storage.StrictFormatVersion && vs.next == 0 {
 			vs.next = int64(len(vs.IDs))
 		}
 		// Normalize fields omitted by historical snapshots before migration.
-		if payload.FormatVersion < storage.CanonicalFormatVersion {
+		if payload.FormatVersion < storage.StrictFormatVersion {
 			for idKey := range vs.idToIx {
 				if vs.TenantID[idKey] == "" {
 					vs.TenantID[idKey] = "default"
@@ -1428,7 +1385,7 @@ func loadOrInitStore(path string, capacity int, dim int) (*VectorStore, bool, er
 		// normalize them before migrating the checksum. Current snapshots must
 		// match exactly after the same codec-stable normalization.
 		if payload.FormatVersion < storage.CurrentFormatVersion {
-			if payload.FormatVersion == storage.CanonicalFormatVersion {
+			if payload.FormatVersion == storage.StrictFormatVersion {
 				if payload.Checksum != vs.computeV3Checksum() {
 					return nil, false, fmt.Errorf("canonical version 3 snapshot checksum mismatch")
 				}
@@ -2850,7 +2807,7 @@ func sortedStringMapKeys[V any](values map[string]V) []string {
 // that defines logical query state. Derived indexes and LastSaved are excluded:
 // index blobs have their own format validation and timestamps are metadata, not
 // database contents. Length-prefixing and sorted map keys make the hash stable
-// across Go map iteration order and across Gob/Cowrie round-trips.
+// across Go map iteration order and across Gob round-trips.
 func (vs *VectorStore) computeChecksumForFormat(formatVersion int, includeWALHighWater bool) string {
 	digest := sha256.New()
 	var scalar [8]byte
@@ -3038,8 +2995,13 @@ func initEmbedder(defaultDim int) Embedder {
 	if ollamaModel == "" {
 		ollamaModel = "nomic-embed-text" // Default to nomic-embed-text
 	}
-	// Test if Ollama is available
+	// Test if Ollama is available.
+	// ollamaURL is process environment (OLLAMA_URL), defaulted to loopback above.
+	// It is never derived from a request body, header, or path, so a client cannot
+	// steer this probe at an internal address. Anyone able to set the server's
+	// environment already runs code as this user; SSRF is not the marginal risk.
 	client := &http.Client{Timeout: 5 * time.Second}
+	// #nosec G704 -- URL is operator configuration (OLLAMA_URL env), not attacker-controlled input.
 	if resp, err := client.Get(ollamaURL + "/api/tags"); err == nil {
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
@@ -3126,6 +3088,20 @@ func warmupModels(embedder Embedder, reranker Reranker) {
 func main() {
 	// CLI flag parsing — strip "serve" subcommand if present
 	args := os.Args[1:]
+	// `routes` prints the contract's HTTP surface and exits. It reads only
+	// the embedded operations list, so it needs no data directory, no
+	// environment and no server; the docs linter runs it to generate the
+	// route table in internal/collection/API.md (DOC-03).
+	if len(args) > 0 && args[0] == "routes" {
+		if err := printRoutes(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(args) > 0 && args[0] == "replicate" {
+		os.Exit(runReplicate(args[1:], logging.Default()))
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}
@@ -3230,19 +3206,6 @@ func main() {
 	}
 	logger.Info("data directory ready", "path", dataDir)
 
-	// Cost tracking belongs to the unsupported provider-backed legacy runtime.
-	var costTracker *CostTracker
-	if !canonicalOnly {
-		costTracker, err = NewCostTracker(modeConfig.Mode)
-		if err != nil {
-			logger.Warn("failed to initialize cost tracker", "error", err)
-		}
-		if costTracker != nil {
-			defer costTracker.Close()
-			logger.Info("cost tracking enabled", "db", GetCostDBPath(modeConfig.Mode))
-		}
-	}
-
 	// Use mode-specific index path
 	indexPath := GetIndexPath(modeConfig.Mode)
 
@@ -3267,44 +3230,24 @@ func main() {
 		}()
 	}
 
-	// Canonical requests carry vectors, so the RC never initializes an external
-	// or model-backed embedder. A tiny in-process placeholder keeps historical
-	// handler construction isolated behind the canonical route allowlist.
+	// One text embedder per process, named by DEEPDATA_EMBEDDER (default none:
+	// callers send vectors). A configured-but-unreachable embedder refuses to
+	// start, like unreadable persistence below.
 	var embedder Embedder
 	if canonicalOnly {
-		embedder = NewHashEmbedder(1)
-		logger.Info("server-managed embedding disabled; canonical clients must provide vectors")
-	} else if os.Getenv("USE_HASH_EMBEDDER") == "1" {
-		logger.Info("using hash embedder (low-memory mode)")
-		embedder = NewHashEmbedder(modeConfig.Dimension)
-	} else {
-		// Use mode-aware embedder factory
-		embedder, err = InitEmbedderForMode(modeConfig, costTracker)
-		if err != nil {
-			logger.Error("failed to initialize embedder", "error", err)
-			// Fall back to hash embedder — use modeConfig.Dimension which
-			// InitEmbedderForMode may have updated before failing
-			logger.Warn("falling back to hash embedder")
-			embedder = NewHashEmbedder(modeConfig.Dimension)
+		serverEmb, embErr := newServerEmbedderFromEnv()
+		if embErr != nil {
+			logger.Error("refusing to start with an unusable text embedder", "error", embErr)
+			os.Exit(1)
+		}
+		if serverEmb != nil {
+			embedder = serverEmb
+			logger.Info("text embedder ready", "embedder", serverEmb.Label(), "dim", serverEmb.Dim())
+		} else {
+			logger.Info("no text embedder configured (DEEPDATA_EMBEDDER=none); clients must provide vectors")
 		}
 	}
 
-	if !canonicalOnly {
-		// Print mode banner only for the provider-backed legacy runtime.
-		PrintModeBanner(modeConfig)
-	}
-
-	// Make initial capacity configurable for low-memory deployments
-	initialCapacity := 1000 // Reduced from 100000 for low-memory deployment
-	if envCap := os.Getenv("VECTOR_CAPACITY"); envCap != "" {
-		if v, err := strconv.Atoi(envCap); err == nil && v >= 0 {
-			initialCapacity = v
-		}
-	}
-	// Swapping endpoints are absent from the canonical route surface.
-	swappableEmbedder := NewSwappableEmbedder(embedder)
-	var store *VectorStore
-	loaded := false
 	if canonicalOnly {
 		legacyArtifacts, inspectErr := existingLegacyRootArtifacts(indexPath)
 		if inspectErr != nil {
@@ -3315,38 +3258,14 @@ func main() {
 			logger.Error("legacy root persistence requires an explicit offline migration before canonical RC startup", "artifacts", legacyArtifacts)
 			os.Exit(1)
 		}
-		store = NewVectorStore(0, 1)
-	} else {
-		store, loaded, err = loadOrInitStore(indexPath, initialCapacity, swappableEmbedder.Dim())
-		if err != nil {
-			logger.Error("refusing to start with unreadable persistence state", "path", indexPath, "error", err)
-			os.Exit(1)
-		}
-	}
-	store.walMaxBytes = envInt64("WAL_MAX_BYTES", 5*1024*1024)
-	store.walMaxOps = envInt("WAL_MAX_OPS", 1000)
-
-	if !loaded && !canonicalOnly {
-		logger.Info("fresh index initialized", "capacity", initialCapacity, "dimension", swappableEmbedder.Dim())
-	}
-	if !canonicalOnly {
-		logger.Info("index ready", "vectors", store.Count, "ram_contiguous", true)
 	}
 
-	var reranker Reranker
-	if !canonicalOnly {
-		reranker = initReranker(swappableEmbedder)
-		warmupModels(swappableEmbedder, reranker)
-	}
+	// The V3 surface keeps its authentication and limit state here; the legacy
+	// engine is never constructed.
+	rt := newServerRuntime()
 
 	// HTTP API with graceful shutdown
-	var handler http.Handler
-	var collectionHTTP *CollectionHTTPServer
-	if canonicalOnly {
-		handler, collectionHTTP = newCanonicalHTTPHandler(store, swappableEmbedder, reranker, indexPath)
-	} else {
-		handler, collectionHTTP = newHTTPHandler(store, swappableEmbedder, reranker, indexPath)
-	}
+	handler, collectionHTTP := newCanonicalHTTPHandler(rt, embedder, nil, indexPath)
 	if err := collectionHTTP.PersistenceError(); err != nil {
 		logger.Error("refusing to start with unreadable collection persistence state", "path", indexPath+".collections", "error", err)
 		os.Exit(1)
@@ -3369,16 +3288,33 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	addr, grpcAddr := canonicalListenerAddresses(
+	addr, grpcAddr, err := canonicalListenerAddresses(
 		envInt("PORT", 8080),
 		envInt("GRPC_PORT", 50051),
 		os.Getenv("DEEPDATA_INSECURE_DEV_MODE") == "1",
+		os.Getenv("DEEPDATA_BIND_HOST"),
 	)
+	if err != nil {
+		logger.Error("refusing invalid API bind host", "error", err)
+		if closeErr := collectionHTTP.Abort(); closeErr != nil {
+			logger.Error("failed to release collection store after bind-host refusal", "error", closeErr)
+		}
+		os.Exit(1)
+	}
 	httpListener, grpcListener, err := bindAPIListeners(addr, grpcAddr)
 	if err != nil {
 		logger.Error("refusing to start without the complete API listener set", "error", err)
 		if closeErr := collectionHTTP.Abort(); closeErr != nil {
 			logger.Error("failed to release collection store after listener failure", "error", closeErr)
+		}
+		os.Exit(1)
+	}
+
+	handler, err = canonicalReplicationSurface(handler, collectionHTTP, indexPath, logger)
+	if err != nil {
+		logger.Error("refusing to start with an unusable replication configuration", "error", err)
+		if closeErr := collectionHTTP.Abort(); closeErr != nil {
+			logger.Error("failed to release collection store after replication refusal", "error", closeErr)
 		}
 		os.Exit(1)
 	}
@@ -3413,17 +3349,11 @@ func main() {
 		grpcSrv = grpc.NewServer(
 			grpc.MaxRecvMsgSize(canonicalGRPCMaxReceiveBytes),
 			grpc.MaxSendMsgSize(64*1024*1024),
-			grpc.UnaryInterceptor(grpcAuthInterceptorWithRateLimiters(
-				store.jwtMgr,
-				store.apiToken,
-				store.requireAuth,
-				logger,
-				store.canonicalTenantRL,
-				store.authFailureRL,
-			)),
+			grpc.UnaryInterceptor(rt.grpcInterceptor(logger)),
 		)
 		deepdatav3.RegisterDeepDataServer(grpcSrv, &CollectionGRPCServer{
-			tenants: collectionHTTP.TenantManager(),
+			tenants:  collectionHTTP.TenantManager(),
+			embedder: collectionHTTP.embedder,
 			persistenceHealth: func() error {
 				if !collectionHTTP.IsDurable() {
 					return errors.New("durable collection persistence is not initialized")
@@ -3453,113 +3383,6 @@ func main() {
 		}()
 	}
 
-	// Background compaction belongs to the legacy VectorStore. Canonical mode
-	// must not evaluate or depend on its interval configuration.
-	compactDone := make(chan struct{})
-	compactStop := make(chan struct{})
-	if canonicalOnly {
-		close(compactDone)
-	} else {
-		go func() {
-			defer close(compactDone)
-			interval := time.Duration(envInt("COMPACT_INTERVAL_MIN", 60)) * time.Minute
-			tombstoneThreshold := float64(envInt("COMPACT_TOMBSTONE_THRESHOLD", 10)) / 100.0
-			t := time.NewTicker(interval)
-			defer t.Stop()
-			for {
-				select {
-				case <-compactStop:
-					return
-				case <-t.C:
-					store.RLock()
-					total := store.Count
-					deleted := len(store.Deleted)
-					store.RUnlock()
-					if total == 0 {
-						continue
-					}
-					if float64(deleted)/float64(total) >= tombstoneThreshold {
-						logger.Info("auto-compaction triggered", "deleted", deleted, "total", total)
-						if err := store.Compact(indexPath); err != nil {
-							logger.Error("compact error", "error", err)
-						}
-					}
-				}
-			}
-		}()
-	}
-
-	// Background Obsidian vault sync
-	var obsidianSyncCancel context.CancelFunc
-	obsidianDone := make(chan struct{})
-	if canonicalOnly {
-		close(obsidianDone)
-	} else {
-		cfg := obsidian.LoadOrDetectConfig(dataDir)
-		obsidian.ApplyEnvOverrides(&cfg)
-
-		if cfg.Enabled && cfg.VaultPath != "" {
-			cfg.StateFile = filepath.Join(dataDir, ".obsidian-sync-state")
-			syncCtx, cancel := context.WithCancel(context.Background())
-			obsidianSyncCancel = cancel
-
-			// Wire store methods into callbacks to avoid import cycles
-			embedFn := func(text string) ([]float32, error) {
-				return swappableEmbedder.Embed(text)
-			}
-			upsertFn := func(vec []float32, doc, id string, meta map[string]string, collection string) error {
-				_, err := store.Upsert(vec, doc, id, meta, collection, "default")
-				return err
-			}
-			deleteFn := func(id string) error {
-				return store.Delete(id)
-			}
-			iterFn := func(collection string, fn func(id string, meta map[string]string) bool) {
-				type snapshotEntry struct {
-					id   string
-					meta map[string]string
-				}
-
-				store.RLock()
-				entries := make([]snapshotEntry, 0, store.Count)
-				for i := 0; i < store.Count; i++ {
-					docID := store.GetID(i)
-					hid := hashID(docID)
-					if store.Deleted[hid] {
-						continue
-					}
-					if collection != "" && store.Coll[hid] != collection {
-						continue
-					}
-					metaCopy := make(map[string]string, len(store.Meta[hid]))
-					for k, v := range store.Meta[hid] {
-						metaCopy[k] = v
-					}
-					entries = append(entries, snapshotEntry{id: docID, meta: metaCopy})
-				}
-				store.RUnlock()
-
-				for _, entry := range entries {
-					if !fn(entry.id, entry.meta) {
-						break
-					}
-				}
-			}
-
-			go func() {
-				defer close(obsidianDone)
-				obsidian.SyncLoop(syncCtx, cfg, logger, embedFn, upsertFn, deleteFn, iterFn)
-			}()
-			logger.Info("obsidian auto-sync started", "vault", cfg.VaultPath, "interval", cfg.Interval)
-		} else {
-			close(obsidianDone) // Not started — unblock shutdown wait
-			if vaults := obsidian.DetectVaults(); len(vaults) > 0 {
-				logger.Info("obsidian vault detected (not syncing — set OBSIDIAN_VAULT to enable)",
-					"vault", vaults[0])
-			}
-		}
-	}
-
 	// Setup graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -3576,18 +3399,8 @@ func main() {
 	}
 	signal.Stop(sigCh)
 
-	// Stop background compaction
-	close(compactStop)
-
-	// Stop obsidian sync
-	if obsidianSyncCancel != nil {
-		obsidianSyncCancel()
-	}
-
-	// Graceful shutdown sequence. A forced or timed-out drain retains WAL
-	// artifacts even if a final snapshot succeeds; only a proven clean drain may
-	// discard the recovery source.
-	cleanDrain := !serveFailed
+	// Graceful shutdown sequence. The final collection checkpoint runs only
+	// when every handler has drained.
 	allHandlersDrained := true
 	if grpcSrv != nil {
 		logging.Default().Info("shutting down gRPC server")
@@ -3600,7 +3413,6 @@ func main() {
 		case <-grpcDone:
 		case <-time.After(30 * time.Second):
 			logging.Default().Warn("gRPC graceful shutdown timed out, forcing stop")
-			cleanDrain = false
 			grpcSrv.Stop()
 			select {
 			case <-grpcDone:
@@ -3615,7 +3427,6 @@ func main() {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		cleanDrain = false
 		logging.Default().Error("HTTP server shutdown error; forcing connection close", "error", err)
 		if closeErr := srv.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
 			logging.Default().Error("HTTP server forced close error", "error", closeErr)
@@ -3630,49 +3441,14 @@ func main() {
 	case <-httpDone:
 	case <-time.After(5 * time.Second):
 		allHandlersDrained = false
-		cleanDrain = false
 		logging.Default().Error("HTTP handlers did not drain after shutdown")
 	}
 
-	// Wait for background goroutines to finish before final save
-	logger.Info("waiting for background compaction to finish...")
-	<-compactDone
-	logger.Info("waiting for obsidian sync to finish...")
-	<-obsidianDone
 	if allHandlersDrained {
-		if !canonicalOnly {
-			logger.Info("waiting for in-flight legacy WAL snapshots to finish...")
-			store.bgWg.Wait()
-
-			logging.Default().Info("saving final legacy snapshot")
-			if err := store.Save(indexPath); err != nil {
-				logger.Error("failed to save final legacy snapshot", "error", err)
-			} else {
-				logger.Info("final legacy snapshot saved successfully")
-				store.RLock()
-				walFault := store.walFault
-				store.RUnlock()
-				if cleanDrain && walFault == nil && store.walPath != "" {
-					for _, walPath := range []string{store.walPath + ".frozen", store.walPath} {
-						if err := removeWALArtifact(walPath); err != nil {
-							logger.Error("failed to remove checkpointed WAL artifact", "path", walPath, "error", err)
-						}
-					}
-				} else if store.walPath != "" {
-					logger.Warn("retaining legacy WAL artifacts after non-clean shutdown or WAL fault", "clean_drain", cleanDrain, "wal_fault", walFault)
-				}
-			}
-		}
-		if canonicalOnly {
-			if err := collectionHTTP.Close(); err != nil {
-				logger.Error("failed to checkpoint and close canonical collection state", "error", err)
-			} else {
-				logger.Info("canonical collection state checkpointed and closed successfully")
-			}
-		} else if err := collectionHTTP.Save(indexPath + ".collections"); err != nil {
-			logger.Error("failed to save collection state", "error", err)
+		if err := collectionHTTP.Close(); err != nil {
+			logger.Error("failed to checkpoint and close canonical collection state", "error", err)
 		} else {
-			logger.Info("collection state saved successfully")
+			logger.Info("canonical collection state checkpointed and closed successfully")
 		}
 	} else {
 		logger.Error("skipping final persistence checkpoint because handlers are still active; WAL artifacts retained")
@@ -3708,10 +3484,23 @@ func bindAPIListeners(httpAddr, grpcAddr string) (net.Listener, net.Listener, er
 
 // canonicalListenerAddresses keeps the explicit credentialless development
 // escape hatch loopback-only. Authenticated deployments retain wildcard binds
-// so containers and orchestrators can publish the configured ports.
-func canonicalListenerAddresses(httpPort, grpcPort int, insecureDevelopment bool) (string, string) {
+// by default so containers and orchestrators can publish the configured ports,
+// while DEEPDATA_BIND_HOST lets an operator reduce exposure to one IP literal.
+func canonicalListenerAddresses(httpPort, grpcPort int, insecureDevelopment bool, configuredHost string) (string, string, error) {
 	host := ""
-	if insecureDevelopment {
+	if configuredHost != strings.TrimSpace(configuredHost) {
+		return "", "", errors.New("DEEPDATA_BIND_HOST must not contain surrounding whitespace")
+	}
+	if configuredHost != "" {
+		ip := net.ParseIP(configuredHost)
+		if ip == nil {
+			return "", "", fmt.Errorf("DEEPDATA_BIND_HOST=%q must be an IP literal", configuredHost)
+		}
+		if insecureDevelopment && !ip.IsLoopback() {
+			return "", "", errors.New("DEEPDATA_INSECURE_DEV_MODE may bind only to a loopback IP")
+		}
+		host = configuredHost
+	} else if insecureDevelopment {
 		host = "127.0.0.1"
 	}
 	httpAddr := net.JoinHostPort(host, strconv.Itoa(httpPort))
@@ -3719,7 +3508,7 @@ func canonicalListenerAddresses(httpPort, grpcPort int, insecureDevelopment bool
 	if grpcPort > 0 {
 		grpcAddr = net.JoinHostPort(host, strconv.Itoa(grpcPort))
 	}
-	return httpAddr, grpcAddr
+	return httpAddr, grpcAddr, nil
 }
 
 func envInt(key string, def int) int {
@@ -3921,21 +3710,32 @@ func grpcAuthInterceptorWithRateLimiters(
 		defer func() {
 			if r := recover(); r != nil {
 				logger.Error("panic recovered in gRPC handler", "error", r, "method", info.FullMethod)
-				err = status.Errorf(codes.Internal, "internal error")
+				err = apierror.New(apierror.CodeInternal, "internal error").GRPC(ctx)
 			}
 		}()
 
-		// Extract auth token from gRPC metadata (mirrors HTTP Authorization header)
-		token := ""
+		// Auth token and request id from gRPC metadata (mirrors the HTTP
+		// Authorization header and X-Request-ID middleware): honour the
+		// caller's x-request-id or mint one, echo it as a response header and
+		// carry it in ctx so every apierror quotes it.
+		token, requestID := "", ""
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
 			if vals := md.Get("authorization"); len(vals) > 0 {
 				token = strings.TrimPrefix(vals[0], "Bearer ")
 			}
+			if vals := md.Get("x-request-id"); len(vals) > 0 {
+				requestID = truncateRequestID(strings.TrimSpace(vals[0]), 128)
+			}
 		}
+		if requestID == "" {
+			requestID = generateRequestID()
+		}
+		ctx = context.WithValue(ctx, logging.RequestIDKey, requestID)
+		_ = grpc.SetHeader(ctx, metadata.Pairs("x-request-id", requestID))
 		authPeerKey := grpcAuthPeerKey(ctx)
 		authAttempt, allowed := authFailureLimiter.begin(authPeerKey)
 		if !allowed {
-			return nil, status.Error(codes.ResourceExhausted, "authentication rate limited")
+			return nil, apierror.New(apierror.CodeRateLimited, "authentication rate limited").GRPC(ctx)
 		}
 		finishAuthAttempt := func(failed bool) {
 			if authAttempt != nil {
@@ -3951,7 +3751,7 @@ func grpcAuthInterceptorWithRateLimiters(
 			if token == "" {
 				if requireAuth {
 					finishAuthAttempt(true)
-					return nil, status.Error(codes.Unauthenticated, "missing authentication token")
+					return nil, apierror.New(apierror.CodeUnauthenticated, "missing authentication token").GRPC(ctx)
 				}
 				tenantCtx = &security.TenantContext{
 					TenantID:    "default",
@@ -3964,7 +3764,7 @@ func grpcAuthInterceptorWithRateLimiters(
 				if valErr != nil {
 					logging.Default().Error("gRPC JWT validation failed", "error", valErr)
 					finishAuthAttempt(true)
-					return nil, status.Error(codes.Unauthenticated, "invalid token")
+					return nil, apierror.New(apierror.CodeUnauthenticated, "invalid token").GRPC(ctx)
 				}
 			}
 		} else {
@@ -3974,12 +3774,12 @@ func grpcAuthInterceptorWithRateLimiters(
 					authenticated = true
 				} else if token != "" {
 					finishAuthAttempt(true)
-					return nil, status.Error(codes.Unauthenticated, "unauthorized")
+					return nil, apierror.New(apierror.CodeUnauthenticated, "unauthorized").GRPC(ctx)
 				}
 			}
 			if requireAuth && !authenticated {
 				finishAuthAttempt(true)
-				return nil, status.Error(codes.Unauthenticated, "unauthorized")
+				return nil, apierror.New(apierror.CodeUnauthenticated, "unauthorized").GRPC(ctx)
 			}
 			serverAdmin := authenticated || (jwtMgr == nil && apiToken == "")
 			tenantCtx = &security.TenantContext{
@@ -4001,7 +3801,7 @@ func grpcAuthInterceptorWithRateLimiters(
 			}
 			tenantKey := canonicalRateLimitTenant(tenantCtx, targetTenant)
 			if !tenantLimiter.allow(tenantKey) {
-				return nil, status.Error(codes.ResourceExhausted, "tenant rate limited")
+				return nil, apierror.New(apierror.CodeRateLimited, "tenant rate limited").GRPC(ctx)
 			}
 		}
 

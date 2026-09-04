@@ -1,0 +1,44 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if and .Values.telemetry.enabled (eq (len .Values.networkPolicy.egressTo) 0) }}
+{{- fail "telemetry requires an explicit networkPolicy.egressTo CIDR; the RC pod deny-all egress cannot reach an OTLP endpoint otherwise" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-deepdata
+  labels:
+    app.kubernetes.io/name: deepdata
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: deepdata
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Ingress is limited to the advertised protocols, but not by source: the
+    # single-node server's clients live outside its own namespace. Omitting
+    # `from` is how that is spelled -- a rule with no peers matches all
+    # sources. Writing `from: [- {}]` expresses the same intent in prose and
+    # is rejected by the API server ("spec.ingress[0].from[0]: Required
+    # value: must specify a peer"), which takes the whole chart down with it.
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+        - protocol: TCP
+          port: {{ .Values.service.grpcPort }}
+  egress:
+    {{- if .Values.networkPolicy.egressTo }}
+    {{- range .Values.networkPolicy.egressTo }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+    {{- else }}
+    # The RC pod makes no outbound connections (telemetry is off by default).
+    # An empty egress list denies all outbound traffic.
+    []
+    {{- end }}
+{{- end }}

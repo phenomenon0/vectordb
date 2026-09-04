@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/phenomenon0/vectordb/internal/logging"
 )
@@ -104,6 +105,54 @@ func TestRequestIDFromContext(t *testing.T) {
 			t.Errorf("expected %q, got %q", "test-id-abc", got)
 		}
 	})
+}
+
+// TestRequestIDTruncationKeepsValidUTF8 verifies that a client-supplied ID
+// longer than the cap is truncated to a valid UTF-8 string rather than being
+// sliced at an arbitrary byte boundary (which could corrupt the echoed header
+// and the structured log field).
+func TestRequestIDTruncationKeepsValidUTF8(t *testing.T) {
+	store := NewVectorStore(100, 4)
+	emb := NewHashEmbedder(4)
+	handler, _ := newHTTPHandler(store, emb, nil, "")
+
+	// 127 ASCII bytes + a 2-byte rune + another 2-byte rune: a naive 128-byte
+	// slice would cut the first é mid-rune.
+	clientID := strings.Repeat("a", 127) + "é" + "é"
+	if len(clientID) <= 128 {
+		t.Fatalf("test setup requires a >128-byte ID, got %d", len(clientID))
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("X-Request-ID", clientID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	got := rec.Header().Get("X-Request-ID")
+	if len(got) > 128 {
+		t.Errorf("truncated X-Request-ID length = %d, want <= 128", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("X-Request-ID is not valid UTF-8 after truncation: %q", got)
+	}
+}
+
+// TestTruncateRequestID verifies the truncation helper directly.
+func TestTruncateRequestID(t *testing.T) {
+	if got := truncateRequestID("short", 128); got != "short" {
+		t.Errorf("truncateRequestID under limit = %q, want unchanged", got)
+	}
+	multi := strings.Repeat("é", 70) // 140 bytes, five 2-byte runes over 128
+	got := truncateRequestID(multi, 128)
+	if len(got) > 128 {
+		t.Errorf("truncateRequestID length = %d, want <= 128", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("truncateRequestID produced invalid UTF-8: %q", got)
+	}
+	if len(got)%2 != 0 {
+		t.Errorf("truncateRequestID split a 2-byte rune: %q", got)
+	}
 }
 
 // TestGenerateRequestID verifies the ID generator produces valid hex strings.

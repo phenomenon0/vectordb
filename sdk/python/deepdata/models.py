@@ -92,13 +92,26 @@ class TenantIndexConfig(_TenantRequestModel):
         return self
 
 
+class TenantEmbeddingConfig(_TenantRequestModel):
+    """Binds a field to a text embedder so requests may send ``texts`` for it.
+
+    Dense fields bind the server's ``DEEPDATA_EMBEDDER`` provider (``model``
+    optional; the server fills it and ``dim`` at create). Sparse fields bind
+    only ``provider="bm25"`` (deterministic term hashing, no server embedder).
+    """
+
+    provider: str = Field(min_length=1)
+    model: str | None = None
+
+
 class TenantVectorField(_TenantRequestModel):
     """Vector field accepted by ``POST /v3/.../collections``."""
 
     name: str
     type: Literal["dense", "sparse"]
-    dim: int = Field(gt=0, le=65_536)
+    dim: int = Field(default=0, ge=0, le=65_536)
     index: TenantIndexConfig
+    embedding: TenantEmbeddingConfig | None = None
 
     @model_validator(mode="after")
     def validate_canonical_index(self) -> TenantVectorField:
@@ -108,7 +121,29 @@ class TenantVectorField(_TenantRequestModel):
             raise ValueError("dense fields require an hnsw or flat index")
         if self.type == "sparse" and self.index.type != "inverted":
             raise ValueError("sparse fields require an inverted index")
+        if self.dim == 0 and self.embedding is None:
+            raise ValueError("dim is required unless the field binds an embedding")
+        if self.embedding is not None:
+            is_bm25 = self.embedding.provider == "bm25"
+            if self.type == "sparse" and (not is_bm25 or self.embedding.model is not None):
+                raise ValueError("sparse fields bind only embedding provider bm25 without a model")
+            if self.type == "dense" and is_bm25:
+                raise ValueError("embedding provider bm25 is for sparse fields")
         return self
+
+
+class TenantFieldInfo(TenantVectorField):
+    """A vector field as a read reports it.
+
+    Everything ``TenantVectorField`` carries plus ``score_direction``, which
+    the server derives from the field type and sends only on responses.
+    Unknown keys are ignored so a newer server can add response fields
+    without breaking this client.
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    score_direction: Literal["lower_is_better", "higher_is_better"] | None = None
 
 
 class TenantCollectionSchema(_TenantRequestModel):
@@ -118,6 +153,9 @@ class TenantCollectionSchema(_TenantRequestModel):
     fields: list[TenantVectorField] = Field(min_length=1, max_length=8)
     metadata: dict[str, Any] | None = None
     description: str | None = None
+    #: "ephemeral" keeps the documents in memory only: they write no journal
+    #: record and are gone after a restart, while the collection remains.
+    durability: Literal["durable", "ephemeral"] | None = None
 
 
 class TenantCollectionInfo(_TenantResponseModel):
@@ -129,7 +167,7 @@ class TenantCollectionInfo(_TenantResponseModel):
     """
 
     name: str = Field(validation_alias=AliasChoices("name", "Name"))
-    fields: list[TenantVectorField] = Field(
+    fields: list[TenantFieldInfo] = Field(
         validation_alias=AliasChoices("fields", "Fields")
     )
     description: str = Field(
@@ -140,6 +178,9 @@ class TenantCollectionInfo(_TenantResponseModel):
     )
     doc_count: int = Field(
         default=0, validation_alias=AliasChoices("doc_count", "DocCount"), ge=0
+    )
+    durability: Literal["durable", "ephemeral"] = Field(
+        default="durable", validation_alias=AliasChoices("durability", "Durability")
     )
 
 
@@ -168,12 +209,38 @@ class TenantGetCollectionResponse(_TenantResponseModel):
     collection: TenantCollectionInfo
 
 
+def _text_or_vector_fields(
+    vectors: dict[str, Any] | None, texts: dict[str, str] | None, vector_key: str
+) -> set[str]:
+    """Union of field names sent as vectors or texts; a field may be sent as one, not both."""
+
+    both = set(vectors or ()) & set(texts or ())
+    if both:
+        raise ValueError(
+            "fields sent as both text and vector: " + ", ".join(sorted(both))
+        )
+    names = set(vectors or ()) | set(texts or ())
+    if not names:
+        raise ValueError(f"{vector_key} or texts must name at least one field")
+    return names
+
+
 class TenantDocumentInput(_TenantRequestModel):
-    """One document accepted by canonical insert endpoints."""
+    """One document accepted by canonical insert endpoints.
+
+    ``texts`` (field name -> text) are embedded by the server for fields
+    created with an ``embedding`` binding; only the vector is stored.
+    """
 
     id: int | None = Field(default=None, gt=0)
-    vectors: dict[str, Any] = Field(min_length=1)
+    vectors: dict[str, Any] | None = None
+    texts: dict[str, str] | None = None
     metadata: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_vectors_or_texts(self) -> TenantDocumentInput:
+        _text_or_vector_fields(self.vectors, self.texts, "vectors")
+        return self
 
 
 class TenantBatchInsertRequest(_TenantRequestModel):
@@ -194,6 +261,35 @@ class TenantDocument(_TenantResponseModel):
     id: int = Field(gt=0)
     vectors: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+
+
+class TenantGetDocumentRequest(_TenantRequestModel):
+    """Canonical document read-by-ID path payload (empty today, reserved)."""
+
+    pass
+
+
+class TenantUpsertDocumentRequest(_TenantRequestModel):
+    """One document upserted under a caller-supplied ID. Unlike insert, the ID
+    is required and never auto-assigned by the server."""
+
+    vectors: dict[str, Any] | None = None
+    texts: dict[str, str] | None = None
+    metadata: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_vectors_or_texts(self) -> TenantUpsertDocumentRequest:
+        _text_or_vector_fields(self.vectors, self.texts, "vectors")
+        return self
+
+
+class TenantUpsertResponse(_TenantResponseModel):
+    """Response from upserting one canonical document."""
+
+    status: Literal["success"]
+    tenant_id: str
+    id: int = Field(gt=0)
+    message: str
 
 
 class TenantInsertResponse(_TenantResponseModel):
@@ -246,40 +342,123 @@ class TenantHybridParams(_TenantRequestModel):
         return self
 
 
-class TenantSearchRequest(_TenantRequestModel):
-    """Canonical tenant search payload."""
+class TenantFallbackParams(_TenantRequestModel):
+    """Auto-fallback ladder: primary field first, secondary if it is weak.
 
-    queries: dict[str, Any] = Field(min_length=1, max_length=2)
+    With ``threshold=None`` the ladder only falls back on zero hits; with a
+    threshold it also falls back when the primary's best score is worse than
+    the threshold in the field's score direction (best distance > threshold
+    on dense fields, best score < threshold on sparse fields).
+    """
+
+    primary: str = Field(min_length=1)
+    secondary: str = Field(min_length=1)
+    threshold: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_fallback_contract(self) -> TenantFallbackParams:
+        """Reject ladders the server cannot run."""
+
+        if self.primary == self.secondary:
+            raise ValueError("fallback primary and secondary must differ")
+        if self.threshold is not None and not math.isfinite(self.threshold):
+            raise ValueError("fallback threshold must be finite")
+        return self
+
+
+class TenantSearchRequest(_TenantRequestModel):
+    """Canonical tenant search payload.
+
+    ``score_floor`` is a confidence filter on the returned raw scores: on
+    dense (distance) fields it is a maximum acceptable distance (keep
+    ``score <= score_floor``), on sparse (BM25) and hybrid scores a minimum
+    acceptable score (keep ``score >= score_floor``). ``usage_boost`` blends
+    non-durable per-tenant usage (frecency) into ranking without altering
+    the reported raw scores. ``texts`` (field name -> query text) are
+    embedded by the server for fields with an ``embedding`` binding; the
+    response names the embedder per field in ``embedded_by``.
+    """
+
+    queries: dict[str, Any] | None = Field(default=None, max_length=2)
+    texts: dict[str, str] | None = Field(default=None, max_length=2)
     top_k: int = Field(default=10, gt=0, le=1000)
     ef_search: int | None = Field(default=None, ge=0)
     include_vectors: bool | None = None
     filters: dict[str, Any] | None = None
     hybrid_params: TenantHybridParams | None = None
+    score_floor: float | None = Field(default=None, ge=0)
+    fallback: TenantFallbackParams | None = None
+    usage_boost: float | None = Field(default=None, ge=0, lt=1)
 
     @model_validator(mode="after")
     def validate_hybrid_contract(self) -> TenantSearchRequest:
         """Keep SDK admission aligned with the server's two-field contract."""
 
-        if len(self.queries) > 1 and self.hybrid_params is None:
-            raise ValueError("multiple query fields require hybrid_params")
+        query_fields = _text_or_vector_fields(self.queries, self.texts, "queries")
+        if len(query_fields) > 2:
+            raise ValueError("search accepts at most two query fields")
+        if (
+            len(query_fields) > 1
+            and self.hybrid_params is None
+            and self.fallback is None
+        ):
+            raise ValueError(
+                "multiple query fields require hybrid_params or fallback"
+            )
         if self.hybrid_params is not None and self.hybrid_params.weights is not None:
-            unknown = self.hybrid_params.weights.keys() - self.queries.keys()
+            unknown = self.hybrid_params.weights.keys() - query_fields
             if unknown:
                 raise ValueError(
                     "hybrid weights reference unknown query fields: "
                     + ", ".join(sorted(unknown))
                 )
+        if self.fallback is not None:
+            if self.hybrid_params is not None:
+                raise ValueError(
+                    "fallback and hybrid_params are mutually exclusive"
+                )
+            if len(query_fields) != 2:
+                raise ValueError("fallback requires exactly two query fields")
+            missing = {self.fallback.primary, self.fallback.secondary} - query_fields
+            if missing:
+                raise ValueError(
+                    "fallback fields must be query fields: "
+                    + ", ".join(sorted(missing))
+                )
+        for name, value in (("score_floor", self.score_floor), ("usage_boost", self.usage_boost)):
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{name} must be finite")
         return self
 
 
 class TenantSearchResponse(_TenantResponseModel):
-    """Typed canonical tenant search result."""
+    """Typed canonical tenant search result.
+
+    ``best_score`` is the best raw score among ``documents`` (0 when empty)
+    and calibrates ``score_floor``. ``weak_match`` is true when
+    ``score_floor`` is set and no document survived it — treat it as "no
+    confident answer" rather than consuming the (empty) results.
+    ``fell_back_to`` names the secondary field when the fallback ladder
+    fired. ``embedded_by`` maps each field queried by text to the
+    ``provider:model`` that embedded it (empty when only vectors were sent).
+    ``score_direction`` says how to read ``scores`` and ``best_score``:
+    dense fields return distances (``lower_is_better``), sparse and fused
+    hybrid return scores (``higher_is_better``); it names the direction of
+    the field that actually answered.
+    """
 
     status: Literal["success"]
     tenant_id: str
     documents: list[TenantDocument]
     scores: list[float]
     candidates_examined: int = Field(ge=0)
+    best_score: float = 0.0
+    weak_match: bool = False
+    fell_back_to: str = ""
+    embedded_by: dict[str, str] = Field(default_factory=dict)
+    score_direction: Literal["lower_is_better", "higher_is_better"] | None = None
+    query_time_ms: float = 0.0
+    request_id: str = ""
 
 
 class TenantCollectionStats(_TenantResponseModel):

@@ -1,5 +1,3 @@
-// Package storage provides pluggable storage formats for VectorStore persistence.
-// Supports gob (default, backward compatible) and cowrie (optimized for embeddings).
 package storage
 
 import (
@@ -8,9 +6,9 @@ import (
 )
 
 const (
-	// CanonicalFormatVersion is the first snapshot format whose checksum covers
+	// StrictFormatVersion is the first snapshot format whose checksum covers
 	// the complete logical query state and whose index descriptors are strict.
-	CanonicalFormatVersion = 3
+	StrictFormatVersion = 3
 	// CurrentFormatVersion adds the durable WAL checkpoint high-water mark.
 	CurrentFormatVersion = 4
 )
@@ -51,10 +49,10 @@ type Payload struct {
 
 // Format defines the interface for storage format implementations.
 type Format interface {
-	// Name returns the format identifier (e.g., "gob", "cowrie")
+	// Name returns the format identifier (e.g., "gob")
 	Name() string
 
-	// Extension returns the file extension (e.g., ".gob", ".cowrie")
+	// Extension returns the file extension (e.g., ".gob")
 	Extension() string
 
 	// Save writes the payload to the writer
@@ -77,16 +75,8 @@ func Get(name string) Format {
 	return registry[name]
 }
 
-// Default returns the default storage format (cowrie with compression for efficiency).
-// For backward compatibility with existing gob files, use Get("gob").
+// Default returns the default storage format.
 func Default() Format {
-	if f := registry["cowrie-zstd"]; f != nil {
-		return f
-	}
-	// Fallback to uncompressed cowrie, then gob
-	if f := registry["cowrie"]; f != nil {
-		return f
-	}
 	return registry["gob"]
 }
 

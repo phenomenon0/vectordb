@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,12 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unsafe"
 
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
-	"github.com/phenomenon0/vectordb/internal/encoding"
 	"github.com/phenomenon0/vectordb/internal/graph"
-	"github.com/phenomenon0/vectordb/internal/hybrid"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/sparse"
 )
@@ -67,8 +64,29 @@ func decodeDenseVectorFast(raw json.RawMessage) ([]float32, error) {
 		if err := dec.Decode(&f); err != nil {
 			return nil, fmt.Errorf("invalid dense vector element: %w", err)
 		}
-		result = append(result, float32(f))
+		f32 := float32(f)
+		// A finite-but-out-of-float32-range element would silently become
+		// +Inf/-Inf and poison distance/similarity; reject it explicitly.
+		if math.IsNaN(float64(f32)) || math.IsInf(float64(f32), 0) {
+			return nil, fmt.Errorf("dense vector element %d out of float32 range", len(result))
+		}
+		result = append(result, f32)
 	}
+
+	// Consume the closing ']' and require the document to end there. Without
+	// this, a trailing second array (or bracketed garbage) after the vector is
+	// silently ignored even though it cannot be part of the vector.
+	end, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("dense vector array missing closing ']': %w", err)
+	}
+	if d, ok := end.(json.Delim); !ok || d != ']' {
+		return nil, fmt.Errorf("expected ']' at end of dense vector, got %v", end)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("unexpected trailing data after dense vector array: %v", err)
+	}
+
 	return result, nil
 }
 
@@ -93,7 +111,8 @@ type CollectionHTTPServer struct {
 	manager       *vcollection.CollectionManager
 	tenantManager *vcollection.TenantManager // Multi-tenant collection manager
 	graphIndex    *graph.GraphIndex          // Optional GraphRAG index for graph-boosted search
-	durableStore  *vcollection.DurableStore  // Canonical Linux persistence boundary
+	durableStore  *vcollection.DurableStore  // canonical Linux persistence boundary
+	embedder      *serverEmbedder            // process text embedder for `texts`; nil = none
 
 	persistenceMu       sync.Mutex
 	snapshotMetadata    vcollection.CollectionSnapshotMetadata
@@ -253,11 +272,33 @@ func (s *CollectionHTTPServer) PersistenceError() error {
 	return s.persistenceErr
 }
 
+// DurableStore is the canonical store, or nil for a memory-only run. It is the
+// replication leader's source; nothing else outside this file should reach past
+// the accessors above for it.
+func (s *CollectionHTTPServer) DurableStore() *vcollection.DurableStore {
+	s.persistenceMu.Lock()
+	defer s.persistenceMu.Unlock()
+	return s.durableStore
+}
+
 // IsDurable reports whether the canonical journal and lifetime lock opened.
 func (s *CollectionHTTPServer) IsDurable() bool {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
 	return s.durableStore != nil
+}
+
+// UsageLoaded reports whether the class B usage records this server opened
+// with were the ones it was entitled to. A memory-only run has no sidecar to
+// lose, so it reports true for the same reason a durable store with no
+// sidecar does: the signal names a loss, not a file read (CTL-05).
+func (s *CollectionHTTPServer) UsageLoaded() bool {
+	s.persistenceMu.Lock()
+	defer s.persistenceMu.Unlock()
+	if s.durableStore == nil {
+		return true
+	}
+	return s.durableStore.UsageLoaded()
 }
 
 // Close checkpoints and releases the lifetime lock for a durable store. It is
@@ -293,7 +334,7 @@ func (s *CollectionHTTPServer) Abort() error {
 }
 
 // Manager returns the legacy V2 manager for explicit migration/compatibility
-// code. Canonical durable state is never installed into this raw manager.
+// code. The canonical durable state is never installed into this raw manager.
 func (s *CollectionHTTPServer) Manager() *vcollection.CollectionManager {
 	return s.manager
 }
@@ -321,482 +362,20 @@ func (s *CollectionHTTPServer) EnableGraphRAG(cfg graph.Config) {
 	s.graphIndex = graph.NewGraphIndex(cfg)
 }
 
-// RegisterHandlers registers all collection HTTP handlers with the given mux
-func (s *CollectionHTTPServer) RegisterHandlers(mux *http.ServeMux, guard func(http.HandlerFunc) http.HandlerFunc, adminGuard func(http.HandlerFunc) http.HandlerFunc) {
-	// Admin endpoints for collection management
-	mux.HandleFunc("/v2/collections", adminGuard(s.handleCollections))
-	mux.HandleFunc("/v2/collections/", adminGuard(s.handleCollectionOps))
-
-	// Document operations (multi-vector support)
-	mux.HandleFunc("/v2/insert", guard(s.handleInsert))
-	mux.HandleFunc("/v2/insert/batch", guard(s.handleBatchInsert)) // True batch insert
-	mux.HandleFunc("/v2/search", guard(s.handleSearch))
-	mux.HandleFunc("/v2/delete", guard(s.handleDelete))
-
-	// Binary bulk import (zero-copy dense vectors)
-	mux.HandleFunc("/v2/import", guard(s.handleBinaryImport))
-
-	// Recommend and Discover APIs
-	mux.HandleFunc("/v2/recommend", guard(s.handleRecommend))
-	mux.HandleFunc("/v2/discover", guard(s.handleDiscover))
-
-	// Multi-tenant endpoints (v3)
-	// Tenant collection management
-	mux.HandleFunc("/v3/tenants/", guard(s.handleTenantRoutes))
-}
-
 // RegisterCanonicalHandlers exposes only the tenant-aware RC contract. Legacy
 // V2, bulk import, recommend, and discover handlers are deliberately absent.
 func (s *CollectionHTTPServer) RegisterCanonicalHandlers(mux *http.ServeMux, guard func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("/v3/tenants/", guard(func(w http.ResponseWriter, r *http.Request) {
 		if !s.IsDurable() {
-			http.Error(w, "durable collection persistence required", http.StatusServiceUnavailable)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeUnavailable, "durable collection persistence required"))
 			return
 		}
 		if err := s.PersistenceError(); err != nil {
-			http.Error(w, "collection persistence unavailable", http.StatusServiceUnavailable)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeUnavailable, "collection persistence unavailable"))
 			return
 		}
 		s.handleTenantRoutes(w, r)
 	}))
-}
-
-// handleCollections handles POST (create) and GET (list) on /v2/collections
-func (s *CollectionHTTPServer) handleCollections(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		s.handleCreateCollection(w, r)
-	case http.MethodGet:
-		s.handleListCollections(w, r)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// handleCreateCollection creates a new multi-vector collection
-func (s *CollectionHTTPServer) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
-	var schema vcollection.CollectionSchema
-	if err := json.NewDecoder(r.Body).Decode(&schema); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Create collection
-	ctx := r.Context()
-	if _, err := s.manager.CreateCollection(ctx, schema); err != nil {
-		http.Error(w, fmt.Sprintf("failed to create collection: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Return success
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "success",
-		"message": fmt.Sprintf("collection %q created", schema.Name),
-	})
-}
-
-// handleListCollections returns all collections with their info
-func (s *CollectionHTTPServer) handleListCollections(w http.ResponseWriter, r *http.Request) {
-	infos := s.manager.ListCollectionInfos()
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":      "success",
-		"count":       len(infos),
-		"collections": infos,
-	})
-}
-
-// handleCollectionOps handles operations on specific collections: GET, DELETE, PUT /v2/collections/{name}
-func (s *CollectionHTTPServer) handleCollectionOps(w http.ResponseWriter, r *http.Request) {
-	// Extract collection name from URL
-	path := strings.TrimPrefix(r.URL.Path, "/v2/collections/")
-	parts := strings.Split(path, "/")
-
-	if len(parts) == 0 || parts[0] == "" {
-		http.Error(w, "collection name required", http.StatusBadRequest)
-		return
-	}
-
-	collectionName := parts[0]
-
-	// Route based on HTTP method and path structure
-	if len(parts) == 1 {
-		// /v2/collections/{name}
-		switch r.Method {
-		case http.MethodGet:
-			s.handleGetCollection(w, r, collectionName)
-		case http.MethodDelete:
-			s.handleDeleteCollection(w, r, collectionName)
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	} else if len(parts) == 2 {
-		// /v2/collections/{name}/stats|get
-		operation := parts[1]
-		if operation == "stats" && r.Method == http.MethodGet {
-			s.handleCollectionStats(w, r, collectionName)
-		} else if operation == "get" && r.Method == http.MethodPost {
-			s.handleCollectionGetDocuments(w, r, collectionName)
-		} else {
-			http.Error(w, "unknown operation or method not allowed", http.StatusBadRequest)
-		}
-	} else {
-		http.Error(w, "invalid URL format", http.StatusBadRequest)
-	}
-}
-
-// handleGetCollection returns collection info
-func (s *CollectionHTTPServer) handleGetCollection(w http.ResponseWriter, r *http.Request, name string) {
-	info, err := s.manager.GetCollectionInfo(name)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("collection not found: %v", err), http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":     "success",
-		"collection": info,
-	})
-}
-
-// handleDeleteCollection deletes a collection
-func (s *CollectionHTTPServer) handleDeleteCollection(w http.ResponseWriter, r *http.Request, name string) {
-	ctx := r.Context()
-	if err := s.manager.DeleteCollection(ctx, name); err != nil {
-		http.Error(w, fmt.Sprintf("failed to delete collection: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "success",
-		"message": fmt.Sprintf("collection %q deleted", name),
-	})
-}
-
-// handleCollectionStats returns collection statistics
-func (s *CollectionHTTPServer) handleCollectionStats(w http.ResponseWriter, r *http.Request, name string) {
-	info, err := s.manager.GetCollectionInfo(name)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("collection not found: %v", err), http.StatusNotFound)
-		return
-	}
-
-	stats := s.manager.GetStats()
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":        "success",
-		"name":          name,
-		"doc_count":     info.DocCount,
-		"manager_stats": stats,
-	})
-}
-
-func (s *CollectionHTTPServer) handleCollectionGetDocuments(w http.ResponseWriter, r *http.Request, name string) {
-	if _, err := s.manager.GetCollection(name); err != nil {
-		http.Error(w, fmt.Sprintf("collection not found: %v", err), http.StatusNotFound)
-		return
-	}
-
-	var req struct {
-		IDs []uint64 `json:"ids"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
-	if len(req.IDs) == 0 {
-		http.Error(w, "at least one id required", http.StatusBadRequest)
-		return
-	}
-
-	documents := make([]vcollection.Document, 0, len(req.IDs))
-	for _, id := range req.IDs {
-		doc, err := s.manager.GetDocument(name, id)
-		if err != nil {
-			continue
-		}
-		documents = append(documents, *doc)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "success",
-		"documents": documents,
-	})
-}
-
-// InsertRequest for multi-vector documents
-type InsertRequest struct {
-	CollectionName string                 `json:"collection"`
-	Doc            string                 `json:"doc"`
-	Vectors        map[string]interface{} `json:"vectors"` // field name -> vector data
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`
-}
-
-// handleInsert adds a document with multiple vectors to a collection
-func (s *CollectionHTTPServer) handleInsert(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req InsertRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Validate request
-	if req.CollectionName == "" {
-		http.Error(w, "collection name required", http.StatusBadRequest)
-		return
-	}
-
-	if len(req.Vectors) == 0 {
-		http.Error(w, "at least one vector required", http.StatusBadRequest)
-		return
-	}
-
-	// Convert vectors to proper format
-	vectors := make(map[string]interface{})
-	for fieldName, vectorData := range req.Vectors {
-		// Check if it's a sparse vector (has indices and values)
-		if vecMap, ok := vectorData.(map[string]interface{}); ok {
-			if indices, hasIndices := vecMap["indices"]; hasIndices {
-				// Sparse vector format
-				indicesSlice, ok1 := indices.([]interface{})
-				values, ok2 := vecMap["values"].([]interface{})
-				dim, ok3 := vecMap["dim"].(float64)
-
-				if !ok1 || !ok2 || !ok3 {
-					http.Error(w, fmt.Sprintf("invalid sparse vector format for field %s", fieldName), http.StatusBadRequest)
-					return
-				}
-
-				// Convert to uint32 and float32
-				uint32Indices := make([]uint32, len(indicesSlice))
-				for i, v := range indicesSlice {
-					if f, ok := v.(float64); ok {
-						uint32Indices[i] = uint32(f)
-					}
-				}
-
-				float32Values := make([]float32, len(values))
-				for i, v := range values {
-					if f, ok := v.(float64); ok {
-						float32Values[i] = float32(f)
-					}
-				}
-
-				sparseVec, err := sparse.NewSparseVector(uint32Indices, float32Values, int(dim))
-				if err != nil {
-					http.Error(w, fmt.Sprintf("invalid sparse vector: %v", err), http.StatusBadRequest)
-					return
-				}
-				vectors[fieldName] = sparseVec
-				continue
-			}
-		}
-
-		// Dense vector format
-		if vecSlice, ok := vectorData.([]interface{}); ok {
-			denseVec := make([]float32, len(vecSlice))
-			for i, v := range vecSlice {
-				if f, ok := v.(float64); ok {
-					denseVec[i] = float32(f)
-				}
-			}
-			vectors[fieldName] = denseVec
-		}
-	}
-
-	// Create document
-	doc := vcollection.Document{
-		Vectors:  vectors,
-		Metadata: req.Metadata,
-	}
-
-	// Add to collection
-	ctx := r.Context()
-	if err := s.manager.AddDocument(ctx, req.CollectionName, &doc); err != nil {
-		http.Error(w, fmt.Sprintf("failed to add document: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "success",
-		"id":      doc.ID,
-		"message": "document added",
-	})
-}
-
-// BatchInsertRequest for bulk document insertion (SOTA batch API)
-type BatchInsertRequest struct {
-	CollectionName  string          `json:"collection"`
-	Docs            []InsertRequest `json:"docs"`
-	ContinueOnError bool            `json:"continue_on_error"`
-}
-
-// handleBatchInsert adds multiple documents in a single request (true batch)
-// This provides 10-50x throughput improvement over sequential inserts
-func (s *CollectionHTTPServer) handleBatchInsert(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req BatchInsertRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Validate request
-	if req.CollectionName == "" {
-		http.Error(w, "collection name required", http.StatusBadRequest)
-		return
-	}
-
-	if len(req.Docs) == 0 {
-		http.Error(w, "no documents provided", http.StatusBadRequest)
-		return
-	}
-	if len(req.Docs) > limitMaxBatchSize {
-		http.Error(w, fmt.Sprintf("batch too large: max %d documents (set LIMIT_MAX_BATCH_SIZE to increase)", limitMaxBatchSize), http.StatusBadRequest)
-		return
-	}
-
-	ids := make([]uint64, 0, len(req.Docs))
-	errors := make(map[int]string)
-	ctx := r.Context()
-
-	for i, docReq := range req.Docs {
-		// Use collection from batch request if not specified per-doc
-		collectionName := docReq.CollectionName
-		if collectionName == "" {
-			collectionName = req.CollectionName
-		}
-
-		// Validate vectors
-		if len(docReq.Vectors) == 0 {
-			errors[i] = "at least one vector required"
-			if !req.ContinueOnError {
-				break
-			}
-			continue
-		}
-
-		// Convert vectors to proper format (reuse existing logic)
-		vectors := make(map[string]interface{})
-		for fieldName, vectorData := range docReq.Vectors {
-			// Check if it's a sparse vector (has indices and values)
-			if vecMap, ok := vectorData.(map[string]interface{}); ok {
-				if indices, hasIndices := vecMap["indices"]; hasIndices {
-					// Sparse vector format
-					indicesSlice, ok1 := indices.([]interface{})
-					values, ok2 := vecMap["values"].([]interface{})
-					dim, ok3 := vecMap["dim"].(float64)
-
-					if !ok1 || !ok2 || !ok3 {
-						errors[i] = fmt.Sprintf("invalid sparse vector format for field %s", fieldName)
-						if !req.ContinueOnError {
-							break
-						}
-						continue
-					}
-
-					// Convert to uint32 and float32
-					uint32Indices := make([]uint32, len(indicesSlice))
-					for j, v := range indicesSlice {
-						if f, ok := v.(float64); ok {
-							uint32Indices[j] = uint32(f)
-						}
-					}
-
-					float32Values := make([]float32, len(values))
-					for j, v := range values {
-						if f, ok := v.(float64); ok {
-							float32Values[j] = float32(f)
-						}
-					}
-
-					sparseVec, err := sparse.NewSparseVector(uint32Indices, float32Values, int(dim))
-					if err != nil {
-						errors[i] = fmt.Sprintf("invalid sparse vector: %v", err)
-						if !req.ContinueOnError {
-							break
-						}
-						continue
-					}
-					vectors[fieldName] = sparseVec
-					continue
-				}
-			}
-
-			// Dense vector format
-			if vecSlice, ok := vectorData.([]interface{}); ok {
-				denseVec := make([]float32, len(vecSlice))
-				for j, v := range vecSlice {
-					if f, ok := v.(float64); ok {
-						denseVec[j] = float32(f)
-					}
-				}
-				vectors[fieldName] = denseVec
-			}
-		}
-
-		// Skip if we hit an error during vector conversion.
-		// FIX #7: When ContinueOnError=false, a break from the inner field loop
-		// must also break the outer doc loop, not just continue to the next doc.
-		if _, hasError := errors[i]; hasError {
-			if !req.ContinueOnError {
-				break
-			}
-			continue
-		}
-
-		// Create document
-		doc := vcollection.Document{
-			Vectors:  vectors,
-			Metadata: docReq.Metadata,
-		}
-
-		// Add to collection
-		if err := s.manager.AddDocument(ctx, collectionName, &doc); err != nil {
-			errors[i] = err.Error()
-			if !req.ContinueOnError {
-				break
-			}
-			continue
-		}
-		ids = append(ids, doc.ID)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":   "success",
-		"ids":      ids,
-		"inserted": len(ids),
-		"failed":   len(errors),
-		"errors":   errors,
-	})
-}
-
-// searchJSONResponse is a typed struct for JSON encoding search results.
-// Using a struct instead of map[string]interface{} lets the JSON encoder
-// use the cached struct codec path, avoiding runtime reflection overhead.
-type searchJSONResponse struct {
-	Status             string                 `json:"status"`
-	Documents          []vcollection.Document `json:"documents"`
-	Scores             []float32              `json:"scores"`
-	CandidatesExamined int                    `json:"candidates_examined"`
 }
 
 // tenantSearchJSONResponse is a typed struct for tenant search JSON encoding.
@@ -806,20 +385,13 @@ type tenantSearchJSONResponse struct {
 	Documents          []vcollection.Document `json:"documents"`
 	Scores             []float32              `json:"scores"`
 	CandidatesExamined int                    `json:"candidates_examined"`
-}
-
-// SearchRequest for hybrid search
-type SearchRequest struct {
-	CollectionName string                          `json:"collection"`
-	Queries        map[string]interface{}          `json:"queries"`    // field name -> query vector
-	QueryText      string                          `json:"query_text"` // text query for GraphRAG entity matching
-	TopK           int                             `json:"top_k"`
-	EfSearch       int                             `json:"ef_search,omitempty"`       // HNSW ef_search override (0 = server default)
-	IncludeVectors *bool                           `json:"include_vectors,omitempty"` // include vectors in response (nil = default false)
-	Offset         int                             `json:"offset,omitempty"`
-	Filters        map[string]interface{}          `json:"filters,omitempty"`
-	HybridParams   *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
-	GraphWeight    float32                         `json:"graph_weight,omitempty"` // weight for graph signal (0 = disabled)
+	BestScore          float32                `json:"best_score,omitempty"`
+	WeakMatch          bool                   `json:"weak_match"`
+	FellBackTo         string                 `json:"fell_back_to,omitempty"`
+	EmbeddedBy         map[string]string      `json:"embedded_by,omitempty"`
+	ScoreDirection     string                 `json:"score_direction,omitempty"`
+	QueryTimeMs        float64                `json:"query_time_ms"`
+	RequestID          string                 `json:"request_id,omitempty"`
 }
 
 func resolveIncludeVectors(bodyValue *bool, raw string) (*bool, error) {
@@ -831,374 +403,6 @@ func resolveIncludeVectors(bodyValue *bool, raw string) (*bool, error) {
 		return nil, fmt.Errorf("include_vectors must be true or false")
 	}
 	return &parsed, nil
-}
-
-// handleSearch performs search (dense, sparse, or hybrid)
-func (s *CollectionHTTPServer) handleSearch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Two-phase decode: parse structure first, then decode vectors directly
-	// into []float32 via json.RawMessage, avoiding []interface{} intermediate.
-	var req searchRequestRaw
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Validate request
-	if req.CollectionName == "" {
-		http.Error(w, "collection name required", http.StatusBadRequest)
-		return
-	}
-
-	if len(req.Queries) == 0 {
-		http.Error(w, "at least one query vector required", http.StatusBadRequest)
-		return
-	}
-
-	if req.TopK <= 0 {
-		http.Error(w, "top_k must be positive", http.StatusBadRequest)
-		return
-	}
-	if req.Offset < 0 {
-		http.Error(w, "offset must be >= 0", http.StatusBadRequest)
-		return
-	}
-	effectiveTopK := req.TopK + req.Offset
-	if effectiveTopK < req.TopK { // overflow guard
-		http.Error(w, "invalid top_k/offset combination", http.StatusBadRequest)
-		return
-	}
-
-	// Decode query vectors directly into typed slices
-	queries := make(map[string]interface{}, len(req.Queries))
-	for fieldName, rawVec := range req.Queries {
-		trimmed := bytes.TrimSpace(rawVec)
-		if len(trimmed) == 0 {
-			http.Error(w, fmt.Sprintf("empty query vector for field %s", fieldName), http.StatusBadRequest)
-			return
-		}
-
-		// Sparse vector: JSON object with "indices" key
-		if trimmed[0] == '{' {
-			var vecMap map[string]interface{}
-			if err := json.Unmarshal(rawVec, &vecMap); err != nil {
-				http.Error(w, fmt.Sprintf("invalid sparse query for field %s: %v", fieldName, err), http.StatusBadRequest)
-				return
-			}
-			if indices, hasIndices := vecMap["indices"]; hasIndices {
-				indicesSlice, ok1 := indices.([]interface{})
-				values, ok2 := vecMap["values"].([]interface{})
-				dim, ok3 := vecMap["dim"].(float64)
-				if !ok1 || !ok2 || !ok3 {
-					http.Error(w, fmt.Sprintf("invalid sparse query vector for field %s", fieldName), http.StatusBadRequest)
-					return
-				}
-				uint32Indices := make([]uint32, len(indicesSlice))
-				for i, v := range indicesSlice {
-					if f, ok := v.(float64); ok {
-						uint32Indices[i] = uint32(f)
-					}
-				}
-				float32Values := make([]float32, len(values))
-				for i, v := range values {
-					if f, ok := v.(float64); ok {
-						float32Values[i] = float32(f)
-					}
-				}
-				sparseVec, err := sparse.NewSparseVector(uint32Indices, float32Values, int(dim))
-				if err != nil {
-					http.Error(w, fmt.Sprintf("invalid sparse query: %v", err), http.StatusBadRequest)
-					return
-				}
-				queries[fieldName] = sparseVec
-				continue
-			}
-		}
-
-		// Dense vector: JSON array — decode directly to []float32
-		if trimmed[0] == '[' {
-			denseVec, err := decodeDenseVectorFast(rawVec)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("invalid dense query for field %s: %v", fieldName, err), http.StatusBadRequest)
-				return
-			}
-			queries[fieldName] = denseVec
-		}
-	}
-
-	includeVectors, err := resolveIncludeVectors(req.IncludeVectors, r.URL.Query().Get("include_vectors"))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Build search request
-	searchReq := vcollection.SearchRequest{
-		CollectionName: req.CollectionName,
-		Queries:        queries,
-		TopK:           effectiveTopK,
-		EfSearch:       req.EfSearch,
-		IncludeVectors: includeVectors,
-		Filters:        req.Filters,
-		HybridParams:   req.HybridParams,
-	}
-
-	// Perform search
-	ctx := r.Context()
-	resp, err := s.manager.SearchCollection(ctx, searchReq)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("search failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Apply GraphRAG boosting if enabled
-	if s.graphIndex != nil && s.graphIndex.NodeCount() > 0 && req.GraphWeight > 0 {
-		queryTerms := strings.Fields(req.QueryText)
-		if len(queryTerms) > 0 {
-			graphResults := s.graphIndex.Search(queryTerms, effectiveTopK)
-			if len(graphResults) > 0 {
-				// Convert collection results to hybrid format
-				baseResults := make([]hybrid.SearchResult, len(resp.Documents))
-				for i, doc := range resp.Documents {
-					score := float32(0)
-					if i < len(resp.Scores) {
-						score = resp.Scores[i]
-					}
-					baseResults[i] = hybrid.SearchResult{DocID: doc.ID, Score: score}
-				}
-
-				// Fuse with graph scores
-				params := hybrid.FusionParams{
-					Strategy:    hybrid.FusionRRF,
-					DenseWeight: 1.0,
-					GraphWeight: req.GraphWeight,
-				}
-				fused, _ := hybrid.HybridSearchWithGraph(baseResults, nil, graphResults, params, effectiveTopK)
-
-				// Rebuild response from fused results
-				docMap := make(map[uint64]vcollection.Document, len(resp.Documents))
-				for _, doc := range resp.Documents {
-					docMap[doc.ID] = doc
-				}
-				fusedDocs := make([]vcollection.Document, 0, len(fused))
-				fusedScores := make([]float32, 0, len(fused))
-				for _, fr := range fused {
-					if doc, ok := docMap[fr.DocID]; ok {
-						fusedDocs = append(fusedDocs, doc)
-						fusedScores = append(fusedScores, fr.Score)
-					}
-				}
-				resp.Documents = fusedDocs
-				resp.Scores = fusedScores
-			}
-		}
-	}
-
-	// Apply offset pagination at HTTP layer.
-	// Collection engine currently supports top-k only, so we overfetch (top_k+offset)
-	// then trim to the requested page.
-	documents := resp.Documents
-	scores := resp.Scores
-	if req.Offset > 0 {
-		if req.Offset >= len(documents) {
-			documents = []vcollection.Document{}
-			scores = []float32{}
-		} else {
-			end := req.Offset + req.TopK
-			if end > len(documents) {
-				end = len(documents)
-			}
-			documents = documents[req.Offset:end]
-			if req.Offset < len(scores) {
-				scoreEnd := end
-				if scoreEnd > len(scores) {
-					scoreEnd = len(scores)
-				}
-				scores = scores[req.Offset:scoreEnd]
-			} else {
-				scores = []float32{}
-			}
-		}
-	}
-
-	// Check if client wants Glyph tabular format (50-62% fewer tokens for RAG)
-	accept := r.Header.Get("Accept")
-	if accept == "application/glyph" || accept == "text/glyph" {
-		glyphOutput := encoding.EncodeSearchResults(documents, scores)
-		w.Header().Set("Content-Type", "application/glyph")
-		w.Write([]byte(glyphOutput))
-		return
-	}
-
-	// Return results as JSON (default) — typed struct + pooled buffer
-	buf := jsonBufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	enc := json.NewEncoder(buf)
-	enc.Encode(searchJSONResponse{
-		Status:             "success",
-		Documents:          documents,
-		Scores:             scores,
-		CandidatesExamined: resp.CandidatesExamined,
-	})
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(buf.Bytes())
-	jsonBufPool.Put(buf)
-}
-
-// DeleteRequest for document deletion
-type DeleteRequest struct {
-	CollectionName string `json:"collection"`
-	DocID          uint64 `json:"doc_id"`
-}
-
-// handleDelete deletes a document from a collection
-func (s *CollectionHTTPServer) handleDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req DeleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Validate request
-	if req.CollectionName == "" {
-		http.Error(w, "collection name required", http.StatusBadRequest)
-		return
-	}
-
-	if req.DocID == 0 {
-		http.Error(w, "doc_id required", http.StatusBadRequest)
-		return
-	}
-
-	// Delete document
-	ctx := r.Context()
-	if err := s.manager.DeleteDocument(ctx, req.CollectionName, req.DocID); err != nil {
-		http.Error(w, fmt.Sprintf("failed to delete document: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "success",
-		"message": fmt.Sprintf("document %d deleted from collection %s", req.DocID, req.CollectionName),
-	})
-}
-
-func (s *CollectionHTTPServer) handleRecommend(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var raw struct {
-		Collection     string                 `json:"collection"`
-		Field          string                 `json:"field"`
-		PositiveIDs    []uint64               `json:"positive_ids"`
-		NegativeIDs    []uint64               `json:"negative_ids"`
-		NegativeWeight float32                `json:"negative_weight"`
-		TopK           int                    `json:"top_k"`
-		EfSearch       int                    `json:"ef_search"`
-		Filters        map[string]interface{} `json:"filters,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	if raw.Collection == "" {
-		http.Error(w, "collection name required", http.StatusBadRequest)
-		return
-	}
-	if len(raw.PositiveIDs) == 0 {
-		http.Error(w, "at least one positive_id required", http.StatusBadRequest)
-		return
-	}
-	if raw.TopK <= 0 {
-		raw.TopK = 10
-	}
-
-	req := vcollection.RecommendRequest{
-		CollectionName: raw.Collection,
-		FieldName:      raw.Field,
-		PositiveIDs:    raw.PositiveIDs,
-		NegativeIDs:    raw.NegativeIDs,
-		NegativeWeight: raw.NegativeWeight,
-		TopK:           raw.TopK,
-		EfSearch:       raw.EfSearch,
-		Filters:        raw.Filters,
-	}
-
-	resp, err := s.manager.Recommend(r.Context(), req)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("recommend failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *CollectionHTTPServer) handleDiscover(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var raw struct {
-		Collection   string                    `json:"collection"`
-		Field        string                    `json:"field"`
-		TargetID     uint64                    `json:"target_id"`
-		TargetVector []float32                 `json:"target_vector"`
-		Context      []vcollection.ContextPair `json:"context"`
-		TopK         int                       `json:"top_k"`
-		EfSearch     int                       `json:"ef_search"`
-		Filters      map[string]interface{}    `json:"filters,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	if raw.Collection == "" {
-		http.Error(w, "collection name required", http.StatusBadRequest)
-		return
-	}
-	if len(raw.Context) == 0 {
-		http.Error(w, "at least one context pair required", http.StatusBadRequest)
-		return
-	}
-	if raw.TopK <= 0 {
-		raw.TopK = 10
-	}
-
-	req := vcollection.DiscoverRequest{
-		CollectionName: raw.Collection,
-		FieldName:      raw.Field,
-		TargetID:       raw.TargetID,
-		TargetVector:   raw.TargetVector,
-		Context:        raw.Context,
-		TopK:           raw.TopK,
-		EfSearch:       raw.EfSearch,
-		Filters:        raw.Filters,
-	}
-
-	resp, err := s.manager.Discover(r.Context(), req)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("discover failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }
 
 // ======================================================================================
@@ -1216,7 +420,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 	parts := strings.SplitN(path, "/", 5) // tenant_id / collections / name / operation / ...
 
 	if len(parts) < 1 || parts[0] == "" {
-		http.Error(w, "tenant ID required in URL path", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "tenant ID required in URL path"))
 		return
 	}
 
@@ -1224,7 +428,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 
 	// Validate tenant ID format
 	if !isValidTenantID(tenantID) {
-		http.Error(w, "invalid tenant ID: must be 1-64 alphanumeric/hyphen/underscore characters", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "invalid tenant ID: must be 1-64 alphanumeric/hyphen/underscore characters"))
 		return
 	}
 
@@ -1239,7 +443,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 
 	// Must be /v3/tenants/{tenant_id}/collections[/...]
 	if parts[1] != "collections" {
-		http.Error(w, "unknown resource; expected 'collections'", http.StatusNotFound)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeNotFound, "unknown resource; expected 'collections'"))
 		return
 	}
 
@@ -1247,7 +451,9 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 	if len(parts) == 2 {
 		switch r.Method {
 		case http.MethodGet:
-			if !authorizeCanonicalHTTP(w, r, tenantID, "", "admin") {
+			// Discovery is read-gated: listing collection names and
+			// schemas is the same class of read as searching them (CTL-04).
+			if !authorizeCanonicalHTTP(w, r, tenantID, "", "read") {
 				return
 			}
 			s.handleTenantListCollections(w, r, tenantID)
@@ -1260,14 +466,14 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 			}
 			s.handleTenantCreateCollection(w, r, tenantID)
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		}
 		return
 	}
 
 	collectionName := parts[2]
 	if collectionName == "" {
-		http.Error(w, "collection name required", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "collection name required"))
 		return
 	}
 
@@ -1285,7 +491,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 			}
 			s.handleTenantDeleteCollection(w, r, tenantID, collectionName)
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		}
 		return
 	}
@@ -1294,14 +500,35 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 	operation := parts[3]
 	switch operation {
 	case "docs":
+		// A fifth path segment addresses a single document: PUT upserts the
+		// body under that numeric id, GET reads it back. The literal "batch"
+		// keeps its collection-level route.
+		if len(parts) == 5 && parts[4] != "" && parts[4] != "batch" {
+			docID, err := parseDocIDPathPart(parts[4])
+			if err != nil {
+				apierror.WriteHTTP(w, apierror.New(apierror.CodeNotFound, err.Error()))
+				return
+			}
+			switch r.Method {
+			case http.MethodPut:
+				if !authorizeCanonicalHTTP(w, r, tenantID, collectionName, "write") {
+					return
+				}
+				s.handleTenantUpsertDoc(w, r, tenantID, collectionName, docID)
+			case http.MethodGet:
+				if !authorizeCanonicalHTTP(w, r, tenantID, collectionName, "read") {
+					return
+				}
+				s.handleTenantGetDoc(w, r, tenantID, collectionName, docID)
+			default:
+				apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
+			}
+			return
+		}
 		if !authorizeCanonicalHTTP(w, r, tenantID, collectionName, "write") {
 			return
 		}
-		if len(parts) == 5 {
-			if parts[4] != "batch" {
-				http.Error(w, fmt.Sprintf("unknown document operation: %s", parts[4]), http.StatusNotFound)
-				return
-			}
+		if len(parts) == 5 && parts[4] == "batch" {
 			s.handleTenantBatchDocs(w, r, tenantID, collectionName)
 			return
 		}
@@ -1312,7 +539,7 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 		}
 		s.handleTenantSearch(w, r, tenantID, collectionName)
 	default:
-		http.Error(w, fmt.Sprintf("unknown operation: %s", operation), http.StatusNotFound)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeNotFound, fmt.Sprintf("unknown operation: %s", operation)))
 	}
 }
 
@@ -1337,10 +564,10 @@ func writeCanonicalHTTPAuthorizationResult(w http.ResponseWriter, err error) boo
 		return true
 	}
 	if security.IsAuthorizationFailure(err, security.AuthorizationUnauthenticated) {
-		http.Error(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeUnauthenticated, "unauthorized: "+err.Error()))
 		return false
 	}
-	http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+	apierror.WriteHTTP(w, apierror.New(apierror.CodePermissionDenied, "forbidden: "+err.Error()))
 	return false
 }
 
@@ -1356,6 +583,26 @@ func isValidTenantID(id string) bool {
 		}
 	}
 	return true
+}
+
+// decodeCanonicalVectorRaw decodes a vector field straight from its raw JSON
+// form. Dense arrays — the ingest-dominant shape — take a boxing-free fast
+// path; sparse objects and any other shape fall back to the generic decoder
+// so their exact validation error contract is unchanged.
+func decodeCanonicalVectorRaw(fieldName string, raw json.RawMessage) (interface{}, error) {
+	trimmed := bytes.TrimLeft(raw, " \t\n\r")
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		vec, err := decodeDenseVectorFast(raw)
+		if err != nil {
+			return nil, fmt.Errorf("field %s: %w", fieldName, err)
+		}
+		return vec, nil
+	}
+	var generic interface{}
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return nil, fmt.Errorf("field %s: %v", fieldName, err)
+	}
+	return decodeCanonicalVector(fieldName, generic)
 }
 
 func decodeCanonicalVector(fieldName string, value interface{}) (interface{}, error) {
@@ -1418,32 +665,23 @@ func canonicalPersistenceUnavailable(err error) bool {
 	return errors.Is(err, vcollection.ErrDurableStoreClosed) || errors.Is(err, vcollection.ErrDurableStoreFaulted)
 }
 
-func writeCanonicalOperationError(w http.ResponseWriter, prefix string, err error, fallbackStatus int) {
-	if canonicalPersistenceUnavailable(err) {
-		http.Error(w, "collection persistence unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	if errors.Is(err, vcollection.ErrSearchResponseBudgetExceeded) {
-		http.Error(w, fmt.Sprintf("%s: %v", prefix, err), http.StatusRequestEntityTooLarge)
-		return
-	}
-	if errors.Is(err, vcollection.ErrTenantLimitExceeded) || errors.Is(err, vcollection.ErrCollectionLimitExceeded) {
-		http.Error(w, fmt.Sprintf("%s: %v", prefix, err), http.StatusTooManyRequests)
-		return
-	}
-	http.Error(w, fmt.Sprintf("%s: %v", prefix, err), fallbackStatus)
+// writeCanonicalOperationError projects an engine error onto the wire:
+// apierror.FromEngine classifies the sentinels, fallback names the code for
+// anything the engine left unclassified.
+func writeCanonicalOperationError(w http.ResponseWriter, err error, fallback string) {
+	apierror.WriteHTTP(w, apierror.FromEngine(err, fallback))
 }
 
 func (s *CollectionHTTPServer) handleTenantInfo(w http.ResponseWriter, r *http.Request, tenantID string) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		return
 	}
 
 	stats, err := s.tenantManager.GetTenantStats(tenantID)
 	if err != nil {
 		if canonicalPersistenceUnavailable(err) {
-			writeCanonicalOperationError(w, "tenant info unavailable", err, http.StatusInternalServerError)
+			writeCanonicalOperationError(w, err, apierror.CodeInternal)
 			return
 		}
 		// Tenant with no collections yet is not an error — return empty stats
@@ -1474,24 +712,28 @@ func (s *CollectionHTTPServer) handleTenantCreateCollection(w http.ResponseWrite
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&schema); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if err := ensureJSONEOF(dec); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if !vcollection.IsValidCanonicalIdentifier(schema.Name) {
-		http.Error(w, "invalid collection name: must be 1-64 alphanumeric/hyphen/underscore characters", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "invalid collection name: must be 1-64 alphanumeric/hyphen/underscore characters"))
 		return
 	}
 	if !authorizeCanonicalHTTP(w, r, tenantID, schema.Name, "admin") {
 		return
 	}
+	if aerr := resolveSchemaEmbedding(&schema, s.embedder); aerr != nil {
+		apierror.WriteHTTP(w, aerr)
+		return
+	}
 
 	ctx := r.Context()
 	if _, err := s.tenantManager.CreateCollection(ctx, tenantID, schema); err != nil {
-		writeCanonicalOperationError(w, "failed to create collection", err, http.StatusBadRequest)
+		writeCanonicalOperationError(w, err, apierror.CodeInvalidArgument)
 		return
 	}
 
@@ -1508,7 +750,7 @@ func (s *CollectionHTTPServer) handleTenantCreateCollection(w http.ResponseWrite
 func (s *CollectionHTTPServer) handleTenantListCollections(w http.ResponseWriter, r *http.Request, tenantID string) {
 	infos, err := s.tenantManager.ListCollectionInfosChecked(tenantID)
 	if err != nil {
-		writeCanonicalOperationError(w, "failed to list collections", err, http.StatusInternalServerError)
+		writeCanonicalOperationError(w, err, apierror.CodeInternal)
 		return
 	}
 
@@ -1525,7 +767,7 @@ func (s *CollectionHTTPServer) handleTenantListCollections(w http.ResponseWriter
 func (s *CollectionHTTPServer) handleTenantGetCollection(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
 	info, err := s.tenantManager.GetCollectionInfo(tenantID, collectionName)
 	if err != nil {
-		writeCanonicalOperationError(w, "collection not found", err, http.StatusNotFound)
+		writeCanonicalOperationError(w, err, apierror.CodeNotFound)
 		return
 	}
 
@@ -1541,7 +783,7 @@ func (s *CollectionHTTPServer) handleTenantGetCollection(w http.ResponseWriter, 
 func (s *CollectionHTTPServer) handleTenantDeleteCollection(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
 	ctx := r.Context()
 	if err := s.tenantManager.DeleteCollection(ctx, tenantID, collectionName); err != nil {
-		writeCanonicalOperationError(w, "failed to delete collection", err, http.StatusBadRequest)
+		writeCanonicalOperationError(w, err, apierror.CodeInvalidArgument)
 		return
 	}
 
@@ -1561,34 +803,38 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 		// Insert document
 		r.Body = http.MaxBytesReader(w, r.Body, limitInsertBody)
 		var req struct {
-			ID       uint64                 `json:"id,omitempty"`
-			Vectors  map[string]interface{} `json:"vectors"`
-			Metadata map[string]interface{} `json:"metadata,omitempty"`
+			ID       uint64                     `json:"id,omitempty"`
+			Vectors  map[string]json.RawMessage `json:"vectors"`
+			Texts    map[string]string          `json:"texts,omitempty"`
+			Metadata map[string]interface{}     `json:"metadata,omitempty"`
 		}
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 			return
 		}
 		if err := ensureJSONEOF(dec); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 			return
 		}
 
-		if len(req.Vectors) == 0 {
-			http.Error(w, "at least one vector required", http.StatusBadRequest)
+		if len(req.Vectors) == 0 && len(req.Texts) == 0 {
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one vector or text required"))
 			return
 		}
 
-		vectors := make(map[string]interface{}, len(req.Vectors))
+		vectors := make(map[string]interface{}, len(req.Vectors)+len(req.Texts))
 		for fieldName, vectorData := range req.Vectors {
-			vector, err := decodeCanonicalVector(fieldName, vectorData)
+			vector, err := decodeCanonicalVectorRaw(fieldName, vectorData)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, err.Error()))
 				return
 			}
 			vectors[fieldName] = vector
+		}
+		if _, ok := s.applyTexts(w, tenantID, collectionName, req.Texts, vectors, false); !ok {
+			return
 		}
 
 		doc := vcollection.Document{
@@ -1599,7 +845,7 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 
 		ctx := r.Context()
 		if err := s.tenantManager.AddDocument(ctx, tenantID, collectionName, &doc); err != nil {
-			writeCanonicalOperationError(w, "failed to add document", err, http.StatusInternalServerError)
+			writeCanonicalOperationError(w, err, apierror.CodeInternal)
 			return
 		}
 
@@ -1619,21 +865,21 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 			return
 		}
 		if err := ensureJSONEOF(dec); err != nil {
-			http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 			return
 		}
 		if req.DocID == 0 {
-			http.Error(w, "doc_id required", http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "doc_id required"))
 			return
 		}
 
 		ctx := r.Context()
 		if err := s.tenantManager.DeleteDocument(ctx, tenantID, collectionName, req.DocID); err != nil {
-			writeCanonicalOperationError(w, "failed to delete document", err, http.StatusInternalServerError)
+			writeCanonicalOperationError(w, err, apierror.CodeInternal)
 			return
 		}
 
@@ -1645,8 +891,97 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 		})
 
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 	}
+}
+
+// parseDocIDPathPart resolves the final /docs/{doc_id} path segment. The
+// literal "batch" is already routed before this helper runs, so any remaining
+// value must be a numeric document id.
+func parseDocIDPathPart(value string) (uint64, error) {
+	docID, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("document id must be numeric, got %q", value)
+	}
+	if docID == 0 {
+		return 0, fmt.Errorf("document id must be non-zero")
+	}
+	return docID, nil
+}
+
+// handleTenantUpsertDoc upserts a document under a caller-supplied path ID.
+// PUT /v3/tenants/{t}/collections/{c}/docs/{id} — the ID is taken from the
+// path, never from the body, so an acknowledgement always matches the address
+// the caller used.
+func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *http.Request, tenantID, collectionName string, docID uint64) {
+	r.Body = http.MaxBytesReader(w, r.Body, limitInsertBody)
+	var req struct {
+		Vectors  map[string]json.RawMessage `json:"vectors"`
+		Texts    map[string]string          `json:"texts,omitempty"`
+		Metadata map[string]interface{}     `json:"metadata,omitempty"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
+		return
+	}
+	if err := ensureJSONEOF(dec); err != nil {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
+		return
+	}
+	if len(req.Vectors) == 0 && len(req.Texts) == 0 {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one vector or text required"))
+		return
+	}
+
+	vectors := make(map[string]interface{}, len(req.Vectors)+len(req.Texts))
+	for fieldName, vectorData := range req.Vectors {
+		vector, err := decodeCanonicalVectorRaw(fieldName, vectorData)
+		if err != nil {
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, err.Error()))
+			return
+		}
+		vectors[fieldName] = vector
+	}
+	if _, ok := s.applyTexts(w, tenantID, collectionName, req.Texts, vectors, false); !ok {
+		return
+	}
+
+	doc := vcollection.Document{
+		ID:       docID,
+		Vectors:  vectors,
+		Metadata: req.Metadata,
+	}
+	if err := s.tenantManager.UpsertDocument(r.Context(), tenantID, collectionName, &doc); err != nil {
+		writeCanonicalOperationError(w, err, apierror.CodeInternal)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"tenant_id": tenantID,
+		"id":        docID,
+		"message":   "document upserted",
+	})
+}
+
+// handleTenantGetDoc serves a single document by caller-supplied ID.
+func (s *CollectionHTTPServer) handleTenantGetDoc(w http.ResponseWriter, r *http.Request, tenantID, collectionName string, docID uint64) {
+	doc, ok := s.tenantManager.GetDocument(tenantID, collectionName, docID)
+	if !ok {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeNotFound, fmt.Sprintf("document %d not found", docID)))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"tenant_id": tenantID,
+		"id":        doc.ID,
+		"vectors":   doc.Vectors,
+		"metadata":  doc.Metadata,
+	})
 }
 
 // handleTenantBatchDocs atomically validates a bounded canonical batch before
@@ -1654,7 +989,7 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 // intentionally not part of the RC contract.
 func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		return
 	}
 
@@ -1665,50 +1000,67 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 	r.Body = http.MaxBytesReader(w, r.Body, maxCanonicalBatchBody)
 	var req struct {
 		Documents []struct {
-			ID       uint64                 `json:"id,omitempty"`
-			Vectors  map[string]interface{} `json:"vectors"`
-			Metadata map[string]interface{} `json:"metadata,omitempty"`
+			ID       uint64                     `json:"id,omitempty"`
+			Vectors  map[string]json.RawMessage `json:"vectors"`
+			Texts    map[string]string          `json:"texts,omitempty"`
+			Metadata map[string]interface{}     `json:"metadata,omitempty"`
 		} `json:"documents"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if err := ensureJSONEOF(dec); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if len(req.Documents) == 0 {
-		http.Error(w, "at least one document required", http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "at least one document required"))
 		return
 	}
-	if len(req.Documents) > vcollection.CanonicalMaxBatchDocuments {
-		http.Error(w, fmt.Sprintf("batch too large: maximum is %d documents", vcollection.CanonicalMaxBatchDocuments), http.StatusRequestEntityTooLarge)
+	if len(req.Documents) > vcollection.MaxBatchDocuments {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodePayloadTooLarge, fmt.Sprintf("batch too large: maximum is %d documents", vcollection.MaxBatchDocuments)))
 		return
 	}
 
 	docs := make([]vcollection.Document, len(req.Documents))
+	var fields []vcollection.FieldInfo // schema, loaded once if any document sends texts
 	for i, input := range req.Documents {
-		if len(input.Vectors) == 0 {
-			http.Error(w, fmt.Sprintf("document %d requires at least one vector", i), http.StatusBadRequest)
+		if len(input.Vectors) == 0 && len(input.Texts) == 0 {
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d requires at least one vector or text", i)))
 			return
 		}
-		vectors := make(map[string]interface{}, len(input.Vectors))
+		vectors := make(map[string]interface{}, len(input.Vectors)+len(input.Texts))
 		for fieldName, raw := range input.Vectors {
-			vector, err := decodeCanonicalVector(fieldName, raw)
+			vector, err := decodeCanonicalVectorRaw(fieldName, raw)
 			if err != nil {
-				http.Error(w, fmt.Sprintf("document %d: %v", i, err), http.StatusBadRequest)
+				apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("document %d: %v", i, err)))
 				return
 			}
 			vectors[fieldName] = vector
+		}
+		if len(input.Texts) > 0 {
+			if fields == nil {
+				info, err := s.tenantManager.GetCollectionInfo(tenantID, collectionName)
+				if err != nil {
+					writeCanonicalOperationError(w, err, apierror.CodeNotFound)
+					return
+				}
+				fields = info.Fields
+			}
+			if _, aerr := resolveTexts(fields, s.embedder, input.Texts, vectors, false); aerr != nil {
+				aerr.Message = fmt.Sprintf("document %d: %s", i, aerr.Message)
+				apierror.WriteHTTP(w, aerr)
+				return
+			}
 		}
 		docs[i] = vcollection.Document{ID: input.ID, Vectors: vectors, Metadata: input.Metadata}
 	}
 
 	if err := s.tenantManager.BatchAddDocuments(r.Context(), tenantID, collectionName, docs); err != nil {
-		writeCanonicalOperationError(w, "failed to add document batch", err, http.StatusInternalServerError)
+		writeCanonicalOperationError(w, err, apierror.CodeInternal)
 		return
 	}
 	ids := make([]uint64, len(docs))
@@ -1728,60 +1080,51 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 // handleTenantSearch performs a search on a tenant's collection.
 func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http.Request, tenantID, collectionName string) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, limitQueryBody)
 	var req struct {
-		Queries        map[string]interface{}          `json:"queries"`
+		Queries        map[string]json.RawMessage      `json:"queries"`
+		Texts          map[string]string               `json:"texts,omitempty"`
 		TopK           int                             `json:"top_k"`
 		EfSearch       int                             `json:"ef_search,omitempty"`
 		IncludeVectors *bool                           `json:"include_vectors,omitempty"`
 		Filters        map[string]interface{}          `json:"filters,omitempty"`
 		HybridParams   *vcollection.HybridSearchParams `json:"hybrid_params,omitempty"`
+		ScoreFloor     float64                         `json:"score_floor,omitempty"`
+		Fallback       *vcollection.FallbackParams     `json:"fallback,omitempty"`
+		UsageBoost     float64                         `json:"usage_boost,omitempty"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 	if err := ensureJSONEOF(dec); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
 		return
 	}
 
-	if len(req.Queries) == 0 {
-		http.Error(w, "at least one query vector required", http.StatusBadRequest)
-		return
-	}
-	if len(req.Queries) > vcollection.CanonicalMaxSearchFields {
-		http.Error(w, fmt.Sprintf("at most %d query fields are supported", vcollection.CanonicalMaxSearchFields), http.StatusBadRequest)
-		return
-	}
-	if req.TopK <= 0 {
-		http.Error(w, "top_k must be positive", http.StatusBadRequest)
-		return
-	}
-	if req.TopK > vcollection.CanonicalMaxSearchTopK {
-		http.Error(w, fmt.Sprintf("top_k must not exceed %d", vcollection.CanonicalMaxSearchTopK), http.StatusBadRequest)
-		return
-	}
-
-	queries := make(map[string]interface{}, len(req.Queries))
+	queries := make(map[string]interface{}, len(req.Queries)+len(req.Texts))
 	for fieldName, vectorData := range req.Queries {
-		vector, err := decodeCanonicalVector(fieldName, vectorData)
+		vector, err := decodeCanonicalVectorRaw(fieldName, vectorData)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, err.Error()))
 			return
 		}
 		queries[fieldName] = vector
 	}
+	embeddedBy, ok := s.applyTexts(w, tenantID, collectionName, req.Texts, queries, true)
+	if !ok {
+		return
+	}
 
 	includeVectors, err := resolveIncludeVectors(req.IncludeVectors, r.URL.Query().Get("include_vectors"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, err.Error()))
 		return
 	}
 
@@ -1793,12 +1136,15 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 		IncludeVectors: includeVectors,
 		Filters:        req.Filters,
 		HybridParams:   req.HybridParams,
+		ScoreFloor:     req.ScoreFloor,
+		Fallback:       req.Fallback,
+		UsageBoost:     req.UsageBoost,
 	}
 
 	ctx := r.Context()
 	resp, err := s.tenantManager.SearchCollection(ctx, tenantID, searchReq)
 	if err != nil {
-		writeCanonicalOperationError(w, "search failed", err, http.StatusInternalServerError)
+		writeCanonicalOperationError(w, err, apierror.CodeInternal)
 		return
 	}
 
@@ -1809,108 +1155,12 @@ func (s *CollectionHTTPServer) handleTenantSearch(w http.ResponseWriter, r *http
 		Documents:          resp.Documents,
 		Scores:             resp.Scores,
 		CandidatesExamined: resp.CandidatesExamined,
-	})
-}
-
-// handleBinaryImport handles POST /v2/import for high-throughput binary vector import.
-//
-// Wire format (little-endian, numpy-compatible):
-//
-//	[uint32: count] [uint32: dim]
-//	[uint64: id₁] [float32 × dim: vector₁]
-//	[uint64: id₂] [float32 × dim: vector₂]
-//	...
-//
-// Query params: collection, field
-// Content-Type: application/octet-stream
-func (s *CollectionHTTPServer) handleBinaryImport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	collectionName := r.URL.Query().Get("collection")
-	fieldName := r.URL.Query().Get("field")
-	if collectionName == "" || fieldName == "" {
-		http.Error(w, "collection and field query params required", http.StatusBadRequest)
-		return
-	}
-
-	// Cap request body to prevent OOM
-	maxBodySize := limitBinaryImport
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-
-	// Read 8-byte header: [uint32 count][uint32 dim]
-	var header [8]byte
-	if _, err := io.ReadFull(r.Body, header[:]); err != nil {
-		http.Error(w, fmt.Sprintf("failed to read header: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	count := binary.LittleEndian.Uint32(header[0:4])
-	dim := binary.LittleEndian.Uint32(header[4:8])
-
-	if count == 0 {
-		http.Error(w, "count must be > 0", http.StatusBadRequest)
-		return
-	}
-	if dim == 0 || dim > uint32(limitMaxDimension) {
-		http.Error(w, fmt.Sprintf("dim must be in [1, %d]", limitMaxDimension), http.StatusBadRequest)
-		return
-	}
-
-	// Each record: 8 bytes (uint64 id) + dim*4 bytes (float32 vector)
-	recordSize := 8 + uint64(dim)*4
-	expectedSize := uint64(count) * recordSize
-	if expectedSize > uint64(maxBodySize) {
-		http.Error(w, fmt.Sprintf("payload too large: %d bytes", expectedSize), http.StatusRequestEntityTooLarge)
-		return
-	}
-
-	// Read full payload
-	body := make([]byte, expectedSize)
-	if _, err := io.ReadFull(r.Body, body); err != nil {
-		http.Error(w, fmt.Sprintf("failed to read body: %v, expected %d bytes", err, expectedSize), http.StatusBadRequest)
-		return
-	}
-
-	// Decode vectors: zero-copy reinterpret on little-endian (amd64/arm64)
-	ids := make([]uint64, count)
-	vectors := make([][]float32, count)
-
-	for i := uint32(0); i < count; i++ {
-		offset := uint64(i) * recordSize
-
-		// Read ID (little-endian uint64)
-		ids[i] = binary.LittleEndian.Uint64(body[offset : offset+8])
-
-		// Zero-copy decode float32 slice from body bytes.
-		// Safe on little-endian architectures (amd64, arm64).
-		// The body slice is kept alive for the duration of this handler.
-		vecBytes := body[offset+8 : offset+8+uint64(dim)*4]
-
-		// Alignment check: if the slice is 4-byte aligned, use unsafe reinterpret
-		if uintptr(unsafe.Pointer(&vecBytes[0]))%4 == 0 {
-			vectors[i] = unsafe.Slice((*float32)(unsafe.Pointer(&vecBytes[0])), dim)
-		} else {
-			// Fallback: copy for unaligned data
-			vec := make([]float32, dim)
-			for j := uint32(0); j < dim; j++ {
-				vec[j] = math.Float32frombits(binary.LittleEndian.Uint32(vecBytes[j*4 : j*4+4]))
-			}
-			vectors[i] = vec
-		}
-	}
-
-	// Insert via BulkAddDense
-	if err := s.manager.BulkAddDense(r.Context(), collectionName, fieldName, ids, vectors); err != nil {
-		http.Error(w, fmt.Sprintf("bulk import failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":   "success",
-		"inserted": count,
+		BestScore:          resp.BestScore,
+		WeakMatch:          resp.WeakMatch,
+		FellBackTo:         resp.FellBackTo,
+		EmbeddedBy:         embeddedBy,
+		ScoreDirection:     resp.ScoreDirection,
+		QueryTimeMs:        resp.QueryTimeMs,
+		RequestID:          requestIDFromContext(r.Context()),
 	})
 }

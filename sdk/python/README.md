@@ -64,8 +64,10 @@ Tenant and collection identifiers must contain 1–64 ASCII letters, digits,
 hyphens, or underscores. The SDK validates them before issuing a request so a
 dynamic identifier cannot alter the URL path.
 
-Canonical V3 accepts caller-supplied vectors. The SDK does not invoke an
-embedding model or external embedding provider.
+Canonical V3 accepts caller-supplied vectors, or `texts=` on `insert`, `upsert`
+and `search` for fields whose collection schema binds an `embedding`; the server
+embeds them and search results report `embedded_by`. The SDK itself never
+invokes an embedding model.
 
 ## Collections
 
@@ -190,8 +192,17 @@ except ServerError:
     print("Server error after configured retries")
 ```
 
-Retries are enabled by default for retryable failures and can be configured or
-disabled:
+Every `APIError` carries the server's envelope: `code`, `message`, `hint`,
+`field`, `request_id`, `retryable`, `retry_after` (seconds, from
+`retry_after_ms` or the `Retry-After` header) and `docs`
+(`deepdata/errors.py:32-55`). `str(err)` reads
+`deepdata api 404 not_found: collection not found: missing for tenant acme Hint: list the tenant's collections ...`.
+The subclass follows the status code (`classify_error`, `deepdata/errors.py:129`);
+a `quota_exceeded` 409 is a plain `APIError` with `retryable=False`.
+
+Retries are enabled by default and follow the server's `retryable` verdict
+(`deepdata/_utils.py:45`): a 429 `rate_limited` is retried, a 409
+`quota_exceeded` is not. They can be configured or disabled:
 
 ```python
 from deepdata import DeepDataClient, RetryConfig

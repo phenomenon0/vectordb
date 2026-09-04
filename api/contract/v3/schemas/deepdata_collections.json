@@ -1,0 +1,110 @@
+{
+ "input": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Describe one collection (name) or list every collection of this tenant (no arguments). Both need only the read permission.",
+  "properties": {
+   "name": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+   }
+  },
+  "additionalProperties": false
+ },
+ "output": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "collections": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+         },
+         "type": {
+          "type": "string",
+          "enum": [
+           "dense",
+           "sparse",
+           "binary"
+          ]
+         },
+         "dim": {
+          "type": "integer"
+         },
+         "index": {
+          "type": "object"
+         },
+         "score_direction": {
+          "type": "string",
+          "enum": [
+           "lower_is_better",
+           "higher_is_better"
+          ],
+          "description": "How this field's scores read: dense returns distances (lower_is_better), sparse returns BM25 scores (higher_is_better)."
+         },
+         "embedding": {
+          "type": "object",
+          "properties": {
+           "provider": {
+            "type": "string"
+           },
+           "model": {
+            "type": "string"
+           }
+          },
+          "additionalProperties": false,
+          "required": [
+           "provider"
+          ]
+         }
+        },
+        "additionalProperties": true,
+        "required": [
+         "name",
+         "type",
+         "dim"
+        ]
+       }
+      },
+      "doc_count": {
+       "type": "integer"
+      },
+      "description": {
+       "type": "string"
+      },
+      "durability": {
+       "type": "string",
+       "enum": [
+        "durable",
+        "ephemeral"
+       ],
+       "description": "Durability class of this collection's documents: 'ephemeral' means they are memory only and do not survive a restart."
+      }
+     },
+     "additionalProperties": true,
+     "required": [
+      "name",
+      "fields"
+     ]
+    }
+   }
+  },
+  "required": [
+   "collections"
+  ],
+  "additionalProperties": false
+ }
+}

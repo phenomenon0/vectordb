@@ -1,0 +1,176 @@
+{
+ "input": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Search one collection and get ranked hits back. Give query (text; the server embeds it for every field the collection binds an embedding to \u2014 with a dense and a sparse field bound, the dense field answers first and the sparse field is the automatic fallback) or queries (field name to vector, when you computed vectors yourself).",
+  "properties": {
+   "query": {
+    "type": "string",
+    "minLength": 1,
+    "description": "Query text for the collection's embedding-bound fields."
+   },
+   "queries": {
+    "type": "object",
+    "description": "Field name to vector: a dense float array, or a sparse {indices, values, dim} object. A schema field appears in vectors or is covered by text, never both.",
+    "minProperties": 1
+   },
+   "collection": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9_-]{1,64}$",
+    "description": "Collection name; defaults to DEEPDATA_COLLECTION (default 'memory')."
+   },
+   "top_k": {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 50,
+    "default": 10
+   },
+   "filters": {
+    "$ref": "#/$defs/filter"
+   },
+   "score_floor": {
+    "type": "number",
+    "minimum": 0,
+    "description": "Confidence filter on raw scores. Direction follows the field metric: on dense (distance) fields keep score <= floor; on sparse/fused scores keep score >= floor. When set and nothing survives, the response says weak_match: true."
+   },
+   "fallback": {
+    "type": "object",
+    "properties": {
+     "primary": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+     },
+     "secondary": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+     },
+     "threshold": {
+      "type": "number",
+      "minimum": 0
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "primary",
+     "secondary"
+    ],
+    "description": "Auto-fallback ladder: search primary; if it is weak, answer from secondary and report fell_back_to."
+   },
+   "usage_boost": {
+    "type": "number",
+    "minimum": 0,
+    "exclusiveMaximum": 1,
+    "description": "Blend frecency into ranking (0 = off). Reported scores stay raw."
+   },
+   "response_format": {
+    "type": "string",
+    "enum": [
+     "concise",
+     "detailed"
+    ],
+    "default": "concise",
+    "description": "concise elides metadata strings over 300 chars."
+   },
+   "max_chars": {
+    "type": "integer",
+    "minimum": 500,
+    "default": 8000,
+    "description": "Result-size budget; tail hits are dropped over it and named in the hint."
+   }
+  },
+  "additionalProperties": false,
+  "$defs": {
+   "filter": {
+    "type": "object",
+    "description": "Metadata filter: {\"field\": value} for equality, {\"field\": {\"$op\": value}} with $op one of $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $contains, $startswith, $endswith, $regex, $exists, $geo_radius, $geo_bbox, or one logical operator: {\"$and\": [f, ...]}, {\"$or\": [f, ...]}, {\"$not\": f}.",
+    "properties": {
+     "$and": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/filter"
+      },
+      "minItems": 1
+     },
+     "$or": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/filter"
+      },
+      "minItems": 1
+     },
+     "$not": {
+      "$ref": "#/$defs/filter"
+     }
+    }
+   }
+  }
+ },
+ "output": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "hits": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "score": {
+       "type": "number"
+      },
+      "metadata": {
+       "type": "object"
+      }
+     },
+     "additionalProperties": false,
+     "required": [
+      "id",
+      "score"
+     ]
+    }
+   },
+   "best_score": {
+    "type": "number",
+    "description": "Best raw score among returned hits; 0 when none. Use it to calibrate score_floor."
+   },
+   "score_direction": {
+    "type": "string",
+    "enum": [
+     "lower_is_better",
+     "higher_is_better"
+    ],
+    "description": "How to read score and best_score: dense fields return distances (lower_is_better), sparse and fused hybrid return scores (higher_is_better). Names the direction of the field that actually answered, so a fallback answer reports the secondary field's direction."
+   },
+   "weak_match": {
+    "type": "boolean",
+    "description": "true = score_floor was set and nothing survived it; treat as 'no confident answer'."
+   },
+   "fell_back_to": {
+    "type": "string",
+    "description": "Secondary field that answered when the fallback ladder fired."
+   },
+   "embedded_by": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "string"
+    },
+    "description": "Field name to 'provider:model' for query texts the server embedded."
+   },
+   "truncated": {
+    "type": "boolean"
+   },
+   "hint": {
+    "type": "string",
+    "description": "What to do next when truncated or weak."
+   }
+  },
+  "required": [
+   "hits",
+   "weak_match"
+  ],
+  "additionalProperties": false
+ }
+}

@@ -186,7 +186,6 @@ func TestIndexTypeAndArtifactIntegrityRoundTrip(t *testing.T) {
 	store := NewVectorStore(10, 3)
 	for _, config := range []CollectionConfig{
 		{Name: "flat-coll", IndexType: "flat", Dimension: 3},
-		{Name: "ivf-coll", IndexType: "ivf", Dimension: 3, Config: map[string]interface{}{"nlist": 1, "nprobe": 1}},
 	} {
 		if err := store.CreateCollection(config); err != nil {
 			t.Fatalf("create %s: %v", config.Name, err)
@@ -199,7 +198,6 @@ func TestIndexTypeAndArtifactIntegrityRoundTrip(t *testing.T) {
 	}{
 		{"default-id", "default", []float32{1, 0, 0}},
 		{"flat-id", "flat-coll", []float32{0, 1, 0}},
-		{"ivf-id", "ivf-coll", []float32{0, 0, 1}},
 	}
 	for _, fixture := range fixtures {
 		if _, err := store.Add(fixture.vector, "typed index fixture", fixture.id, nil, fixture.collection, "tenant-a"); err != nil {
@@ -217,7 +215,6 @@ func TestIndexTypeAndArtifactIntegrityRoundTrip(t *testing.T) {
 	for collection, want := range map[string]string{
 		"default":   "HNSW",
 		"flat-coll": "FLAT",
-		"ivf-coll":  "IVF",
 	} {
 		idx := loaded.indexes[collection]
 		if idx == nil || idx.Name() != want {

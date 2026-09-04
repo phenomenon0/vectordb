@@ -1,4 +1,3 @@
-// Package releaseinfo exposes metadata shared by the shipped server surfaces.
 package releaseinfo
 
 import (

@@ -30,10 +30,7 @@ func TestMemoryFootprint(t *testing.T) {
 		{"hnsw", map[string]interface{}{"m": 16, "ef_construction": 200}, "none"},
 		{"hnsw", map[string]interface{}{"m": 16, "ef_construction": 200, "quantization": map[string]interface{}{"type": "float16"}}, "fp16"},
 		{"hnsw", map[string]interface{}{"m": 16, "ef_construction": 200, "quantization": map[string]interface{}{"type": "uint8"}}, "uint8"},
-		{"ivf", map[string]interface{}{"nlist": 100, "metric": "cosine"}, "none"},
-		{"ivf", map[string]interface{}{"nlist": 100, "metric": "cosine", "quantization": map[string]interface{}{"type": "float16"}}, "fp16"},
 		{"flat", map[string]interface{}{"metric": "cosine"}, "none"},
-		{"diskann", map[string]interface{}{"max_degree": 32, "ef_construction": 100, "memory_limit": 100000, "metric": "cosine"}, "none"},
 	}
 
 	for _, dim := range dims {

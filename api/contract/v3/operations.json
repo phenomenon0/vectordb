@@ -1,0 +1,98 @@
+[
+  {
+    "name": "get_tenant_info",
+    "method": "GET",
+    "path": "/v3/tenants/{tenant}",
+    "permission": "admin",
+    "grpc_rpc": "GetTenantInfo",
+    "mcp_tool": null
+  },
+  {
+    "name": "list_collections",
+    "method": "GET",
+    "path": "/v3/tenants/{tenant}/collections",
+    "permission": "read",
+    "grpc_rpc": "ListCollections",
+    "mcp_tool": "deepdata_collections"
+  },
+  {
+    "name": "create_collection",
+    "method": "POST",
+    "path": "/v3/tenants/{tenant}/collections",
+    "permission": "admin",
+    "grpc_rpc": "CreateCollection",
+    "mcp_tool": "deepdata_create_collection"
+  },
+  {
+    "name": "get_collection",
+    "method": "GET",
+    "path": "/v3/tenants/{tenant}/collections/{collection}",
+    "permission": "read",
+    "grpc_rpc": "GetCollection",
+    "mcp_tool": "deepdata_collections"
+  },
+  {
+    "name": "delete_collection",
+    "method": "DELETE",
+    "path": "/v3/tenants/{tenant}/collections/{collection}",
+    "permission": "admin",
+    "grpc_rpc": "DeleteCollection",
+    "mcp_tool": null
+  },
+  {
+    "name": "insert_doc",
+    "method": "POST",
+    "path": "/v3/tenants/{tenant}/collections/{collection}/docs",
+    "permission": "write",
+    "grpc_rpc": "Insert",
+    "mcp_tool": "deepdata_remember"
+  },
+  {
+    "name": "delete_doc",
+    "method": "DELETE",
+    "path": "/v3/tenants/{tenant}/collections/{collection}/docs",
+    "permission": "write",
+    "grpc_rpc": "DeleteDoc",
+    "mcp_tool": "deepdata_forget"
+  },
+  {
+    "name": "batch_insert_docs",
+    "method": "POST",
+    "path": "/v3/tenants/{tenant}/collections/{collection}/docs/batch",
+    "permission": "write",
+    "grpc_rpc": "BatchInsert",
+    "mcp_tool": "deepdata_remember"
+  },
+  {
+    "name": "upsert_doc",
+    "method": "PUT",
+    "path": "/v3/tenants/{tenant}/collections/{collection}/docs/{doc_id}",
+    "permission": "write",
+    "grpc_rpc": "Upsert",
+    "mcp_tool": "deepdata_remember"
+  },
+  {
+    "name": "get_doc",
+    "method": "GET",
+    "path": "/v3/tenants/{tenant}/collections/{collection}/docs/{doc_id}",
+    "permission": "read",
+    "grpc_rpc": "GetDoc",
+    "mcp_tool": "deepdata_get"
+  },
+  {
+    "name": "search",
+    "method": "POST",
+    "path": "/v3/tenants/{tenant}/collections/{collection}/search",
+    "permission": "read",
+    "grpc_rpc": "Search",
+    "mcp_tool": "deepdata_recall"
+  },
+  {
+    "name": "status",
+    "method": "GET",
+    "path": "/v3/status",
+    "permission": "read",
+    "grpc_rpc": null,
+    "mcp_tool": null
+  }
+]

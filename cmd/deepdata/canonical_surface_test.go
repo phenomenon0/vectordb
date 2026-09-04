@@ -20,13 +20,20 @@ import (
 
 func newCanonicalSurfaceTestHandler(t *testing.T) http.Handler {
 	t.Helper()
+	return newCanonicalSurfaceTestHandlerAt(t, filepath.Join(t.TempDir(), "index.gob"))
+}
+
+// newCanonicalSurfaceTestHandlerAt is the same handler over a caller-chosen
+// data directory, so a test can seed on-disk state the server must find at
+// open.
+func newCanonicalSurfaceTestHandlerAt(t *testing.T, indexPath string) http.Handler {
+	t.Helper()
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "0")
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	embedder := NewHashEmbedder(4)
-	indexPath := filepath.Join(t.TempDir(), "index.gob")
-	handler, collections := newCanonicalHTTPHandler(store, embedder, nil, indexPath)
+	handler, collections := newCanonicalHTTPHandler(rt, embedder, nil, indexPath)
 	if err := collections.PersistenceError(); err != nil {
 		t.Fatalf("open canonical persistence: %v", err)
 	}
@@ -121,6 +128,84 @@ func TestCanonicalRCSurfaceTenantBatchContract(t *testing.T) {
 	}
 }
 
+func TestCanonicalHTTPUpsertAndGetDocContract(t *testing.T) {
+	handler := newCanonicalSurfaceTestHandler(t)
+	schema := vcollection.CollectionSchema{
+		Name: "docs",
+		Fields: []vcollection.VectorField{{
+			Name:  "embedding",
+			Type:  vcollection.VectorTypeDense,
+			Dim:   2,
+			Index: vcollection.IndexConfig{Type: vcollection.IndexTypeFLAT},
+		}},
+	}
+	createBody, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v3/tenants/acme/collections", bytes.NewReader(createBody))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create collection returned %d: %s", response.Code, response.Body.String())
+	}
+
+	// PUT upserts a document under the path ID.
+	putBody := []byte(`{"vectors":{"embedding":[1,0]},"metadata":{"kind":"replaced"}}`)
+	request = httptest.NewRequest(http.MethodPut, "/v3/tenants/acme/collections/docs/docs/55", bytes.NewReader(putBody))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("upsert returned %d: %s", response.Code, response.Body.String())
+	}
+
+	// Replacing the same ID must not duplicate storage.
+	putBody = []byte(`{"vectors":{"embedding":[0,1]},"metadata":{"kind":"replaced-again"}}`)
+	request = httptest.NewRequest(http.MethodPut, "/v3/tenants/acme/collections/docs/docs/55", bytes.NewReader(putBody))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("second upsert returned %d: %s", response.Code, response.Body.String())
+	}
+
+	// GET reads the replacement back.
+	request = httptest.NewRequest(http.MethodGet, "/v3/tenants/acme/collections/docs/docs/55", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("get doc returned %d: %s", response.Code, response.Body.String())
+	}
+	var doc struct {
+		ID       uint64                 `json:"id"`
+		Metadata map[string]interface{} `json:"metadata"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.ID != 55 || doc.Metadata["kind"] != "replaced-again" {
+		t.Fatalf("get after upsert returned %+v", doc)
+	}
+
+	// GET of a never-written ID is 404.
+	request = httptest.NewRequest(http.MethodGet, "/v3/tenants/acme/collections/docs/docs/57", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("get of missing doc returned %d, want 404", response.Code)
+	}
+
+	// A non-numeric document id segment is routed as 404, not parsed.
+	request = httptest.NewRequest(http.MethodGet, "/v3/tenants/acme/collections/docs/docs/not-a-number", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("non-numeric doc id returned %d, want 404", response.Code)
+	}
+}
+
 func TestCanonicalHTTPRejectsUnaddressableCollectionName(t *testing.T) {
 	handler := newCanonicalSurfaceTestHandler(t)
 	request := httptest.NewRequest(
@@ -138,6 +223,11 @@ func TestCanonicalHTTPRejectsUnaddressableCollectionName(t *testing.T) {
 
 func TestCanonicalRCSurfaceSearchAdmissionIsBounded(t *testing.T) {
 	handler := newCanonicalSurfaceTestHandler(t)
+	// The bounds are checked by the engine, which needs the collection to
+	// exist; a missing collection is a 404 and would mask the check.
+	if response := canonicalHTTPCreateCollection(t, handler, "acme", "docs", ""); response.Code/100 != 2 {
+		t.Fatalf("create collection returned %d: %s", response.Code, response.Body.String())
+	}
 	path := "/v3/tenants/acme/collections/docs/search"
 	for _, tc := range []struct {
 		name string
@@ -145,7 +235,7 @@ func TestCanonicalRCSurfaceSearchAdmissionIsBounded(t *testing.T) {
 	}{
 		{
 			name: "top k",
-			body: fmt.Sprintf(`{"queries":{"dense":[1]},"top_k":%d}`, vcollection.CanonicalMaxSearchTopK+1),
+			body: fmt.Sprintf(`{"queries":{"dense":[1]},"top_k":%d}`, vcollection.MaxSearchTopK+1),
 		},
 		{
 			name: "query fields",
@@ -168,9 +258,9 @@ func TestCanonicalRCSurfaceDoesNotAcceptBearerTokenInURL(t *testing.T) {
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("API_TOKEN", "secret")
 	t.Setenv("REQUIRE_AUTH", "1")
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	embedder := NewHashEmbedder(4)
-	handler, collections := newCanonicalHTTPHandler(store, embedder, nil, filepath.Join(t.TempDir(), "index.gob"))
+	handler, collections := newCanonicalHTTPHandler(rt, embedder, nil, filepath.Join(t.TempDir(), "index.gob"))
 	t.Cleanup(func() { _ = collections.Close() })
 
 	request := httptest.NewRequest(http.MethodGet, "/v3/tenants/default?token=secret", nil)
@@ -195,20 +285,20 @@ func TestCanonicalCreateRejectsUnauthorizedCallerBeforeReadingBody(t *testing.T)
 	t.Setenv("JWT_ISSUER", "canonical-test")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "1")
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
 	)
 	t.Cleanup(func() { _ = collections.Close() })
 
-	readOnly, err := store.jwtMgr.GenerateTenantToken("acme", []string{"read"}, nil, time.Hour)
+	readOnly, err := rt.jwtMgr.GenerateTenantToken("acme", []string{"read"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	crossTenantAdmin, err := store.jwtMgr.GenerateTenantToken("other", []string{"admin"}, nil, time.Hour)
+	crossTenantAdmin, err := rt.jwtMgr.GenerateTenantToken("other", []string{"admin"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,16 +332,16 @@ func TestCanonicalHTTPJWTTenantAdminCannotEscapeTenantOrCollectionScope(t *testi
 	t.Setenv("JWT_ISSUER", "canonical-test")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "1")
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
 	)
 	t.Cleanup(func() { _ = collections.Close() })
 
-	scopedAdmin, err := store.jwtMgr.GenerateTenantToken(
+	scopedAdmin, err := rt.jwtMgr.GenerateTenantToken(
 		"acme",
 		[]string{"admin"},
 		[]string{"allowed"},
@@ -260,7 +350,7 @@ func TestCanonicalHTTPJWTTenantAdminCannotEscapeTenantOrCollectionScope(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	unscopedAdmin, err := store.jwtMgr.GenerateTenantToken(
+	unscopedAdmin, err := rt.jwtMgr.GenerateTenantToken(
 		"acme",
 		[]string{"admin"},
 		nil,
@@ -316,15 +406,15 @@ func TestCanonicalHTTPJWTRejectsMissingMalformedAndExpiredCredentials(t *testing
 	t.Setenv("JWT_ISSUER", "canonical-test")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "1")
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
 	)
 	t.Cleanup(func() { _ = collections.Close() })
-	expired, err := store.jwtMgr.GenerateTenantToken("acme", []string{"read"}, nil, -time.Hour)
+	expired, err := rt.jwtMgr.GenerateTenantToken("acme", []string{"read"}, nil, -time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,8 +445,8 @@ func TestCanonicalRCSurfaceRequiresDurablePersistence(t *testing.T) {
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "0")
-	store := NewVectorStore(8, 4)
-	handler, collections := newCanonicalHTTPHandler(store, NewHashEmbedder(4), nil, "")
+	rt := newServerRuntime()
+	handler, collections := newCanonicalHTTPHandler(rt, NewHashEmbedder(4), nil, "")
 
 	request := httptest.NewRequest(http.MethodGet, "/v3/tenants/acme", nil)
 	response := httptest.NewRecorder()
@@ -381,7 +471,7 @@ func TestCanonicalHTTPAcknowledgementSurvivesRestart(t *testing.T) {
 	t.Setenv("REQUIRE_AUTH", "0")
 	indexPath := filepath.Join(t.TempDir(), "index.gob")
 	newHandler := func() (http.Handler, *CollectionHTTPServer) {
-		return newCanonicalHTTPHandler(NewVectorStore(8, 4), NewHashEmbedder(4), nil, indexPath)
+		return newCanonicalHTTPHandler(newServerRuntime(), NewHashEmbedder(4), nil, indexPath)
 	}
 
 	handler, collections := newHandler()
@@ -449,6 +539,8 @@ func TestCanonicalGRPCDescriptorExcludesAdvancedMethods(t *testing.T) {
 		"BatchInsert":      true,
 		"Search":           true,
 		"DeleteDoc":        true,
+		"Upsert":           true,
+		"GetDoc":           true,
 	}
 	for _, method := range deepdatav3.DeepData_ServiceDesc.Methods {
 		if !want[method.MethodName] {

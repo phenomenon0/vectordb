@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
 func durableTestSchema(name string) CollectionSchema {
@@ -97,8 +99,8 @@ func TestDurableStoreSubprocessLockExclusion(t *testing.T) {
 }
 
 func TestDurableStoreRejectsSymlinkLockWithoutTouchingTarget(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Linux persistence contract")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("persistence contract covers linux and darwin")
 	}
 	dir := t.TempDir()
 	base := filepath.Join(dir, "collections")
@@ -128,7 +130,7 @@ func TestDurableStoreRejectsSymlinkLockWithoutTouchingTarget(t *testing.T) {
 	}
 }
 
-func TestDurableStoreReplayAndRecoveredCheckpoint(t *testing.T) {
+func TestDurableStoreReplayRetainsJournalUntilExplicitCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	base := filepath.Join(t.TempDir(), "collections")
 	store, err := OpenDurableStore(base, base)
@@ -183,14 +185,123 @@ func TestDurableStoreReplayAndRecoveredCheckpoint(t *testing.T) {
 	if _, err := reopened.Tenants().GetCollectionInfo("tenant-a", "temporary"); err == nil {
 		t.Fatal("deleted collection reappeared after replay")
 	}
+	if _, err := os.Stat(base + ".journal"); err != nil {
+		t.Fatalf("recovery did not retain validated current journal: %v", err)
+	}
+	if _, err := os.Stat(base + ".journal.frozen"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected frozen journal after current-only recovery: %v", err)
+	}
+	if err := reopened.Checkpoint(); err != nil {
+		t.Fatalf("explicit checkpoint after recovery: %v", err)
+	}
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("recovery did not clean covered journal %s: %v", path, err)
+			t.Fatalf("explicit checkpoint did not clean covered journal %s: %v", path, err)
 		}
 	}
 }
 
-func TestDurableStoreRepairsPartialMutationTailThroughRecoveryCheckpointExactlyOnce(t *testing.T) {
+func TestDurableStoreUpsertReplacesAndReplays(t *testing.T) {
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenants := store.Tenants()
+	if _, err := tenants.CreateCollection(ctx, "tenant-a", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new caller-supplied ID behaves like an insert.
+	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &Document{
+		ID:       42,
+		Vectors:  map[string]interface{}{"embedding": []float64{1, 0, 0, 0}},
+		Metadata: map[string]interface{}{"source": "first"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := durableTestStoredDocument(t, store, "tenant-a", "docs", 42); !ok || got.Metadata["source"] != "first" {
+		t.Fatalf("upsert insert not stored: ok=%v doc=%+v", ok, got)
+	}
+
+	// Replacing an existing live ID keeps exactly one storage entry.
+	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &Document{
+		ID:       42,
+		Vectors:  map[string]interface{}{"embedding": []float32{4, 0, 0, 0}},
+		Metadata: map[string]interface{}{"source": "replaced"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info := durableTestCollectionInfo(t, store, "tenant-a", "docs")
+	if info.DocCount != 1 {
+		t.Fatalf("doc count = %d after upsert-replace, want 1", info.DocCount)
+	}
+	wantLSN := store.Metadata().AppliedLSN
+	abandonDurableStoreForTest(t, store)
+
+	reopened, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("reopen after upsert: %v", err)
+	}
+	defer reopened.Close()
+	if got := reopened.Metadata().AppliedLSN; got != wantLSN {
+		t.Fatalf("recovered LSN = %d, want %d", got, wantLSN)
+	}
+	info = durableTestCollectionInfo(t, reopened, "tenant-a", "docs")
+	if info.DocCount != 1 {
+		t.Fatalf("recovered doc count = %d after upsert replay, want 1", info.DocCount)
+	}
+	got, ok := durableTestStoredDocument(t, reopened, "tenant-a", "docs", 42)
+	if !ok {
+		t.Fatal("upserted document missing after replay")
+	}
+	if got.Metadata["source"] != "replaced" {
+		t.Fatalf("replay applied first upsert instead of replacement: %+v", got.Metadata)
+	}
+	replayedVector, ok := got.Vectors["embedding"].([]float32)
+	if !ok || len(replayedVector) != 4 || replayedVector[0] != 4 {
+		t.Fatalf("upsert replay retained non-compact dense vector: %T %v", got.Vectors["embedding"], got.Vectors["embedding"])
+	}
+}
+
+func TestDurableStoreUpsertContractAndReadNotFound(t *testing.T) {
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	tenants := store.Tenants()
+	if _, err := tenants.CreateCollection(ctx, "tenant-a", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Automatically-assigned (zero) IDs are refused: upsert is caller-addressed.
+	zero := durableTestDocument(1)
+	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &zero); err == nil {
+		t.Fatal("upsert with zero ID should fail")
+	}
+
+	// GetDocument is the canonical single-doc read.
+	if doc, ok := tenants.GetDocument("tenant-a", "docs", 99); ok || doc != nil {
+		t.Fatal("read of never-written ID must be not-found")
+	}
+	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &Document{
+		ID:       7,
+		Vectors:  map[string]interface{}{"embedding": []float32{7, 0, 0, 0}},
+		Metadata: map[string]interface{}{"value": float64(7)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := tenants.GetDocument("tenant-a", "docs", 7)
+	if !ok || got.ID != 7 {
+		t.Fatalf("GetDocument after read-write = ok=%v id=%d", ok, got.ID)
+	}
+}
+
+func TestDurableStoreRepairsPartialMutationTailAndDefersCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	base := filepath.Join(t.TempDir(), "collections")
 	store, err := OpenDurableStore(base, base)
@@ -263,9 +374,18 @@ func TestDurableStoreRepairsPartialMutationTailThroughRecoveryCheckpointExactlyO
 	if _, ok := durableTestStoredDocument(t, reopened, "tenant", "docs", 2); ok {
 		t.Fatal("partial unacknowledged document was applied")
 	}
+	if _, err := os.Stat(base + ".journal"); err != nil {
+		t.Fatalf("partial-tail recovery did not retain repaired journal: %v", err)
+	}
+	if _, err := os.Stat(base + ".journal.frozen"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected frozen journal after partial-tail recovery: %v", err)
+	}
+	if err := reopened.Checkpoint(); err != nil {
+		t.Fatalf("explicit checkpoint after partial-tail recovery: %v", err)
+	}
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("recovery checkpoint retained journal %s: %v", path, err)
+			t.Fatalf("explicit checkpoint retained journal %s: %v", path, err)
 		}
 	}
 	if err := reopened.Close(); err != nil {
@@ -325,8 +445,16 @@ func TestDurableStoreRestartRecoversFrozenAndCurrentAfterCheckpointFailureExactl
 		t.Fatalf("recovered document count = %d, want 1", got)
 	}
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("restart recovery did not retain validated journal %s: %v", path, err)
+		}
+	}
+	if err := reopened.Checkpoint(); err != nil {
+		t.Fatalf("explicit checkpoint after frozen/current recovery: %v", err)
+	}
+	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("restart recovery retained covered journal %s: %v", path, err)
+			t.Fatalf("explicit checkpoint retained covered journal %s: %v", path, err)
 		}
 	}
 	if err := reopened.Close(); err != nil {
@@ -380,6 +508,19 @@ func TestDurableStoreReplaysSupportedHNSWAndSparseState(t *testing.T) {
 	info := durableTestCollectionInfo(t, reopened, "t", "hybrid")
 	if info.DocCount != 1 {
 		t.Fatalf("hybrid collection after replay: count=%d", info.DocCount)
+	}
+	replayed, ok := durableTestStoredDocument(t, reopened, "t", "hybrid", doc.ID)
+	if !ok {
+		t.Fatal("hybrid document missing after replay")
+	}
+	dense, ok := replayed.Vectors["dense"].([]float32)
+	if !ok || len(dense) != 4 || dense[0] != 1 {
+		t.Fatalf("WAL replay retained non-compact dense vector: %T %v", replayed.Vectors["dense"], replayed.Vectors["dense"])
+	}
+	sparseVector, ok := replayed.Vectors["sparse"].(*sparse.SparseVector)
+	if !ok || len(sparseVector.Indices) != 2 || sparseVector.Indices[0] != 1 || sparseVector.Indices[1] != 3 ||
+		len(sparseVector.Values) != 2 || sparseVector.Values[0] != 2 || sparseVector.Values[1] != 1 {
+		t.Fatalf("WAL replay retained non-compact or misaligned sparse vector: %T %+v", replayed.Vectors["sparse"], replayed.Vectors["sparse"])
 	}
 	response, err := reopened.Tenants().SearchCollection(ctx, "t", SearchRequest{
 		CollectionName: "hybrid",
@@ -536,7 +677,7 @@ func TestDurableStoreReplaysLegacyV1BatchAboveCurrentAdmissionLimit(t *testing.T
 		t.Fatal(err)
 	}
 
-	documents := make([]Document, CanonicalMaxBatchDocuments+1)
+	documents := make([]Document, MaxBatchDocuments+1)
 	for i := range documents {
 		documents[i] = durableTestDocument(float32(i + 1))
 		documents[i].ID = uint64(i + 1)
@@ -670,7 +811,7 @@ func TestDurableStoreRejectsOutOfScopeIndexAndOversizePayloadWithoutFault(t *tes
 	defer store.Close()
 	ivf := durableTestSchema("ivf")
 	ivf.Fields[0].Index.Type = IndexTypeIVF
-	if _, err := store.Tenants().CreateCollection(ctx, "t", ivf); err == nil || !strings.Contains(err.Error(), "only HNSW or Flat") {
+	if _, err := store.Tenants().CreateCollection(ctx, "t", ivf); err == nil || !strings.Contains(err.Error(), "index type ivf was retired") {
 		t.Fatalf("IVF create error = %v", err)
 	}
 	invalidName := durableTestSchema("contains/slash")

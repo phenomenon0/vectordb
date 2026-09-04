@@ -16,13 +16,17 @@ from .models import (
     TenantCollectionSchema,
     TenantDeleteDocumentRequest,
     TenantDeleteDocumentResponse,
+    TenantDocument,
     TenantDocumentInput,
+    TenantFallbackParams,
     TenantGetCollectionResponse,
     TenantHybridParams,
     TenantInfoResponse,
     TenantInsertResponse,
     TenantSearchRequest,
     TenantSearchResponse,
+    TenantUpsertDocumentRequest,
+    TenantUpsertResponse,
     TenantVectorField,
 )
 from ._tenant import (
@@ -142,9 +146,7 @@ class DeepDataClient:
 
             except DeepDataError as exc:
                 last_exc = exc
-                if isinstance(exc, APIError) and should_retry(
-                    exc.status_code, attempt, retry_config
-                ):
+                if isinstance(exc, APIError) and should_retry(exc, attempt, retry_config):
                     continue
                 raise
 
@@ -238,12 +240,15 @@ class TenantClient:
         collection: str,
         *,
         id: int | None = None,
-        vectors: dict[str, Any],
+        vectors: dict[str, Any] | None = None,
+        texts: dict[str, str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TenantInsertResponse:
         """Insert a document into a tenant collection."""
         segment = collection_segment(collection)
-        document = TenantDocumentInput(id=id, vectors=vectors, metadata=metadata)
+        document = TenantDocumentInput(
+            id=id, vectors=vectors, texts=texts, metadata=metadata
+        )
         data = self._request(
             "POST",
             f"/collections/{segment}/docs",
@@ -287,31 +292,90 @@ class TenantClient:
         )
         return response_model(TenantDeleteDocumentResponse, data)
 
+    def upsert(
+        self,
+        collection: str,
+        *,
+        id: int,
+        vectors: dict[str, Any] | None = None,
+        texts: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> TenantUpsertResponse:
+        """Insert or replace a document under a caller-supplied ID.
+
+        Upsert is caller-addressed: ``id`` is required and the server never
+        auto-assigns it. Replacing a live ID overwrites its vectors and
+        metadata atomically.
+        """
+        segment = collection_segment(collection)
+        request = TenantUpsertDocumentRequest(
+            vectors=vectors, texts=texts, metadata=metadata
+        )
+        data = self._request(
+            "PUT",
+            f"/collections/{segment}/docs/{id}",
+            json=request_payload(request),
+        )
+        return response_model(TenantUpsertResponse, data)
+
+    def get_document(
+        self,
+        collection: str,
+        doc_id: int,
+    ) -> TenantDocument:
+        """Fetch one document by caller-supplied ID."""
+        segment = collection_segment(collection)
+        data = self._request(
+            "GET",
+            f"/collections/{segment}/docs/{doc_id}",
+        )
+        return response_model(TenantDocument, data)
+
     def search(
         self,
         collection: str,
         *,
-        queries: dict[str, Any],
+        queries: dict[str, Any] | None = None,
+        texts: dict[str, str] | None = None,
         top_k: int = 10,
         ef_search: int | None = None,
         filters: dict[str, Any] | None = None,
         hybrid_params: dict[str, Any] | TenantHybridParams | None = None,
         include_vectors: bool | None = None,
+        score_floor: float | None = None,
+        fallback: dict[str, Any] | TenantFallbackParams | None = None,
+        usage_boost: float | None = None,
     ) -> TenantSearchResponse:
-        """Search within a tenant collection."""
+        """Search within a tenant collection.
+
+        ``score_floor`` drops results worse than the floor (direction follows
+        the field metric) and reports ``weak_match=True`` when nothing
+        survives; ``fallback`` searches a secondary field when the primary is
+        weak; ``usage_boost`` (0 to 1) blends non-durable usage into ranking
+        while reported scores stay raw.
+        """
         segment = collection_segment(collection)
         normalized_hybrid = (
             hybrid_params
             if isinstance(hybrid_params, TenantHybridParams) or hybrid_params is None
             else TenantHybridParams.model_validate(hybrid_params)
         )
+        normalized_fallback = (
+            fallback
+            if isinstance(fallback, TenantFallbackParams) or fallback is None
+            else TenantFallbackParams.model_validate(fallback)
+        )
         request = TenantSearchRequest(
             queries=queries,
+            texts=texts,
             top_k=top_k,
             ef_search=ef_search,
             filters=filters,
             hybrid_params=normalized_hybrid,
             include_vectors=include_vectors,
+            score_floor=score_floor,
+            fallback=normalized_fallback,
+            usage_boost=usage_boost,
         )
         data = self._client._request(
             "POST",

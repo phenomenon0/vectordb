@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"sort"
+	"reflect"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/phenomenon0/vectordb/internal/filter"
 	"github.com/phenomenon0/vectordb/internal/hybrid"
@@ -20,7 +21,7 @@ import (
 // Collection manages multiple vector indexes for a single collection.
 //
 // A collection can have multiple vector fields, each with its own index:
-//   - Dense fields use HNSW/IVF/FLAT indexes
+//   - Dense fields use the dense members of IndexTypes (HNSW, FLAT)
 //   - Sparse fields use InvertedIndex
 //
 // Example:
@@ -38,6 +39,11 @@ type Collection struct {
 
 	// Default ef_search for HNSW (from env HNSW_EFSEARCH or 64)
 	defaultEfSearch int
+
+	// usage is an in-memory, non-durable frecency signal over documents
+	// this collection has returned or fetched. Session signal only: it
+	// resets on restart and must only nudge ranking, never replace it.
+	usage *UsageTracker
 
 	// durableReadOnly prevents a Collection pointer obtained from a durable V2
 	// manager or tenant read API from bypassing the canonical tenant WAL.
@@ -65,6 +71,7 @@ func NewCollection(schema CollectionSchema) (*Collection, error) {
 		documents:       make(map[uint64]*Document),
 		nextID:          1,
 		defaultEfSearch: defaultEf,
+		usage:           NewUsageTracker(),
 	}
 
 	// Initialize indexes for each field
@@ -91,7 +98,27 @@ func (c *Collection) createIndex(field VectorField) error {
 	}
 }
 
-// createDenseIndex creates a dense vector index (HNSW/IVF/FLAT).
+// createDenseIndex creates a dense vector index: one constructor per dense
+// member of IndexTypes.
+// segmentCountFromParam coerces the schema's "segments" value (decoded as
+// float64 from JSON) into a validated segment count.
+func segmentCountFromParam(raw interface{}) (int, error) {
+	switch v := raw.(type) {
+	case int:
+		if v < 1 || v > 64 {
+			return 0, fmt.Errorf("segments must be in [1,64], got %d", v)
+		}
+		return v, nil
+	case float64:
+		if v != math.Trunc(v) || v < 1 || v > 64 {
+			return 0, fmt.Errorf("segments must be an integer in [1,64], got %v", v)
+		}
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("segments must be a number in [1,64]")
+	}
+}
+
 func (c *Collection) createDenseIndex(field VectorField) error {
 	config := field.Index.Params
 	if config == nil {
@@ -111,22 +138,45 @@ func (c *Collection) createDenseIndex(field VectorField) error {
 			config["ef_construction"] = 200
 		}
 
-		idx, err = index.NewHNSWIndex(field.Dim, config)
-		if err != nil {
-			return fmt.Errorf("failed to create HNSW index: %w", err)
+		// Segment topology is part of the persisted schema, not an ambient host
+		// tuning knob. A missing parameter preserves the historical single HNSW
+		// graph; callers opt into deterministic segmented routing explicitly.
+		// This also prevents a journal from replaying into a different topology
+		// merely because GOMAXPROCS changed between hosts or restarts.
+		segments := index.SegmentsForNewCollection()
+		if raw, ok := config["segments"]; ok {
+			parsed, convErr := segmentCountFromParam(raw)
+			if convErr != nil {
+				return fmt.Errorf("field %s: %w", field.Name, convErr)
+			}
+			segments = parsed
 		}
 
-	case IndexTypeIVF:
-		// Set defaults if not provided
-		if _, ok := config["nlist"]; !ok {
-			config["nlist"] = 100
+		if segments > 1 {
+			// Each segment is an independent HNSW graph built from the same
+			// configuration; docs route deterministically by document ID.
+			// The wrapper hides them behind the single-index interfaces, so
+			// search/delete/export paths below need no segmentation awareness.
+			hnswConfig := make(map[string]interface{}, len(config))
+			for k, v := range config {
+				if k == "segments" {
+					continue // wrapper-level knob, not an HNSW parameter
+				}
+				hnswConfig[k] = v
+			}
+			dim := field.Dim
+			idx, err = index.NewSegmentedIndex(segments, func() (index.Index, error) {
+				return index.NewHNSWIndex(dim, hnswConfig)
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create segmented HNSW index (%d segments): %w", segments, err)
+			}
+		} else {
+			idx, err = index.NewHNSWIndex(field.Dim, config)
+			if err != nil {
+				return fmt.Errorf("failed to create HNSW index: %w", err)
+			}
 		}
-
-		idx, err = index.NewIVFIndex(field.Dim, config)
-		if err != nil {
-			return fmt.Errorf("failed to create IVF index: %w", err)
-		}
-
 	case IndexTypeFLAT:
 		idx, err = index.NewFLATIndex(field.Dim, config)
 		if err != nil {
@@ -134,7 +184,13 @@ func (c *Collection) createDenseIndex(field VectorField) error {
 		}
 
 	default:
-		return fmt.Errorf("index type %s not supported for dense vectors", field.Index.Type)
+		// Outside the vocabulary, or inside it but sparse-only.
+		if err := validateFieldIndexType(field); err != nil {
+			return err
+		}
+		// In IndexTypes and dense, yet no constructor above: the schema would
+		// validate and journal, then fail to rebuild on replay.
+		return fmt.Errorf("%w: no dense index constructor for %s", ErrInvalidArgument, field.Index.Type)
 	}
 
 	c.indexes[field.Name] = idx
@@ -143,8 +199,8 @@ func (c *Collection) createDenseIndex(field VectorField) error {
 
 // createSparseIndex creates a sparse vector index (Inverted).
 func (c *Collection) createSparseIndex(field VectorField) error {
-	if field.Index.Type != IndexTypeInverted {
-		return fmt.Errorf("sparse vectors require inverted index, got %s", field.Index.Type)
+	if err := validateFieldIndexType(field); err != nil {
+		return err
 	}
 
 	// Extract BM25 parameters
@@ -178,7 +234,7 @@ func (c *Collection) Add(ctx context.Context, doc *Document) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	normalized, nextID, err := c.prepareDocumentsLocked([]Document{*doc}, false)
+	normalized, nextID, err := c.prepareDocumentsLockedVariant([]Document{*doc}, false)
 	if err != nil {
 		return err
 	}
@@ -225,6 +281,12 @@ func coerceDenseVector(vector interface{}) ([]float32, error) {
 
 func coerceUint32Slice(value interface{}) ([]uint32, error) {
 	switch v := value.(type) {
+	case nil:
+		// A nil index slice is the legacy ingest's encoding of an EMPTY sparse
+		// vector (a document with no terms). NewSparseVector treats an empty
+		// slice the same way, so accept nil here for journal format
+		// compatibility (see 2026-08-28-bounded-recovery journal).
+		return []uint32{}, nil
 	case []uint32:
 		out := make([]uint32, len(v))
 		copy(out, v)
@@ -251,6 +313,9 @@ func coerceUint32Slice(value interface{}) ([]uint32, error) {
 
 func coerceFloat32Slice(value interface{}) ([]float32, error) {
 	switch v := value.(type) {
+	case nil:
+		// Companion to coerceUint32Slice: a nil values slice is an empty sparse.
+		return []float32{}, nil
 	case []float32:
 		out := make([]float32, len(v))
 		copy(out, v)
@@ -321,6 +386,47 @@ func coerceSparseVector(vector interface{}) (*sparse.SparseVector, error) {
 	}
 }
 
+// normalizeDocumentVectorTypes converts JSON-decoded vector containers into
+// the compact typed representations the indexes consume. It is intentionally
+// separate from ordinary document preparation: live callers keep the concrete
+// Go types they supplied, while persistence recovery owns its freshly decoded
+// documents and can canonicalize them without weakening caller isolation.
+//
+// Snapshot V2 load and durable-journal replay share this helper so both cold
+// start paths retain []float32 dense vectors and *sparse.SparseVector sparse
+// vectors instead of keeping allocation-heavy []interface{} JSON trees alive.
+func normalizeDocumentVectorTypes(doc *Document, schema *CollectionSchema) error {
+	for fieldName, vector := range doc.Vectors {
+		field := schema.GetField(fieldName)
+		if field == nil {
+			return fmt.Errorf("unknown vector field %s", fieldName)
+		}
+		switch field.Type {
+		case VectorTypeDense:
+			dense, err := coerceDenseVector(vector)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", fieldName, err)
+			}
+			if len(dense) != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, len(dense), field.Dim)
+			}
+			doc.Vectors[fieldName] = dense
+		case VectorTypeSparse:
+			sparseVector, err := coerceSparseVector(vector)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", fieldName, err)
+			}
+			if sparseVector.Dim != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, sparseVector.Dim, field.Dim)
+			}
+			doc.Vectors[fieldName] = sparseVector
+		default:
+			return fmt.Errorf("unsupported vector type %s for field %s", field.Type, fieldName)
+		}
+	}
+	return nil
+}
+
 // addToIndex adds a vector to the appropriate index.
 func (c *Collection) addToIndex(ctx context.Context, field VectorField, docID uint64, vector interface{}) error {
 	switch field.Type {
@@ -374,7 +480,8 @@ func (c *Collection) setIndexMetadata(field VectorField, docID uint64, metadata 
 			return setter.SetMetadata(docID, metadata)
 		}
 
-		// Index doesn't support metadata (e.g., FLAT index), silently skip
+		// Index doesn't support metadata (e.g., legacy binary-backed indexes),
+		// silently skip.
 		return nil
 
 	case VectorTypeSparse:
@@ -388,7 +495,18 @@ func (c *Collection) setIndexMetadata(field VectorField, docID uint64, metadata 
 }
 
 // Search performs a search across one or more vector fields.
-func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+//
+// Every answering path funnels through here, so this is the one place
+// that stamps QueryTimeMs: the wall time of the whole call, including
+// both rungs of the fallback ladder.
+func (c *Collection) Search(ctx context.Context, req SearchRequest) (resp *SearchResponse, err error) {
+	start := time.Now()
+	defer func() {
+		if resp != nil {
+			resp.QueryTimeMs = float64(time.Since(start).Nanoseconds()) / float64(time.Millisecond)
+		}
+	}()
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -396,16 +514,33 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 		return nil, fmt.Errorf("collection mismatch: expected %s, got %s", c.schema.Name, req.CollectionName)
 	}
 	if len(req.Queries) == 0 {
-		return nil, fmt.Errorf("at least one query field is required")
+		return nil, fmt.Errorf("%w: at least one query field is required", ErrInvalidArgument)
 	}
-	if len(req.Queries) > CanonicalMaxSearchFields {
-		return nil, fmt.Errorf("at most %d query fields are supported", CanonicalMaxSearchFields)
+	if len(req.Queries) > MaxSearchFields {
+		return nil, fmt.Errorf("%w: at most %d query fields are supported", ErrInvalidArgument, MaxSearchFields)
 	}
-	if req.TopK <= 0 || req.TopK > CanonicalMaxSearchTopK {
-		return nil, fmt.Errorf("top_k must be in [1, %d]", CanonicalMaxSearchTopK)
+	if req.TopK <= 0 || req.TopK > MaxSearchTopK {
+		return nil, fmt.Errorf("%w: top_k must be in [1, %d]", ErrInvalidArgument, MaxSearchTopK)
+	}
+	if req.EfSearch < 0 || req.EfSearch > MaxSearchEf {
+		return nil, fmt.Errorf("%w: ef_search must be in [0, %d]", ErrInvalidArgument, MaxSearchEf)
 	}
 	if req.HybridParams != nil {
 		if err := validateHybridSearchParams(req.Queries, req.HybridParams); err != nil {
+			return nil, err
+		}
+	}
+	if math.IsNaN(req.ScoreFloor) || req.ScoreFloor < 0 {
+		return nil, fmt.Errorf("%w: score_floor must be a finite value >= 0", ErrInvalidSearchArgument)
+	}
+	if math.IsNaN(req.UsageBoost) || req.UsageBoost < 0 || req.UsageBoost >= 1 {
+		return nil, fmt.Errorf("%w: usage_boost must be in [0, 1)", ErrInvalidSearchArgument)
+	}
+	if req.Fallback != nil {
+		if req.HybridParams != nil {
+			return nil, fmt.Errorf("%w: fallback and hybrid_params are mutually exclusive", ErrInvalidSearchArgument)
+		}
+		if err := validateFallbackParams(req.Queries, req.Fallback); err != nil {
 			return nil, err
 		}
 	}
@@ -416,7 +551,7 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 		var err error
 		metadataFilter, err = filter.FromMap(req.Filters)
 		if err != nil {
-			return nil, fmt.Errorf("invalid filter: %w", err)
+			return nil, fmt.Errorf("%w: invalid filter: %v", ErrInvalidArgument, err)
 		}
 	}
 
@@ -434,24 +569,166 @@ func (c *Collection) Search(ctx context.Context, req SearchRequest) (*SearchResp
 		efSearch = req.EfSearch
 	}
 
+	// Auto-fallback ladder: exactly two query fields, primary first, then
+	// secondary if the primary answer is weak (zero hits — including hits
+	// wiped out by ScoreFloor — or best raw score worse than Threshold when
+	// one is set). The floor is applied to the primary answer before the
+	// decision, so "no confident result" always routes to the secondary.
+	if req.Fallback != nil {
+		primaryField := req.Fallback.Primary
+		primaryResp, err := c.searchSingleField(ctx, primaryField, req.Queries[primaryField], req.TopK, efSearch, includeVectors, req.UsageBoost, metadataFilter)
+		if err != nil {
+			return nil, err
+		}
+		primaryLower := c.scoreLowerIsBetter(primaryField)
+		c.finalizeSearch(primaryResp, req, primaryLower)
+		needsFallback := len(primaryResp.Documents) == 0
+		if !needsFallback && req.Fallback.Threshold > 0 && primaryQualityWorse(float64(primaryResp.BestScore), req.Fallback.Threshold, primaryLower) {
+			needsFallback = true
+		}
+		if !needsFallback {
+			c.recordSearchUsage(primaryResp)
+			return primaryResp, nil
+		}
+
+		secondaryField := req.Fallback.Secondary
+		secondaryResp, err := c.searchSingleField(ctx, secondaryField, req.Queries[secondaryField], req.TopK, efSearch, includeVectors, req.UsageBoost, metadataFilter)
+		if err != nil {
+			return nil, err
+		}
+		c.finalizeSearch(secondaryResp, req, c.scoreLowerIsBetter(secondaryField))
+		secondaryResp.FellBackTo = secondaryField
+		secondaryResp.CandidatesExamined += primaryResp.CandidatesExamined
+		c.recordSearchUsage(secondaryResp)
+		return secondaryResp, nil
+	}
+
 	// Single-field search
 	if len(req.Queries) == 1 {
 		for fieldName, queryVec := range req.Queries {
-			return c.searchSingleField(ctx, fieldName, queryVec, req.TopK, efSearch, includeVectors, metadataFilter)
+			resp, err := c.searchSingleField(ctx, fieldName, queryVec, req.TopK, efSearch, includeVectors, req.UsageBoost, metadataFilter)
+			if err != nil {
+				return nil, err
+			}
+			c.finalizeSearch(resp, req, c.scoreLowerIsBetter(fieldName))
+			c.recordSearchUsage(resp)
+			return resp, nil
 		}
 	}
 
 	// Multi-field hybrid search
 	if req.HybridParams != nil {
-		return c.searchHybrid(ctx, req, efSearch, includeVectors, metadataFilter)
+		resp, err := c.searchHybrid(ctx, req, efSearch, includeVectors, metadataFilter)
+		if err != nil {
+			return nil, err
+		}
+		// Fused hybrid scores are contributions (higher is better).
+		c.finalizeSearch(resp, req, false)
+		c.recordSearchUsage(resp)
+		return resp, nil
 	}
 
 	// Multiple fields without fusion (return error)
-	return nil, fmt.Errorf("multiple query fields require HybridParams")
+	return nil, fmt.Errorf("%w: multiple query fields require hybrid_params or fallback", ErrInvalidSearchArgument)
+}
+
+// scoreLowerIsBetter reports whether the field's raw scores are
+// distances (smaller is better), the dense-field convention, as opposed
+// to BM25 and fused hybrid scores where higher is better. Unknown fields
+// default to the higher-is-better convention (they cannot score anyway).
+func (c *Collection) scoreLowerIsBetter(fieldName string) bool {
+	field := c.schema.GetField(fieldName)
+	return field != nil && field.Type == VectorTypeDense
+}
+
+// primaryQualityWorse reports whether the primary field's best score is
+// worse than the fallback threshold, in the field's score direction.
+func primaryQualityWorse(best, threshold float64, lowerIsBetter bool) bool {
+	if lowerIsBetter {
+		return best > threshold
+	}
+	return best < threshold
+}
+
+// validateFallbackParams checks the auto-fallback contract: the two named
+// query fields are distinct, non-empty, threshold finite, and both present
+// in the request's query map.
+func validateFallbackParams(queries map[string]interface{}, fb *FallbackParams) error {
+	// Both fields must be present and differ, and the collection caps a
+	// request at MaxSearchFields (2) query fields, so a valid
+	// fallback request is exactly the two named fields.
+	if fb.Primary == "" || fb.Secondary == "" {
+		return fmt.Errorf("%w: fallback requires non-empty primary and secondary fields", ErrInvalidSearchArgument)
+	}
+	if fb.Primary == fb.Secondary {
+		return fmt.Errorf("%w: fallback primary and secondary must differ", ErrInvalidSearchArgument)
+	}
+	if math.IsNaN(fb.Threshold) || fb.Threshold < 0 {
+		return fmt.Errorf("%w: fallback threshold must be a finite value >= 0", ErrInvalidSearchArgument)
+	}
+	if _, ok := queries[fb.Primary]; !ok {
+		return fmt.Errorf("%w: fallback primary field %q is not in queries", ErrInvalidSearchArgument, fb.Primary)
+	}
+	if _, ok := queries[fb.Secondary]; !ok {
+		return fmt.Errorf("%w: fallback secondary field %q is not in queries", ErrInvalidSearchArgument, fb.Secondary)
+	}
+	return nil
+}
+
+// finalizeSearch applies the response-level retrieval contract: the
+// confidence floor (drops documents whose returned score is worse than it,
+// in the field's score direction), then computes BestScore (the best raw
+// score among the surviving documents, 0 when none survive) and WeakMatch.
+// It does not record usage, so the caller records only the response it
+// actually returns.
+func (c *Collection) finalizeSearch(resp *SearchResponse, req SearchRequest, lowerIsBetter bool) {
+	if resp == nil {
+		return
+	}
+	if req.ScoreFloor > 0 {
+		keep := 0
+		for i := range resp.Documents {
+			if !primaryQualityWorse(float64(resp.Scores[i]), req.ScoreFloor, lowerIsBetter) {
+				resp.Documents[keep] = resp.Documents[i]
+				resp.Scores[keep] = resp.Scores[i]
+				keep++
+			}
+		}
+		resp.Documents = resp.Documents[:keep]
+		resp.Scores = resp.Scores[:keep]
+	}
+	var best float32
+	for i, s := range resp.Scores {
+		// Keep s when it is not worse than the current best.
+		if i == 0 || !primaryQualityWorse(float64(s), float64(best), lowerIsBetter) {
+			best = s
+		}
+	}
+	resp.BestScore = best
+	resp.WeakMatch = req.ScoreFloor > 0 && len(resp.Documents) == 0
+	resp.ScoreDirection = ScoreDirectionHigherIsBetter
+	if lowerIsBetter {
+		resp.ScoreDirection = ScoreDirectionLowerIsBetter
+	}
+}
+
+// recordSearchUsage feeds the non-durable frecency signal with the
+// documents actually returned to the caller.
+func (c *Collection) recordSearchUsage(resp *SearchResponse) {
+	if c == nil || c.usage == nil || resp == nil {
+		return
+	}
+	for _, d := range resp.Documents {
+		c.usage.Record(d.ID)
+	}
 }
 
 // searchSingleField performs a search on a single vector field.
-func (c *Collection) searchSingleField(ctx context.Context, fieldName string, queryVec interface{}, k int, efSearch int, includeVectors bool, metadataFilter filter.Filter) (*SearchResponse, error) {
+// usageBlend is the opt-in frecency weight applied to the raw ranking
+// (0 keeps the index order exactly). Response post-processing (floor,
+// weak-match, usage recording) is applied by the caller via
+// finalizeSearch so fallback can inspect the raw primary answer first.
+func (c *Collection) searchSingleField(ctx context.Context, fieldName string, queryVec interface{}, k int, efSearch int, includeVectors bool, usageBlend float64, metadataFilter filter.Filter) (*SearchResponse, error) {
 	field := c.schema.GetField(fieldName)
 	if field == nil {
 		return nil, fmt.Errorf("field not found: %s", fieldName)
@@ -479,13 +756,8 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 				EfSearch: efSearch,
 				Filter:   metadataFilter,
 			}
-		case IndexTypeIVF:
-			params = index.IVFSearchParams{
-				NProbe: 10, // Default value
-				Filter: metadataFilter,
-			}
 		default:
-			// For other index types (FLAT, DiskANN), use HNSW params as fallback
+			// For other index types (FLAT), use HNSW params as fallback
 			params = index.HNSWSearchParams{
 				Filter: metadataFilter,
 			}
@@ -533,6 +805,14 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 	default:
 		return nil, fmt.Errorf("unsupported vector type: %d", field.Type)
 	}
+
+	// Frecency re-order (opt-in). Ranking only: raw scores are preserved in
+	// the response and the usage blend is bounded to < 1 by Search, so the
+	// similarity signal always dominates.
+	if usageBlend > 0 {
+		rankByUsage(results, c.usage, usageBlend, field.Type == VectorTypeDense)
+	}
+
 	if err := c.validateSearchResultsBudget(results, includeVectors); err != nil {
 		return nil, err
 	}
@@ -606,11 +886,6 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 				EfSearch: efSearch,
 				Filter:   metadataFilter,
 			}
-		case IndexTypeIVF:
-			params = index.IVFSearchParams{
-				NProbe: 10, // Default value
-				Filter: metadataFilter,
-			}
 		default:
 			params = index.HNSWSearchParams{
 				Filter: metadataFilter,
@@ -624,9 +899,12 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 
 		denseResults = make([]hybrid.SearchResult, len(idxResults))
 		for i, r := range idxResults {
+			// Use similarity (higher is better) so weighted/linear fusion ranks
+			// dense hits correctly alongside sparse similarity scores. RRF is
+			// rank-only and unaffected.
 			denseResults[i] = hybrid.SearchResult{
 				DocID: r.ID,
-				Score: r.Distance,
+				Score: r.Score,
 			}
 		}
 	}
@@ -688,6 +966,13 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 	if err != nil {
 		return nil, fmt.Errorf("fusion failed: %w", err)
 	}
+
+	// Frecency re-order (opt-in), same bounded semantics as the single
+	// field path: ranking only, raw fusion scores preserved.
+	if req.UsageBoost > 0 {
+		rankByUsage(fusedResults, c.usage, req.UsageBoost, false) // fused scores: higher is better
+	}
+
 	if err := c.validateSearchResultsBudget(fusedResults, includeVectors); err != nil {
 		return nil, err
 	}
@@ -713,23 +998,23 @@ func validateHybridSearchParams(queries map[string]interface{}, params *HybridSe
 	switch params.Strategy {
 	case "rrf", "weighted", "linear":
 	default:
-		return fmt.Errorf("invalid hybrid strategy %q", params.Strategy)
+		return fmt.Errorf("%w: invalid hybrid strategy %q", ErrInvalidArgument, params.Strategy)
 	}
 	if math.IsNaN(float64(params.RRFConstant)) || math.IsInf(float64(params.RRFConstant), 0) || params.RRFConstant < 0 {
-		return fmt.Errorf("hybrid rrf_constant must be finite and non-negative")
+		return fmt.Errorf("%w: hybrid rrf_constant must be finite and non-negative", ErrInvalidArgument)
 	}
 	var weightSum float32
 	for field, weight := range params.Weights {
 		if _, ok := queries[field]; !ok && field != "dense" && field != "sparse" {
-			return fmt.Errorf("hybrid weight references unknown query field %q", field)
+			return fmt.Errorf("%w: hybrid weight references unknown query field %q", ErrInvalidArgument, field)
 		}
 		if math.IsNaN(float64(weight)) || math.IsInf(float64(weight), 0) || weight < 0 {
-			return fmt.Errorf("hybrid weight for %q must be finite and non-negative", field)
+			return fmt.Errorf("%w: hybrid weight for %q must be finite and non-negative", ErrInvalidArgument, field)
 		}
 		weightSum += weight
 	}
 	if len(params.Weights) > 0 && weightSum <= 0 {
-		return fmt.Errorf("hybrid weights must contain a positive value")
+		return fmt.Errorf("%w: hybrid weights must contain a positive value", ErrInvalidArgument)
 	}
 	return nil
 }
@@ -743,7 +1028,7 @@ func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	normalized, nextID, err := c.prepareDocumentsLocked(docs, false)
+	normalized, nextID, err := c.prepareDocumentsLockedVariant(docs, false)
 	if err != nil {
 		return err
 	}
@@ -759,13 +1044,23 @@ func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
 // prepareCanonicalDocuments validates and deep-clones documents without
 // changing collection or caller-owned state. IDs are resolved before WAL
 // append, including explicit IDs, so replay cannot make a different choice.
+//
+// The clone preserves caller Go types instead of round-tripping through JSON.
+// This is deliberate: Validate and validatePersistedDocument coerce by value
+// shape rather than concrete type, journal replay re-decodes every record
+// from JSON anyway, and snapshots marshal stored documents wholesale, so no
+// consumer depends on JSON-normalized types. Preserved []float32 vectors let
+// index insertion take coerceDenseVector's zero-copy fast path instead of
+// unboxing a per-dimension float64 map on every batch. Deep-copy isolation is
+// unchanged: cloneDocumentPreservingTypes copies every reachable slice, map,
+// and pointer, so later caller mutations cannot reach stored state.
 func (c *Collection) prepareCanonicalDocuments(docs []Document) ([]Document, uint64, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.prepareDocumentsLocked(docs, true)
+	return c.prepareDocumentsLockedVariant(docs, false)
 }
 
-func (c *Collection) prepareDocumentsLocked(docs []Document, canonicalJSON bool) ([]Document, uint64, error) {
+func (c *Collection) prepareDocumentsLockedVariant(docs []Document, allowReplacement bool) ([]Document, uint64, error) {
 	if len(docs) == 0 {
 		return nil, c.nextID, fmt.Errorf("documents cannot be empty")
 	}
@@ -776,16 +1071,8 @@ func (c *Collection) prepareDocumentsLocked(docs []Document, canonicalJSON bool)
 	reserved := make(map[uint64]struct{}, len(docs))
 	normalized := make([]Document, len(docs))
 	for i := range docs {
-		var clone Document
+		clone := cloneDocumentPreservingTypes(docs[i])
 		var err error
-		if canonicalJSON {
-			clone, err = cloneCanonicalDocument(docs[i])
-		} else {
-			clone = cloneDocumentPreservingTypes(docs[i])
-		}
-		if err != nil {
-			return nil, c.nextID, fmt.Errorf("document %d clone failed: %w", i, err)
-		}
 		if clone.ID == 0 {
 			clone.ID, nextID, err = nextCanonicalID(nextID, reserved, c.documents)
 			if err != nil {
@@ -798,8 +1085,8 @@ func (c *Collection) prepareDocumentsLocked(docs []Document, canonicalJSON bool)
 			if _, exists := reserved[clone.ID]; exists {
 				return nil, c.nextID, fmt.Errorf("document %d duplicates ID %d in batch", i, clone.ID)
 			}
-			if _, exists := c.documents[clone.ID]; exists {
-				return nil, c.nextID, fmt.Errorf("document %d ID %d already exists", i, clone.ID)
+			if _, exists := c.documents[clone.ID]; exists && !allowReplacement {
+				return nil, c.nextID, fmt.Errorf("%w: document %d ID %d", ErrDocumentExists, i, clone.ID)
 			}
 			if clone.ID >= nextID {
 				nextID = clone.ID + 1
@@ -815,6 +1102,23 @@ func (c *Collection) prepareDocumentsLocked(docs []Document, canonicalJSON bool)
 		normalized[i] = clone
 	}
 	return normalized, nextID, nil
+}
+
+// prepareCanonicalUpsert validates and deep-clones a single upsert document
+// without changing collection or caller-owned state. In contrast with insert
+// preparation, an existing live ID is accepted: the caller explicitly chose
+// it for replacement. IDs are not auto-assigned here; upsert requires a
+// caller-supplied nonzero ID.
+func (c *Collection) prepareCanonicalUpsert(docs []Document) ([]Document, uint64, error) {
+	if len(docs) != 1 {
+		return nil, c.nextID, fmt.Errorf("upsert requires exactly one document")
+	}
+	if docs[0].ID == 0 {
+		return nil, c.nextID, fmt.Errorf("upsert requires a caller-supplied document ID")
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.prepareDocumentsLockedVariant(docs, true)
 }
 
 func cloneDocumentPreservingTypes(doc Document) Document {
@@ -863,11 +1167,11 @@ func (c *Collection) validateSearchResultsBudget(results []hybrid.SearchResult, 
 			}
 			resultBytes += int64(len(metadata))
 		}
-		if resultBytes > int64(CanonicalMaxSearchResponseBytes)-estimated {
+		if resultBytes > int64(MaxSearchResponseBytes)-estimated {
 			return fmt.Errorf(
 				"%w: estimated response exceeds %d bytes",
 				ErrSearchResponseBudgetExceeded,
-				CanonicalMaxSearchResponseBytes,
+				MaxSearchResponseBytes,
 			)
 		}
 		estimated += resultBytes
@@ -905,20 +1209,71 @@ func cloneDocumentValue(value interface{}) interface{} {
 			Dim:     typed.Dim,
 		}
 	default:
-		return typed
+		// Anything outside the vector vocabulary (e.g. []string or
+		// map[string]string metadata) must still be isolated: share only
+		// immutable leaves and copy every reachable composite.
+		return cloneCompositeDocumentValue(value)
 	}
 }
 
-func cloneCanonicalDocument(doc Document) (Document, error) {
-	data, err := json.Marshal(doc)
-	if err != nil {
-		return Document{}, err
+// cloneCompositeDocumentValue deep-copies slice, array, map, and pointer
+// values that the typed cases above do not cover, so caller mutations after
+// insertion can never alias stored state. Scalar leaves (numbers, strings,
+// bools, nil) are immutable from the store's side and shared as-is; structs
+// reached through pointers are copied as opaque values, which is safe because
+// mutation through them would require exporting a reference interior that
+// JSON-shaped callers cannot construct.
+func cloneCompositeDocumentValue(value interface{}) interface{} {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return value
 	}
-	var clone Document
-	if err := decodeCollectionJSON(data, &clone); err != nil {
-		return Document{}, err
+	cloned := cloneReflectValue(rv)
+	if !cloned.IsValid() {
+		return value
 	}
-	return clone, nil
+	return cloned.Interface()
+}
+
+func cloneReflectValue(rv reflect.Value) reflect.Value {
+	switch rv.Kind() {
+	case reflect.Slice:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(rv.Index(i)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(rv.Type()).Elem()
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(rv.Index(i)))
+		}
+		return out
+	case reflect.Map:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			// Keys stay as-is: they are comparable values, and cloning a key
+			// could break identity-based lookups on pointer-keyed maps.
+			out.SetMapIndex(iter.Key(), cloneReflectValue(iter.Value()))
+		}
+		return out
+	case reflect.Ptr:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.New(rv.Type().Elem())
+		out.Elem().Set(cloneReflectValue(rv.Elem()))
+		return out
+	default:
+		return rv
+	}
 }
 
 func (c *Collection) addPreparedDocuments(ctx context.Context, docs []Document, nextID uint64) error {
@@ -993,7 +1348,63 @@ func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Docu
 	return nil
 }
 
-// BulkAddDense inserts raw dense vectors into a single field without full Document overhead.
+// Upsert inserts or replaces a single caller-addressed document. The new
+// document is applied under the same write lock as an overwrite of any vector
+// set the ID already owns: the old dense/sparse postings for the ID are
+// removed first so the re-add cannot hit an index's live-ID rejection, then
+// the new document is added through the normal prepared-add path. Unlike
+// delete+insert, the ID counter placement is driven only by
+// prepareCanonicalUpsert, so journal replay of an upsert is deterministic.
+func (c *Collection) Upsert(ctx context.Context, doc *Document) error {
+	if c.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
+	if doc == nil {
+		return fmt.Errorf("document cannot be nil")
+	}
+	normalized, nextID, err := c.prepareCanonicalUpsert([]Document{*doc})
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.upsertPreparedLocked(ctx, normalized, nextID)
+}
+
+// upsertPreparedLocked applies one or more prepared (canonicalized) documents
+// as upserts. The caller must hold the write lock. Documents that already own
+// live dense/sparse entries are first evicted from those indexes before the
+// prepared add path reinserts them, which keeps index counts stable and lets
+// HNSW resurrect instead of rejecting a duplicate live ID. nextID is the
+// position prepareCanonicalUpsert finished its ID placement at and becomes the
+// collection's new cursor.
+func (c *Collection) upsertPreparedLocked(ctx context.Context, docs []Document, nextID uint64) error {
+	// Evict existing live postings for any ID being replaced, then let
+	// addPreparedDocumentsLocked reinsert and re-register metadata in one pass.
+	for i := range docs {
+		docID := docs[i].ID
+		if _, exists := c.documents[docID]; !exists {
+			continue
+		}
+		for fieldName := range c.indexes {
+			if err := c.indexes[fieldName].Delete(ctx, docID); err != nil {
+				return fmt.Errorf("failed to delete from index %s: %w", fieldName, err)
+			}
+		}
+		for fieldName := range c.sparse {
+			if err := c.sparse[fieldName].Delete(ctx, docID); err != nil {
+				return fmt.Errorf("failed to delete from sparse index %s: %w", fieldName, err)
+			}
+		}
+	}
+	preparedNextID := nextID
+	if nextID == 0 {
+		preparedNextID = c.nextID
+	}
+	return c.addPreparedDocumentsLocked(ctx, docs, preparedNextID)
+}
+
+// BulkAddDense inserts raw dense documents into a single field without full Document overhead.
 // IDs and vectors must be the same length. Minimal Document records are created (ID only).
 func (c *Collection) BulkAddDense(ctx context.Context, fieldName string, ids []uint64, vectors [][]float32) error {
 	if c.isDurableReadOnly() {
@@ -1083,6 +1494,11 @@ func (c *Collection) GetDocument(docID uint64) (*Document, bool) {
 		return nil, false
 	}
 	clone := cloneDocumentPreservingTypes(*doc)
+	// A direct fetch is the strongest "this tenant consumed this document"
+	// signal, so it is recorded in the non-durable usage tracker too.
+	if c.usage != nil {
+		c.usage.Record(docID)
+	}
 	return &clone, true
 }
 
@@ -1101,7 +1517,7 @@ func (c *Collection) deleteDocumentDirect(ctx context.Context, docID uint64) err
 		return fmt.Errorf("document ID cannot be zero")
 	}
 	if _, exists := c.documents[docID]; !exists {
-		return fmt.Errorf("document %d not found", docID)
+		return fmt.Errorf("%w: %d", ErrDocumentNotFound, docID)
 	}
 
 	// Remove from all indexes
@@ -1121,6 +1537,11 @@ func (c *Collection) deleteDocumentDirect(ctx context.Context, docID uint64) err
 
 	// Remove from document storage
 	delete(c.documents, docID)
+	// The usage signal is keyed by document, so it dies with the document.
+	// Nothing else drops an entry, so a retained one is unreclaimable: it is
+	// persisted to the usage sidecar and restored on every open, growing the
+	// tracker with cumulative deletes instead of the live set.
+	c.usage.Forget(docID)
 
 	return nil
 }
@@ -1151,9 +1572,23 @@ func (c *Collection) Schema() CollectionSchema {
 	defer c.mu.RUnlock()
 	clone, err := cloneCanonicalSchema(c.schema)
 	if err != nil {
-		return c.schema
+		// The JSON round-trip failed (in practice: unserializable metadata),
+		// so no live reference may escape under RLock. Return the structural
+		// fields with a fresh Fields slice and drop the metadata map.
+		schema := c.schema
+		schema.Fields = append([]VectorField(nil), c.schema.Fields...)
+		schema.Metadata = nil
+		return schema
 	}
 	return clone
+}
+
+// isEphemeral reports the collection's durability class without cloning the
+// whole schema, so the store can consult it on every document mutation.
+func (c *Collection) isEphemeral() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.schema.Durability == DurabilityEphemeral
 }
 
 // UpdateMetadata updates the collection schema's metadata map.
@@ -1329,308 +1764,6 @@ func (c *Collection) ImportDocuments(docs map[uint64]*Document) {
 	for id, doc := range docs {
 		c.documents[id] = doc
 	}
-}
-
-// Recommend finds similar documents given positive/negative example IDs.
-func (c *Collection) Recommend(ctx context.Context, req RecommendRequest) (*SearchResponse, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if len(req.PositiveIDs) == 0 {
-		return nil, fmt.Errorf("at least one positive ID is required")
-	}
-
-	// Resolve field name (default to first dense field)
-	fieldName := req.FieldName
-	if fieldName == "" {
-		for _, f := range c.schema.Fields {
-			if f.Type == VectorTypeDense {
-				fieldName = f.Name
-				break
-			}
-		}
-		if fieldName == "" {
-			return nil, fmt.Errorf("no dense vector field found")
-		}
-	}
-
-	field := c.schema.GetField(fieldName)
-	if field == nil {
-		return nil, fmt.Errorf("field not found: %s", fieldName)
-	}
-	if field.Type != VectorTypeDense {
-		return nil, fmt.Errorf("field %s is not a dense vector field", fieldName)
-	}
-
-	// Look up vectors for positive IDs
-	dim := field.Dim
-	posCentroid := make([]float32, dim)
-	for _, id := range req.PositiveIDs {
-		doc, ok := c.documents[id]
-		if !ok {
-			return nil, fmt.Errorf("document %d not found", id)
-		}
-		vec, err := coerceDenseVector(doc.Vectors[fieldName])
-		if err != nil {
-			return nil, fmt.Errorf("document %d: %w", id, err)
-		}
-		for j := range posCentroid {
-			posCentroid[j] += vec[j]
-		}
-	}
-	posCount := float32(len(req.PositiveIDs))
-	for j := range posCentroid {
-		posCentroid[j] /= posCount
-	}
-
-	// Subtract negative centroid if present
-	if len(req.NegativeIDs) > 0 {
-		negWeight := req.NegativeWeight
-		if negWeight == 0 {
-			negWeight = 0.5
-		}
-		negCentroid := make([]float32, dim)
-		for _, id := range req.NegativeIDs {
-			doc, ok := c.documents[id]
-			if !ok {
-				return nil, fmt.Errorf("document %d not found", id)
-			}
-			vec, err := coerceDenseVector(doc.Vectors[fieldName])
-			if err != nil {
-				return nil, fmt.Errorf("document %d: %w", id, err)
-			}
-			for j := range negCentroid {
-				negCentroid[j] += vec[j]
-			}
-		}
-		negCount := float32(len(req.NegativeIDs))
-		for j := range negCentroid {
-			negCentroid[j] /= negCount
-		}
-		for j := range posCentroid {
-			posCentroid[j] -= negWeight * negCentroid[j]
-		}
-	}
-
-	// L2-normalize the result vector
-	l2NormalizeInPlace(posCentroid)
-
-	// Parse filters
-	var metadataFilter filter.Filter
-	if len(req.Filters) > 0 {
-		var err error
-		metadataFilter, err = filter.FromMap(req.Filters)
-		if err != nil {
-			return nil, fmt.Errorf("invalid filter: %w", err)
-		}
-	}
-
-	efSearch := c.defaultEfSearch
-	if req.EfSearch > 0 {
-		efSearch = req.EfSearch
-	}
-
-	// Search with synthesized vector
-	resp, err := c.searchSingleField(ctx, fieldName, posCentroid, req.TopK, efSearch, true, metadataFilter)
-	if err != nil {
-		return nil, err
-	}
-
-	// Post-filter: exclude all input IDs
-	excludeSet := make(map[uint64]struct{}, len(req.PositiveIDs)+len(req.NegativeIDs))
-	for _, id := range req.PositiveIDs {
-		excludeSet[id] = struct{}{}
-	}
-	for _, id := range req.NegativeIDs {
-		excludeSet[id] = struct{}{}
-	}
-
-	filteredDocs := make([]Document, 0, len(resp.Documents))
-	filteredScores := make([]float32, 0, len(resp.Scores))
-	for i, doc := range resp.Documents {
-		if _, excluded := excludeSet[doc.ID]; !excluded {
-			filteredDocs = append(filteredDocs, doc)
-			filteredScores = append(filteredScores, resp.Scores[i])
-		}
-	}
-
-	resp.Documents = filteredDocs
-	resp.Scores = filteredScores
-	return resp, nil
-}
-
-// Discover performs context-based discovery search using positive/negative pairs.
-func (c *Collection) Discover(ctx context.Context, req DiscoverRequest) (*SearchResponse, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if len(req.Context) == 0 {
-		return nil, fmt.Errorf("at least one context pair is required")
-	}
-
-	// Resolve field name
-	fieldName := req.FieldName
-	if fieldName == "" {
-		for _, f := range c.schema.Fields {
-			if f.Type == VectorTypeDense {
-				fieldName = f.Name
-				break
-			}
-		}
-		if fieldName == "" {
-			return nil, fmt.Errorf("no dense vector field found")
-		}
-	}
-
-	field := c.schema.GetField(fieldName)
-	if field == nil {
-		return nil, fmt.Errorf("field not found: %s", fieldName)
-	}
-	if field.Type != VectorTypeDense {
-		return nil, fmt.Errorf("field %s is not a dense vector field", fieldName)
-	}
-
-	// Resolve target vector
-	var targetVec []float32
-	if req.TargetVector != nil {
-		targetVec = req.TargetVector
-	} else if req.TargetID != 0 {
-		doc, ok := c.documents[req.TargetID]
-		if !ok {
-			return nil, fmt.Errorf("target document %d not found", req.TargetID)
-		}
-		var err error
-		targetVec, err = coerceDenseVector(doc.Vectors[fieldName])
-		if err != nil {
-			return nil, fmt.Errorf("target document %d: %w", req.TargetID, err)
-		}
-	} else {
-		// Average of context positives
-		dim := field.Dim
-		targetVec = make([]float32, dim)
-		for _, pair := range req.Context {
-			doc, ok := c.documents[pair.PositiveID]
-			if !ok {
-				return nil, fmt.Errorf("positive document %d not found", pair.PositiveID)
-			}
-			vec, err := coerceDenseVector(doc.Vectors[fieldName])
-			if err != nil {
-				return nil, fmt.Errorf("positive document %d: %w", pair.PositiveID, err)
-			}
-			for j := range targetVec {
-				targetVec[j] += vec[j]
-			}
-		}
-		count := float32(len(req.Context))
-		for j := range targetVec {
-			targetVec[j] /= count
-		}
-		l2NormalizeInPlace(targetVec)
-	}
-
-	// Resolve context vectors
-	type resolvedPair struct {
-		posVec []float32
-		negVec []float32
-	}
-	pairs := make([]resolvedPair, len(req.Context))
-	for i, pair := range req.Context {
-		posDoc, ok := c.documents[pair.PositiveID]
-		if !ok {
-			return nil, fmt.Errorf("positive document %d not found", pair.PositiveID)
-		}
-		posVec, err := coerceDenseVector(posDoc.Vectors[fieldName])
-		if err != nil {
-			return nil, fmt.Errorf("positive document %d: %w", pair.PositiveID, err)
-		}
-		negDoc, ok := c.documents[pair.NegativeID]
-		if !ok {
-			return nil, fmt.Errorf("negative document %d not found", pair.NegativeID)
-		}
-		negVec, err := coerceDenseVector(negDoc.Vectors[fieldName])
-		if err != nil {
-			return nil, fmt.Errorf("negative document %d: %w", pair.NegativeID, err)
-		}
-		pairs[i] = resolvedPair{posVec: posVec, negVec: negVec}
-	}
-
-	// Parse filters
-	var metadataFilter filter.Filter
-	if len(req.Filters) > 0 {
-		var err error
-		metadataFilter, err = filter.FromMap(req.Filters)
-		if err != nil {
-			return nil, fmt.Errorf("invalid filter: %w", err)
-		}
-	}
-
-	efSearch := c.defaultEfSearch
-	if req.EfSearch > 0 {
-		efSearch = req.EfSearch
-	}
-
-	topK := req.TopK
-	if topK <= 0 {
-		topK = 10
-	}
-
-	// Over-fetch candidates
-	overFetchK := topK * 4
-	overFetchEf := efSearch * 2
-	resp, err := c.searchSingleField(ctx, fieldName, targetVec, overFetchK, overFetchEf, true, metadataFilter)
-	if err != nil {
-		return nil, err
-	}
-
-	// Re-rank each candidate using context scoring
-	type scoredDoc struct {
-		doc   Document
-		score float32
-	}
-	scored := make([]scoredDoc, 0, len(resp.Documents))
-	for i, doc := range resp.Documents {
-		candidateVec, err := c.getDocumentVector(doc.ID, fieldName)
-		if err != nil {
-			continue
-		}
-
-		// Compute context score
-		contextScore := float64(1.0)
-		for _, pair := range pairs {
-			posSim := cosineSimilarity(candidateVec, pair.posVec)
-			negSim := cosineSimilarity(candidateVec, pair.negVec)
-			contextScore *= sigmoid(float64(posSim - negSim))
-		}
-
-		targetSim := cosineSimilarity(candidateVec, targetVec)
-		finalScore := float32(contextScore) * targetSim
-
-		_ = resp.Scores[i] // bounds check hint
-		scored = append(scored, scoredDoc{doc: doc, score: finalScore})
-	}
-
-	// Sort by final_score descending
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
-
-	// Return top-k
-	if len(scored) > topK {
-		scored = scored[:topK]
-	}
-
-	docs := make([]Document, len(scored))
-	scores := make([]float32, len(scored))
-	for i, s := range scored {
-		docs[i] = s.doc
-		scores[i] = s.score
-	}
-
-	return &SearchResponse{
-		Documents:          docs,
-		Scores:             scores,
-		CandidatesExamined: resp.CandidatesExamined,
-	}, nil
 }
 
 // getDocumentVector retrieves a dense vector for a document from the stored documents.

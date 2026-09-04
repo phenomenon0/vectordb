@@ -19,16 +19,12 @@ import (
 
 // EmbedderFactory creates embedders based on mode configuration
 type EmbedderFactory struct {
-	mode        *ModeConfig
-	costTracker *CostTracker
+	mode *ModeConfig
 }
 
 // NewEmbedderFactory creates a new factory for the given mode
-func NewEmbedderFactory(mode *ModeConfig, costTracker *CostTracker) *EmbedderFactory {
-	return &EmbedderFactory{
-		mode:        mode,
-		costTracker: costTracker,
-	}
+func NewEmbedderFactory(mode *ModeConfig) *EmbedderFactory {
+	return &EmbedderFactory{mode: mode}
 }
 
 // CreateEmbedder creates an embedder appropriate for the current mode
@@ -63,12 +59,6 @@ func (f *EmbedderFactory) createLocalEmbedder() (Embedder, error) {
 
 	// Explicit provider selection via EMBEDDER_TYPE
 	embType := strings.ToLower(os.Getenv("EMBEDDER_TYPE"))
-	dim := 0
-	if d := os.Getenv("EMBED_DIM"); d != "" {
-		if v, err := strconv.Atoi(d); err == nil && v > 0 {
-			dim = v
-		}
-	}
 
 	if embType == "openai" {
 		apiKey := os.Getenv("OPENAI_API_KEY")
@@ -80,15 +70,7 @@ func (f *EmbedderFactory) createLocalEmbedder() (Embedder, error) {
 		f.mode.EmbedderType = "openai"
 		f.mode.EmbedderModel = "text-embedding-3-small"
 		f.mode.CostPer1MToken = 0.02
-		baseEmb := NewOpenAIEmbedder(apiKey)
-		if f.costTracker != nil {
-			return NewTrackedEmbedder(baseEmb, f.costTracker), nil
-		}
-		return baseEmb, nil
-	}
-
-	if emb, err := f.tryExplicitProvider(embType, dim); emb != nil {
-		return emb, err
+		return NewOpenAIEmbedder(apiKey), nil
 	}
 
 	// Priority 1: ONNX embeddings (local, good quality, requires model files)
@@ -123,29 +105,13 @@ func (f *EmbedderFactory) createLocalEmbedder() (Embedder, error) {
 	return NewHashEmbedder(384), nil
 }
 
-// createProEmbedder creates an embedder for PRO mode.
-// Supports OpenAI (default), Gemini, Voyage, Jina, Cohere, Mistral via EMBEDDER_TYPE.
+// createProEmbedder creates an embedder for PRO mode. OpenAI is the only
+// hosted provider the release candidate ships; the Gemini/Voyage/Jina/Cohere/
+// Mistral vendors were retired under SYS-03.
 func (f *EmbedderFactory) createProEmbedder() (Embedder, error) {
-	embType := strings.ToLower(os.Getenv("EMBEDDER_TYPE"))
-	dim := 0
-	if d := os.Getenv("EMBED_DIM"); d != "" {
-		if v, err := strconv.Atoi(d); err == nil && v > 0 {
-			dim = v
-		}
-	}
-
-	// Try explicit provider selection first
-	if emb, err := f.tryExplicitProvider(embType, dim); emb != nil {
-		if f.costTracker != nil {
-			return NewTrackedEmbedder(emb, f.costTracker), nil
-		}
-		return emb, err
-	}
-
-	// Default: OpenAI
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		return nil, fmt.Errorf("PRO mode requires OPENAI_API_KEY environment variable (or set EMBEDDER_TYPE to gemini, voyage, jina, cohere, or mistral)")
+		return nil, fmt.Errorf("PRO mode requires OPENAI_API_KEY environment variable")
 	}
 
 	fmt.Println(">>> [PRO] Using OpenAI embedder (text-embedding-3-small, 1536d)")
@@ -154,105 +120,7 @@ func (f *EmbedderFactory) createProEmbedder() (Embedder, error) {
 	f.mode.EmbedderModel = "text-embedding-3-small"
 	f.mode.CostPer1MToken = 0.02
 
-	baseEmb := NewOpenAIEmbedder(apiKey)
-	if f.costTracker != nil {
-		return NewTrackedEmbedder(baseEmb, f.costTracker), nil
-	}
-	return baseEmb, nil
-}
-
-// tryExplicitProvider creates an embedder for explicitly-selected providers (Gemini, Voyage, Jina, Cohere, Mistral).
-// Returns (nil, nil) if embType doesn't match a known provider, allowing fallback to default behavior.
-func (f *EmbedderFactory) tryExplicitProvider(embType string, dim int) (Embedder, error) {
-	model := os.Getenv("EMBED_MODEL")
-
-	switch embType {
-	case "gemini":
-		apiKey := os.Getenv("GOOGLE_API_KEY")
-		if apiKey == "" {
-			apiKey = os.Getenv("GEMINI_API_KEY")
-		}
-		if apiKey == "" {
-			return nil, fmt.Errorf("EMBEDDER_TYPE=gemini requires GOOGLE_API_KEY or GEMINI_API_KEY")
-		}
-		if dim <= 0 {
-			dim = 3072
-		}
-		fmt.Printf(">>> Using Gemini embedder (gemini-embedding-2-preview, %dd)\n", dim)
-		f.mode.Dimension = dim
-		f.mode.EmbedderType = "gemini"
-		f.mode.EmbedderModel = "gemini-embedding-2-preview"
-		f.mode.CostPer1MToken = 0.20
-		return NewGeminiEmbedder(apiKey, dim), nil
-
-	case "voyage":
-		apiKey := os.Getenv("VOYAGE_API_KEY")
-		if apiKey == "" {
-			return nil, fmt.Errorf("EMBEDDER_TYPE=voyage requires VOYAGE_API_KEY")
-		}
-		if model == "" {
-			model = "voyage-4-large"
-		}
-		if dim <= 0 {
-			dim = 1024
-		}
-		fmt.Printf(">>> Using Voyage embedder (%s, %dd)\n", model, dim)
-		f.mode.Dimension = dim
-		f.mode.EmbedderType = "voyage"
-		f.mode.EmbedderModel = model
-		f.mode.CostPer1MToken = 0.12
-		return NewVoyageEmbedder(apiKey, model, dim), nil
-
-	case "jina":
-		apiKey := os.Getenv("JINA_API_KEY")
-		if apiKey == "" {
-			return nil, fmt.Errorf("EMBEDDER_TYPE=jina requires JINA_API_KEY")
-		}
-		if model == "" {
-			model = "jina-embeddings-v3"
-		}
-		if dim <= 0 {
-			dim = 1024
-		}
-		fmt.Printf(">>> Using Jina embedder (%s, %dd)\n", model, dim)
-		f.mode.Dimension = dim
-		f.mode.EmbedderType = "jina"
-		f.mode.EmbedderModel = model
-		f.mode.CostPer1MToken = 0.10
-		return NewJinaEmbedder(apiKey, model, dim), nil
-
-	case "cohere":
-		apiKey := os.Getenv("COHERE_API_KEY")
-		if apiKey == "" {
-			return nil, fmt.Errorf("EMBEDDER_TYPE=cohere requires COHERE_API_KEY")
-		}
-		if model == "" {
-			model = "embed-english-v3.0"
-		}
-		fmt.Printf(">>> Using Cohere embedder (%s, 1024d)\n", model)
-		f.mode.Dimension = 1024
-		f.mode.EmbedderType = "cohere"
-		f.mode.EmbedderModel = model
-		f.mode.CostPer1MToken = 0.10
-		return NewCohereEmbedder(apiKey, model), nil
-
-	case "mistral":
-		apiKey := os.Getenv("MISTRAL_API_KEY")
-		if apiKey == "" {
-			return nil, fmt.Errorf("EMBEDDER_TYPE=mistral requires MISTRAL_API_KEY")
-		}
-		if model == "" {
-			model = "mistral-embed"
-		}
-		fmt.Printf(">>> Using Mistral embedder (%s, 1024d)\n", model)
-		f.mode.Dimension = 1024
-		f.mode.EmbedderType = "mistral"
-		f.mode.EmbedderModel = model
-		f.mode.CostPer1MToken = 0.15
-		return NewMistralEmbedder(apiKey, model), nil
-	}
-
-	return nil, nil
+	return NewOpenAIEmbedder(apiKey), nil
 }
 
 // tryOnnxEmbedder attempts to create an ONNX embedder
@@ -316,8 +184,12 @@ func (f *EmbedderFactory) tryOllamaEmbedder() Embedder {
 		ollamaModel = "nomic-embed-text"
 	}
 
-	// Test if Ollama is available
+	// Test if Ollama is available.
+	// Same reasoning as the probe in main.go: ollamaURL comes from the OLLAMA_URL
+	// environment variable, defaulted to loopback above, and is never influenced by
+	// a request. The taint analyser cannot see that os.Getenv is a trust boundary.
 	client := &http.Client{Timeout: 3 * time.Second}
+	// #nosec G704 -- URL is operator configuration (OLLAMA_URL env), not attacker-controlled input.
 	resp, err := client.Get(ollamaURL + "/api/tags")
 	if err != nil {
 		return nil
@@ -328,70 +200,6 @@ func (f *EmbedderFactory) tryOllamaEmbedder() Embedder {
 	}
 
 	return NewOllamaEmbedder(ollamaURL, ollamaModel)
-}
-
-// ======================================================================================
-// Tracked Embedder (wraps any embedder with cost tracking)
-// ======================================================================================
-
-// TrackedEmbedder wraps an embedder and tracks costs
-type TrackedEmbedder struct {
-	inner       Embedder
-	costTracker *CostTracker
-	model       string
-}
-
-// NewTrackedEmbedder creates a new cost-tracking embedder wrapper
-func NewTrackedEmbedder(inner Embedder, costTracker *CostTracker) *TrackedEmbedder {
-	model := "unknown"
-	if _, ok := inner.(*OpenAIEmbedder); ok {
-		model = "text-embedding-3-small"
-	}
-	return &TrackedEmbedder{
-		inner:       inner,
-		costTracker: costTracker,
-		model:       model,
-	}
-}
-
-func (t *TrackedEmbedder) Dim() int {
-	return t.inner.Dim()
-}
-
-func (t *TrackedEmbedder) Embed(text string) ([]float32, error) {
-	// Estimate tokens (rough: ~4 chars per token for English)
-	tokens := len(text) / 4
-	if tokens < 1 {
-		tokens = 1
-	}
-
-	// Track cost before embedding (so we record even on failure)
-	if t.costTracker != nil {
-		t.costTracker.RecordEmbedding(tokens, t.model, "embed")
-	}
-
-	return t.inner.Embed(text)
-}
-
-func (t *TrackedEmbedder) EmbedQuery(text string) ([]float32, error) {
-	tokens := len(text) / 4
-	if tokens < 1 {
-		tokens = 1
-	}
-	if t.costTracker != nil {
-		t.costTracker.RecordEmbedding(tokens, t.model, "embed_query")
-	}
-	return t.inner.EmbedQuery(text)
-}
-
-// ======================================================================================
-// Mode-Aware Initialization (replaces initEmbedder for mode-based startup)
-// ======================================================================================
-
-// InitEmbedderForMode creates an embedder based on the current mode configuration
-func InitEmbedderForMode(mode *ModeConfig, costTracker *CostTracker) (Embedder, error) {
-	factory := NewEmbedderFactory(mode, costTracker)
-	return factory.CreateEmbedder()
 }
 
 // InitRerankerForMode creates a reranker appropriate for the mode

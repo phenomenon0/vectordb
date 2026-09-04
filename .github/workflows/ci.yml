@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  GO_VERSION: '1.25.12'
+  GO_VERSION: '1.25.13'
   PYTHON_VERSION: '3.12'
 
 permissions:
@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -43,27 +45,32 @@ jobs:
             scripts/check_proto_generated.sh
       - name: Verify release artifact version parity
         run: python3 scripts/check_version_contract.py
+      - name: Check the docs contract
+        run: python3 scripts/check_docs_contract.py
+      - name: Check the truth ledger
+        run: python3 scripts/gates.py check
       - name: Vet the supported server surface
         run: |
           go vet \
+            ./api/contract \
             ./api/gen/deepdata/v1 \
             ./api/gen/deepdata/v3 \
             ./cmd/deepdata \
+            ./cmd/deepdata-mcp \
             ./internal/collection \
             ./internal/security \
-            ./internal/storage \
-            ./internal/wal
+            ./internal/storage
         env:
           CGO_ENABLED: '0'
       - name: Test the supported server surface
         run: |
           go test -short -timeout 600s -count=1 \
+            ./api/contract \
             ./api/gen/deepdata/v1 \
             ./api/gen/deepdata/v3 \
             ./cmd/deepdata \
+            ./cmd/deepdata-mcp \
             ./internal/collection \
-            ./internal/cowrieutil \
-            ./internal/encoding \
             ./internal/filter \
             ./internal/hybrid \
             ./internal/index/simd \
@@ -71,8 +78,7 @@ jobs:
             ./internal/security \
             ./internal/sparse \
             ./internal/storage \
-            ./internal/telemetry \
-            ./internal/wal
+            ./internal/telemetry
         env:
           CGO_ENABLED: '0'
       - name: Test the vendored HNSW graph module
@@ -95,8 +101,7 @@ jobs:
             ./cmd/deepdata \
             ./internal/collection \
             ./internal/security \
-            ./internal/storage \
-            ./internal/wal
+            ./internal/storage
         env:
           CGO_ENABLED: '1'
       - name: Run SIMD C reference correctness when AVX2 is available
@@ -108,6 +113,20 @@ jobs:
           fi
         env:
           CGO_ENABLED: '1'
+
+  smoke-rc:
+    name: Linux RC smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run the RC smoke test
+        timeout-minutes: 20
+        run: tests/smoke_test.sh
+        env:
+          CGO_ENABLED: '0'
 
   test-python-sdk:
     name: Canonical Python client
@@ -275,10 +294,7 @@ jobs:
         run: |
           go test -short -timeout 300s -count=1 \
             ./internal/index/... \
-            ./internal/cluster \
             ./internal/extraction \
-            ./internal/feedback \
-            ./internal/graph \
-            ./internal/obsidian
+            ./internal/graph
         env:
           CGO_ENABLED: '0'

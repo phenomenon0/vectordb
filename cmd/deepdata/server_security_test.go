@@ -8,10 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-	"time"
-
-	"github.com/phenomenon0/vectordb/internal/security"
 )
 
 type failingEmbedder struct {
@@ -109,6 +107,48 @@ func TestEmbedEndpointsRequireAuthWhenEnabled(t *testing.T) {
 	handler.ServeHTTP(wAuth, reqAuth)
 	if wAuth.Code != http.StatusOK {
 		t.Fatalf("expected 200 with valid auth, got %d: %s", wAuth.Code, wAuth.Body.String())
+	}
+}
+
+func TestMetricsEndpointRequiresAuthWhenEnabled(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	store.requireAuth = true
+	store.apiToken = "secret-token"
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
+
+	reqNoAuth := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	wNoAuth := httptest.NewRecorder()
+	handler.ServeHTTP(wNoAuth, reqNoAuth)
+	if wNoAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for /metrics without auth when REQUIRE_AUTH is on, got %d", wNoAuth.Code)
+	}
+
+	reqAuth := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	reqAuth.Header.Set("Authorization", "Bearer secret-token")
+	globalMetrics.RecordOperation("insert", 0, 0, nil)
+	wAuth := httptest.NewRecorder()
+	handler.ServeHTTP(wAuth, reqAuth)
+	if wAuth.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /metrics with valid auth, got %d: %s", wAuth.Code, wAuth.Body.String())
+	}
+	if !strings.Contains(wAuth.Body.String(), "vectordb_operations_total") {
+		t.Error("authenticated /metrics did not expose the custom metrics surface")
+	}
+}
+
+func TestMetricsEndpointOpenWhenAuthDisabled(t *testing.T) {
+	store := NewVectorStore(100, 3)
+	emb := NewHashEmbedder(3)
+	reranker := &SimpleReranker{Embedder: emb}
+	handler, _ := newHTTPHandler(store, emb, reranker, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /metrics without auth when requireAuth is off, got %d", w.Code)
 	}
 }
 
@@ -228,85 +268,5 @@ func TestOnlineSnapshotImportDisabledInRC(t *testing.T) {
 	}
 	if _, err := os.Stat(indexPath); !os.IsNotExist(err) {
 		t.Fatalf("disabled online import created snapshot: %v", err)
-	}
-}
-
-func TestVaultEndpointsRequireServerAdmin(t *testing.T) {
-	store := NewVectorStore(100, 3)
-	store.requireAuth = true
-	store.jwtMgr = security.NewJWTManager("tenant-admin-secret-for-tests", "deepdata")
-	emb := NewHashEmbedder(3)
-	reranker := &SimpleReranker{Embedder: emb}
-	handler, _ := newHTTPHandler(store, emb, reranker, filepath.Join(t.TempDir(), "index.gob"))
-	token, err := store.jwtMgr.GenerateTenantToken("acme", []string{"admin"}, nil, time.Hour)
-	if err != nil {
-		t.Fatalf("generate tenant-admin token: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/vault/browse", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for tenant-admin vault access, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestObsidianEnableStoresConfigBesideIndex(t *testing.T) {
-	store := NewVectorStore(100, 3)
-	emb := NewHashEmbedder(3)
-	reranker := &SimpleReranker{Embedder: emb}
-	dir := t.TempDir()
-	indexPath := filepath.Join(dir, "index.gob")
-	handler, _ := newHTTPHandler(store, emb, reranker, indexPath)
-
-	vaultDir := filepath.Join(dir, "vault")
-	if err := os.MkdirAll(vaultDir, 0o755); err != nil {
-		t.Fatalf("mkdir vault failed: %v", err)
-	}
-
-	body, _ := json.Marshal(map[string]string{
-		"vault":      vaultDir,
-		"collection": "obsidian",
-		"interval":   "1m",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/admin/obsidian/enable", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 enabling obsidian, got %d: %s", w.Code, w.Body.String())
-	}
-
-	if _, err := os.Stat(filepath.Join(dir, "obsidian.json")); err != nil {
-		t.Fatalf("expected obsidian config in data directory: %v", err)
-	}
-}
-
-func TestVaultAnnotationsStoreBesideIndex(t *testing.T) {
-	store := NewVectorStore(100, 3)
-	emb := NewHashEmbedder(3)
-	reranker := &SimpleReranker{Embedder: emb}
-	dir := t.TempDir()
-	handler, _ := newHTTPHandler(store, emb, reranker, filepath.Join(dir, "index.gob"))
-
-	body, _ := json.Marshal(map[string]any{
-		"id":     "ann-1",
-		"doc_id": "doc-1",
-		"text":   "note",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/vault/annotations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 storing annotation, got %d: %s", w.Code, w.Body.String())
-	}
-
-	if _, err := os.Stat(filepath.Join(dir, "annotations.json")); err != nil {
-		t.Fatalf("expected annotations file in data directory: %v", err)
 	}
 }

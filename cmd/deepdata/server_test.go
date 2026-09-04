@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenomenon0/vectordb/client"
 	"github.com/phenomenon0/vectordb/internal/testutil"
 )
 
@@ -73,29 +71,55 @@ func TestHTTPHandlersInsertQueryDelete(t *testing.T) {
 	handler, _ := newHTTPHandler(store, embedder, reranker, indexPath)
 	srv := testutil.NewLoopbackServer(t, handler)
 
-	cli := client.New(srv.URL)
+	// The Go client package was retired under SYS-03, so this exercises the
+	// same round trip over the wire with net/http: a real request has to be
+	// serialized, routed and decoded for the assertions below to hold.
+	postJSON := func(path string, body, out any) {
+		t.Helper()
+		payload, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal %s request: %v", path, err)
+		}
+		resp, err := http.Post(srv.URL+path, "application/json", bytes.NewReader(payload))
+		if err != nil {
+			t.Fatalf("post %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("post %s: unexpected status %d", path, resp.StatusCode)
+		}
+		if out == nil {
+			return
+		}
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			t.Fatalf("decode %s response: %v", path, err)
+		}
+	}
 
 	// insert
-	if _, err := cli.Insert(context.Background(), client.InsertRequest{Doc: "hello world", Meta: map[string]string{"tag": "a", "score": "0.8", "ts": "2024-01-01T00:00:00Z"}}); err != nil {
-		t.Fatalf("insert failed: %v", err)
-	}
+	postJSON("/insert", map[string]any{
+		"doc":  "hello world",
+		"meta": map[string]string{"tag": "a", "score": "0.8", "ts": "2024-01-01T00:00:00Z"},
+	}, nil)
 
 	// query first page
-	min := 0.5
-	qr, err := cli.Query(context.Background(), client.QueryRequest{
-		Query:       "hello",
-		TopK:        2,
-		PageSize:    1,
-		IncludeMeta: true,
-		ScoreMode:   "hybrid",
-		MetaRanges: []client.RangeFilter{
-			{Key: "score", Min: &min},
-			{Key: "ts", TimeMin: "2023-12-31T00:00:00Z", TimeMax: "2024-12-31T00:00:00Z"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("query failed: %v", err)
+	var qr struct {
+		IDs    []string  `json:"ids"`
+		Docs   []string  `json:"docs"`
+		Scores []float32 `json:"scores"`
+		Next   string    `json:"next"`
 	}
+	postJSON("/query", map[string]any{
+		"query":        "hello",
+		"top_k":        2,
+		"page_size":    1,
+		"include_meta": true,
+		"score_mode":   "hybrid",
+		"meta_ranges": []map[string]any{
+			{"key": "score", "min": 0.5},
+			{"key": "ts", "time_min": "2023-12-31T00:00:00Z", "time_max": "2024-12-31T00:00:00Z"},
+		},
+	}, &qr)
 	if len(qr.IDs) != 1 || len(qr.Docs) != 1 {
 		t.Fatalf("unexpected query response: %+v", qr)
 	}
@@ -107,9 +131,7 @@ func TestHTTPHandlersInsertQueryDelete(t *testing.T) {
 	}
 
 	// delete
-	if _, err := cli.Delete(context.Background(), client.DeleteRequest{ID: qr.IDs[0]}); err != nil {
-		t.Fatalf("delete failed: %v", err)
-	}
+	postJSON("/delete", map[string]any{"id": qr.IDs[0]}, nil)
 }
 
 func TestHTTPQueryPaginationUsesPageToken(t *testing.T) {

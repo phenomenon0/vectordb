@@ -6,15 +6,16 @@ can test end to end.
 
 ## What the RC is
 
-- A Linux-only, single-node persistent service with one process holding the
-  data-directory lock.
-- A tenant-aware V3 HTTP API and exactly nine equivalent unary gRPC methods.
-- Caller-supplied vectors: embedding generation remains in the application or
-  a separately operated pipeline.
+- A single-node persistent service on Linux or macOS, with one process holding
+  the data-directory lock. Linux amd64 is the released artifact.
+- A tenant-aware V3 HTTP API and eleven equivalent unary gRPC methods.
+- Caller-supplied vectors, or texts for fields that bind an embedding when the
+  server runs one (`DEEPDATA_EMBEDDER`; the default `none` leaves embedding to
+  the application).
 - Dense search with HNSW or exact Flat indexes.
 - Sparse Inverted/BM25 search and explicit two-field hybrid fusion.
-- Five durable mutations: create/delete collection, insert, atomic batch
-  insert, and delete document.
+- Six durable mutations: create/delete collection, insert, atomic batch
+  insert, delete document, and upsert by caller-supplied ID.
 - Static bearer-token or tenant-scoped JWT authentication.
 - Readiness that fails closed when the checksummed snapshot, mutation journal,
   or lifetime lock is unhealthy.
@@ -36,11 +37,15 @@ manager, authorization model, and append-before-apply durability boundary.
 
 - A managed service or a control plane that hides infrastructure operations.
 - Built-in replication, automatic failover, clustering, or multi-node scale.
-- Persistent Windows or macOS deployment.
-- Server-managed OpenAI/local embedding providers or runtime model switching.
+- Persistent Windows deployment: only Linux and macOS build a store lock.
+  macOS starts persistently on the same POSIX implementation Linux uses, but
+  Linux amd64 is the only gated release target.
+- Switching the embedder at runtime: one per process, chosen at startup.
 - GraphRAG, extraction, recommendations, discovery, or feedback loops.
 - DiskANN, IVF, binary/PQ quantization, or CUDA acceleration.
-- Upsert/update, document fetch/scan, rename, metadata mutation, or “drop all.”
+- Rename, partial metadata update, document scan, or “drop all.” Upsert and
+  single-document fetch by ID are in the contract (a99fe53); the remaining
+  omissions keep the surface small enough to crash-test and restore as a unit.
 - A supported web dashboard, desktop wrapper, or broad multi-language SDK
   surface.
 

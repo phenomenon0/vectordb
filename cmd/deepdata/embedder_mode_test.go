@@ -10,7 +10,7 @@ func TestLocalModeDoesNotAutoSelectOpenAI(t *testing.T) {
 	t.Setenv("OLLAMA_URL", "http://127.0.0.1:1")
 
 	mode := &ModeConfig{Mode: ModeLocal}
-	emb, err := NewEmbedderFactory(mode, nil).CreateEmbedder()
+	emb, err := NewEmbedderFactory(mode).CreateEmbedder()
 	if err != nil {
 		t.Fatalf("create embedder failed: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestLocalModeCanExplicitlySelectOpenAI(t *testing.T) {
 	t.Setenv("EMBEDDER_TYPE", "openai")
 
 	mode := &ModeConfig{Mode: ModeLocal}
-	emb, err := NewEmbedderFactory(mode, nil).CreateEmbedder()
+	emb, err := NewEmbedderFactory(mode).CreateEmbedder()
 	if err != nil {
 		t.Fatalf("create embedder failed: %v", err)
 	}

@@ -2,6 +2,7 @@ package collection
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"os"
@@ -98,15 +99,10 @@ func TestUnifiedCollectionSnapshotRejectsChecksumCorruption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var envelope collectionSnapshotEnvelope
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		t.Fatal(err)
+	if len(data) < sha256.Size {
+		t.Fatalf("snapshot is only %d bytes", len(data))
 	}
-	envelope.Checksum = "sha256:" + strings.Repeat("0", 64)
-	data, err = json.Marshal(envelope)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data[len(data)-1] ^= 0xff
 	if err := os.WriteFile(collectionSnapshotPath(basePath), data, 0o600); err != nil {
 		t.Fatal(err)
 	}

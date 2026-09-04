@@ -19,7 +19,7 @@ func TestProductManagerReview(t *testing.T) {
 
 	// Check 1: Index type coverage
 	t.Run("index_type_coverage", func(t *testing.T) {
-		requiredTypes := []string{"hnsw", "ivf", "flat", "diskann"}
+		requiredTypes := []string{"hnsw", "flat"}
 		supported := index.SupportedTypes()
 		supportedSet := make(map[string]bool)
 		for _, s := range supported {
@@ -35,10 +35,10 @@ func TestProductManagerReview(t *testing.T) {
 		}
 
 		if missing == 0 {
-			review.Pass("index_types", "All 4 core index types available (HNSW, IVF, FLAT, DiskANN)", SeverityHigh,
+			review.Pass("index_types", "Both core index types available (HNSW, FLAT)", SeverityHigh,
 				strings.Join(supported, ", "))
 		} else {
-			review.Fail("index_types", "All 4 core index types available", SeverityHigh,
+			review.Fail("index_types", "Both core index types available", SeverityHigh,
 				strings.Join(supported, ", "))
 		}
 	})
@@ -134,13 +134,13 @@ func TestProductManagerReview(t *testing.T) {
 	// Check 6: GAP_ANALYSIS exists
 	t.Run("gap_analysis", func(t *testing.T) {
 		projectRoot := findProjectRoot()
-		gapPath := filepath.Join(projectRoot, "benchmarks", "GAP_ANALYSIS.md")
+		gapPath := filepath.Join(projectRoot, "docs", "GAP_ANALYSIS.md")
 		_, err := os.Stat(gapPath)
 		if err == nil {
 			review.Pass("gap_analysis", "GAP_ANALYSIS.md exists", SeverityMedium, gapPath)
 		} else {
 			review.Fail("gap_analysis", "GAP_ANALYSIS.md exists", SeverityLow,
-				"benchmarks/GAP_ANALYSIS.md not found — competitive positioning unclear")
+				"docs/GAP_ANALYSIS.md not found — competitive positioning unclear")
 		}
 	})
 
@@ -153,9 +153,7 @@ func TestProductManagerReview(t *testing.T) {
 			Params    index.SearchParams
 		}{
 			{"hnsw", map[string]interface{}{"m": 16}, &index.HNSWSearchParams{EfSearch: 64}},
-			{"ivf", map[string]interface{}{"nlist": 10, "metric": "cosine"}, &index.IVFSearchParams{NProbe: 5}},
 			{"flat", map[string]interface{}{"metric": "cosine"}, &index.DefaultSearchParams{}},
-			{"diskann", map[string]interface{}{"max_degree": 16, "memory_limit": 1000, "metric": "cosine"}, &index.DefaultSearchParams{}},
 		}
 
 		working := 0
@@ -207,4 +205,3 @@ func findProjectRoot() string {
 		dir = parent
 	}
 }
-

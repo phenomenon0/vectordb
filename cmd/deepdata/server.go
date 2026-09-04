@@ -1,35 +1,27 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"io"
-	"io/fs"
 	"math"
-	"mime"
-	"mime/multipart"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+	"unicode/utf8"
 
-	"github.com/Neumenon/cowrie/go/codec"
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/index"
 	"github.com/phenomenon0/vectordb/internal/logging"
-	"github.com/phenomenon0/vectordb/internal/obsidian"
 	"github.com/phenomenon0/vectordb/internal/releaseinfo"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
@@ -52,6 +44,20 @@ func requestIDFromContext(ctx context.Context) string {
 		return id
 	}
 	return ""
+}
+
+// truncateRequestID caps id to maxBytes without splitting a multi-byte UTF-8
+// rune, so the echoed header and the logged request_id remain valid UTF-8 even
+// after an arbitrary-length client-supplied ID is trimmed.
+func truncateRequestID(id string, maxBytes int) string {
+	if len(id) <= maxBytes {
+		return id
+	}
+	cut := id[:maxBytes]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 // ===========================================================================================
@@ -82,9 +88,6 @@ var (
 	limitMaxDimension = envInt("LIMIT_MAX_DIMENSION", 65_536)
 )
 
-//go:embed web-ui/dist
-var webUIFS embed.FS
-
 // isValidCollectionName checks if a collection name contains only allowed characters.
 // Valid names: 1-64 characters, alphanumeric, underscores, hyphens.
 func isValidCollectionName(name string) bool {
@@ -110,14 +113,12 @@ func validateVector(vec []float32) error {
 	return nil
 }
 
-// encodeResponse encodes v using the codec preferred by the client (Accept header).
-// Cowrie is used when Accept: application/cowrie is present, JSON otherwise.
-// For small responses, both formats are similar; for responses with []float32 arrays
-// (like query scores), Cowrie provides ~48% size reduction.
-func encodeResponse(w http.ResponseWriter, r *http.Request, v any) error {
-	responseCodec := codec.FromRequest(r)
-	w.Header().Set("Content-Type", responseCodec.ContentType())
-	return responseCodec.Encode(w, v)
+// encodeResponse encodes v as JSON. The legacy Cowrie content negotiation was
+// removed under SYS-03 together with the Cowrie dependency; JSON is the only
+// wire format the release candidate speaks.
+func encodeResponse(w http.ResponseWriter, _ *http.Request, v any) error {
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(v)
 }
 
 // sendResponse encodes and sends a response, logging any encoding errors.
@@ -128,201 +129,35 @@ func sendResponse(w http.ResponseWriter, r *http.Request, v any) {
 	}
 }
 
-// decodeRequest decodes the request body using the appropriate codec based on Content-Type.
-// Supports both JSON (default) and Cowrie (Content-Type: application/cowrie).
+// decodeRequest decodes a JSON request body.
 func decodeRequest(r *http.Request, v any) error {
-	requestCodec := codec.FromContentType(r.Header.Get("Content-Type"))
-	return requestCodec.Decode(r.Body, v)
+	return json.NewDecoder(r.Body).Decode(v)
 }
 
 // newHTTPHandler retains the broad historical surface for focused compatibility
 // tests and explicit migration tooling. Production serve uses
 // newCanonicalHTTPHandler instead.
 func newHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
-	return newHTTPHandlerWithSurface(store, embedder, reranker, indexPath, false)
+	return newHTTPHandlerWithSurface(store, store.serverRuntime, embedder, reranker, indexPath, false)
 }
 
-func newCanonicalHTTPHandler(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
-	return newHTTPHandlerWithSurface(store, embedder, reranker, indexPath, true)
+// newCanonicalHTTPHandler serves the RC surface from the server runtime alone;
+// the legacy engine is never constructed for it.
+func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, reranker Reranker, indexPath string) (http.Handler, *CollectionHTTPServer) {
+	return newHTTPHandlerWithSurface(nil, rt, embedder, reranker, indexPath, true)
 }
 
-func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker Reranker, indexPath string, canonicalOnly bool) (http.Handler, *CollectionHTTPServer) {
+// newHTTPHandlerWithSurface registers both surfaces. store is nil in canonical
+// mode: every route that reaches it is a historical route, and canonicalRCSurface
+// answers 404 for all of them before a handler runs.
+func newHTTPHandlerWithSurface(store *VectorStore, rt *serverRuntime, embedder Embedder, reranker Reranker, indexPath string, canonicalOnly bool) (http.Handler, *CollectionHTTPServer) {
 	mux := http.NewServeMux()
 	var collectionHTTP *CollectionHTTPServer
-	configDir := "."
-	if indexPath != "" {
-		configDir = filepath.Dir(indexPath)
-	}
-	if store.rl == nil {
-		rps := envInt("API_RPS", 100)
-		store.rl = newRateLimiter(rps, rps, envInt("MAX_RATE_LIMIT_KEYS", 100_000), time.Minute)
-	}
-	if store.authFailureRL == nil {
-		store.authFailureRL = newAuthFailureLimiter(
-			envInt("AUTH_FAILURE_RPS", 1),
-			envInt("AUTH_FAILURE_BURST", 5),
-			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
-			time.Second,
-		)
-	}
-	if canonicalOnly && store.canonicalTenantRL == nil {
-		store.canonicalTenantRL = newRateLimiter(
-			envInt("TENANT_RPS", 100),
-			envInt("TENANT_BURST", 100),
-			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
-			time.Second,
-		)
-	}
-	trustProxy := os.Getenv("TRUST_PROXY") == "1"
+	rt.ensureLimiters(canonicalOnly)
 
-	// SECURITY FIX: Proper JWT validation guard
-	// When JWT_SECRET is configured, all requests MUST have valid JWT tokens
-	guard := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			token := r.Header.Get("Authorization")
-			authPeerKey := httpAuthPeerKey(r, trustProxy)
-			authAttempt, allowed := store.authFailureRL.begin(authPeerKey)
-			if !allowed {
-				http.Error(w, "authentication rate limited", http.StatusTooManyRequests)
-				return
-			}
-			finishAuthAttempt := func(failed bool) {
-				if authAttempt != nil {
-					authAttempt.finish(failed)
-					authAttempt = nil
-				}
-			}
-			defer func() { finishAuthAttempt(false) }()
-
-			authenticated := false
-			var tenantCtx *security.TenantContext
-
-			// JWT authentication (when enabled) - SECURE VERSION
-			if store.jwtMgr != nil {
-				if token == "" {
-					// No token provided, but JWT is configured
-					if store.requireAuth {
-						finishAuthAttempt(true)
-						http.Error(w, "unauthorized: missing authentication token", http.StatusUnauthorized)
-						return
-					}
-					// If not required, use default context (backward compatibility)
-					tenantCtx = &security.TenantContext{
-						TenantID:    "default",
-						Permissions: map[string]bool{"read": true, "write": true},
-						Collections: make(map[string]bool),
-						IsAdmin:     false,
-					}
-				} else {
-					// Token provided - MUST be valid
-					jwtToken := strings.TrimPrefix(token, "Bearer ")
-					var err error
-					tenantCtx, err = store.jwtMgr.ValidateTenantToken(jwtToken)
-					if err != nil {
-						logging.Default().Warn("JWT validation failed", "error", err, "path", r.URL.Path)
-						finishAuthAttempt(true)
-						http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
-						return
-					}
-					authenticated = true
-				}
-			} else {
-				// No JWT manager configured - fallback to legacy API token auth
-				// Simple API token authentication (legacy)
-				if store.apiToken != "" {
-					candidate := strings.TrimPrefix(token, "Bearer ")
-					if security.SecureCompare(candidate, store.apiToken) {
-						authenticated = true
-					} else if token != "" {
-						finishAuthAttempt(true)
-						http.Error(w, "unauthorized", http.StatusUnauthorized)
-						return
-					}
-				}
-
-				if store.requireAuth && !authenticated {
-					finishAuthAttempt(true)
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
-					return
-				}
-
-				requestedTenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
-				if requestedTenantID != "" && !isValidTenantID(requestedTenantID) {
-					finishAuthAttempt(false)
-					http.Error(w, "invalid X-Tenant-ID header", http.StatusBadRequest)
-					return
-				}
-				tenantID := "default"
-				if requestedTenantID != "" {
-					tenantID = requestedTenantID
-				}
-
-				// Use default tenant context for non-JWT mode
-				if tenantCtx == nil {
-					serverAdmin := authenticated || (store.jwtMgr == nil && store.apiToken == "" && requestedTenantID == "")
-					tenantCtx = &security.TenantContext{
-						TenantID:    tenantID,
-						Permissions: map[string]bool{"read": true, "write": true},
-						Collections: make(map[string]bool),
-						// A configured static server token is an explicit full-control
-						// credential. JWTs remain the path for scoped tenant roles.
-						IsAdmin:       serverAdmin,
-						IsServerAdmin: serverAdmin,
-					}
-				}
-			}
-			finishAuthAttempt(false)
-
-			// Global rate limiting (per-IP or per-token)
-			if store.rl != nil {
-				// Use IP address for anonymous users instead of shared "anon" key
-				key := token
-				if key == "" {
-					// Extract client IP (handle X-Forwarded-For and X-Real-IP headers)
-					clientIP := ""
-					if trustProxy {
-						clientIP = r.Header.Get("X-Forwarded-For")
-						if clientIP == "" {
-							clientIP = r.Header.Get("X-Real-IP")
-						}
-					}
-					if clientIP == "" {
-						clientIP = r.RemoteAddr
-					}
-					// Use first IP in X-Forwarded-For chain
-					if idx := strings.Index(clientIP, ","); idx > 0 {
-						clientIP = clientIP[:idx]
-					}
-					// Strip port from RemoteAddr
-					if idx := strings.LastIndex(clientIP, ":"); idx > 0 {
-						clientIP = clientIP[:idx]
-					}
-					key = "ip:" + strings.TrimSpace(clientIP)
-				}
-				if !store.rl.allow(key) {
-					http.Error(w, "rate limited", http.StatusTooManyRequests)
-					return
-				}
-			}
-
-			if canonicalOnly && store.canonicalTenantRL != nil {
-				tenantKey := canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
-				if !store.canonicalTenantRL.allow(tenantKey) {
-					http.Error(w, "tenant rate limited", http.StatusTooManyRequests)
-					return
-				}
-			}
-
-			// Add tenant context to request context for handlers to use
-			if tenantCtx != nil {
-				ctx := r.Context()
-				ctx = context.WithValue(ctx, security.TenantContextKey, tenantCtx)
-				r = r.WithContext(ctx)
-			}
-
-			next(w, r)
-		}
-	}
+	// Authentication, global rate limiting and (canonical only) per-tenant
+	// rate limiting all live on the server runtime.
+	guard := rt.httpGuard(canonicalOnly)
 
 	mux.HandleFunc("/insert", withMetrics("insert", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1009,9 +844,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		telemetry.SearchDurationSeconds.WithLabelValues(req.Mode).Observe(searchDur.Seconds())
 		logging.Default().Search(r.Context(), req.Collection, req.TopK, len(respIDs), searchDur)
 
-		// Select codec based on Accept header (JSON default, Cowrie opt-in)
-		responseCodec := codec.FromRequest(r)
-		w.Header().Set("Content-Type", responseCodec.ContentType())
+		w.Header().Set("Content-Type", "application/json")
 
 		// Build structured results array for web UI compatibility
 		// UI reads: r.id, r.score, r.text||r.document, r.metadata
@@ -1041,7 +874,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			"results": results,
 		}
 
-		if err := responseCodec.Encode(w, response); err != nil {
+		if err := json.NewEncoder(w).Encode(response); err != nil {
 			// Log error but don't change response (already started writing)
 			logging.Default().LogError(r.Context(), "encode_response", err)
 		}
@@ -1417,7 +1250,6 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		walFault := store.walFault
 		_, embedderIsONNX := embedder.(*OnnxEmbedder)
 		_, embedderIsOpenAI := embedder.(*OpenAIEmbedder)
-		_, embedderIsTracked := embedder.(*TrackedEmbedder)
 		_, embedderIsOllama := embedder.(*OllamaEmbedder)
 		_, rerankerIsONNX := reranker.(*OnnxCrossEncoderReranker)
 		store.RUnlock()
@@ -1428,7 +1260,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		embedderType := "hash"
 		if embedderIsONNX {
 			embedderType = "onnx"
-		} else if embedderIsOpenAI || embedderIsTracked {
+		} else if embedderIsOpenAI {
 			embedderType = "openai"
 		} else if embedderIsOllama {
 			embedderType = "ollama"
@@ -1485,7 +1317,47 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		sendResponse(w, r, response)
 	})))
 
-	mux.Handle("/metrics", globalMetrics.Handler())
+	// Prometheus metrics are an operational surface like the health probes,
+	// but unlike probes they can leak request-volume/operation detail, so they
+	// are gated behind the same guard used for API routes when REQUIRE_AUTH is
+	// on. In credentialless dev mode the guard authorizes anonymous access.
+	mux.Handle("/metrics", guard(globalMetrics.Handler().ServeHTTP))
+
+	// GET /v3/status — the server describing itself: version, the operation
+	// list, the embedder it will use, its limits and its capabilities. It
+	// names no tenant, so it is gated on the caller's own read permission
+	// (CTL-04).
+	mux.Handle("/v3/status", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
+			return
+		}
+		tenantCtx, _ := security.GetTenantContextFromContext(r.Context())
+		var ownTenant string
+		if tenantCtx != nil {
+			ownTenant = tenantCtx.TenantID
+		}
+		if !writeCanonicalHTTPAuthorizationResult(w, security.AuthorizeTenantPermission(tenantCtx, ownTenant, "read")) {
+			return
+		}
+		var embedder *serverEmbedder
+		usageLoaded := true
+		readOnly := false
+		if collectionHTTP != nil {
+			embedder = collectionHTTP.embedder
+			usageLoaded = collectionHTTP.UsageLoaded()
+			if store := collectionHTTP.DurableStore(); store != nil {
+				readOnly = store.IsReplica()
+			}
+		}
+		payload, err := statusPayload(embedder, usageLoaded, readOnly, requestIDFromContext(r.Context()))
+		if err != nil {
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeInternal, "status unavailable"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(payload)
+	}))
 
 	// Kubernetes-style health probes
 	// /healthz - Liveness probe: Is the process alive and not deadlocked?
@@ -1498,8 +1370,12 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 
 		done := make(chan struct{})
 		go func() {
-			store.RLock()
-			store.RUnlock()
+			// There is no legacy engine to deadlock on, so the
+			// probe answers as it always did with an idle store: ok.
+			if store != nil {
+				store.RLock()
+				store.RUnlock()
+			}
 			close(done)
 		}()
 
@@ -1523,8 +1399,9 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		if canonicalOnly {
 			issues := []string{}
 			type canonicalHealth struct {
-				durable bool
-				err     error
+				durable  bool
+				readOnly bool
+				err      error
 			}
 			health := make(chan canonicalHealth, 1)
 			go func() {
@@ -1534,13 +1411,16 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 				}
 				durable := collectionHTTP.IsDurable()
 				var err error
+				var readOnly bool
 				if durable {
 					err = collectionHTTP.PersistenceError()
+					readOnly = collectionHTTP.DurableStore().IsReplica()
 				}
-				health <- canonicalHealth{durable: durable, err: err}
+				health <- canonicalHealth{durable: durable, readOnly: readOnly, err: err}
 			}()
+			var state canonicalHealth
 			select {
-			case state := <-health:
+			case state = <-health:
 				if !state.durable {
 					issues = append(issues, "durable collection store not initialized")
 				} else if state.err != nil {
@@ -1553,10 +1433,18 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			w.Header().Set("Content-Type", "application/json")
 			if len(issues) == 0 {
 				w.WriteHeader(http.StatusOK)
+				// embedder names the process text embedder ("none" when
+				// callers must send vectors); no live embedding call here.
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"ready":   true,
-					"checks":  []string{"collection_snapshot", "mutation_journal", "lifetime_lock"},
-					"version": releaseinfo.Version(),
+					"ready":  true,
+					"checks": []string{"collection_snapshot", "mutation_journal", "lifetime_lock"},
+					// A read replica is ready -- it answers reads correctly --
+					// so it stays 200 and stays in the pool. read_only is how
+					// it declines writes to a load balancer that would
+					// otherwise treat every ready backend as interchangeable.
+					"read_only": state.readOnly,
+					"embedder":  collectionHTTP.embedder.Label(),
+					"version":   releaseinfo.Version(),
 				})
 			} else {
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -1636,28 +1524,6 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			})
 		}
 	})
-
-	// Serve Web UI Dashboard
-	webUISubFS, err := fs.Sub(webUIFS, "web-ui/dist")
-	if err != nil {
-		logging.Default().Warn("failed to create web UI sub-filesystem", "error", err)
-	} else {
-		// Serve dashboard at /dashboard/
-		mux.Handle("/dashboard/", http.StripPrefix("/dashboard/", http.FileServer(http.FS(webUISubFS))))
-
-		// Serve /assets/ from dist (Vite builds with absolute /assets/ paths)
-		mux.Handle("/assets/", http.FileServer(http.FS(webUISubFS)))
-
-		// Redirect root to dashboard
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/" {
-				http.Redirect(w, r, "/dashboard/", http.StatusFound)
-				return
-			}
-			// Let other handlers take precedence
-			http.NotFound(w, r)
-		})
-	}
 
 	mux.HandleFunc("/integrity", withMetrics("integrity", guard(func(w http.ResponseWriter, r *http.Request) {
 		store.RLock()
@@ -2056,6 +1922,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		collectionBasePath = indexPath + ".collections"
 	}
 	collectionHTTP = NewCollectionHTTPServer(collectionBasePath)
+	collectionHTTP.embedder, _ = embedder.(*serverEmbedder)
 	if collectionBasePath != "" {
 		var err error
 		if canonicalOnly {
@@ -2068,23 +1935,18 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		}
 		if err != nil {
 			collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
+		} else if canonicalOnly {
+			// Before a single route is registered: a replica directory that
+			// came up unbound would take one local write and fork its history
+			// from the leader's at the same LSN.
+			if err := bindReplicaReadOnly(collectionHTTP, collectionBasePath); err != nil {
+				collectionHTTP.setPersistenceError(err)
+			}
 		}
 	}
-	if canonicalOnly {
-		collectionHTTP.RegisterCanonicalHandlers(mux, guard)
-	} else {
-		collectionHTTP.RegisterHandlers(mux, guard, adminGuard)
-	}
-
-	// ==========================================================================
-	// FEEDBACK API ENDPOINTS (v2)
-	// ==========================================================================
-	// Enables relevance feedback collection and boost-based re-ranking
-	// Endpoints: /v2/feedback, /v2/feedback/batch, /v2/feedback/stats,
-	//            /v2/feedback/boosts, /v2/feedback/implicit, /v2/interaction
-	if !canonicalOnly {
-		RegisterFeedbackHandlers(mux)
-	}
+	// Only the canonical tenant-aware V3 surface is served. Legacy V2/root
+	// collection routes were removed; unsupported paths cannot be registered.
+	collectionHTTP.RegisterCanonicalHandlers(mux, guard)
 
 	// ==========================================================================
 	// KNOWLEDGE GRAPH EXTRACTION API ENDPOINTS (v2)
@@ -2146,11 +2008,10 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		}
 
 		var req struct {
-			Type      string `json:"type"`      // "ollama", "openai", "gemini", "voyage", "jina", "cohere", "mistral", "hash"
-			Model     string `json:"model"`     // model name
-			URL       string `json:"url"`       // for ollama: base URL
-			Key       string `json:"key"`       // API key for the provider
-			Dimension int    `json:"dimension"` // for providers with configurable dimensions (gemini, voyage, jina)
+			Type  string `json:"type"`  // "ollama", "openai", "hash"
+			Model string `json:"model"` // model name
+			URL   string `json:"url"`   // for ollama: base URL
+			Key   string `json:"key"`   // API key for the provider
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
@@ -2230,139 +2091,8 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			newEmbType = "hash"
 			newEmbModel = fmt.Sprintf("hash-%d", dim)
 
-		case "gemini":
-			key := req.Key
-			if key == "" {
-				key = os.Getenv("GOOGLE_API_KEY")
-			}
-			if key == "" {
-				key = os.Getenv("GEMINI_API_KEY")
-			}
-			if key == "" {
-				errMsg = "Google/Gemini API key required (pass 'key' field or set GOOGLE_API_KEY)"
-				break
-			}
-			dim := req.Dimension
-			if dim <= 0 {
-				dim = 3072
-			}
-			emb := NewGeminiEmbedder(key, dim)
-			vec, err := emb.Embed("dimension test")
-			if err != nil {
-				errMsg = "gemini embed failed: " + err.Error()
-				break
-			}
-			newDim = len(vec)
-			newEmb = emb
-			newEmbType = "gemini"
-			newEmbModel = "gemini-embedding-2-preview"
-
-		case "voyage":
-			key := req.Key
-			if key == "" {
-				key = os.Getenv("VOYAGE_API_KEY")
-			}
-			if key == "" {
-				errMsg = "Voyage API key required (pass 'key' field or set VOYAGE_API_KEY)"
-				break
-			}
-			model := req.Model
-			if model == "" {
-				model = "voyage-4-large"
-			}
-			dim := req.Dimension
-			if dim <= 0 {
-				dim = 1024
-			}
-			emb := NewVoyageEmbedder(key, model, dim)
-			vec, err := emb.Embed("dimension test")
-			if err != nil {
-				errMsg = "voyage embed failed: " + err.Error()
-				break
-			}
-			newDim = len(vec)
-			newEmb = emb
-			newEmbType = "voyage"
-			newEmbModel = model
-
-		case "jina":
-			key := req.Key
-			if key == "" {
-				key = os.Getenv("JINA_API_KEY")
-			}
-			if key == "" {
-				errMsg = "Jina API key required (pass 'key' field or set JINA_API_KEY)"
-				break
-			}
-			model := req.Model
-			if model == "" {
-				model = "jina-embeddings-v3"
-			}
-			dim := req.Dimension
-			if dim <= 0 {
-				dim = 1024
-			}
-			emb := NewJinaEmbedder(key, model, dim)
-			vec, err := emb.Embed("dimension test")
-			if err != nil {
-				errMsg = "jina embed failed: " + err.Error()
-				break
-			}
-			newDim = len(vec)
-			newEmb = emb
-			newEmbType = "jina"
-			newEmbModel = model
-
-		case "cohere":
-			key := req.Key
-			if key == "" {
-				key = os.Getenv("COHERE_API_KEY")
-			}
-			if key == "" {
-				errMsg = "Cohere API key required (pass 'key' field or set COHERE_API_KEY)"
-				break
-			}
-			model := req.Model
-			if model == "" {
-				model = "embed-english-v3.0"
-			}
-			emb := NewCohereEmbedder(key, model)
-			vec, err := emb.Embed("dimension test")
-			if err != nil {
-				errMsg = "cohere embed failed: " + err.Error()
-				break
-			}
-			newDim = len(vec)
-			newEmb = emb
-			newEmbType = "cohere"
-			newEmbModel = model
-
-		case "mistral":
-			key := req.Key
-			if key == "" {
-				key = os.Getenv("MISTRAL_API_KEY")
-			}
-			if key == "" {
-				errMsg = "Mistral API key required (pass 'key' field or set MISTRAL_API_KEY)"
-				break
-			}
-			model := req.Model
-			if model == "" {
-				model = "mistral-embed"
-			}
-			emb := NewMistralEmbedder(key, model)
-			vec, err := emb.Embed("dimension test")
-			if err != nil {
-				errMsg = "mistral embed failed: " + err.Error()
-				break
-			}
-			newDim = len(vec)
-			newEmb = emb
-			newEmbType = "mistral"
-			newEmbModel = model
-
 		default:
-			errMsg = "unknown embedder type: " + req.Type + " (valid: ollama, openai, gemini, voyage, jina, cohere, mistral, hash)"
+			errMsg = "unknown embedder type: " + req.Type + " (valid: ollama, openai, hash)"
 		}
 
 		if errMsg != "" {
@@ -2460,101 +2190,6 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			"set": set,
 		})
 	}))
-
-	// GET /api/costs - Returns cost tracking statistics (PRO mode only)
-	mux.HandleFunc("/api/costs", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-
-		// Find the cost tracker from the embedder if it's a TrackedEmbedder
-		var costTracker *CostTracker
-		if te, ok := embedder.(*TrackedEmbedder); ok {
-			costTracker = te.costTracker
-		}
-
-		if costTracker == nil {
-			// LOCAL mode - no cost tracking
-			sendResponse(w, r, map[string]any{
-				"mode":    "local",
-				"message": "Cost tracking is only available in PRO mode",
-				"session": map[string]any{
-					"tokens": 0,
-					"cost":   0,
-					"ops":    0,
-				},
-			})
-			return
-		}
-
-		stats := costTracker.GetStats()
-		sendResponse(w, r, stats)
-	})
-
-	// GET /api/costs/daily - Returns daily cost breakdown (PRO mode only)
-	mux.HandleFunc("/api/costs/daily", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-
-		var costTracker *CostTracker
-		if te, ok := embedder.(*TrackedEmbedder); ok {
-			costTracker = te.costTracker
-		}
-
-		if costTracker == nil {
-			sendResponse(w, r, map[string]any{
-				"mode":  "local",
-				"daily": []DailyStats{},
-			})
-			return
-		}
-
-		days := 30 // Default to last 30 days
-		dailyStats, err := costTracker.GetDailyStats(days)
-		if err != nil {
-			logging.Default().LogError(r.Context(), "get_daily_stats", err)
-			http.Error(w, "failed to get daily stats", http.StatusInternalServerError)
-			return
-		}
-
-		sendResponse(w, r, map[string]any{
-			"mode":  "pro",
-			"days":  days,
-			"daily": dailyStats,
-		})
-	})
-
-	// GET /api/costs/export - Export costs as CSV (PRO mode only)
-	mux.HandleFunc("/api/costs/export", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-
-		var costTracker *CostTracker
-		if te, ok := embedder.(*TrackedEmbedder); ok {
-			costTracker = te.costTracker
-		}
-
-		if costTracker == nil {
-			http.Error(w, "Cost tracking is only available in PRO mode", http.StatusBadRequest)
-			return
-		}
-
-		csv, err := costTracker.ExportCSV()
-		if err != nil {
-			logging.Default().LogError(r.Context(), "export_costs", err)
-			http.Error(w, "failed to export costs", http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "text/csv")
-		w.Header().Set("Content-Disposition", "attachment; filename=vectordb-costs.csv")
-		w.Write([]byte(csv))
-	})
 
 	// POST /api/embed - Embed a single text using server-side embedder
 	mux.HandleFunc("/api/embed", withMetrics("embed", guard(func(w http.ResponseWriter, r *http.Request) {
@@ -2860,464 +2495,6 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 		})
 	}
 
-	// ==========================================================================
-	// OBSIDIAN ADMIN ENDPOINTS
-	// ==========================================================================
-
-	mux.HandleFunc("/admin/obsidian/detect", adminGuard(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		vaults := obsidian.DetectVaults()
-		sendResponse(w, r, map[string]any{"vaults": vaults})
-	}))
-
-	mux.HandleFunc("/admin/obsidian/status", adminGuard(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		cfg := obsidian.LoadOrDetectConfig(configDir)
-		obsidian.ApplyEnvOverrides(&cfg)
-
-		// Count notes in the obsidian collection
-		collection := cfg.Collection
-		if collection == "" {
-			collection = "obsidian"
-		}
-		store.RLock()
-		noteCount := 0
-		for _, coll := range store.Coll {
-			if coll == collection {
-				noteCount++
-			}
-		}
-		store.RUnlock()
-
-		sendResponse(w, r, map[string]any{
-			"enabled":    cfg.Enabled,
-			"vault":      cfg.VaultPath,
-			"collection": collection,
-			"interval":   cfg.Interval.String(),
-			"note_count": noteCount,
-		})
-	}))
-
-	mux.HandleFunc("/admin/obsidian/enable", adminGuard(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var req struct {
-			Vault      string `json:"vault"`
-			Collection string `json:"collection"`
-			Interval   string `json:"interval"`
-		}
-		if err := decodeRequest(r, &req); err != nil {
-			http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if req.Vault == "" {
-			http.Error(w, "vault path required", http.StatusBadRequest)
-			return
-		}
-		// Validate vault path exists
-		if info, err := os.Stat(req.Vault); err != nil || !info.IsDir() {
-			http.Error(w, "vault path is not a valid directory", http.StatusBadRequest)
-			return
-		}
-
-		cfg := obsidian.DefaultConfig()
-		cfg.VaultPath = req.Vault
-		cfg.Enabled = true
-		if req.Collection != "" {
-			cfg.Collection = req.Collection
-		}
-		if req.Interval != "" {
-			if d, err := time.ParseDuration(req.Interval); err == nil {
-				cfg.Interval = d
-			}
-		}
-
-		if err := obsidian.SaveConfig(configDir, cfg); err != nil {
-			logging.Default().LogError(r.Context(), "save_obsidian_config", err)
-			http.Error(w, "failed to save config", http.StatusInternalServerError)
-			return
-		}
-
-		sendResponse(w, r, map[string]any{
-			"ok":         true,
-			"vault":      cfg.VaultPath,
-			"collection": cfg.Collection,
-			"interval":   cfg.Interval.String(),
-			"note":       "restart server to start sync, or set OBSIDIAN_VAULT env var",
-		})
-	}))
-
-	mux.HandleFunc("/admin/obsidian/disable", adminGuard(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		cfg := obsidian.DefaultConfig()
-		cfg.Enabled = false
-		cfg.VaultPath = ""
-		if err := obsidian.SaveConfig(configDir, cfg); err != nil {
-			logging.Default().LogError(r.Context(), "disable_obsidian_config", err)
-			http.Error(w, "failed to save config", http.StatusInternalServerError)
-			return
-		}
-		sendResponse(w, r, map[string]any{"ok": true, "note": "restart server to stop sync"})
-	}))
-
-	// ==========================================================================
-	// VAULT FILE SERVING & ANNOTATIONS
-	// ==========================================================================
-
-	// getVaultRoot returns the configured obsidian vault path, or empty string.
-	getVaultRoot := func() string {
-		cfg := obsidian.LoadOrDetectConfig(configDir)
-		obsidian.ApplyEnvOverrides(&cfg)
-		return cfg.VaultPath
-	}
-
-	// validateVaultPath resolves a relative path within the vault, rejecting traversal.
-	validateVaultPath := func(vaultRoot, relPath string) (string, error) {
-		cleaned := filepath.Clean(relPath)
-		if strings.Contains(cleaned, "..") {
-			return "", fmt.Errorf("path traversal rejected")
-		}
-		abs := filepath.Join(vaultRoot, cleaned)
-		// Ensure resolved path is still within vault
-		realAbs, err := filepath.EvalSymlinks(abs)
-		if err != nil {
-			// File may not exist yet for new paths — check parent
-			realAbs = abs
-		}
-		realVault, err := filepath.EvalSymlinks(vaultRoot)
-		if err != nil {
-			realVault = vaultRoot
-		}
-		if !strings.HasPrefix(realAbs, realVault+string(filepath.Separator)) && realAbs != realVault {
-			return "", fmt.Errorf("path outside vault")
-		}
-		return abs, nil
-	}
-
-	// GET /vault/file?path=<relative_path> — serve a file from the vault
-	mux.HandleFunc("/vault/file", adminGuard(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		vaultRoot := getVaultRoot()
-		if vaultRoot == "" {
-			http.Error(w, "no vault configured", http.StatusNotFound)
-			return
-		}
-		relPath := r.URL.Query().Get("path")
-		if relPath == "" {
-			http.Error(w, "path parameter required", http.StatusBadRequest)
-			return
-		}
-		absPath, err := validateVaultPath(vaultRoot, relPath)
-		if err != nil {
-			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
-			return
-		}
-		info, err := os.Stat(absPath)
-		if err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		if info.IsDir() {
-			http.Error(w, "path is a directory", http.StatusBadRequest)
-			return
-		}
-		if info.Size() > 100*1024*1024 {
-			http.Error(w, "file too large (>100MB)", http.StatusRequestEntityTooLarge)
-			return
-		}
-		// Set MIME type from extension
-		ext := filepath.Ext(absPath)
-		mimeType := mime.TypeByExtension(ext)
-		if mimeType != "" {
-			w.Header().Set("Content-Type", mimeType)
-		}
-		http.ServeFile(w, r, absPath)
-	}))
-
-	// GET /vault/browse?dir=<relative_path> — list files in a vault subdirectory
-	mux.HandleFunc("/vault/browse", adminGuard(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		vaultRoot := getVaultRoot()
-		if vaultRoot == "" {
-			http.Error(w, "no vault configured", http.StatusNotFound)
-			return
-		}
-		relDir := r.URL.Query().Get("dir")
-		if relDir == "" {
-			relDir = "."
-		}
-		absDir, err := validateVaultPath(vaultRoot, relDir)
-		if err != nil {
-			http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
-			return
-		}
-		entries, err := os.ReadDir(absDir)
-		if err != nil {
-			http.Error(w, "cannot read directory", http.StatusNotFound)
-			return
-		}
-		type fileEntry struct {
-			Name    string `json:"name"`
-			Path    string `json:"path"`
-			Size    int64  `json:"size"`
-			ModTime string `json:"mod_time"`
-			IsDir   bool   `json:"is_dir"`
-		}
-		files := make([]fileEntry, 0, len(entries))
-		for _, e := range entries {
-			// Skip hidden files/dirs
-			if strings.HasPrefix(e.Name(), ".") {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			entryPath := relDir
-			if entryPath == "." {
-				entryPath = e.Name()
-			} else {
-				entryPath = filepath.Join(relDir, e.Name())
-			}
-			files = append(files, fileEntry{
-				Name:    e.Name(),
-				Path:    entryPath,
-				Size:    info.Size(),
-				ModTime: info.ModTime().UTC().Format(time.RFC3339),
-				IsDir:   e.IsDir(),
-			})
-		}
-		sendResponse(w, r, map[string]any{"files": files, "dir": relDir})
-	}))
-
-	// Annotation storage — simple JSON file persistence
-	annotationFile := filepath.Join(configDir, "annotations.json")
-	var annotationMu sync.Mutex
-
-	loadAnnotations := func() map[string][]map[string]any {
-		data, err := os.ReadFile(annotationFile)
-		if err != nil {
-			return make(map[string][]map[string]any)
-		}
-		var result map[string][]map[string]any
-		if err := json.Unmarshal(data, &result); err != nil {
-			return make(map[string][]map[string]any)
-		}
-		return result
-	}
-	saveAnnotations := func(anns map[string][]map[string]any) error {
-		data, err := json.MarshalIndent(anns, "", "  ")
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(annotationFile, data, 0644)
-	}
-
-	// GET /vault/annotations?doc_id=<id> — get annotations for a document
-	// POST /vault/annotations — create/update an annotation
-	// DELETE /vault/annotations?doc_id=<id>&id=<aid> — delete an annotation
-	mux.HandleFunc("/vault/annotations", adminGuard(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			docID := r.URL.Query().Get("doc_id")
-			annotationMu.Lock()
-			anns := loadAnnotations()
-			annotationMu.Unlock()
-			if docID != "" {
-				sendResponse(w, r, map[string]any{"annotations": anns[docID]})
-			} else {
-				sendResponse(w, r, map[string]any{"annotations": anns})
-			}
-
-		case http.MethodPost:
-			var ann map[string]any
-			if err := decodeRequest(r, &ann); err != nil {
-				http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			docID, _ := ann["doc_id"].(string)
-			if docID == "" {
-				http.Error(w, "doc_id required", http.StatusBadRequest)
-				return
-			}
-			annotationMu.Lock()
-			anns := loadAnnotations()
-			anns[docID] = append(anns[docID], ann)
-			err := saveAnnotations(anns)
-			annotationMu.Unlock()
-			if err != nil {
-				logging.Default().LogError(r.Context(), "save_annotation", err)
-				http.Error(w, "save failed", http.StatusInternalServerError)
-				return
-			}
-			sendResponse(w, r, map[string]any{"ok": true})
-
-		case http.MethodDelete:
-			docID := r.URL.Query().Get("doc_id")
-			annID := r.URL.Query().Get("id")
-			if docID == "" || annID == "" {
-				http.Error(w, "doc_id and id required", http.StatusBadRequest)
-				return
-			}
-			annotationMu.Lock()
-			anns := loadAnnotations()
-			if docAnns, ok := anns[docID]; ok {
-				filtered := make([]map[string]any, 0, len(docAnns))
-				for _, a := range docAnns {
-					if aid, _ := a["id"].(string); aid != annID {
-						filtered = append(filtered, a)
-					}
-				}
-				anns[docID] = filtered
-			}
-			err := saveAnnotations(anns)
-			annotationMu.Unlock()
-			if err != nil {
-				logging.Default().LogError(r.Context(), "delete_annotation", err)
-				http.Error(w, "save failed", http.StatusInternalServerError)
-				return
-			}
-			sendResponse(w, r, map[string]any{"ok": true})
-
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	}))
-
-	// ==========================================================================
-	// WHISPER TRANSCRIPTION ENDPOINT
-	// ==========================================================================
-
-	// POST /vault/transcribe?path=<relative_path> — transcribe audio/video via OpenAI Whisper
-	// Also accepts file upload via multipart form (field "file")
-	mux.HandleFunc("/vault/transcribe", adminGuard(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		openaiKey := os.Getenv("OPENAI_API_KEY")
-		if openaiKey == "" {
-			http.Error(w, "OPENAI_API_KEY not configured", http.StatusServiceUnavailable)
-			return
-		}
-
-		var audioData io.Reader
-		var filename string
-
-		// Option 1: path query param — read from vault
-		if relPath := r.URL.Query().Get("path"); relPath != "" {
-			vaultRoot := getVaultRoot()
-			if vaultRoot == "" {
-				http.Error(w, "no vault configured", http.StatusNotFound)
-				return
-			}
-			absPath, err := validateVaultPath(vaultRoot, relPath)
-			if err != nil {
-				http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
-				return
-			}
-			info, err := os.Stat(absPath)
-			if err != nil {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-			if info.Size() > 25*1024*1024 { // Whisper limit is 25MB
-				http.Error(w, "file too large for Whisper (>25MB)", http.StatusRequestEntityTooLarge)
-				return
-			}
-			f, err := os.Open(absPath)
-			if err != nil {
-				http.Error(w, "cannot open file", http.StatusInternalServerError)
-				return
-			}
-			defer f.Close()
-			audioData = f
-			filename = filepath.Base(absPath)
-		} else {
-			// Option 2: multipart upload
-			if err := r.ParseMultipartForm(25 << 20); err != nil {
-				http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			file, header, err := r.FormFile("file")
-			if err != nil {
-				http.Error(w, "file field required", http.StatusBadRequest)
-				return
-			}
-			defer file.Close()
-			audioData = file
-			filename = header.Filename
-		}
-
-		// Build multipart request for OpenAI Whisper API
-		var buf bytes.Buffer
-		mw := multipart.NewWriter(&buf)
-		part, err := mw.CreateFormFile("file", filename)
-		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		if _, err := io.Copy(part, audioData); err != nil {
-			logging.Default().LogError(r.Context(), "whisper_read", err)
-			http.Error(w, "failed to read audio data", http.StatusInternalServerError)
-			return
-		}
-		mw.WriteField("model", "whisper-1")
-		mw.WriteField("response_format", "verbose_json")
-
-		// Optional language hint
-		if lang := r.URL.Query().Get("language"); lang != "" {
-			mw.WriteField("language", lang)
-		}
-		mw.Close()
-
-		whisperReq, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/transcriptions", &buf)
-		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		whisperReq.Header.Set("Authorization", "Bearer "+openaiKey)
-		whisperReq.Header.Set("Content-Type", mw.FormDataContentType())
-
-		client := &http.Client{Timeout: 120 * time.Second}
-		resp, err := client.Do(whisperReq)
-		if err != nil {
-			logging.Default().LogError(r.Context(), "whisper_api", err)
-			http.Error(w, "transcription service unavailable", http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			logging.Default().Warn("whisper API error", "status", resp.StatusCode, "body", string(body))
-			http.Error(w, fmt.Sprintf("transcription service error (status %d)", resp.StatusCode), resp.StatusCode)
-			return
-		}
-
-		// Stream the JSON response back
-		w.Header().Set("Content-Type", "application/json")
-		io.Copy(w, resp.Body)
-	}))
-
 	// Request context timeout middleware — cancels handler context after the deadline.
 	// This is separate from HTTP server WriteTimeout (which is a hard TCP-level cutoff).
 	// The context timeout lets handlers cooperatively abort long operations.
@@ -3351,7 +2528,7 @@ func newHTTPHandlerWithSurface(store *VectorStore, embedder Embedder, reranker R
 			// Cap client-supplied IDs to prevent log inflation and strip
 			// non-printable characters to avoid log injection.
 			if len(id) > 128 {
-				id = id[:128]
+				id = truncateRequestID(id, 128)
 			}
 			w.Header().Set("X-Request-ID", id)
 			ctx := context.WithValue(r.Context(), logging.RequestIDKey, id)
@@ -3397,11 +2574,13 @@ func canonicalRateLimitTenant(tenantCtx *security.TenantContext, targetTenant st
 func canonicalRCSurface(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		if strings.HasPrefix(path, "/v3/tenants/") || path == "/healthz" || path == "/readyz" || path == "/livez" || path == "/metrics" {
+		if strings.HasPrefix(path, "/v3/tenants/") || path == "/v3/status" || path == "/healthz" || path == "/readyz" || path == "/livez" || path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		http.NotFound(w, r)
+		e := apierror.New(apierror.CodeNotFound, "no such route on the RC surface: "+path)
+		e.Hint = "the RC serves /v3/tenants/{tenant}/collections..., /v3/status, /healthz, /readyz, /livez and /metrics; the route table is in the contract"
+		apierror.WriteHTTP(w, e)
 	})
 }
 

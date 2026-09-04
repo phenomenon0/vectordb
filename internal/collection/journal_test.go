@@ -56,9 +56,30 @@ func refreshCollectionJournalChecksum(frame []byte) {
 	copy(frame[collectionJournalChecksumOffset:int(collectionJournalHeaderSize)], h.Sum(nil))
 }
 
+// openCollectionJournalForTest materializes replay only for small unit-test
+// fixtures. Production startup consumes collectionJournalReplayPlan through
+// streamReplay and never retains all payloads.
+func openCollectionJournalForTest(current, frozen string, storeID [16]byte, appliedLSN uint64) (*collectionJournal, []collectionJournalRecord, error) {
+	j, plan, err := openCollectionJournal(current, frozen, storeID, appliedLSN)
+	if err != nil {
+		return nil, nil, err
+	}
+	records := make([]collectionJournalRecord, 0, plan.replayRecords)
+	if err := j.streamReplay(plan, func(record collectionJournalRecord) error {
+		records = append(records, collectionJournalRecord{
+			LSN:     record.LSN,
+			Payload: append([]byte(nil), record.Payload...),
+		})
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
+	return j, records, nil
+}
+
 func TestCollectionJournalAppendIsSyncedSecureAndReplayable(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, records, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, records, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open empty journal: %v", err)
 	}
@@ -83,12 +104,10 @@ func TestCollectionJournalAppendIsSyncedSecureAndReplayable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append first frame: %v", err)
 	}
-	if record.LSN != 1 || string(record.Payload) != "create-collection" {
-		t.Fatalf("first record = %#v", record)
-	}
-	payload[0] = 'X'
-	if string(record.Payload) != "create-collection" {
-		t.Fatal("append result aliases caller payload")
+	// Append acknowledges only the assigned LSN; payload bytes are recovered
+	// exclusively through replay, asserted below after reopen.
+	if record.LSN != 1 || record.Payload != nil {
+		t.Fatalf("first record = %#v, want LSN 1 with no payload", record)
 	}
 	if fileSyncs != 1 || dirSyncs != 1 {
 		t.Fatalf("first append syncs: file=%d dir=%d, want 1/1", fileSyncs, dirSyncs)
@@ -105,11 +124,14 @@ func TestCollectionJournalAppendIsSyncedSecureAndReplayable(t *testing.T) {
 	if _, err := j.append([]byte("insert-document")); err != nil {
 		t.Fatalf("append second frame: %v", err)
 	}
-	if fileSyncs != 2 || dirSyncs != 2 {
-		t.Fatalf("second append syncs: file=%d dir=%d, want 2/2", fileSyncs, dirSyncs)
+	// The second append must still fsync file contents, but the directory
+	// entry was made durable by this writer's first append; the once-per-
+	// descriptor contract means no further namespace barrier is required.
+	if fileSyncs != 2 || dirSyncs != 1 {
+		t.Fatalf("second append syncs: file=%d dir=%d, want 2/1", fileSyncs, dirSyncs)
 	}
 
-	reopened, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	reopened, replay, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("reopen journal: %v", err)
 	}
@@ -119,12 +141,26 @@ func TestCollectionJournalAppendIsSyncedSecureAndReplayable(t *testing.T) {
 	if string(replay[0].Payload) != "create-collection" || string(replay[1].Payload) != "insert-document" {
 		t.Fatalf("replay payloads = %q, %q", replay[0].Payload, replay[1].Payload)
 	}
+	// A fresh descriptor in a new writer must re-establish namespace
+	// durability before acknowledging its first frame: the previous process
+	// may have crashed before its own directory sync survived.
+	defaultReopenedSyncDir := reopened.ops.syncDir
+	reopened.ops.syncDir = func(path string) error {
+		dirSyncs++
+		return defaultReopenedSyncDir(path)
+	}
 	third, err := reopened.append([]byte("delete-document"))
 	if err != nil {
 		t.Fatalf("append after reopen: %v", err)
 	}
 	if third.LSN != 3 {
 		t.Fatalf("LSN after reopen = %d, want 3", third.LSN)
+	}
+	// A fresh descriptor in a new writer must re-establish namespace
+	// durability before acknowledging its first frame: the previous process
+	// may have crashed before its own directory sync survived.
+	if dirSyncs != 2 {
+		t.Fatalf("dir syncs after reopen+append = %d, want 2 (one per writer)", dirSyncs)
 	}
 }
 
@@ -168,7 +204,7 @@ func TestCollectionJournalParserRejectsMalformedFrames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			current, frozen := collectionJournalTestPaths(t)
 			writeCollectionJournalFramesForTest(t, current, tc.data)
-			j, records, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			j, records, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("open malformed journal: journal=%v records=%v err=%v, want %q", j, records, err, tc.wantErr)
 			}
@@ -188,7 +224,7 @@ func TestCollectionJournalRepairsCurrentTerminalPartialTailExactlyOnce(t *testin
 			current, frozen := collectionJournalTestPaths(t)
 			writeCollectionJournalFramesForTest(t, current, first, second[:cut])
 
-			journal, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			journal, replay, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 			if err != nil {
 				t.Fatalf("open with terminal partial tail: %v", err)
 			}
@@ -211,7 +247,7 @@ func TestCollectionJournalRepairsCurrentTerminalPartialTailExactlyOnce(t *testin
 				t.Fatalf("append LSN after repair = %d, want 2", appended.LSN)
 			}
 
-			_, reopened, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			_, reopened, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 			if err != nil {
 				t.Fatalf("second reopen: %v", err)
 			}
@@ -230,7 +266,7 @@ func TestCollectionJournalRepairsPartialFirstFrameToEmpty(t *testing.T) {
 	first := mustCollectionJournalFrame(t, collectionJournalTestStoreID, 1, "first")
 	writeCollectionJournalFramesForTest(t, current, first[:17])
 
-	journal, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	journal, replay, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open partial first frame: %v", err)
 	}
@@ -297,7 +333,7 @@ func TestCollectionJournalPartialTailRepairRemainsFailClosed(t *testing.T) {
 			if tc.frozen != nil {
 				writeCollectionJournalFramesForTest(t, frozen, tc.frozen)
 			}
-			journal, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			journal, replay, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("unsafe partial tail open: journal=%v replay=%v err=%v, want %q", journal, replay, err, tc.wantErr)
 			}
@@ -344,8 +380,8 @@ func TestCollectionJournalPartialTailRepairFailuresFailClosed(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.inject(journal)
-			if replay, err := journal.readAfter(0); err == nil || !strings.Contains(err.Error(), "injected") {
-				t.Fatalf("repair failure did not fail closed: replay=%v err=%v", replay, err)
+			if plan, err := journal.validateAndRepair(0, nil); err == nil || !strings.Contains(err.Error(), "injected") {
+				t.Fatalf("repair failure did not fail closed: plan=%+v err=%v", plan, err)
 			}
 		})
 	}
@@ -357,7 +393,7 @@ func TestCollectionJournalRejectsInsecureArtifactPermissions(t *testing.T) {
 	if err := os.Chmod(current, 0o644); err != nil {
 		t.Fatalf("broaden fixture permissions: %v", err)
 	}
-	if _, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0); err == nil || !strings.Contains(err.Error(), "permissions 0644") {
+	if _, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0); err == nil || !strings.Contains(err.Error(), "permissions 0644") {
 		t.Fatalf("insecure journal permissions must fail closed: %v", err)
 	}
 }
@@ -396,7 +432,7 @@ func TestCollectionJournalRejectsSequenceViolations(t *testing.T) {
 				writeCollectionJournalFramesForTest(t, current, frames...)
 			}
 
-			if _, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, tc.appliedLSN); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			if _, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, tc.appliedLSN); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("sequence violation did not fail with %q: %v", tc.wantErr, err)
 			}
 		})
@@ -414,7 +450,7 @@ func TestCollectionJournalReadsFrozenThenCurrentAndSkipsCheckpointedFrames(t *te
 		mustCollectionJournalFrame(t, collectionJournalTestStoreID, 4, "replay-four"),
 	)
 
-	j, records, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 2)
+	j, records, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 2)
 	if err != nil {
 		t.Fatalf("read frozen/current journal: %v", err)
 	}
@@ -443,7 +479,7 @@ func TestCollectionJournalAllowsCheckpointCoveredCleanupGap(t *testing.T) {
 	)
 	// Snapshot LSN 5 covers the missing 4..5 records after a partial cleanup
 	// removed current but failed to remove frozen.
-	j, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 5)
+	j, replay, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 5)
 	if err != nil {
 		t.Fatalf("open partially cleaned journal: %v", err)
 	}
@@ -458,7 +494,7 @@ func TestCollectionJournalAllowsCheckpointCoveredCleanupGap(t *testing.T) {
 		t.Fatalf("new LSN = %d, want 6", record.LSN)
 	}
 
-	_, replay, err = openCollectionJournal(current, frozen, collectionJournalTestStoreID, 5)
+	_, replay, err = openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 5)
 	if err != nil {
 		t.Fatalf("reopen after acknowledged append: %v", err)
 	}
@@ -475,7 +511,7 @@ func TestCollectionJournalRemovesCheckpointCoveredCurrentBeforeAppend(t *testing
 		mustCollectionJournalFrame(t, collectionJournalTestStoreID, 3, "stale-3"),
 	)
 
-	j, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 5)
+	j, replay, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 5)
 	if err != nil {
 		t.Fatalf("open stale current journal: %v", err)
 	}
@@ -492,7 +528,7 @@ func TestCollectionJournalRemovesCheckpointCoveredCurrentBeforeAppend(t *testing
 	if record.LSN != 6 {
 		t.Fatalf("new LSN = %d, want 6", record.LSN)
 	}
-	_, replay, err = openCollectionJournal(current, frozen, collectionJournalTestStoreID, 5)
+	_, replay, err = openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 5)
 	if err != nil {
 		t.Fatalf("reopen after stale-current append: %v", err)
 	}
@@ -512,18 +548,111 @@ func TestCollectionJournalValidatesAllArtifactsBeforeReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct journal: %v", err)
 	}
-	records, err := j.readAfter(0)
+	plan, err := j.validateAndRepair(0, nil)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
-		t.Fatalf("corrupt current artifact must fail: records=%#v err=%v", records, err)
+		t.Fatalf("corrupt current artifact must fail: plan=%+v err=%v", plan, err)
 	}
-	if records != nil {
-		t.Fatalf("corrupt current artifact leaked frozen replay: %#v", records)
+	if plan.replayRecords != 0 {
+		t.Fatalf("corrupt current artifact leaked frozen replay count: %+v", plan)
+	}
+}
+
+func TestCollectionJournalValidationAndReplayReuseOnePayloadBufferAndBindArtifacts(t *testing.T) {
+	current, frozen := collectionJournalTestPaths(t)
+	const (
+		recordCount = 32
+		payloadSize = 128 << 10
+	)
+	frames := make([][]byte, 0, recordCount)
+	for i := 1; i <= recordCount; i++ {
+		payload := make([]byte, payloadSize)
+		payload[0] = byte(i)
+		frame, err := encodeCollectionJournalFrame(collectionJournalTestStoreID, uint64(i), payload, collectionJournalMaxPayload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, frame)
+	}
+	writeCollectionJournalFramesForTest(t, current, frames...)
+
+	var (
+		validated        int
+		validationBuffer *byte
+	)
+	j, plan, err := openCollectionJournalValidated(
+		current,
+		frozen,
+		collectionJournalTestStoreID,
+		0,
+		func(record collectionJournalRecord) error {
+			validated++
+			if got, want := record.Payload[0], byte(record.LSN); got != want {
+				return fmt.Errorf("validation payload marker = %d, want %d", got, want)
+			}
+			if validationBuffer == nil {
+				validationBuffer = &record.Payload[0]
+			} else if validationBuffer != &record.Payload[0] {
+				return errors.New("validation allocated more than one payload buffer")
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("validate journal: %v", err)
+	}
+	if validated != recordCount || plan.replayRecords != recordCount {
+		t.Fatalf("validation counts = %d/%d, want %d", validated, plan.replayRecords, recordCount)
+	}
+
+	var (
+		replayed     int
+		replayBuffer *byte
+	)
+	if err := j.streamReplay(plan, func(record collectionJournalRecord) error {
+		replayed++
+		if got, want := record.Payload[0], byte(record.LSN); got != want {
+			return fmt.Errorf("replay payload marker = %d, want %d", got, want)
+		}
+		if replayBuffer == nil {
+			replayBuffer = &record.Payload[0]
+		} else if replayBuffer != &record.Payload[0] {
+			return errors.New("replay allocated more than one payload buffer")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("stream validated replay: %v", err)
+	}
+	if replayed != recordCount {
+		t.Fatalf("replayed records = %d, want %d", replayed, recordCount)
+	}
+
+	f, err := os.OpenFile(current, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{0xff}); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	visitedAfterChange := 0
+	err = j.streamReplay(plan, func(collectionJournalRecord) error {
+		visitedAfterChange++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after validation") {
+		t.Fatalf("changed artifact replay error = %v", err)
+	}
+	if visitedAfterChange != 0 {
+		t.Fatalf("changed artifact exposed %d records before refusal", visitedAfterChange)
 	}
 }
 
 func TestCollectionJournalPayloadBoundIsEnforcedBeforeIO(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -544,7 +673,7 @@ func TestCollectionJournalPayloadBoundIsEnforcedBeforeIO(t *testing.T) {
 
 func TestCollectionJournalRotateIsDurableAndNeverOverwritesFrozen(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -571,7 +700,7 @@ func TestCollectionJournalRotateIsDurableAndNeverOverwritesFrozen(t *testing.T) 
 		t.Fatalf("frozen artifact stat: info=%v err=%v", info, err)
 	}
 
-	j2, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j2, replay, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open rotated journal: %v", err)
 	}
@@ -610,7 +739,7 @@ func TestCollectionJournalRepairsInterruptedPortableRotation(t *testing.T) {
 		t.Fatalf("create interrupted rotation fixture: %v", err)
 	}
 
-	j, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, replay, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("repair interrupted rotation: %v", err)
 	}
@@ -645,7 +774,7 @@ func TestCollectionJournalRepairSyncsFrozenLinkBeforeUnlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	j.ops.syncDir = func(string) error { return errors.New("injected pre-unlink sync failure") }
-	if _, err := j.readAfter(0); err == nil || !strings.Contains(err.Error(), "pre-unlink sync failure") {
+	if _, err := j.validateAndRepair(0, nil); err == nil || !strings.Contains(err.Error(), "pre-unlink sync failure") {
 		t.Fatalf("repair pre-unlink sync error = %v", err)
 	}
 	if _, err := os.Stat(current); err != nil {
@@ -704,7 +833,7 @@ func TestCollectionJournalRotationFaultsAreLatched(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			current, frozen := collectionJournalTestPaths(t)
-			j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 			if err != nil {
 				t.Fatalf("open journal: %v", err)
 			}
@@ -727,7 +856,7 @@ func TestCollectionJournalRotationFaultsAreLatched(t *testing.T) {
 
 func TestCollectionJournalCleanupIsDurableAndRetryable(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -762,7 +891,7 @@ func TestCollectionJournalCleanupIsDurableAndRetryable(t *testing.T) {
 
 func TestCollectionJournalCleanupPreservesArtifactOnRemoveFailure(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -792,7 +921,7 @@ func TestCollectionJournalCleanupPreservesArtifactOnRemoveFailure(t *testing.T) 
 
 func TestCollectionJournalCleanupAllRemovesBothAndSyncsAbsentRetries(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -836,7 +965,7 @@ func TestCollectionJournalCleanupAllRemovesBothAndSyncsAbsentRetries(t *testing.
 
 func TestCollectionJournalCleanupAllSyncFailureIsRetryable(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -876,7 +1005,7 @@ func TestCollectionJournalCleanupAllSyncFailureIsRetryable(t *testing.T) {
 
 func TestCollectionJournalCleanupAllContinuesAfterOneRemoveFailure(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -927,8 +1056,9 @@ func TestCollectionJournalCleanupAllContinuesAfterOneRemoveFailure(t *testing.T)
 
 func TestCollectionJournalAppendFaultsAreLatched(t *testing.T) {
 	tests := []struct {
-		name   string
-		inject func(*collectionJournal)
+		name      string
+		inject    func(*collectionJournal)
+		viaRotate bool
 	}{
 		{
 			name: "partial write",
@@ -949,7 +1079,7 @@ func TestCollectionJournalAppendFaultsAreLatched(t *testing.T) {
 			},
 		},
 		{
-			name: "close",
+			name: "close during rotation",
 			inject: func(j *collectionJournal) {
 				j.ops.closeFile = func(f *os.File) error {
 					if err := f.Close(); err != nil {
@@ -958,6 +1088,9 @@ func TestCollectionJournalAppendFaultsAreLatched(t *testing.T) {
 					return errors.New("injected close uncertainty")
 				}
 			},
+			// Close no longer runs inside append; descriptor teardown happens
+			// when the artifact identity changes, so drive it via rotate.
+			viaRotate: true,
 		},
 		{
 			name: "creation directory sync",
@@ -970,13 +1103,24 @@ func TestCollectionJournalAppendFaultsAreLatched(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			current, frozen := collectionJournalTestPaths(t)
-			j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+			j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 			if err != nil {
 				t.Fatalf("open journal: %v", err)
 			}
 			tc.inject(j)
-			if _, err := j.append([]byte("uncertain-frame")); err == nil || !strings.Contains(err.Error(), "indeterminate") {
-				t.Fatalf("injected append error = %v", err)
+			if tc.viaRotate {
+				// Establish a cached descriptor first; close only runs during
+				// identity changes when one exists.
+				if _, err := j.append([]byte("seed-frame")); err != nil {
+					t.Fatalf("seed append before rotation: %v", err)
+				}
+				if err := j.rotate(); err == nil || !strings.Contains(err.Error(), "indeterminate") {
+					t.Fatalf("injected rotation error = %v", err)
+				}
+			} else {
+				if _, err := j.append([]byte("uncertain-frame")); err == nil || !strings.Contains(err.Error(), "indeterminate") {
+					t.Fatalf("injected append error = %v", err)
+				}
 			}
 			if fault := j.writeFault(); fault == nil {
 				t.Fatal("append uncertainty did not latch fault")
@@ -990,7 +1134,7 @@ func TestCollectionJournalAppendFaultsAreLatched(t *testing.T) {
 
 func TestCollectionJournalPreIOFailureDoesNotPoisonWriter(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -1012,7 +1156,7 @@ func TestCollectionJournalPreIOFailureDoesNotPoisonWriter(t *testing.T) {
 
 func TestCollectionJournalRetryAfterPostCreateSetupFailureSyncsNamespace(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -1047,7 +1191,7 @@ func TestCollectionJournalRetryAfterPostCreateSetupFailureSyncsNamespace(t *test
 		t.Fatalf("successful retry directory sync calls = %d; want 1", dirSyncCalls)
 	}
 
-	reopened, records, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	reopened, records, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("reopen journal: %v", err)
 	}
@@ -1058,7 +1202,7 @@ func TestCollectionJournalRetryAfterPostCreateSetupFailureSyncsNamespace(t *test
 
 func TestCollectionJournalConcurrentAppendsRemainContiguous(t *testing.T) {
 	current, frozen := collectionJournalTestPaths(t)
-	j, _, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	j, _, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("open journal: %v", err)
 	}
@@ -1099,7 +1243,7 @@ func TestCollectionJournalConcurrentAppendsRemainContiguous(t *testing.T) {
 		}
 	}
 
-	_, replay, err := openCollectionJournal(current, frozen, collectionJournalTestStoreID, 0)
+	_, replay, err := openCollectionJournalForTest(current, frozen, collectionJournalTestStoreID, 0)
 	if err != nil {
 		t.Fatalf("reopen concurrent journal: %v", err)
 	}
@@ -1128,7 +1272,7 @@ func TestCollectionJournalPathAndStoreInvariants(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, err := openCollectionJournal(tc.current, tc.frozen, tc.storeID, 0); err == nil {
+			if _, _, err := openCollectionJournalForTest(tc.current, tc.frozen, tc.storeID, 0); err == nil {
 				t.Fatal("invalid journal configuration succeeded")
 			}
 		})

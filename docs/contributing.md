@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- Go 1.25.12 or later
+- Go 1.25.13 or later
 - golangci-lint (for linting)
 
 ### Getting Started
@@ -45,8 +45,8 @@ go tool cover -html=cover.out
 # Build server
 go build -o deepdata ./cmd/deepdata
 
-# Build CLI
-go build -o deepdata-cli ./cmd/cli
+# Build MCP server
+go build -o deepdata-mcp ./cmd/deepdata-mcp
 ```
 
 ### Linting

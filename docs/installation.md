@@ -2,13 +2,19 @@
 
 ## Supported runtime
 
-The persistent release candidate supports Linux amd64 only. It is a headless,
-single-process, single-node server. Linux arm64 and non-Linux cross-builds are
-compile proofs, not persistence-supported release artifacts.
+The persistent release candidate ships as a Linux amd64 artifact: a headless,
+single-process, single-node server. The store also builds and runs persistently
+on macOS — `internal/collection/store_lock_unix.go` carries the `linux || darwin`
+build tag — but no gate or CI test job covers it, so macOS is a development
+target, not a release artifact; `scripts/darwin_durability_check.py` is the
+hand-run lifecycle check. Linux arm64 and Windows are compile proofs only, and
+persistent startup fails closed there.
 
-The server exposes tenant-aware HTTP V3 on port 8080 and the matching nine
-unary gRPC methods on port 50051. Clients provide vectors; the server does not
-initialize an embedding service.
+The server exposes tenant-aware HTTP V3 on port 8080 and the matching eleven
+unary gRPC methods on port 50051. Clients provide vectors; when `DEEPDATA_EMBEDDER`
+names an embedder they may instead send `texts` for fields that bind an
+`embedding`. One embedder per process; the default `none` refuses `texts` with
+`503 embedder_unavailable`.
 
 ## Container quick start
 
@@ -36,7 +42,7 @@ container is stopped.
 
 ## Build from source
 
-Go 1.25.12 or newer is required.
+Go 1.25.13 or newer is required.
 
 ```bash
 git clone https://github.com/phenomenon0/vectordb.git
@@ -46,9 +52,10 @@ export API_TOKEN='replace-with-a-long-random-token'
 ./deepdata serve
 ```
 
-Source-built persistent deployments are supported only on Linux amd64. A
-production build should be tied to an exact source commit and the evidence
-generated for that commit.
+Production source builds are supported only on Linux amd64; a macOS source
+build runs persistently but carries no release evidence. A production build
+should be tied to an exact source commit and the evidence generated for that
+commit.
 
 ## Canonical Python client
 
@@ -93,6 +100,7 @@ for the complete typed sync and async contract.
 | `VECTORDB_MODE` | `local` | Must be `local` in canonical startup |
 | `VECTORDB_BASE_DIR` | `~/.vectordb` | Parent used when the data directory is relative or unset |
 | `VECTORDB_DATA_DIR` | empty | Exact primary directory if absolute; otherwise relative to the base directory |
+| `DEEPDATA_BIND_HOST` | empty (all interfaces with auth) | Optional IP literal to bind both HTTP and gRPC; use `127.0.0.1` for a host-local service |
 | `API_TOKEN` | unset | Static bearer token with server-wide administrative access; at least 32 bytes with no surrounding whitespace; configure this or `JWT_SECRET`, never both |
 | `JWT_SECRET` | unset | HS256 JWT verification secret; at least 32 bytes with no surrounding whitespace; configure this or `API_TOKEN`, never both |
 | `REQUIRE_AUTH` | `0` | Compatibility/defense-in-depth switch set to `1` by shipped deployments; it does not relax the exact-one-credential startup requirement |
@@ -101,6 +109,13 @@ for the complete typed sync and async contract.
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 | `LOG_FORMAT` | `json` | `json` or `text` |
 | `MAX_COLLECTIONS` | `10000` | Collection limit |
+| `DEEPDATA_EMBEDDER` | `none` | Process text embedder for fields that bind an `embedding`: `none`, `ollama`, `openai`, `onnx` (build tag `onnx`) or `hash` (deterministic test embedder, never implicit). `none` answers `texts` with `503 embedder_unavailable`; a configured embedder is probed once at startup and refuses to start when unreachable (`cmd/deepdata/embed_text.go:43`) |
+| `DEEPDATA_EMBED_DIM` | `384` | Vector dimension for `hash` and `onnx`; Ollama and OpenAI report their own |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama base URL for `DEEPDATA_EMBEDDER=ollama` |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model; bindings name it as `provider:model` |
+| `OPENAI_API_KEY` | unset | Required by `DEEPDATA_EMBEDDER=openai` |
+| `ONNX_EMBED_MODEL` / `ONNX_EMBED_TOKENIZER` | `vectordb/models/bge-small-en-v1.5/model.onnx` and the tokenizer.json beside it | ONNX model and tokenizer paths (`scripts/fetch_bge_small.sh`) |
+| `ONNX_EMBED_MAX_LEN` | `512` | ONNX tokenizer truncation length |
 | `MAX_TENANTS` | `100000` | Tenant limit |
 | `TENANT_RPS` | `100` | Per-tenant requests per second |
 | `TENANT_BURST` | `100` | Per-tenant burst allowance |
@@ -194,5 +209,13 @@ exact candidate checkout:
 ./tests/smoke_test.sh
 ```
 
-It exercises HTTP V3 and all nine unary gRPC methods, restarts the process, and
-checks that unsupported legacy routes remain unavailable.
+It exercises HTTP V3 and every unary gRPC method except `Upsert` and `GetDoc`
+(`tests/smoke_test.sh:129-201`), restarts the process, and checks that
+unsupported legacy routes remain unavailable.
+
+Its collection assertions read the snake_case keys `CollectionInfo` has
+emitted since bc1fa27 (`internal/collection/manager.go:186`). Three of them,
+and one each in `tests/compose_contract_test.sh` and
+`tests/container_contract_test.sh`, still named the pre-bc1fa27 PascalCase
+keys until 2026-09-03; `jq` read the absent key as null, so every one of those
+scripts failed at HEAD. Gates SDK-02, CI-06 and OPS-03 track the scripts.

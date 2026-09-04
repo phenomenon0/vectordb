@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -172,11 +173,10 @@ func (t *BertTokenizer) EncodePair(query, doc string) ([]int64, []int64) {
 // ===== Embedder =====
 
 type OnnxEmbedder struct {
-	sess     *ort.DynamicSession[int64, float32]
-	maxLen   int
-	dim      int
-	fallback *HashEmbedder
-	tok      *BertTokenizer
+	sess   *ort.DynamicSession[int64, float32]
+	maxLen int
+	dim    int
+	tok    *BertTokenizer
 }
 
 var ortOnce sync.Once
@@ -208,11 +208,10 @@ func NewOnnxEmbedder(modelPath, tokenizerPath string, dim, maxLen int) (Embedder
 	}
 
 	return &OnnxEmbedder{
-		sess:     sess,
-		maxLen:   maxLen,
-		dim:      dim,
-		fallback: NewHashEmbedder(dim),
-		tok:      tok,
+		sess:   sess,
+		maxLen: maxLen,
+		dim:    dim,
+		tok:    tok,
 	}, nil
 }
 
@@ -222,37 +221,37 @@ func (o *OnnxEmbedder) EmbedQuery(text string) ([]float32, error) { return o.Emb
 
 func (o *OnnxEmbedder) Embed(text string) ([]float32, error) {
 	if o.sess == nil || o.tok == nil {
-		return o.fallback.Embed(text)
+		return nil, errors.New("onnx embedder not initialized")
 	}
 
 	ids, mask := o.tok.Encode(text)
 
 	inputIDs, err := ort.NewTensor(ort.NewShape(1, int64(o.maxLen)), ids)
 	if err != nil {
-		return o.fallback.Embed(text)
+		return nil, fmt.Errorf("onnx input_ids tensor: %w", err)
 	}
 	defer inputIDs.Destroy()
 
 	attnMask, err := ort.NewTensor(ort.NewShape(1, int64(o.maxLen)), mask)
 	if err != nil {
-		return o.fallback.Embed(text)
+		return nil, fmt.Errorf("onnx attention_mask tensor: %w", err)
 	}
 	defer attnMask.Destroy()
 
 	// Expect last_hidden_state shape [1, maxLen, dim]
 	outputTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(1, int64(o.maxLen), int64(o.dim)))
 	if err != nil {
-		return o.fallback.Embed(text)
+		return nil, fmt.Errorf("onnx output tensor: %w", err)
 	}
 	defer outputTensor.Destroy()
 
 	if err := o.sess.Run([]*ort.Tensor[int64]{inputIDs, attnMask}, []*ort.Tensor[float32]{outputTensor}); err != nil {
-		return o.fallback.Embed(text)
+		return nil, fmt.Errorf("onnx run: %w", err)
 	}
 
 	vec := outputTensor.GetData()
 	if len(vec) == 0 {
-		return o.fallback.Embed(text)
+		return nil, errors.New("onnx returned an empty output")
 	}
 
 	// Mean-pool using attention mask count.
@@ -269,7 +268,7 @@ func (o *OnnxEmbedder) Embed(text string) ([]float32, error) {
 	pooled := make([]float32, o.dim)
 	seq := len(vec) / o.dim
 	if seq <= 0 {
-		return o.fallback.Embed(text)
+		return nil, errors.New("onnx output shorter than one token")
 	}
 	for i := 0; i < seq; i++ {
 		base := i * o.dim

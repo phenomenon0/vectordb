@@ -14,16 +14,19 @@ from deepdata import (
     DeepDataClient,
     RetryConfig,
     TenantBatchInsertResponse,
+    TenantFallbackParams,
     TenantCollectionListResponse,
     TenantCollectionMutationResponse,
     TenantCollectionSchema,
     TenantDeleteDocumentResponse,
+    TenantDocument,
     TenantDocumentInput,
     TenantGetCollectionResponse,
     TenantInfoResponse,
     TenantInsertResponse,
     TenantSearchRequest,
     TenantSearchResponse,
+    TenantUpsertResponse,
     TenantVectorField,
 )
 from deepdata.errors import (
@@ -202,6 +205,118 @@ def test_multi_field_search_requires_valid_hybrid_params() -> None:
     assert request.hybrid_params is not None
 
 
+def test_agent_retrieval_params_admission() -> None:
+    two_fields = {"dense": [0.1, 0.2], "sparse": {"1": 1.0}}
+
+    # fallback substitutes for hybrid_params on a two-field search
+    request = TenantSearchRequest.model_validate(
+        {
+            "queries": two_fields,
+            "fallback": {"primary": "dense", "secondary": "sparse"},
+        }
+    )
+    assert isinstance(request.fallback, TenantFallbackParams)
+
+    # mutual exclusion, field references, and arity
+    with pytest.raises(PydanticValidationError, match="mutually exclusive"):
+        TenantSearchRequest.model_validate(
+            {
+                "queries": two_fields,
+                "fallback": {"primary": "dense", "secondary": "sparse"},
+                "hybrid_params": {"strategy": "rrf"},
+            }
+        )
+    with pytest.raises(PydanticValidationError, match="must differ"):
+        TenantSearchRequest.model_validate(
+            {
+                "queries": two_fields,
+                "fallback": {"primary": "dense", "secondary": "dense"},
+            }
+        )
+    with pytest.raises(PydanticValidationError, match="must be query fields"):
+        TenantSearchRequest.model_validate(
+            {
+                "queries": two_fields,
+                "fallback": {"primary": "dense", "secondary": "missing"},
+            }
+        )
+    with pytest.raises(PydanticValidationError, match="exactly two"):
+        TenantSearchRequest.model_validate(
+            {
+                "queries": {"dense": [0.1, 0.2]},
+                "fallback": {"primary": "dense", "secondary": "sparse"},
+            }
+        )
+    with pytest.raises(PydanticValidationError, match="finite"):
+        TenantSearchRequest.model_validate(
+            {
+                "queries": two_fields,
+                "fallback": {
+                    "primary": "dense",
+                    "secondary": "sparse",
+                    "threshold": float("inf"),
+                },
+            }
+        )
+
+    # score_floor and usage_boost bounds
+    with pytest.raises(PydanticValidationError):
+        TenantSearchRequest.model_validate(
+            {"queries": {"dense": [0.1]}, "score_floor": -0.1}
+        )
+    # NaN is rejected either by pydantic's ge=0 check or the finite guard
+    with pytest.raises(PydanticValidationError):
+        TenantSearchRequest.model_validate(
+            {"queries": {"dense": [0.1]}, "score_floor": float("nan")}
+        )
+    with pytest.raises(PydanticValidationError):
+        TenantSearchRequest.model_validate(
+            {"queries": {"dense": [0.1]}, "usage_boost": 1.0}
+        )
+    with pytest.raises(PydanticValidationError):
+        TenantSearchRequest.model_validate(
+            {"queries": {"dense": [0.1]}, "usage_boost": -0.5}
+        )
+
+    # a full agent-retrieval request validates; absent flags stay None
+    request = TenantSearchRequest.model_validate(
+        {
+            "queries": two_fields,
+            "score_floor": 0.4,
+            "fallback": {"primary": "dense", "secondary": "sparse", "threshold": 0.6},
+            "usage_boost": 0.25,
+        }
+    )
+    assert request.fallback is not None
+    assert request.fallback.threshold == 0.6
+
+    default = TenantSearchRequest.model_validate({"queries": {"dense": [0.1]}})
+    assert default.score_floor is None
+    assert default.fallback is None
+    assert default.usage_boost is None
+
+    # response fields parse with defaults and explicit values
+    base = {
+        "status": "success",
+        "tenant_id": "t",
+        "documents": [],
+        "scores": [],
+        "candidates_examined": 0,
+    }
+    parsed = TenantSearchResponse.model_validate(base)
+    assert parsed.best_score == 0.0
+    assert parsed.weak_match is False
+    assert parsed.fell_back_to == ""
+    parsed = TenantSearchResponse.model_validate(
+        {**base, "best_score": 0.2, "weak_match": True, "fell_back_to": "sparse"}
+    )
+    assert (parsed.best_score, parsed.weak_match, parsed.fell_back_to) == (
+        0.2,
+        True,
+        "sparse",
+    )
+
+
 class TestTenantV3Sync:
     def test_collection_lifecycle_exact_contract(self) -> None:
         with respx.mock:
@@ -350,6 +465,52 @@ class TestTenantV3Sync:
                 ]
             }
             assert _body(delete) == {"doc_id": 41}
+
+    def test_upsert_and_get_document_exact_contract(self) -> None:
+        with respx.mock:
+            upsert = respx.put(f"{ROOT}/collections/papers/docs/41").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "id": 41,
+                        "message": "document upserted",
+                    },
+                )
+            )
+            get_doc = respx.get(f"{ROOT}/collections/papers/docs/41").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "id": 41,
+                        "vectors": {"embedding": [0.9, 0.8]},
+                        "metadata": {"topic": "upsert"},
+                    },
+                )
+            )
+            with DeepDataClient(BASE, retry=None) as client:
+                tenant = client.tenant(TENANT)
+                upserted = tenant.upsert(
+                    "papers",
+                    id=41,
+                    vectors={"embedding": [0.9, 0.8]},
+                    metadata={"topic": "upsert"},
+                )
+                fetched = tenant.get_document("papers", 41)
+
+            assert isinstance(upserted, TenantUpsertResponse)
+            assert upserted.id == 41
+            assert isinstance(fetched, TenantDocument)
+            assert fetched.id == 41
+            assert fetched.metadata == {"topic": "upsert"}
+            assert fetched.vectors == {"embedding": [0.9, 0.8]}
+            assert _body(upsert) == {
+                "vectors": {"embedding": [0.9, 0.8]},
+                "metadata": {"topic": "upsert"},
+            }
 
     def test_search_and_info_exact_contract(self) -> None:
         with respx.mock:

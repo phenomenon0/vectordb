@@ -11,19 +11,19 @@ import (
 // CollectionConfig defines the configuration for a collection
 type CollectionConfig struct {
 	Name      string                 `json:"name"`
-	IndexType string                 `json:"index_type"` // "hnsw", "ivf", "flat", etc.
+	IndexType string                 `json:"index_type"` // "hnsw", "flat", "sparse"
 	Dimension int                    `json:"dimension"`
 	Config    map[string]interface{} `json:"config,omitempty"` // Index-specific config
 }
 
 // CollectionInfo contains collection metadata and statistics
 type CollectionInfo struct {
-	Name       string                 `json:"name"`
-	IndexType  string                 `json:"index_type"`
-	Dimension  int                    `json:"dimension"`
-	VectorCount int                   `json:"vector_count"`
-	IndexStats index.IndexStats       `json:"index_stats"`
-	Config     map[string]interface{} `json:"config,omitempty"`
+	Name        string                 `json:"name"`
+	IndexType   string                 `json:"index_type"`
+	Dimension   int                    `json:"dimension"`
+	VectorCount int                    `json:"vector_count"`
+	IndexStats  index.IndexStats       `json:"index_stats"`
+	Config      map[string]interface{} `json:"config,omitempty"`
 }
 
 // Collection manager methods on VectorStore
@@ -253,9 +253,9 @@ func (vs *VectorStore) UpdateCollectionConfig(name string, config map[string]int
 
 // CollectionStats returns statistics for all collections
 type CollectionStats struct {
-	TotalCollections int                        `json:"total_collections"`
-	TotalVectors     int                        `json:"total_vectors"`
-	Collections      map[string]CollectionInfo  `json:"collections"`
+	TotalCollections int                       `json:"total_collections"`
+	TotalVectors     int                       `json:"total_vectors"`
+	Collections      map[string]CollectionInfo `json:"collections"`
 }
 
 // GetAllCollectionStats returns comprehensive statistics for all collections

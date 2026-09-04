@@ -21,7 +21,6 @@ func NewFactory() *DefaultFactory {
 	}
 	// Register default index types here as they are implemented
 	// f.Register("hnsw", NewHNSWIndex)
-	// f.Register("ivf", NewIVFIndex)
 	// f.Register("flat", NewFlatIndex)
 	return f
 }
@@ -30,7 +29,7 @@ func NewFactory() *DefaultFactory {
 // This allows external packages to register custom index types.
 //
 // Parameters:
-//   - indexType: Name of the index type (e.g., "hnsw", "ivf", "flat")
+//   - indexType: Name of the index type (e.g., "hnsw", "flat")
 //   - constructor: Function that creates the index
 //
 // Returns:
@@ -47,7 +46,7 @@ func (f *DefaultFactory) Register(indexType string, constructor IndexConstructor
 // Create creates a new index of the specified type.
 //
 // Parameters:
-//   - indexType: Type of index to create (e.g., "hnsw", "ivf", "flat")
+//   - indexType: Type of index to create (e.g., "hnsw", "flat")
 //   - dim: Vector dimensions (must be > 0)
 //   - config: Index-specific configuration parameters
 //

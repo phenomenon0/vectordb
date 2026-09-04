@@ -86,18 +86,41 @@ func TestBindAPIListenersAllowsExplicitGRPCDisable(t *testing.T) {
 }
 
 func TestCanonicalInsecureDevelopmentAddressesAreLoopbackOnly(t *testing.T) {
-	httpAddress, grpcAddress := canonicalListenerAddresses(8080, 50051, true)
+	httpAddress, grpcAddress, err := canonicalListenerAddresses(8080, 50051, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if httpAddress != "127.0.0.1:8080" || grpcAddress != "127.0.0.1:50051" {
 		t.Fatalf("insecure development addresses = %q and %q", httpAddress, grpcAddress)
 	}
 
-	httpAddress, grpcAddress = canonicalListenerAddresses(8080, 50051, false)
+	httpAddress, grpcAddress, err = canonicalListenerAddresses(8080, 50051, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if httpAddress != ":8080" || grpcAddress != ":50051" {
 		t.Fatalf("authenticated deployment addresses = %q and %q", httpAddress, grpcAddress)
 	}
 
-	_, grpcAddress = canonicalListenerAddresses(8080, 0, true)
+	_, grpcAddress, err = canonicalListenerAddresses(8080, 0, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if grpcAddress != "" {
 		t.Fatalf("disabled gRPC address = %q, want empty", grpcAddress)
+	}
+
+	httpAddress, grpcAddress, err = canonicalListenerAddresses(8080, 50051, false, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpAddress != "127.0.0.1:8080" || grpcAddress != "127.0.0.1:50051" {
+		t.Fatalf("configured loopback addresses = %q and %q", httpAddress, grpcAddress)
+	}
+
+	for _, host := range []string{"localhost", " 127.0.0.1", "0.0.0.0"} {
+		if _, _, err := canonicalListenerAddresses(8080, 50051, true, host); err == nil {
+			t.Errorf("insecure configured host %q was accepted", host)
+		}
 	}
 }

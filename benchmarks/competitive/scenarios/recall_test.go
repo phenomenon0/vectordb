@@ -18,18 +18,6 @@ func TestRecall_HNSW(t *testing.T) {
 	}, hnswEfValues())
 }
 
-func TestRecall_IVF(t *testing.T) {
-	runRecallSuite(t, "ivf", map[string]interface{}{
-		"nlist": 100, "metric": "cosine",
-	}, ivfNprobeValues())
-}
-
-func TestRecall_DiskANN(t *testing.T) {
-	runRecallSuite(t, "diskann", map[string]interface{}{
-		"max_degree": 32, "ef_construction": 100, "memory_limit": 100000, "metric": "cosine",
-	}, diskannEfValues())
-}
-
 type paramSweep struct {
 	Label  string
 	Params index.SearchParams
@@ -43,22 +31,6 @@ func hnswEfValues() []paramSweep {
 		{"ef=128", &index.HNSWSearchParams{EfSearch: 128}},
 		{"ef=256", &index.HNSWSearchParams{EfSearch: 256}},
 		{"ef=512", &index.HNSWSearchParams{EfSearch: 512}},
-	}
-}
-
-func ivfNprobeValues() []paramSweep {
-	return []paramSweep{
-		{"nprobe=1", &index.IVFSearchParams{NProbe: 1}},
-		{"nprobe=5", &index.IVFSearchParams{NProbe: 5}},
-		{"nprobe=10", &index.IVFSearchParams{NProbe: 10}},
-		{"nprobe=20", &index.IVFSearchParams{NProbe: 20}},
-		{"nprobe=50", &index.IVFSearchParams{NProbe: 50}},
-	}
-}
-
-func diskannEfValues() []paramSweep {
-	return []paramSweep{
-		{"default", &index.DefaultSearchParams{}},
 	}
 }
 
@@ -164,4 +136,3 @@ func BenchmarkRecall_HNSW_EfSweep(b *testing.B) {
 		})
 	}
 }
-

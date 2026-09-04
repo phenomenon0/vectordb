@@ -55,31 +55,31 @@ func TestFailedAuthenticationThrottleIsSharedAcrossHTTPAndGRPC(t *testing.T) {
 			t.Setenv("MAX_TENANTS", "10")
 			t.Setenv("MAX_COLLECTIONS", "10")
 
-			store := NewVectorStore(8, 4)
-			store.requireAuth = true
+			rt := newServerRuntime()
+			rt.requireAuth = true
 			validToken := ""
 			switch authMode {
 			case "jwt":
-				store.jwtMgr = security.NewJWTManager("failed-auth-throttle-jwt-secret", "failed-auth-test")
+				rt.jwtMgr = security.NewJWTManager("failed-auth-throttle-jwt-secret", "failed-auth-test")
 				var err error
-				validToken, err = store.jwtMgr.GenerateTenantToken("acme", []string{"admin"}, nil, time.Hour)
+				validToken, err = rt.jwtMgr.GenerateTenantToken("acme", []string{"admin"}, nil, time.Hour)
 				if err != nil {
 					t.Fatal(err)
 				}
 			case "static":
-				store.apiToken = "failed-auth-throttle-static-token"
+				rt.apiToken = "failed-auth-throttle-static-token"
 			default:
 				t.Fatalf("unknown auth mode %q", authMode)
 			}
 			if authMode == "static" {
-				validToken = store.apiToken
+				validToken = rt.apiToken
 			}
 
-			store.rl = newRateLimiter(100, 100, 100, time.Hour)
-			store.canonicalTenantRL = newRateLimiter(100, 100, 100, time.Hour)
-			store.authFailureRL = newAuthFailureLimiter(1, 2, 100, time.Hour)
+			rt.rl = newRateLimiter(100, 100, 100, time.Hour)
+			rt.canonicalTenantRL = newRateLimiter(100, 100, 100, time.Hour)
+			rt.authFailureRL = newAuthFailureLimiter(1, 2, 100, time.Hour)
 			handler, collections := newCanonicalHTTPHandler(
-				store,
+				rt,
 				NewHashEmbedder(4),
 				nil,
 				filepath.Join(t.TempDir(), "index.gob"),
@@ -88,12 +88,12 @@ func TestFailedAuthenticationThrottleIsSharedAcrossHTTPAndGRPC(t *testing.T) {
 
 			newInterceptor := func() func(context.Context, any, *grpc.UnaryServerInfo, grpc.UnaryHandler) (any, error) {
 				return grpcAuthInterceptorWithRateLimiters(
-					store.jwtMgr,
-					store.apiToken,
-					store.requireAuth,
+					rt.jwtMgr,
+					rt.apiToken,
+					rt.requireAuth,
 					testLogger(),
 					nil,
-					store.authFailureRL,
+					rt.authFailureRL,
 				)
 			}
 
@@ -115,7 +115,7 @@ func TestFailedAuthenticationThrottleIsSharedAcrossHTTPAndGRPC(t *testing.T) {
 
 			// Reset only the test limiter. Successful authentication on either
 			// transport does not consume its two allowed failure tokens.
-			store.authFailureRL = newAuthFailureLimiter(1, 2, 100, time.Hour)
+			rt.authFailureRL = newAuthFailureLimiter(1, 2, 100, time.Hour)
 			interceptor = newInterceptor()
 			for i := 0; i < 3; i++ {
 				if response := authThrottleHTTPRequest(handler, validToken); response.Code != http.StatusOK {
@@ -143,7 +143,7 @@ func TestFailedAuthenticationThrottleIsSharedAcrossHTTPAndGRPC(t *testing.T) {
 
 			// Missing credentials are failures in both implementations, not a
 			// bypass around the failed-verification accounting.
-			store.authFailureRL = newAuthFailureLimiter(1, 1, 100, time.Hour)
+			rt.authFailureRL = newAuthFailureLimiter(1, 1, 100, time.Hour)
 			interceptor = newInterceptor()
 			if response := authThrottleHTTPRequest(handler, ""); response.Code != http.StatusUnauthorized {
 				t.Fatalf("missing HTTP credential returned %d: %s", response.Code, response.Body.String())
@@ -152,7 +152,7 @@ func TestFailedAuthenticationThrottleIsSharedAcrossHTTPAndGRPC(t *testing.T) {
 				t.Fatalf("gRPC did not share missing HTTP failure: %v", err)
 			}
 
-			store.authFailureRL = newAuthFailureLimiter(1, 1, 100, time.Hour)
+			rt.authFailureRL = newAuthFailureLimiter(1, 1, 100, time.Hour)
 			interceptor = newInterceptor()
 			if _, err := interceptor(authThrottleGRPCContext(""), nil, dummyServerInfo("/test.Auth/Check"), passThroughHandler); status.Code(err) != codes.Unauthenticated {
 				t.Fatalf("missing gRPC credential = %v, want Unauthenticated", err)
@@ -163,7 +163,7 @@ func TestFailedAuthenticationThrottleIsSharedAcrossHTTPAndGRPC(t *testing.T) {
 
 			// Credential verification for one peer is serialized across the two
 			// transports, so concurrent brute force cannot overshoot the burst.
-			store.authFailureRL = newAuthFailureLimiter(1, 1, 100, time.Hour)
+			rt.authFailureRL = newAuthFailureLimiter(1, 1, 100, time.Hour)
 			interceptor = newInterceptor()
 			const workers = 32
 			start := make(chan struct{})

@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package collection
 
@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-var errPersistentCollectionsUnsupported = errors.New("persistent collection storage is supported only on Linux in this release")
+var errPersistentCollectionsUnsupported = errors.New("persistent collection storage is supported only on Linux and macOS in this release")
 
 type collectionStoreLock struct{}
 

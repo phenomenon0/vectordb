@@ -1,9 +1,3 @@
-// Package extraction provides LLM-based entity and relationship extraction
-// for building knowledge graphs from unstructured text.
-//
-// This package implements "cognify" functionality similar to Cognee,
-// automatically extracting entities and relationships from text chunks
-// and storing them in the existing EntityGraph infrastructure.
 package extraction
 
 import (

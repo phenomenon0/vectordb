@@ -10,19 +10,54 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 RUN_ROOT="$REPO_ROOT/.deepdata-run/checks"
 GO_BUILD_CACHE="$REPO_ROOT/.deepdata-run/go-build-cache"
 GO_MODULE_CACHE="${DEEPDATA_GO_MODULE_CACHE:-/tmp/deepdata-go-mod}"
+# go.mod requires go >= 1.25.13; the host /usr/lib/golang bin is a custom
+# build whose default GOTOOLCHAIN=local is 1.25.5, so pin the toolchain
+# explicitly. Override per-invocation via DEEPDATA_GO_TOOLCHAIN.
+GO_TOOLCHAIN="${DEEPDATA_GO_TOOLCHAIN:-go1.25.13}"
+export GOTOOLCHAIN="$GO_TOOLCHAIN"
 
 list_checks() {
     printf '%s\n' \
-        state-json \
+        gates-check \
         benchmark-unit \
         go-storage \
+        go-persistence \
+        go-recovery-snapshot \
+        go-recovery-journal \
+        go-segmented-envelope \
         go-short \
         go-race \
         go-vet-cgo0 \
+        go-apierror \
+        go-embed \
+        go-mcp \
+        go-contract \
+        go-usage \
+        go-indextypes \
+        go-ephemeral \
+        go-runtime \
         python-unit \
         python-mypy \
         python-build \
-        ui-build
+        go-retire \
+        go-canonical \
+        go-replay \
+        go-checkpoint \
+        release-contract \
+        license \
+        go-mod-tidy \
+        sdk-smoke \
+        backup-restore \
+        release-tag \
+        gates-release \
+        soak \
+        restart-reclaim \
+        go-legacy-migration \
+        adversarial-review \
+        build-artifacts \
+        security-scan \
+        deploy-lifecycle \
+        evidence-report
 }
 
 usage() {
@@ -43,17 +78,33 @@ if [[ -z "$CHECK_NAME" ]] || [[ -n "$FORCE" && "$FORCE" != "--force" ]]; then
 fi
 
 case "$CHECK_NAME" in
-    state-json)
+    gates-check)
         CHECK_CWD="$REPO_ROOT"
-        CHECK_DESCRIPTION="python -m json.tool tasks/autonomy/STATE.json"
+        CHECK_DESCRIPTION="python3 scripts/gates.py check"
         ;;
     benchmark-unit)
         CHECK_CWD="$REPO_ROOT"
-        CHECK_DESCRIPTION="python -m unittest -q benchmarks/test_mega_bench.py"
+        CHECK_DESCRIPTION="PYTHONPATH=benchmarks python3 -m unittest -q test_mega_bench"
         ;;
     go-storage)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -short -count=1 -timeout 300s ./internal/storage ./internal/collection ./cmd/deepdata"
+        ;;
+    go-persistence)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -count=1 -p 1 -timeout 900s ./internal/collection ./cmd/deepdata"
+        ;;
+    go-recovery-snapshot)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -count=1 -p 1 -timeout 300s -run 'UnifiedCollectionSnapshot|SnapshotMemory' ./internal/collection"
+        ;;
+    go-recovery-journal)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -count=1 -p 1 -timeout 300s -run 'GeneratedJournal|Corrupt|PartialTail' ./internal/collection"
+        ;;
+    go-segmented-envelope)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -count=1 -p 1 -timeout 300s -run SegmentedColdStart -bench SegmentedColdStart -benchmem -benchtime=3x ./internal/index"
         ;;
     go-short)
         CHECK_CWD="$REPO_ROOT"
@@ -67,6 +118,38 @@ case "$CHECK_NAME" in
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=0 go vet ./..."
         ;;
+    go-apierror)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 300s -run Error ./internal/apierror ./internal/collection ./cmd/deepdata ./cmd/deepdata-mcp"
+        ;;
+    go-embed)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="DEEPDATA_EMBEDDER=hash GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 300s -run 'Embed|Text' ./internal/collection ./cmd/deepdata ./cmd/deepdata-mcp"
+        ;;
+    go-mcp)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="grep -q deepdata-mcp .github/workflows/ci.yml && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 300s ./cmd/deepdata-mcp ./api/contract"
+        ;;
+    go-contract)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 300s -run 'Contract|Operations|Routes|Status|Discovery|ScoreDirection' ./cmd/deepdata && go test -count=1 -timeout 300s ./api/contract ./cmd/deepdata-mcp && go run ./cmd/deepdata routes >/dev/null && (cd sdk/python && python -m pytest tests/test_contract.py -q)"
+        ;;
+    go-usage)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -timeout 300s -run 'Usage' ./internal/collection && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -race -count=1 -p 1 -timeout 300s -run 'Usage' ./internal/collection"
+        ;;
+    go-indextypes)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -timeout 300s -run 'IndexTypes' ./internal/collection ./cmd/deepdata && (cd sdk/python && python -m pytest tests/test_contract.py -q)"
+        ;;
+    go-ephemeral)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -timeout 300s -run 'Ephemeral' ./internal/collection ./cmd/deepdata && (cd sdk/python && python -m pytest tests/test_contract.py -q)"
+        ;;
+    go-runtime)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go vet ./cmd/deepdata && DEEPDATA_EMBEDDER=hash go test -count=1 -p 1 -timeout 600s ./cmd/deepdata && assert_no_new_vector_store_callers"
+        ;;
     python-unit)
         CHECK_CWD="$REPO_ROOT/sdk/python"
         CHECK_DESCRIPTION="python -m pytest tests -q"
@@ -79,9 +162,81 @@ case "$CHECK_NAME" in
         CHECK_CWD="$REPO_ROOT/sdk/python"
         CHECK_DESCRIPTION="python -m build --outdir <repo>/.deepdata-run/python-dist"
         ;;
-    ui-build)
-        CHECK_CWD="$REPO_ROOT/cmd/deepdata/web-ui"
-        CHECK_DESCRIPTION="npm run build"
+    go-retire)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="assert_retired_trees_absent && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go build ./... && CGO_ENABLED=0 go vet ./... && go mod tidy -diff"
+        ;;
+    go-canonical)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="assert_canonical_dropped && GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go build ./... && CGO_ENABLED=0 go vet ./..."
+        ;;
+    soak)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="SOAK_MINUTES=${SOAK_MINUTES:-25} SOAK_KILLS=${SOAK_KILLS:-5} python3 scripts/rehearsals/soak.py"
+        ;;
+    restart-reclaim)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="DRIFT_MINUTES=${DRIFT_MINUTES:-4} N_HNSW=${N_HNSW:-6000} python3 scripts/rehearsals/restart_reclaim_probe.py"
+        ;;
+    go-legacy-migration)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE CGO_ENABLED=1 go test -count=1 -timeout 240s -run 'TestLegacyV2ExportImportRoundTrip' ./cmd/deepdata"
+        ;;
+    go-replay)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -run Replay ./internal/collection"
+        ;;
+    go-checkpoint)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -p 1 -run 'Checkpoint|UnifiedCollectionSnapshot' ./internal/collection"
+        ;;
+    release-contract)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="python3 scripts/check_version_contract.py && scripts/check_proto_generated.sh"
+        ;;
+    license)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="git cat-file -e HEAD:LICENSE && grep -q Apache LICENSE"
+        ;;
+    go-mod-tidy)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go mod tidy -diff"
+        ;;
+    sdk-smoke)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="tests/smoke_test.sh"
+        ;;
+    backup-restore)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="scripts/backup_restore_drill.sh"
+        ;;
+    release-tag)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="python3 scripts/check_version_contract.py && git tag --points-at HEAD"
+        ;;
+    gates-release)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="python3 scripts/gates.py check --release"
+        ;;
+    adversarial-review)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="GOCACHE=$GO_BUILD_CACHE GOMODCACHE=$GO_MODULE_CACHE go test -count=1 -timeout 1080s ./benchmarks/review/..."
+        ;;
+    build-artifacts)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="scripts/rehearsals/build_artifacts.sh"
+        ;;
+    security-scan)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="scripts/rehearsals/security_scan.sh"
+        ;;
+    deploy-lifecycle)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="scripts/rehearsals/kind_helm_rehearsal.sh"
+        ;;
+    evidence-report)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="python3 scripts/generate_evidence_report.py"
         ;;
     *)
         echo "unknown check: $CHECK_NAME" >&2
@@ -90,19 +245,141 @@ case "$CHECK_NAME" in
         ;;
 esac
 
+# SYS-01: the live server builds its state from serverRuntime, never from the
+# legacy engine. NewVectorStore survives only as its own definition and the one
+# loadOrInitStore snapshot path the legacy WAL and persistence tests exercise;
+# func main() must not name VectorStore at all.
+assert_no_new_vector_store_callers() {
+    local callers
+    callers="$(grep -rn 'NewVectorStore(' cmd internal --include='*.go' \
+        | grep -v '_test\.go:' \
+        | grep -v '^cmd/deepdata/main\.go:[0-9]*:func NewVectorStore(' \
+        | grep -v '^cmd/deepdata/main\.go:[0-9]*:[[:space:]]*vs := NewVectorStore(capacity, dim)$')"
+    if [[ -n "$callers" ]]; then
+        echo "unexpected NewVectorStore callers outside tests:" >&2
+        echo "$callers" >&2
+        return 1
+    fi
+    local in_main
+    in_main="$(awk '/^func main\(\) \{$/{inside=1} inside{print} inside && /^\}$/{inside=0}' cmd/deepdata/main.go \
+        | grep -n 'VectorStore')"
+    if [[ -n "$in_main" ]]; then
+        echo "func main() still names VectorStore:" >&2
+        echo "$in_main" >&2
+        return 1
+    fi
+    echo "NewVectorStore has no live-server callers and func main() is engine-free"
+}
+
+# SYS-03: the retired trees are gone for good. A tree that reappears — or a
+# dependency that creeps back into go.mod — silently re-widens the release
+# candidate's surface, so the check names every retired path explicitly and
+# reads the committed index rather than the working tree.
+assert_retired_trees_absent() {
+    local retired=(
+        client
+        cmd/cli
+        cmd/deepdata/web-ui
+        desktop
+        internal/cluster
+        internal/cowrieutil
+        internal/encoding
+        internal/feedback
+        internal/obsidian
+        internal/wal
+        tests/ui
+        vdb-test-suite
+    )
+    local path present=""
+    for path in "${retired[@]}"; do
+        if [[ -n "$(git -C "$REPO_ROOT" ls-files -- "$path")" ]]; then
+            present+="$path"$'\n'
+        fi
+    done
+    if [[ -n "$present" ]]; then
+        echo "retired trees are still tracked:" >&2
+        printf '%s' "$present" >&2
+        return 1
+    fi
+    local deps
+    deps="$(grep -n 'Neumenon/cowrie\|Neumenon/shard\|mattn/go-sqlite3' "$REPO_ROOT/go.mod" "$REPO_ROOT/go.sum")"
+    if [[ -n "$deps" ]]; then
+        echo "retired dependencies are still required:" >&2
+        echo "$deps" >&2
+        return 1
+    fi
+    echo "retired trees are absent and go.mod carries none of their dependencies"
+}
+
+assert_canonical_dropped() {
+    local hits
+    hits="$(grep -rnE '\bCanonical[A-Z]' --include='*.go' --include='*.py' --include='*.proto' \
+        "$REPO_ROOT/cmd" "$REPO_ROOT/internal" "$REPO_ROOT/api" "$REPO_ROOT/sdk")"
+    if [[ -n "$hits" ]]; then
+        echo "Canonical-prefixed identifiers remain:" >&2
+        echo "$hits" >&2
+        return 1
+    fi
+    local dir missing="" docs=()
+    while IFS= read -r dir; do
+        if [[ -f "$dir/doc.go" ]]; then
+            docs+=("$dir/doc.go")
+        else
+            missing+="${dir#"$REPO_ROOT"/}"$'\n'
+        fi
+    done < <(cd "$REPO_ROOT" && GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" go list -f '{{.Dir}}' ./cmd/... ./internal/...)
+    if [[ -n "$missing" ]]; then
+        echo "live packages without doc.go:" >&2
+        printf '%s' "$missing" >&2
+        return 1
+    fi
+    local unformatted
+    unformatted="$(gofmt -l "${docs[@]}")"
+    if [[ -n "$unformatted" ]]; then
+        echo "doc.go files not gofmt-clean:" >&2
+        echo "$unformatted" >&2
+        return 1
+    fi
+    echo "no Canonical-prefixed identifier under cmd, internal, api or sdk; ${#docs[@]} live packages each carry a gofmt-clean doc.go"
+}
+
 run_check() {
     case "$CHECK_NAME" in
-        state-json)
-            timeout 30s python -m json.tool tasks/autonomy/STATE.json
+        gates-check)
+            timeout 30s python3 scripts/gates.py check
             ;;
         benchmark-unit)
-            timeout 60s python -m unittest -q benchmarks/test_mega_bench.py
+            timeout 60s env PYTHONPATH=benchmarks python3 -m unittest -q test_mega_bench
             ;;
         go-storage)
             mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
             timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
                 go test -short -count=1 -timeout 300s \
                 ./internal/storage ./internal/collection ./cmd/deepdata
+            ;;
+        go-persistence)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 960s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
+                go test -count=1 -p 1 -timeout 900s \
+                ./internal/collection ./cmd/deepdata
+            ;;
+        go-recovery-snapshot)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
+                go test -count=1 -p 1 -timeout 300s \
+                -run 'UnifiedCollectionSnapshot|SnapshotMemory' ./internal/collection
+            ;;
+        go-recovery-journal)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
+                go test -count=1 -p 1 -timeout 300s \
+                -run 'GeneratedJournal|Corrupt|PartialTail' ./internal/collection
+            ;;
+        go-segmented-envelope)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
+                go test -count=1 -p 1 -timeout 300s \
+                -run SegmentedColdStart -bench SegmentedColdStart -benchmem -benchtime=3x ./internal/index
             ;;
         go-short)
             mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
@@ -119,6 +396,65 @@ run_check() {
             timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
                 CGO_ENABLED=0 go vet ./...
             ;;
+        go-apierror)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 300s -run Error \
+                ./internal/apierror ./internal/collection ./cmd/deepdata ./cmd/deepdata-mcp
+            ;;
+        go-embed)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env DEEPDATA_EMBEDDER=hash GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 300s -run 'Embed|Text' \
+                ./internal/collection ./cmd/deepdata ./cmd/deepdata-mcp
+            ;;
+        go-mcp)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            grep -q deepdata-mcp .github/workflows/ci.yml && \
+                timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 300s ./cmd/deepdata-mcp ./api/contract
+            ;;
+        go-contract)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 300s \
+                -run 'Contract|Operations|Routes|Status|Discovery|ScoreDirection' \
+                ./cmd/deepdata && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 300s ./api/contract ./cmd/deepdata-mcp && \
+            timeout 180s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go run ./cmd/deepdata routes >/dev/null && \
+            (cd "$REPO_ROOT/sdk/python" && timeout 180s python -m pytest tests/test_contract.py -q)
+            ;;
+        go-usage)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -timeout 300s -run 'Usage' ./internal/collection && \
+                timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -race -count=1 -p 1 -timeout 300s -run 'Usage' ./internal/collection
+            ;;
+        go-indextypes)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -timeout 300s -run 'IndexTypes' \
+                ./internal/collection ./cmd/deepdata && \
+            (cd "$REPO_ROOT/sdk/python" && timeout 180s python -m pytest tests/test_contract.py -q)
+            ;;
+        go-ephemeral)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -timeout 300s -run 'Ephemeral' \
+                ./internal/collection ./cmd/deepdata && \
+            (cd "$REPO_ROOT/sdk/python" && timeout 180s python -m pytest tests/test_contract.py -q)
+            ;;
+        go-runtime)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go vet ./cmd/deepdata && \
+            timeout 660s env DEEPDATA_EMBEDDER=hash GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -timeout 600s ./cmd/deepdata && \
+            assert_no_new_vector_store_callers
+            ;;
         python-unit)
             timeout 360s python -m pytest tests -q
             ;;
@@ -129,8 +465,150 @@ run_check() {
             mkdir -p "$REPO_ROOT/.deepdata-run/python-dist"
             timeout 300s python -m build --outdir "$REPO_ROOT/.deepdata-run/python-dist"
             ;;
-        ui-build)
-            timeout 600s npm run build
+        go-retire)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            assert_retired_trees_absent && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go build ./... && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                CGO_ENABLED=0 go vet ./... && \
+            timeout 180s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go mod tidy -diff
+            ;;
+        go-canonical)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            assert_canonical_dropped && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go build ./... && \
+            timeout 360s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                CGO_ENABLED=0 go vet ./...
+            ;;
+        soak)
+            if [[ -n "${SOAK_BIN:-}" && -x "${SOAK_BIN}" ]]; then
+                echo "using prebuilt binary $SOAK_BIN"
+            else
+                mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            fi
+            timeout "${SOAK_TIMEOUT:-5400}s" env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                python3 scripts/rehearsals/soak.py
+            ;;
+        restart-reclaim)
+            RECLAIM_WORK="$REPO_ROOT/.deepdata-run/rehearsals/memdrift-fix"
+            if [[ -n "${BIN:-}" && -x "${BIN}" ]]; then
+                echo "using prebuilt binary $BIN"
+            else
+                mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE" "$RECLAIM_WORK"
+                env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                    go build -trimpath -o "$RECLAIM_WORK/deepdata" ./cmd/deepdata || return 1
+            fi
+            timeout "${RECLAIM_TIMEOUT:-2400}s" python3 scripts/rehearsals/restart_reclaim_probe.py
+            ;;
+        go-legacy-migration)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 300s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" CGO_ENABLED=1 \
+                go test -count=1 -timeout 240s \
+                -run 'TestLegacyV2ExportImportRoundTrip' ./cmd/deepdata
+            ;;
+        go-replay)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 600s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -run Replay ./internal/collection
+            ;;
+        go-checkpoint)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 600s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -p 1 -run 'Checkpoint|UnifiedCollectionSnapshot' ./internal/collection
+            ;;
+        release-contract)
+            # Two separate problems, both of which make this gate report a tool
+            # fault instead of the stale-codegen fault it exists to catch.
+            #
+            # The plugins install into GOPATH/bin, which a non-login shell does
+            # not have on PATH -- without it generate_proto.sh exits 127.
+            #
+            # And generate_proto.sh pins exact plugin versions so api/gen stays
+            # byte-reproducible, while the version installed on this machine has
+            # moved ahead of the pin. Moving the pin would rewrite every .pb.go
+            # at RC freeze and overwriting the machine's copy would be a change
+            # outside the repository, so the pinned plugin lives in a gitignored
+            # repo-local bin that takes precedence. The pin is read from
+            # generate_proto.sh rather than repeated here, so the two cannot
+            # drift apart.
+            PROTOC_BIN_DIR="$REPO_ROOT/.deepdata-run/protoc-bin"
+            PIN=$(sed -n 's/^PROTOC_GEN_GO_VERSION="${PROTOC_GEN_GO_VERSION:-\(.*\)}"$/\1/p' \
+                scripts/generate_proto.sh)
+            [[ -n "$PIN" ]] || { echo "cannot read the protoc-gen-go pin from scripts/generate_proto.sh" >&2; return 1; }
+            if [[ "$("$PROTOC_BIN_DIR/protoc-gen-go" --version 2>/dev/null)" != "protoc-gen-go v$PIN" ]]; then
+                echo "installing pinned protoc-gen-go v$PIN into $PROTOC_BIN_DIR"
+                GOBIN="$PROTOC_BIN_DIR" go install "google.golang.org/protobuf/cmd/protoc-gen-go@v$PIN" || return 1
+            fi
+            PATH="$PROTOC_BIN_DIR:$PATH:$(go env GOPATH)/bin"
+            timeout 300s python3 scripts/check_version_contract.py &&
+                timeout 300s scripts/check_proto_generated.sh
+            ;;
+        license)
+            # A release that ships without its licence is a legal defect, not a
+            # cosmetic one. This asserts the file is committed -- not merely
+            # present in the worktree -- and that it is the licence the project
+            # claims everywhere else.
+            git cat-file -e HEAD:LICENSE && grep -q Apache LICENSE
+            ;;
+        go-mod-tidy)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 300s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go mod tidy -diff
+            ;;
+        sdk-smoke)
+            # Builds its own binary into a temp directory and runs a real
+            # server, so it needs no prebuilt artifact and leaves the worktree
+            # untouched.
+            timeout "${SMOKE_TIMEOUT:-900}s" tests/smoke_test.sh
+            ;;
+        backup-restore)
+            timeout "${BACKUP_TIMEOUT:-900}s" scripts/backup_restore_drill.sh
+            ;;
+        release-tag)
+            timeout 300s python3 scripts/check_version_contract.py || return 1
+            # `git tag --points-at HEAD` exits 0 and prints nothing when HEAD
+            # carries no tag, so the command the ledger named could never fail
+            # -- it would have reported the RC frozen on an untagged commit.
+            # The claim is that the SHA is frozen under a name, and the name has
+            # to be one .github/workflows/release.yml actually triggers on.
+            local tags
+            tags=$(git tag --points-at HEAD)
+            if [[ -z "$tags" ]]; then
+                echo "HEAD carries no tag; the RC SHA is not frozen" >&2
+                return 1
+            fi
+            if ! grep -qE '^deepdata-v[0-9]' <<<"$tags"; then
+                echo "no deepdata-v* tag at HEAD (found: ${tags//$'\n'/ }); release.yml would not trigger" >&2
+                return 1
+            fi
+            echo "RC frozen at $(git rev-parse --short HEAD) as: ${tags//$'\n'/ }"
+            ;;
+        gates-release)
+            # The meta-gate: every release gate passing, fresh, and taken on a
+            # clean tree. Runs after every other promotion of a run.
+            timeout 60s python3 scripts/gates.py check --release
+            ;;
+        adversarial-review)
+            mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
+            timeout 1200s env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                go test -count=1 -timeout 1080s ./benchmarks/review/...
+            ;;
+        build-artifacts)
+            timeout "${ARTIFACTS_TIMEOUT:-1800}s" scripts/rehearsals/build_artifacts.sh
+            ;;
+        security-scan)
+            # needs the image build-artifacts produces, so run that first
+            timeout "${SECURITY_TIMEOUT:-1800}s" scripts/rehearsals/security_scan.sh
+            ;;
+        deploy-lifecycle)
+            timeout "${DEPLOY_TIMEOUT:-2400}s" scripts/rehearsals/kind_helm_rehearsal.sh
+            ;;
+        evidence-report)
+            # reads every other receipt, so it is the last check of a run
+            timeout 120s python3 scripts/generate_evidence_report.py
             ;;
     esac
 }
@@ -254,9 +732,40 @@ import sys
     log_path,
 ) = sys.argv[1:]
 
+def host_facts():
+    """Record where the check ran.
+
+    Memory and timing evidence (soak, restart-reclaim, cold-start envelopes) is
+    only interpretable against the machine that produced it, and a receipt is
+    otherwise indistinguishable between hosts.
+    """
+    facts = {}
+    try:
+        uname = os.uname()
+        facts["hostname"] = uname.nodename
+        facts["kernel"] = uname.release
+        facts["arch"] = uname.machine
+    except (AttributeError, OSError):
+        pass
+    try:
+        facts["cpus"] = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        facts["cpus"] = os.cpu_count()
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    facts["mem_total_kb"] = int(line.split()[1])
+                    break
+    except (OSError, ValueError, IndexError):
+        pass
+    return facts
+
+
 receipt = {
-    "schema_version": 1,
+    "schema_version": 2,
     "check": name,
+    "host": host_facts(),
     "status": status,
     "exit_code": int(exit_code),
     "started_at": started_at,

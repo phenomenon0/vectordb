@@ -11,6 +11,18 @@ increment auth.secretRevision or restart the Deployment explicitly.
 Never set DEEPDATA_INSECURE_DEV_MODE in this deployment; it is only for
 credentialless, disposable local development.
 
+{{- if .Values.networkPolicy.enabled }}
+Network isolation is enabled: a default-deny NetworkPolicy allows ingress only
+on the HTTP ({{ .Values.service.port }}) and gRPC ({{ .Values.service.grpcPort }})
+ports and denies all pod egress. It requires a CNI with NetworkPolicy support
+(Calico, Cilium, OVN-Kubernetes). On a non-enforcing CNI such as kindnet the
+operator must provide equivalent isolation. To disable the chart policy and
+manage isolation externally, set networkPolicy.enabled=false.
+{{- else }}
+networkPolicy.enabled=false: no chart NetworkPolicy is rendered. Apply the
+cluster isolation contract for the {{ .Release.Name }}-deepdata pod externally.
+{{- end }}
+
 The chart-owned PVC is annotated with helm.sh/resource-policy=keep. Helm
 uninstall will orphan it intentionally; back up the whole PVC while DeepData is
 stopped and delete retained storage only through a separate reviewed action.

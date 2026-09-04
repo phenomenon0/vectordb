@@ -1,0 +1,1057 @@
+{
+  "schema_version": 1,
+  "gates": [
+    {
+      "id": "DUR-01",
+      "statement": "go vet passes with CGO_ENABLED=0 across the RC package list",
+      "command": "scripts/hardening_check.sh go-vet-cgo0",
+      "scope": [
+        "cmd",
+        "internal",
+        "api",
+        "go.mod",
+        "go.sum"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-vet-cgo0/receipt.json",
+        "ci_run": null
+      },
+      "note": "receipt-bound at 9a30758; re-promote after any Go change"
+    },
+    {
+      "id": "DUR-02",
+      "statement": "storage tests pass: journal, snapshot, durable store, WAL recovery",
+      "command": "scripts/hardening_check.sh go-storage",
+      "scope": [
+        "internal/collection",
+        "internal/storage",
+        "internal/index"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-storage/receipt.json",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "DUR-03",
+      "statement": "go test -short passes for cmd/deepdata and internal packages",
+      "command": "scripts/hardening_check.sh go-short",
+      "scope": [
+        "cmd",
+        "internal",
+        "api",
+        "go.mod",
+        "go.sum"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-short/receipt.json",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "DUR-04",
+      "statement": "go test -race passes on the RC package list",
+      "command": "scripts/hardening_check.sh go-race",
+      "scope": [
+        "cmd",
+        "internal",
+        "api",
+        "go.mod",
+        "go.sum"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-race/receipt.json",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "DUR-05",
+      "statement": "focused persistence matrices pass serially (go test -count=1 -p 1 ./internal/collection ./cmd/deepdata)",
+      "command": "scripts/hardening_check.sh go-persistence",
+      "scope": [
+        "internal/collection",
+        "cmd/deepdata",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-persistence/receipt.json",
+        "ci_run": null
+      },
+      "note": "ece6f23 prose claimed a run with no receipt; go-persistence (added 2026-09-01) runs the full serial matrix of both packages, no -short, and writes a receipt for promotion"
+    },
+    {
+      "id": "SDK-01",
+      "statement": "Python SDK unit tests and mypy pass",
+      "command": "scripts/hardening_check.sh python-unit && scripts/hardening_check.sh python-mypy",
+      "scope": [
+        "sdk/python"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/python-unit/receipt.json",
+        "ci_run": null
+      },
+      "note": "python-mypy receipt at the same commit: .deepdata-run/checks/python-mypy/receipt.json"
+    },
+    {
+      "id": "SDK-02",
+      "statement": "live authenticated SDK contract passes against a running server, including restart persistence",
+      "command": "scripts/hardening_check.sh sdk-smoke",
+      "scope": [
+        "sdk/python",
+        "cmd/deepdata",
+        "tests/smoke_test.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/sdk-smoke/receipt.json",
+        "ci_run": null
+      },
+      "note": "d5b2d3a live-sdk rehearsal PASS is in the evidence report but the SDK has changed since; re-run and promote"
+    },
+    {
+      "id": "PKG-01",
+      "statement": "Python sdist and wheel build cleanly",
+      "command": "scripts/hardening_check.sh python-build",
+      "scope": [
+        "sdk/python"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/python-build/receipt.json",
+        "ci_run": null
+      },
+      "note": ""
+    },
+    {
+      "id": "PKG-02",
+      "statement": "Linux binaries, container image and SBOM build reproducibly from the frozen tree",
+      "command": "scripts/hardening_check.sh build-artifacts",
+      "scope": [
+        "Dockerfile",
+        "cmd",
+        "internal",
+        "go.mod",
+        "go.sum",
+        ".goreleaser.yaml",
+        "deploy",
+        "scripts/rehearsals/build_artifacts.sh",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/build-artifacts/receipt.json",
+        "ci_run": null
+      },
+      "note": "previous command .deepdata-run/rehearsals/build_artifacts.sh was never tracked and no longer exists, so the pass could not be re-derived. Replaced by a tracked rehearsal that builds ./cmd/deepdata twice into separate trees and fails unless the two digests match, then asserts the in-image binary is that same digest before taking the SBOM."
+    },
+    {
+      "id": "OPS-01",
+      "statement": "backup and restore rehearsal passes, including disk-full and permission-denied paths",
+      "command": "scripts/hardening_check.sh backup-restore",
+      "scope": [
+        "scripts/backup_restore_drill.sh",
+        "internal/collection",
+        "cmd/deepdata"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/backup-restore/receipt.json",
+        "ci_run": null
+      },
+      "note": "todo.md:142 drill box closed at bc1fa27 (2026-08-21) by prose only; the receipt-backed run is d5b2d3a"
+    },
+    {
+      "id": "OPS-02",
+      "statement": "legacy export/import round-trips a pre-0.2 data directory",
+      "command": "scripts/hardening_check.sh go-legacy-migration",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection",
+        "docs/upgrade-to-0.2-rc.md",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-legacy-migration/receipt.json",
+        "ci_run": null
+      },
+      "note": "previous command named a legacy-migration phase of tests/smoke_test.sh that the script does not contain. Replaced by cmd/deepdata/legacy_migration_test.go, which builds a pre-0.2 root in-process with NewCollectionManager/NewTenantManager, exports it, replays it into a canonical RC over /v3, restarts, and asserts every document is retrievable by its own vector with identical metadata -- then that the legacy artifacts are byte-identical."
+    },
+    {
+      "id": "OPS-03",
+      "statement": "container, Compose and kind+Helm lifecycle contracts pass",
+      "command": "scripts/hardening_check.sh deploy-lifecycle",
+      "scope": [
+        "Dockerfile",
+        "docker-compose.yml",
+        "deploy/helm/deepdata",
+        "tests",
+        "scripts/rehearsals/kind_helm_rehearsal.sh",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/deploy-lifecycle/receipt.json",
+        "ci_run": null
+      },
+      "note": "previous command chained two tracked contract tests with an untracked .deepdata-run/rehearsals/kind_helm_rehearsal.sh that no longer exists. Replaced by a tracked rehearsal that runs both contract tests, then pushes the image to a local registry by digest and installs the chart on kind, deletes the pod, and requires the replacement to still answer for the document written before the kill."
+    },
+    {
+      "id": "SOAK-01",
+      "statement": "sustained soak holds recall, restart-under-load and memory growth within envelope",
+      "command": "scripts/hardening_check.sh soak",
+      "scope": [
+        "cmd/deepdata",
+        "internal",
+        "scripts/rehearsals/soak.py",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-04",
+        "receipt": ".deepdata-run/checks/soak/receipt.json",
+        "ci_run": null
+      },
+      "note": "d5b2d3a soak FAILED on memory drift (109.7% growth) while recall and restart phases passed; not re-run after the 14d1442 fix. The harness was untracked in the gitignored .deepdata-run tree until it moved to scripts/rehearsals/soak.py, so no earlier run had a fingerprint covering the script that produced the number; it is now a receipt-backed check (soak)"
+    },
+    {
+      "id": "SOAK-02",
+      "statement": "restart reclaims memory after the memory-drift fix",
+      "command": "scripts/hardening_check.sh restart-reclaim",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection",
+        "internal/index",
+        "scripts/rehearsals/restart_reclaim_probe.py",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/restart-reclaim/receipt.json",
+        "ci_run": null
+      },
+      "note": "fix landed at 14d1442 with local receipts (memdrift-fix/restart_reclaim_receipt.json) that carry no commit or fingerprint; cannot bind honestly. Now a receipt-backed check (restart-reclaim) with the probe tracked at scripts/rehearsals/restart_reclaim_probe.py"
+    },
+    {
+      "id": "SEC-01",
+      "statement": "gitleaks, govulncheck, gosec and trivy scans are clean on the frozen tree",
+      "command": "scripts/hardening_check.sh security-scan",
+      "scope": [
+        "cmd",
+        "internal",
+        "go.mod",
+        "go.sum",
+        "Dockerfile",
+        "sdk/python",
+        "scripts/rehearsals/security_scan.sh",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/security-scan/receipt.json",
+        "ci_run": null
+      },
+      "note": "the four scanners now run from one tracked script that writes its bar down: gitleaks over full history, govulncheck with nothing reachable, gosec with no HIGH-severity HIGH-confidence finding, trivy with no fixable HIGH/CRITICAL in the image. gosec reports 'found: 0' for a package it failed to load, so the script fails on any load error other than the amd64 assembly stubs rather than reading that as clean."
+    },
+    {
+      "id": "REL-01",
+      "statement": "version parity across version.txt, Python SDK, Helm chart and Dockerfile; generated proto is fresh",
+      "command": "scripts/hardening_check.sh release-contract",
+      "scope": [
+        "internal/releaseinfo/version.txt",
+        "sdk/python/pyproject.toml",
+        "sdk/python/deepdata/__init__.py",
+        "deploy/helm/deepdata/Chart.yaml",
+        "Dockerfile",
+        "api"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/release-contract/receipt.json",
+        "ci_run": null
+      },
+      "note": "CI run https://github.com/phenomenon0/vectordb/actions/runs/29977008196 on PR #4 checked out f5d4582; re-run locally at a3b4cfb (exit 0) after CTL-02/CTL-04 changed api/ (texts, embedding, score_direction, query_time_ms, request_id; operations.json); fingerprint is the clean-tree constant"
+    },
+    {
+      "id": "REL-02",
+      "statement": "repository carries an Apache-2.0 LICENSE and the chart, SDK and README declare it",
+      "command": "scripts/hardening_check.sh license",
+      "scope": [
+        "LICENSE",
+        "README.md",
+        "deploy/helm/deepdata/Chart.yaml",
+        "sdk/python/pyproject.toml"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/license/receipt.json",
+        "ci_run": null
+      },
+      "note": "todo.md:198 box closed at b1f28be; re-verified 2026-09-01 with git cat-file -e b1f28be:LICENSE (Apache License 2.0); re-run at 7db4878 (command exit 0) after the docs phase and CTL-04 rewrote README.md; re-run at 6c01620 (exit 0) after SYS-03 refreshed README.md's source citations; re-run at 7456427 (command exit 0) after the platform-claim correction rewrote README.md"
+    },
+    {
+      "id": "REL-03",
+      "statement": "go.mod and go.sum are tidy (go mod tidy -diff is empty)",
+      "command": "scripts/hardening_check.sh go-mod-tidy",
+      "scope": [
+        "go.mod",
+        "go.sum",
+        "cmd",
+        "internal",
+        "api"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-mod-tidy/receipt.json",
+        "ci_run": null
+      },
+      "note": "todo.md:212 cowrie box closed at 442cdb6; re-verified 2026-09-01: tidy -diff exit 0 on a git archive of 442cdb6 (clean by construction). cowrie/shard/sqlite modules still listed: SYS-03; re-run at 7db4878: tidy -diff exit 0; re-run at 6c01620: tidy -diff exit 0; re-run at 835aaf4: tidy -diff exit 0; re-run at 6869b5e: tidy -diff exit 0; re-run at 4ec2dcc: tidy -diff exit 0; re-run at a3b4cfb: tidy -diff exit 0; re-run at 0c4cff8: tidy -diff exit 0; re-run at 1726127: tidy -diff exit 0"
+    },
+    {
+      "id": "REL-04",
+      "statement": "release candidate SHA frozen; manifests and changelog name the same version and commit",
+      "command": "scripts/hardening_check.sh release-tag",
+      "scope": [
+        "CHANGELOG.md",
+        "internal/releaseinfo/version.txt",
+        "deploy",
+        "docs/releasing.md"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "candidate moved from a99fe53 to 14d1442 and then past it; freeze again after RCV-03 closes"
+    },
+    {
+      "id": "CI-01",
+      "statement": "Linux RC Go contract job green (proto freshness, version parity, vet, test, hnsw)",
+      "command": "gh run view --job \"Linux RC Go contract\"",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "cmd",
+        "internal",
+        "api",
+        "go.mod"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "f5d45827baed2776827ea3ac1f3cb162041a352e",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": null,
+        "ci_run": "https://github.com/phenomenon0/vectordb/actions/runs/29977008196"
+      },
+      "note": "run 29977008196 on PR #4, all 10 checks green"
+    },
+    {
+      "id": "CI-02",
+      "statement": "race job green on the RC package list",
+      "command": "gh run view --job test-rc-race",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "cmd",
+        "internal"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "f5d45827baed2776827ea3ac1f3cb162041a352e",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": null,
+        "ci_run": "https://github.com/phenomenon0/vectordb/actions/runs/29977008196"
+      },
+      "note": ""
+    },
+    {
+      "id": "CI-03",
+      "statement": "deployment manifests, Python client and cross-compile proof jobs green",
+      "command": "gh run view --job test-deployment-manifests --job \"Canonical Python client\" --job cross-compile-proof",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "deploy",
+        "sdk/python",
+        "tests/deployment_manifests_test.sh"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "f5d45827baed2776827ea3ac1f3cb162041a352e",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-07-22",
+        "receipt": null,
+        "ci_run": "https://github.com/phenomenon0/vectordb/actions/runs/29977008196"
+      },
+      "note": ""
+    },
+    {
+      "id": "CI-04",
+      "statement": "browser UI end-to-end job runs in CI",
+      "command": "(none)",
+      "scope": [
+        ".github/workflows/ci.yml"
+      ],
+      "release_gate": false,
+      "status": "retired",
+      "evidence": null,
+      "note": "browser UI job removed at d139313 (2026-07-19) when the web UI left scope; todo.md:155 box was closed at 6bb19de"
+    },
+    {
+      "id": "CI-05",
+      "statement": "cmd/deepdata-mcp is in the CI package list and its tests run",
+      "command": "scripts/hardening_check.sh go-mcp",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "cmd/deepdata-mcp"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-mcp/receipt.json",
+        "ci_run": null
+      },
+      "note": "the go-mcp check greps ci.yml for deepdata-mcp before running the package tests; landed with CTL-03"
+    },
+    {
+      "id": "CI-06",
+      "statement": "RC smoke test job runs tests/smoke_test.sh against a built binary in CI",
+      "command": "grep -n smoke_test .github/workflows/ci.yml",
+      "scope": [
+        ".github/workflows/ci.yml",
+        "tests/smoke_test.sh"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "EVID-01",
+      "statement": "evidence report generated for the frozen candidate with rehearsal receipts",
+      "command": "scripts/hardening_check.sh evidence-report",
+      "scope": [
+        "cmd",
+        "internal",
+        "deploy",
+        "Dockerfile",
+        "sdk/python",
+        "scripts/generate_evidence_report.py",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "previous command .deepdata-run/rehearsals/generate_evidence_report.py was never tracked and its report named a tree sha that does not resolve here. Replaced by a tracked stdlib-only generator that refuses a dirty tree and fails unless at least one receipt was taken at the frozen head on a clean tree. It reports which release gates meet the bar but does not enforce it: that is EVID-02's claim, and requiring it here would make this gate a precondition of itself."
+    },
+    {
+      "id": "EVID-02",
+      "statement": "the truth ledger passes gates.py check --release",
+      "command": "scripts/hardening_check.sh gates-release",
+      "scope": [
+        "scripts/gates.py"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "scope narrowed to the checker itself. tasks/gates.json and docs/PRE_RELEASE_STATUS.md both change whenever any gate is promoted, so keeping them in scope made this gate stale by the act of recording it; check --release re-reads both from disk at run time anyway. gates.py now skips this gate inside the --release loop for the same reason: it records that the command passed and so cannot also be a precondition of it."
+    },
+    {
+      "id": "EVID-03",
+      "statement": "adversarial review (Stage F) findings closed against the frozen candidate",
+      "command": "scripts/hardening_check.sh adversarial-review",
+      "scope": [
+        "cmd",
+        "internal",
+        "api",
+        "sdk/python",
+        "benchmarks/review",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/adversarial-review/receipt.json",
+        "ci_run": null
+      },
+      "note": "previous command 'scripts/hardening_check.sh all' is not a check the script accepts; there is no 'all'. Replaced by the tracked persona suites under benchmarks/review, which fail the run on any unpassed check at High or Critical severity."
+    },
+    {
+      "id": "REV-01",
+      "statement": "every open gate has a named owner decision recorded in tasks/todo.md before freeze",
+      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s — '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
+      "scope": [
+        "tasks/todo.md"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "75a3d92e547e1bc60ef0b697654f4326dbae7587",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-02",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "2026-09-02 decisions recorded in tasks/todo.md '## Owner decisions' at 75a3d92 for the 13 gates then open or blocked (CI-06, EVID-02, MEM-02, PUB-01, PUB-02, PUB-03, RCV-05, REL-04, REV-01, SDK-02, SEC-01, SOAK-01, SOAK-02); drafted by the agent, ratified by the owner in session. Scope narrowed from [tasks/gates.json, tasks/todo.md] to tasks/todo.md: every promotion rewrites gates.json, so the seeded scope made this gate stale the moment it was bound. The command re-checks the current open set against the section whenever it runs, so a gate added later without a decision fails it. REV-02..04 (status-doc parity, stale-box audit, evidence-sha audit) retired: subsumed by gates.py check rules 3 and 5."
+    },
+    {
+      "id": "RCV-01",
+      "statement": "journal replay streams records with bounded memory instead of loading the file",
+      "command": "scripts/hardening_check.sh go-replay",
+      "scope": [
+        "internal/collection/journal.go",
+        "internal/collection/durable_store.go"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-replay/receipt.json",
+        "ci_run": null
+      },
+      "note": "session-verified at 9a30758 (command exit 0) after CTL-01 wrapped durable_store.go errors in sentinels; earlier at 39bfe42: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt; re-run at 7db4878 (exit 0) after CTL-05's usage sidecar and SYS-02's index vocabulary changed durable_store.go; re-run at 6c01620 (exit 0) after CTL-05's usage sidecar and SYS-02's index vocabulary changed durable_store.go; re-run at 835aaf4 (exit 0) after SYS-04 renamed the admission limits durable_store.go reads; re-run at 6869b5e (exit 0) after MED-01 routed ephemeral document mutations around the journal in durable_store.go; re-run at 4ec2dcc (exit 0) after RCV-04 added rejectCompleteFrameAsPartialTail to validateAndRepair in journal.go; re-run at a3b4cfb (exit 0) after RCV-04 added rejectCompleteFrameAsPartialTail to validateAndRepair in journal.go"
+    },
+    {
+      "id": "RCV-02",
+      "statement": "snapshot coverage verification reads headers only, never whole payloads",
+      "command": "scripts/hardening_check.sh go-checkpoint",
+      "scope": [
+        "internal/collection/snapshot.go",
+        "internal/collection/snapshot_stream_test.go"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-checkpoint/receipt.json",
+        "ci_run": null
+      },
+      "note": "session-verified: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt; the earlier command (-run Coverage) matched no test at any commit since 39bfe42, so its exit 0 proved nothing. verifyCovered (internal/collection/journal.go:530) streams both artifacts with one reused payload buffer and is reached only through DurableStore.Checkpoint; the command now runs every Checkpoint-named test plus the snapshot-stream tests (header before payload: V1OversizeFailsBeforeAllocation, V2ChecksMarkerBeforeBuild). No test asserts a memory bound for coverage verification itself; that assertion belongs to RCV-03. Re-run at 6869b5e (exit 0) after MED-01 changed snapshot.go; re-run at 4ec2dcc (exit 0); re-run at a3b4cfb (exit 0)"
+    },
+    {
+      "id": "RCV-03",
+      "statement": "unified snapshots load with bounded memory",
+      "command": "scripts/hardening_check.sh go-recovery-snapshot",
+      "scope": [
+        "internal/collection/snapshot.go",
+        "internal/collection/durable_store.go",
+        "internal/collection/snapshot_memory_test.go",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "pass",
+      "evidence": {
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-recovery-snapshot/receipt.json",
+        "ci_run": null
+      },
+      "note": "internal/collection/snapshot_memory_test.go (8a3e186) proves it with GC disabled: validating an 11.3 MB / 2049-frame v2 snapshot retains ~0 B (bound 1 MiB), loading retains 0.84x the file size (bound: less than the file), the manager reader's largest single Read is 5.5 KB (bound 64 KiB), and an oversize frame is rejected after 2.2 KB of allocation (bound 16 MiB). No production change: v2 has streamed both ways since 39bfe42/356495f. Not proven: peak in-flight heap under a hard cap (RCV-05); a transient whole-file read inside readUnifiedCollectionSnapshotV2File would be caught only by the manager-reader test"
+    },
+    {
+      "id": "RCV-04",
+      "statement": "generated small-journal tests fail closed on truncated and corrupt records",
+      "command": "scripts/hardening_check.sh go-recovery-journal",
+      "scope": [
+        "internal/collection",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-recovery-journal/receipt.json",
+        "ci_run": null
+      },
+      "note": "internal/collection/journal_generated_test.go (e207149) writes a 4-record journal through the real DurableStore writer, mutates bytes at computed frame offsets and reopens: payload/checksum flips, zero length, length above the 16 MiB maximum, length past EOF, truncated/removed/duplicated interior records all fail closed with both artifacts byte-identical; a terminal torn frame repairs exactly once. The same commit ships a production fix in journal.go (rejectCompleteFrameAsPartialTail): a complete acknowledged frame whose length field was corrupted past EOF was indistinguishable from a torn tail and validateAndRepair truncated it, silently discarding that record and every later one (measured before the fix: 984-byte 4-frame journal -> 249 bytes, LSN 1, 0 documents, no error). Not covered by design: an external truncation at a frame boundary or mid-payload is indistinguishable from a torn write and is still repaired (docs/troubleshooting.md). The earlier command (-run Corrupt) matched 3 tests"
+    },
+    {
+      "id": "RCV-05",
+      "statement": "replay rehearsal passes under a cgroup memory hard cap on the disposable probe root only",
+      "command": "systemd-run -p MemoryMax=... deepdata --data-dir /home/omen/var/deepdata-recovery-probe-iBoWBE",
+      "scope": [
+        "internal/collection",
+        "cmd/deepdata"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "never against /home/omen/var/deepdata or the miniexa journals"
+    },
+    {
+      "id": "RCV-06",
+      "statement": "internal/index/segmented.go measured under the cold-start memory envelope",
+      "command": "scripts/hardening_check.sh go-segmented-envelope",
+      "scope": [
+        "internal/index/segmented.go",
+        "internal/index/segmented_coldstart_test.go",
+        "internal/collection/segmented_topology_test.go",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-segmented-envelope/receipt.json",
+        "ci_run": null
+      },
+      "note": "internal/index/segmented_coldstart_test.go (94da608, 79adcce): BenchmarkSegmentedColdStart builds 4000 x 64-dim documents (half Add, half BatchAdd of 100, fixed seed) into plain HNSW and Segmented(4); TestSegmentedColdStartEnvelope asserts segmented allocates and retains at most 1.25x HNSW. Measured on a Ryzen 7 7700X: HNSW 1.14 s/op, 820 MB allocated, 3.04 MB retained; Segmented(4) 0.81 s/op, 494 MB allocated, 3.05 MB retained (ratios 0.60 allocated, 1.01 retained). The earlier command had -benchmem without -bench and ran no benchmark. Not measured: merge-on-export peak, because no cold-start or checkpoint path calls Index.Export (call-site inventory in 79adcce)"
+    },
+    {
+      "id": "DOC-01",
+      "statement": "docs contract linter passes on the tree (scripts/check_docs_contract.py)",
+      "command": "python3 scripts/check_docs_contract.py",
+      "scope": [
+        "README.md",
+        "CHANGELOG.md",
+        "SECURITY.md",
+        "docs",
+        "internal/collection/API.md",
+        "sdk/python/README.md",
+        "sdk/python/deepdata",
+        "benchmarks/README.md",
+        "tasks/todo.md",
+        "tasks/PROTOCOL.md",
+        "scripts/check_docs_contract.py",
+        ":(exclude)docs/PRE_RELEASE_STATUS.md"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "78429a9293d6bfe5194a4eed27808002d73ceda7",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "R3 (generated route table) is live since CTL-04/DOC-03 landed the routes subcommand; .github/workflows/ci.yml runs this same command. Scope excludes the generated render: every promotion rewrites it, and gates.py check already proves it equals a fresh render. R13/R14 landed at c20dbb0: fences are parsed and documented SDK calls resolved against sdk/python/deepdata, which is why that package joined the scope. R15 (curl calls judged against the generated v3 route table) and R14's parameter arm landed at 78a55fa, which also brought SECURITY.md into the checked corpus."
+    },
+    {
+      "id": "DOC-02",
+      "statement": "tasks/todo.md, tasks/PROTOCOL.md and tasks/lessons.md rewritten without checkboxes and pointing at the ledger",
+      "command": "python3 scripts/check_docs_contract.py",
+      "scope": [
+        "tasks/todo.md",
+        "tasks/PROTOCOL.md",
+        "tasks/lessons.md"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "78429a9293d6bfe5194a4eed27808002d73ceda7",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "promoted with the S3 slice (c07a47b), re-run at 9a30758, 0cdf4a7, 2ab20ef, 6c01620, 835aaf4, 6869b5e, 4ec2dcc and a3b4cfb as todo.md's next action moved to CTL-02, CTL-04, SYS-03, SYS-04, MED-01, RCV-03, RCV-05 then SDK-02; the three files carry no checkboxes and point at the ledger"
+    },
+    {
+      "id": "DOC-03",
+      "statement": "HTTP route table in internal/collection/API.md is generated from the routes subcommand",
+      "command": "python3 scripts/check_docs_contract.py",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection/API.md"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "78429a9293d6bfe5194a4eed27808002d73ceda7",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "the route table in internal/collection/API.md is the generated:http-routes block, rendered from `go run ./cmd/deepdata routes` via api/contract/v3/operations.json; R3 no longer skips, so the linter run without DOC_ALLOW_R3_SKIP is the receipt; linter exit 0 at 7db4878; linter exit 0 at 6c01620; linter exit 0 at 835aaf4; linter exit 0 at 6869b5e; linter exit 0 at 4ec2dcc; linter exit 0 at a3b4cfb; re-run at 7456427 (linter exit 0) after the platform-claim correction rewrote the API.md preamble; the generated:http-routes block is untouched"
+    },
+    {
+      "id": "PUB-01",
+      "statement": "branch pushed to origin and CI green on the pushed head",
+      "command": "git push origin main && gh run watch",
+      "scope": [
+        ".github/workflows/ci.yml"
+      ],
+      "release_gate": false,
+      "status": "blocked",
+      "evidence": null,
+      "note": "push needs explicit owner authority for this session"
+    },
+    {
+      "id": "PUB-02",
+      "statement": "release tag created and pushed",
+      "command": "git tag deepdata-v0.2.0-rc.1 && git push origin deepdata-v0.2.0-rc.1",
+      "scope": [
+        "internal/releaseinfo/version.txt",
+        "CHANGELOG.md"
+      ],
+      "release_gate": false,
+      "status": "blocked",
+      "evidence": null,
+      "note": "tagging needs explicit owner authority"
+    },
+    {
+      "id": "PUB-03",
+      "statement": "container image and Python package published",
+      "command": "docker push && python -m twine upload",
+      "scope": [
+        "Dockerfile",
+        "sdk/python/pyproject.toml"
+      ],
+      "release_gate": false,
+      "status": "blocked",
+      "evidence": null,
+      "note": "publication and private credentials were never authorized"
+    },
+    {
+      "id": "CTL-01",
+      "statement": "errors are prompts: every API error carries code, hint and docs pointer via internal/apierror",
+      "command": "scripts/hardening_check.sh go-apierror",
+      "scope": [
+        "cmd/deepdata",
+        "cmd/deepdata-mcp",
+        "internal/apierror",
+        "internal/collection"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-apierror/receipt.json",
+        "ci_run": null
+      },
+      "note": "plan 9.2; the Python side of the envelope (sdk/python/tests/test_errors.py) is proven by python-unit"
+    },
+    {
+      "id": "CTL-02",
+      "statement": "text in, text out: server-side embeddings, Ollama first, hash embedder only when named explicitly",
+      "command": "scripts/hardening_check.sh go-embed",
+      "scope": [
+        "cmd/deepdata",
+        "cmd/deepdata-mcp",
+        "internal/collection",
+        "internal/apierror",
+        "api",
+        "sdk/python",
+        "docs/ARCHITECTURE.md"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-embed/receipt.json",
+        "ci_run": null
+      },
+      "note": "plan 9.2; the check runs with the hash embedder only (Ollama/OpenAI/ONNX startup probes are not exercised); the Python side (sdk/python/tests/test_texts.py) is proven by python-unit"
+    },
+    {
+      "id": "CTL-03",
+      "statement": "MCP server rewritten on the shared api/contract package and covered by CI-05",
+      "command": "scripts/hardening_check.sh go-mcp",
+      "scope": [
+        "cmd/deepdata-mcp",
+        "api"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "a36faa457912ac9eeba42dc05826691fec3093bf",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-02",
+        "receipt": ".deepdata-run/checks/go-mcp/receipt.json",
+        "ci_run": null
+      },
+      "note": "plan 5.7; six verbs whose inputSchema/outputSchema are the api/contract/v3 schema files verbatim (TestToolSchemasAreTheContractFiles); the check runs against an httptest stand-in, never a live server"
+    },
+    {
+      "id": "CTL-04",
+      "statement": "server self-description: routes subcommand and per-result confidence",
+      "command": "scripts/hardening_check.sh go-contract",
+      "scope": [
+        "cmd/deepdata"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "48f690ad88a9c01dd84b58e1b9e451c7e1e9f61d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-contract/receipt.json",
+        "ci_run": null
+      },
+      "note": "api/contract/v3/operations.json is the operation list; GET /v3/status and `go run ./cmd/deepdata routes` are its runtime projections; search answers carry score_direction, query_time_ms and request_id; collection reads carry per-field score_direction; collection list and get are read-gated. The check runs the drift, status, routes and permission tests plus the Python contract test. Unblocks DOC-03."
+    },
+    {
+      "id": "CTL-05",
+      "statement": "durable usage records survive restart",
+      "command": "scripts/hardening_check.sh go-usage",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-usage/receipt.json",
+        "ci_run": null
+      },
+      "note": "DurableStore persists the usage tracker to a <basePath>.usage.json sidecar with each snapshot and on close, and reloads it at open (internal/collection/durable_store.go). Durability class B: an unreadable, corrupt or version-mismatched sidecar is logged and discarded whole, the tracker starts empty and the collection stays up with no fault latched; DurableStore.UsageLoaded reports the loss for a later status signal and is false only when a sidecar existed and was discarded. The check runs the internal/collection Usage tests plain and under -race."
+    },
+    {
+      "id": "SYS-01",
+      "statement": "serverRuntime extracted from cmd/deepdata main; func main() constructs no VectorStore and NewVectorStore has no live caller",
+      "command": "scripts/hardening_check.sh go-runtime",
+      "scope": [
+        "cmd/deepdata",
+        "internal"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-runtime/receipt.json",
+        "ci_run": null
+      },
+      "note": "cmd/deepdata/runtime.go holds serverRuntime, the process-wide auth and limit state (api token, JWT manager, require-auth flag, ACL, tenant quotas, global limiter, canonical tenant limiter, failed-auth limiter) that the V3 HTTP handler and the gRPC interceptor now take directly, so func main() never constructs the legacy VectorStore. NewVectorStore itself and loadOrInitStore (main.go) survive for the offline migration tests that call them; SYS-03 kept both: the offline legacy-migration path (cmd/deepdata/migration.go, gate OPS-02) still reads them."
+    },
+    {
+      "id": "SYS-02",
+      "statement": "one IndexTypes vocabulary shared by server, SDK and docs",
+      "command": "scripts/hardening_check.sh go-indextypes",
+      "scope": [
+        "internal/collection",
+        "cmd/deepdata",
+        "sdk/python"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-indextypes/receipt.json",
+        "ci_run": null
+      },
+      "note": "collection.IndexTypes in internal/collection/types.go is the one vocabulary; ParseIndexType, both schema validators, the index constructors, capabilities.index_types and the contract enum all derive from or are drift-tested against it."
+    },
+    {
+      "id": "SYS-03",
+      "statement": "archive tag archive/pre-narrowing-v2 exists; retired packages deleted; go.mod loses cowrie, shard and sqlite",
+      "command": "scripts/hardening_check.sh go-retire",
+      "scope": [
+        "go.mod",
+        "go.sum",
+        "cmd",
+        "internal",
+        ".github/workflows/ci.yml",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-retire/receipt.json",
+        "ci_run": null
+      },
+      "note": "tag archive/pre-narrowing-v2 exists locally at e4583ef (owner authority 2026-09-01); it is not pushed"
+    },
+    {
+      "id": "SYS-04",
+      "statement": "Canonical prefix dropped; every live package has a doc.go",
+      "command": "scripts/hardening_check.sh go-canonical",
+      "scope": [
+        "cmd",
+        "internal",
+        "api",
+        "sdk/python",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-canonical/receipt.json",
+        "ci_run": null
+      },
+      "note": "Prefix = exported Canonical<Name> identifiers: the eight admission limits in internal/collection/limits.go became Max<Name>, storage.CanonicalFormatVersion became StrictFormatVersion (version 3, the first strict checksum; CurrentFormatVersion stays 4). Lowercase canonical* identifiers, file names and the English word in SDK docstrings are not the prefix and stay. go-canonical asserts no \\bCanonical[A-Z] in Go/Python/proto under cmd, internal, api, sdk, a gofmt-clean doc.go in every go list ./cmd/... ./internal/... package, build and vet. The 14 gofmt-unclean files under cmd/internal predate SYS-04 and are out of its scope."
+    },
+    {
+      "id": "MAC-01",
+      "statement": "darwin/arm64 binary survives boot, SIGKILL journal replay, and SIGTERM checkpoint cold start on real Apple hardware",
+      "command": "python3 scripts/darwin_durability_check.py bin/deepdata-darwin-arm64 /tmp/dd-mac 18080",
+      "scope": [
+        "internal/collection",
+        "cmd/deepdata",
+        "scripts/darwin_durability_check.py"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "Not a release gate: Linux amd64 is the only gated release target, and widening what a release must pass is a separate decision from proving the darwin claim. The claim needs proving because store_lock_unix.go builds for `linux || darwin` and darwin binaries ship in bin/, while nothing has ever run one. The check writes its own schema-2 receipt to .deepdata-run/checks/darwin-durability/ instead of going through hardening_check.sh, which cannot run on macOS: BSD date has no -Iseconds, timeout is not installed, and its heredocs invoke `python`, which macOS does not ship. An empty finished_at from a half-written receipt fails gates.py's date regex and breaks `gates.py check` for the whole ledger, so a Mac receipt from hardening_check.sh would be worse than none. The check refuses to run off Darwin, because every assertion in it is platform-neutral and would pass on Linux without touching the port. Known Linux-only outside this check: soak.py and restart_reclaim_probe.py read /proc/<pid>/status VmRSS -- soak.py raises IndexError on the empty series and the reclaim probe silently returns -1 and reports a meaningless verdict; canonical_process_test.go:1131 asserts an exact os.ReadDir count that a .DS_Store breaks; and F_FULLFSYNC costs ~4.0ms/op against ~0.08ms on Linux, so per-document write loops may exceed Linux-tuned timeouts."
+    },
+    {
+      "id": "MEM-01",
+      "statement": "ADR recorded for graph and extraction revival before any code returns",
+      "command": "test -f docs/decisions/*graph*",
+      "scope": [
+        "docs/decisions",
+        "internal/graph"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "a3b4cfbfda5b998028daa5ff6cd5bd2845c6143c",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-02",
+        "receipt": null,
+        "ci_run": null
+      },
+      "note": "docs/decisions/0008-graph-and-extraction-return-as-signals-over-text-in.md (f4a929f) records the decision, accepted by the owner 2026-09-01 together with ADR 0006 (e4583ef); internal/graph and internal/extraction stay dormant behind the canonical wall until a gate schedules them"
+    },
+    {
+      "id": "MEM-02",
+      "statement": "POST /docs/{id}/feedback stores feedback durably and is covered by tests",
+      "command": "GOTOOLCHAIN=go1.25.13 go test ./cmd/deepdata -run Feedback",
+      "scope": [
+        "cmd/deepdata",
+        "internal/collection"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": ""
+    },
+    {
+      "id": "MED-01",
+      "statement": "ephemeral collection class: documents write no journal record, the collection is empty after restart, /v3/status capabilities report the class",
+      "command": "scripts/hardening_check.sh go-ephemeral",
+      "scope": [
+        "internal/collection",
+        "cmd/deepdata",
+        "api/contract",
+        "api/proto",
+        "api/gen",
+        "sdk/python",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": false,
+      "status": "pass",
+      "evidence": {
+        "commit": "99ef619ff5b145fdce1b64d5f5c6b6c6deddc7d9",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-ephemeral/receipt.json",
+        "ci_run": null
+      },
+      "note": "ADR 0009 (accepted 2026-09-01). The ephemeral class is per collection: CollectionSchema.durability is \"durable\" (default when empty) or \"ephemeral\", and an ephemeral collection's insert/batch-insert/upsert/delete-doc apply under the store mutex but append no journal record, cost no fsync and do not advance AppliedLSN (DurableStore.appendApplyLocked), while snapshot v2 writes the collection with zero documents. Create-collection and delete-collection stay class A, so the collection's existence survives a restart and only its documents are lost; its upstream rebuilds them. Surface: durability on CollectionInfo, on the create and collections contract schemas, on CreateCollectionRequest/CollectionInfo in the proto (tag 6 each), on the Python TenantCollectionSchema/TenantCollectionInfo, and capabilities.durability_classes on GET /v3/status. Tests are internal/collection/ephemeral_test.go (no journal growth, empty after Close+reopen and after Checkpoint+reopen, unknown value rejected) and cmd/deepdata/ephemeral_test.go (HTTP round trip, status capabilities, gRPC mirror)."
+    }
+  ]
+}

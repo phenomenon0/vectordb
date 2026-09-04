@@ -1,16 +1,9 @@
-// Package graph provides GraphRAG integration for DeepData.
-//
-// It maintains a knowledge graph built from extraction pipeline output,
-// stored as CSR adjacency for efficient PageRank computation.
-// Graph importance scores are used as a third signal in hybrid fusion
-// alongside dense (vector) and sparse (BM25) results.
 package graph
 
 import (
 	"strings"
 	"sync"
 
-	"github.com/Neumenon/cowrie/go/gnn/algo"
 	"github.com/phenomenon0/vectordb/internal/extraction"
 	"github.com/phenomenon0/vectordb/internal/hybrid"
 )
@@ -38,10 +31,10 @@ type GraphIndex struct {
 	nodeDocMap map[string]map[uint64]bool
 
 	// Cached CSR and PageRank (invalidated on mutation)
-	csr      *algo.CSR
-	pagerank *algo.PageRankResult
+	csr      *CSR
+	pagerank *PageRankResult
 	dirty    bool
-	prConfig algo.PageRankConfig
+	prConfig PageRankConfig
 }
 
 type edge struct {
@@ -85,7 +78,7 @@ func NewGraphIndex(cfg Config) *GraphIndex {
 		docNodes:   make(map[uint64]map[string]bool),
 		nodeDocMap: make(map[string]map[uint64]bool),
 		dirty:      true,
-		prConfig: algo.PageRankConfig{
+		prConfig: PageRankConfig{
 			Damping:    cfg.Damping,
 			Iterations: cfg.Iterations,
 			Tolerance:  cfg.Tolerance,
@@ -274,8 +267,8 @@ func (g *GraphIndex) ensureComputed() {
 		}
 	}
 
-	g.csr = algo.NewCSR(n, indPtr, indices)
-	g.pagerank = algo.PageRank(g.csr, g.prConfig)
+	g.csr = NewCSR(int(n), indPtr, indices)
+	g.pagerank = PageRank(g.csr, g.prConfig)
 	g.dirty = false
 }
 
@@ -305,7 +298,7 @@ func (g *GraphIndex) Search(queryTerms []string, topK int) []hybrid.SearchResult
 	var scores []float32
 	if len(seeds) > 0 {
 		// Personalized PageRank from matched entities
-		ppr := algo.PersonalizedPageRank(g.csr, g.prConfig, seeds)
+		ppr := PersonalizedPageRank(g.csr, g.prConfig, seeds)
 		scores = ppr.Scores
 	} else {
 		// Fall back to global PageRank

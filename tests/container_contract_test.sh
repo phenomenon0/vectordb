@@ -206,7 +206,7 @@ start_container "$restart_container"
 
 response=$(api GET "/v3/tenants/$tenant/collections/$collection")
 assert_json "HTTP collection survived container replacement" "$response" \
-  '.collection.Name == "http_docs" and .collection.DocCount == 1'
+  '.collection.name == "http_docs" and .collection.doc_count == 1'
 
 response=$(api POST "/v3/tenants/$tenant/collections/$collection/search" '{
   "queries":{"embedding":[1,0,0]},

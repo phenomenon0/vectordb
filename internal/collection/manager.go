@@ -52,7 +52,7 @@ func (cm *CollectionManager) createCollectionDirect(ctx context.Context, schema 
 
 	// Check if collection already exists
 	if _, exists := cm.collections[schema.Name]; exists {
-		return nil, fmt.Errorf("collection %s already exists", schema.Name)
+		return nil, fmt.Errorf("%w: %s", ErrCollectionExists, schema.Name)
 	}
 
 	// Create collection
@@ -77,7 +77,7 @@ func (cm *CollectionManager) GetCollection(name string) (*Collection, error) {
 
 	coll, exists := cm.collections[name]
 	if !exists {
-		return nil, fmt.Errorf("collection %s not found", name)
+		return nil, fmt.Errorf("%w: %s", ErrCollectionNotFound, name)
 	}
 
 	return coll, nil
@@ -99,7 +99,7 @@ func (cm *CollectionManager) deleteCollectionDirect(ctx context.Context, name st
 
 	coll, exists := cm.collections[name]
 	if !exists {
-		return fmt.Errorf("collection %s not found", name)
+		return fmt.Errorf("%w: %s", ErrCollectionNotFound, name)
 	}
 
 	// Cleanup collection resources (indexes, documents)
@@ -145,16 +145,17 @@ func (cm *CollectionManager) GetCollectionInfo(name string) (*CollectionInfo, er
 
 	coll, exists := cm.collections[name]
 	if !exists {
-		return nil, fmt.Errorf("collection %s not found", name)
+		return nil, fmt.Errorf("%w: %s", ErrCollectionNotFound, name)
 	}
 
 	schema := coll.Schema()
 	return &CollectionInfo{
 		Name:        schema.Name,
-		Fields:      schema.Fields,
+		Fields:      fieldInfos(schema.Fields),
 		Description: schema.Description,
 		Metadata:    schema.Metadata,
 		DocCount:    coll.Count(),
+		Durability:  normalizeDurability(schema.Durability),
 	}, nil
 }
 
@@ -168,10 +169,11 @@ func (cm *CollectionManager) ListCollectionInfos() []CollectionInfo {
 		schema := coll.Schema()
 		infos = append(infos, CollectionInfo{
 			Name:        schema.Name,
-			Fields:      schema.Fields,
+			Fields:      fieldInfos(schema.Fields),
 			Description: schema.Description,
 			Metadata:    schema.Metadata,
 			DocCount:    coll.Count(),
+			Durability:  normalizeDurability(schema.Durability),
 		})
 	}
 	return infos
@@ -179,11 +181,42 @@ func (cm *CollectionManager) ListCollectionInfos() []CollectionInfo {
 
 // CollectionInfo contains metadata about a collection.
 type CollectionInfo struct {
-	Name        string
-	Fields      []VectorField
-	Description string
-	Metadata    map[string]interface{}
-	DocCount    int
+	Name        string                 `json:"name"`
+	Fields      []FieldInfo            `json:"fields"`
+	Description string                 `json:"description,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	DocCount    int                    `json:"doc_count"`
+	// Durability is the normalized class (ADR 0009): "durable" for every
+	// collection created before or without the field, "ephemeral" for one
+	// whose documents are memory only.
+	Durability string `json:"durability"`
+}
+
+// FieldInfo is a schema field as a read reports it: the journaled
+// VectorField (flattened, so the JSON shape is unchanged) plus the score
+// direction its raw scores follow. Output only — a create request carries
+// VectorField, which has no score direction to state.
+type FieldInfo struct {
+	VectorField
+	ScoreDirection string `json:"score_direction"`
+}
+
+// FieldScoreDirection reports how a field's raw scores read: dense fields
+// return distances (lower is better), sparse BM25 fields return scores
+// (higher is better).
+func FieldScoreDirection(t VectorType) string {
+	if t == VectorTypeDense {
+		return ScoreDirectionLowerIsBetter
+	}
+	return ScoreDirectionHigherIsBetter
+}
+
+func fieldInfos(fields []VectorField) []FieldInfo {
+	infos := make([]FieldInfo, len(fields))
+	for i, f := range fields {
+		infos[i] = FieldInfo{VectorField: f, ScoreDirection: FieldScoreDirection(f.Type)}
+	}
+	return infos
 }
 
 // AddDocument adds a document to a collection.
@@ -215,6 +248,18 @@ func (cm *CollectionManager) BatchAddDocuments(ctx context.Context, collectionNa
 	return coll.BatchAdd(ctx, docs)
 }
 
+// UpsertDocument inserts or replaces a caller-addressed document.
+func (cm *CollectionManager) UpsertDocument(ctx context.Context, collectionName string, doc *Document) error {
+	if cm.isDurableReadOnly() {
+		return ErrCanonicalMutationRequired
+	}
+	coll, err := cm.GetCollection(collectionName)
+	if err != nil {
+		return err
+	}
+	return coll.Upsert(ctx, doc)
+}
+
 // BulkAddDense inserts raw dense vectors into a single field of a collection.
 func (cm *CollectionManager) BulkAddDense(ctx context.Context, collectionName, fieldName string, ids []uint64, vectors [][]float32) error {
 	if cm.isDurableReadOnly() {
@@ -236,24 +281,6 @@ func (cm *CollectionManager) SearchCollection(ctx context.Context, req SearchReq
 	}
 
 	return coll.Search(ctx, req)
-}
-
-// Recommend performs a recommendation search on a collection.
-func (cm *CollectionManager) Recommend(ctx context.Context, req RecommendRequest) (*SearchResponse, error) {
-	coll, err := cm.GetCollection(req.CollectionName)
-	if err != nil {
-		return nil, err
-	}
-	return coll.Recommend(ctx, req)
-}
-
-// Discover performs a context-based discovery search on a collection.
-func (cm *CollectionManager) Discover(ctx context.Context, req DiscoverRequest) (*SearchResponse, error) {
-	coll, err := cm.GetCollection(req.CollectionName)
-	if err != nil {
-		return nil, err
-	}
-	return coll.Discover(ctx, req)
 }
 
 // DeleteDocument deletes a document from a collection.
@@ -278,7 +305,7 @@ func (cm *CollectionManager) GetDocument(collectionName string, docID uint64) (*
 
 	doc, ok := coll.GetDocument(docID)
 	if !ok {
-		return nil, fmt.Errorf("document %d not found in collection %s", docID, collectionName)
+		return nil, fmt.Errorf("%w: %d in collection %s", ErrDocumentNotFound, docID, collectionName)
 	}
 
 	return doc, nil
@@ -294,7 +321,7 @@ func (cm *CollectionManager) UpdateCollectionMetadata(name string, metadata map[
 
 	coll, exists := cm.collections[name]
 	if !exists {
-		return fmt.Errorf("collection %s not found", name)
+		return fmt.Errorf("%w: %s", ErrCollectionNotFound, name)
 	}
 
 	coll.UpdateMetadata(metadata)
@@ -353,12 +380,12 @@ func (cm *CollectionManager) RenameCollection(oldName, newName string) error {
 	// Check old collection exists
 	coll, exists := cm.collections[oldName]
 	if !exists {
-		return fmt.Errorf("collection %s not found", oldName)
+		return fmt.Errorf("%w: %s", ErrCollectionNotFound, oldName)
 	}
 
 	// Check new name is not taken
 	if _, exists := cm.collections[newName]; exists {
-		return fmt.Errorf("collection %s already exists", newName)
+		return fmt.Errorf("%w: %s", ErrCollectionExists, newName)
 	}
 
 	// Update schema name under the collection's own lock to prevent

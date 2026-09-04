@@ -39,14 +39,10 @@ docs/
 !go.mod
 !go.sum
 
-# Desktop app
-desktop/
 
 # Packages and harnesses not used by the server image
-client/
 sdk/
 tools/
-vdb-test-suite/
 
 # Scripts
 scripts/

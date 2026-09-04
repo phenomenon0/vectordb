@@ -80,11 +80,18 @@ func (s *SparseIndex) Add(ctx context.Context, id uint64, vector []float32) erro
 		isReAdd = true
 		for _, idx := range oldSparse.Indices {
 			if ids, ok := s.inverted[idx]; ok {
+				removed := false
 				for j, pid := range ids {
 					if pid == id {
 						s.inverted[idx] = append(ids[:j], ids[j+1:]...)
+						removed = true
 						break
 					}
+				}
+				// Drop posting lists emptied by the overwrite so they do not
+				// linger as stale one might use in the map.
+				if removed && len(s.inverted[idx]) == 0 {
+					delete(s.inverted, idx)
 				}
 			}
 		}
@@ -97,7 +104,7 @@ func (s *SparseIndex) Add(ctx context.Context, id uint64, vector []float32) erro
 	s.vectors[id] = sparse
 
 	// Update inverted index
-	for i, idx := range sparse.Indices {
+	for _, idx := range sparse.Indices {
 		if s.inverted[idx] == nil {
 			s.inverted[idx] = make([]uint64, 0, 1)
 		}
@@ -107,17 +114,17 @@ func (s *SparseIndex) Add(ctx context.Context, id uint64, vector []float32) erro
 		sort.Slice(s.inverted[idx], func(a, b int) bool {
 			return s.inverted[idx][a] < s.inverted[idx][b]
 		})
-
-		// Pre-compute norm for cosine similarity
-		if i == 0 {
-			s.norms[id] = 0
-		}
-		s.norms[id] += sparse.Values[i] * sparse.Values[i]
 	}
 
-	if len(sparse.Indices) > 0 {
-		s.norms[id] = float32(math.Sqrt(float64(s.norms[id])))
+	// Recompute the norm from the stored vector unconditionally instead of
+	// folding it into the posting loop. An overwrite that replaces a non-empty
+	// vector with an empty (or differently-magnitude) one would otherwise leave
+	// a stale norm in the map, corrupting cosine ranking.
+	norm := float32(0)
+	for _, v := range sparse.Values {
+		norm += v * v
 	}
+	s.norms[id] = float32(math.Sqrt(float64(norm)))
 
 	delete(s.deleted, id)
 	if !isReAdd {

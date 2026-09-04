@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -383,15 +385,66 @@ func restartCanonicalAfterSIGKILL(
 	return restarted
 }
 
-func assertCanonicalRecoveryCheckpoint(t *testing.T, dataDir string) {
+func canonicalSnapshotV2AppliedLSN(t *testing.T, dataDir string) uint64 {
 	t.Helper()
 	base := filepath.Join(dataDir, "index.gob.collections")
-	if _, err := os.Stat(base + ".snapshot"); err != nil {
-		t.Fatalf("recovery checkpoint snapshot missing: %v", err)
+	f, err := os.Open(base + ".snapshot")
+	if err != nil {
+		t.Fatalf("open canonical snapshot: %v", err)
 	}
+	defer f.Close()
+
+	var header [40]byte
+	if _, err := io.ReadFull(f, header[:]); err != nil {
+		t.Fatalf("read canonical snapshot v2 header: %v", err)
+	}
+	if got := string(header[:8]); got != "DDCOLSNP" {
+		t.Fatalf("canonical snapshot magic = %q, want %q", got, "DDCOLSNP")
+	}
+	if got := binary.BigEndian.Uint32(header[8:12]); got != 2 {
+		t.Fatalf("canonical snapshot version = %d, want 2", got)
+	}
+	if got := binary.BigEndian.Uint32(header[12:16]); got != 56 {
+		t.Fatalf("canonical snapshot v2 header size = %d, want 56", got)
+	}
+	return binary.BigEndian.Uint64(header[32:40])
+}
+
+func assertCanonicalRecoveryRetainsWAL(t *testing.T, dataDir string) {
+	t.Helper()
+	base := filepath.Join(dataDir, "index.gob.collections")
+	_ = canonicalSnapshotV2AppliedLSN(t, dataDir)
+	retained := false
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("recovery checkpoint retained covered journal %s: %v", path, err)
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("stat recovered journal %s: %v", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			t.Fatalf("recovered journal %s is not a regular file", path)
+		}
+		if info.Size() == 0 {
+			t.Fatalf("recovered journal %s is empty", path)
+		}
+		retained = true
+	}
+	if !retained {
+		t.Fatal("recovery removed all WAL evidence before an explicit checkpoint or graceful close")
+	}
+}
+
+func assertCanonicalSnapshotOnlyCheckpoint(t *testing.T, dataDir string, wantAppliedLSN uint64) {
+	t.Helper()
+	if got := canonicalSnapshotV2AppliedLSN(t, dataDir); got != wantAppliedLSN {
+		t.Fatalf("canonical snapshot applied LSN = %d, want %d", got, wantAppliedLSN)
+	}
+	base := filepath.Join(dataDir, "index.gob.collections")
+	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("snapshot-only checkpoint retained covered journal %s: %v", path, err)
 		}
 	}
 }
@@ -409,7 +462,7 @@ func assertCanonicalHTTPMutationState(
 	}
 	var collectionResult struct {
 		Collection struct {
-			DocCount int
+			DocCount int `json:"doc_count"`
 		} `json:"collection"`
 	}
 	if err := json.Unmarshal(body, &collectionResult); err != nil {
@@ -469,7 +522,7 @@ func TestCanonicalHTTPAckSurvivesSIGKILLAndReleasesLifetimeLock(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertCanonicalHTTPMutationState(t, baseURL, nil, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	document := []byte(`{"id":91,"vectors":{"embedding":[1,0]},"metadata":{"source":"sigkill"}}`)
 	response, body = canonicalJSONRequest(t, http.MethodPost, baseURL+"/docs/docs", document)
@@ -478,7 +531,7 @@ func TestCanonicalHTTPAckSurvivesSIGKILLAndReleasesLifetimeLock(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertCanonicalHTTPMutationState(t, baseURL, []uint64{91}, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	batch := []byte(`{"documents":[{"id":92,"vectors":{"embedding":[0,1]}},{"id":93,"vectors":{"embedding":[1,1]}}]}`)
 	response, body = canonicalJSONRequest(t, http.MethodPost, baseURL+"/docs/docs/batch", batch)
@@ -497,7 +550,7 @@ func TestCanonicalHTTPAckSurvivesSIGKILLAndReleasesLifetimeLock(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertCanonicalHTTPMutationState(t, baseURL, []uint64{91, 92, 93}, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	response, body = canonicalJSONRequest(t, http.MethodDelete, baseURL+"/docs/docs", []byte(`{"doc_id":92}`))
 	if response.StatusCode != http.StatusOK {
@@ -505,7 +558,7 @@ func TestCanonicalHTTPAckSurvivesSIGKILLAndReleasesLifetimeLock(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertCanonicalHTTPMutationState(t, baseURL, []uint64{91, 93}, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	temporarySchema := []byte(`{"name":"temporary","fields":[{"name":"embedding","type":"dense","dim":2,"index":{"type":"flat"}}]}`)
 	response, body = canonicalJSONRequest(t, http.MethodPost, baseURL, temporarySchema)
@@ -514,7 +567,7 @@ func TestCanonicalHTTPAckSurvivesSIGKILLAndReleasesLifetimeLock(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertCanonicalHTTPMutationState(t, baseURL, []uint64{91, 93}, true)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	response, body = canonicalJSONRequest(t, http.MethodDelete, baseURL+"/temporary", nil)
 	if response.StatusCode != http.StatusOK {
@@ -522,13 +575,19 @@ func TestCanonicalHTTPAckSurvivesSIGKILLAndReleasesLifetimeLock(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertCanonicalHTTPMutationState(t, baseURL, []uint64{91, 93}, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
-	// A snapshot-only restart proves recovery checkpointing did not leave the
-	// acknowledged sequence available for duplicate replay.
-	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
-	assertCanonicalHTTPMutationState(t, baseURL, []uint64{91, 93}, false)
+	// Recovery deliberately retains validated WAL. A graceful close is the
+	// checkpoint boundary: it must commit all six mutations to v2 and remove the
+	// now-covered journals before a snapshot-only restart.
 	process.terminate(t)
+	assertCanonicalSnapshotOnlyCheckpoint(t, dataDir, 6)
+	process = startCanonicalTestProcess(t, dataDir, httpAddress, grpcAddress)
+	process.waitReady(t, httpAddress)
+	assertCanonicalHTTPMutationState(t, baseURL, []uint64{91, 93}, false)
+	assertCanonicalSnapshotOnlyCheckpoint(t, dataDir, 6)
+	process.terminate(t)
+	assertCanonicalSnapshotOnlyCheckpoint(t, dataDir, 6)
 
 	base := filepath.Join(dataDir, "index.gob.collections")
 	store, err := vcollection.OpenDurableStore(base, base)
@@ -636,7 +695,7 @@ func TestCanonicalGRPCAckSurvivesSIGKILL(t *testing.T) {
 	connection.Close()
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertState(nil, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	connection, client = connect()
 	ctx, cancel = requestContext()
@@ -656,7 +715,7 @@ func TestCanonicalGRPCAckSurvivesSIGKILL(t *testing.T) {
 	connection.Close()
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertState([]uint64{123}, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	connection, client = connect()
 	ctx, cancel = requestContext()
@@ -675,7 +734,7 @@ func TestCanonicalGRPCAckSurvivesSIGKILL(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertState([]uint64{123, 124, 125}, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	connection, client = connect()
 	ctx, cancel = requestContext()
@@ -689,7 +748,7 @@ func TestCanonicalGRPCAckSurvivesSIGKILL(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertState([]uint64{123, 125}, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	connection, client = connect()
 	ctx, cancel = requestContext()
@@ -707,7 +766,7 @@ func TestCanonicalGRPCAckSurvivesSIGKILL(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertState([]uint64{123, 125}, true)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
 	connection, client = connect()
 	ctx, cancel = requestContext()
@@ -721,11 +780,16 @@ func TestCanonicalGRPCAckSurvivesSIGKILL(t *testing.T) {
 	}
 	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
 	assertState([]uint64{123, 125}, false)
-	assertCanonicalRecoveryCheckpoint(t, dataDir)
+	assertCanonicalRecoveryRetainsWAL(t, dataDir)
 
-	process = restartCanonicalAfterSIGKILL(t, process, dataDir, httpAddress, grpcAddress)
-	assertState([]uint64{123, 125}, false)
 	process.terminate(t)
+	assertCanonicalSnapshotOnlyCheckpoint(t, dataDir, 6)
+	process = startCanonicalTestProcess(t, dataDir, httpAddress, grpcAddress)
+	process.waitReady(t, httpAddress)
+	assertState([]uint64{123, 125}, false)
+	assertCanonicalSnapshotOnlyCheckpoint(t, dataDir, 6)
+	process.terminate(t)
+	assertCanonicalSnapshotOnlyCheckpoint(t, dataDir, 6)
 }
 
 func TestCanonicalStartupRejectsCorruptCollectionJournalWithoutRewritingIt(t *testing.T) {
@@ -801,7 +865,12 @@ func TestCanonicalStartupRejectsCorruptCollectionJournalWithoutRewritingIt(t *te
 
 func TestCanonicalStartupBindFailureReleasesLifetimeLock(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "state")
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	// Occupy the wildcard, not loopback: an authenticated process binds the
+	// wildcard (canonicalListenerAddresses), and BSD/darwin honors the
+	// SO_REUSEADDR that Go sets by allowing a wildcard bind alongside a
+	// specific one. Only Linux calls that a conflict, so a loopback squatter
+	// would let the helper start and the test would fail off Linux.
+	occupied, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1012,5 +1081,62 @@ func TestCanonicalStartupRefusesRawLegacyV2StateWithoutMutation(t *testing.T) {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("canonical raw legacy refusal created %s: %v", path, err)
 		}
+	}
+}
+
+func TestCanonicalStartupRefusesLegacyRootStateWithoutMutation(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The root guard refuses on artifact existence alone; content is opaque
+	// legacy gob/WAL data that must never be read, rewritten, or removed.
+	rawPaths := []string{
+		filepath.Join(dataDir, "index.gob"),
+		filepath.Join(dataDir, "index.gob.wal"),
+		filepath.Join(dataDir, "index.gob.wal.frozen"),
+	}
+	for i, path := range rawPaths {
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("legacy-root-artifact-%d", i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := make(map[string][32]byte, len(rawPaths))
+	for _, path := range rawPaths {
+		before[path] = testFileSHA256(t, path)
+	}
+
+	// Root preflight happens before either API listener is bound, so fixed
+	// unused test ports are sufficient here as well.
+	process := startCanonicalTestProcess(t, dataDir, "127.0.0.1:1", "127.0.0.1:2")
+	defer process.stopIfRunning()
+	select {
+	case <-process.done:
+		if err := process.waitError(); err == nil {
+			t.Fatalf("legacy root helper exited successfully\n%s", process.output.String())
+		}
+	case <-time.After(10 * time.Second):
+		_ = process.cmd.Process.Kill()
+		_ = process.waitError()
+		t.Fatalf("legacy root helper did not exit\n%s", process.output.String())
+	}
+	if !strings.Contains(process.output.String(), "legacy root persistence") {
+		t.Fatalf("helper failed for an unexpected reason:\n%s", process.output.String())
+	}
+	for _, path := range rawPaths {
+		if got := testFileSHA256(t, path); got != before[path] {
+			t.Fatalf("canonical startup changed legacy root artifact %s", path)
+		}
+	}
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(rawPaths) {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("canonical legacy root refusal created new artifacts: %v", names)
 	}
 }

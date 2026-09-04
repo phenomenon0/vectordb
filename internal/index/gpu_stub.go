@@ -1,7 +1,3 @@
-//go:build !(cuda && vectordb_cuda) && !(darwin && metal)
-// +build !cuda !vectordb_cuda
-// +build !darwin !metal
-
 package index
 
 import "fmt"

@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"github.com/phenomenon0/vectordb/internal/logging"
 )
 
 const (
@@ -20,6 +23,7 @@ const (
 	mutationInsertDocument   = "insert_document"
 	mutationBatchInsert      = "batch_insert_documents"
 	mutationDeleteDocument   = "delete_document"
+	mutationUpsertDocument   = "upsert_document"
 )
 
 var (
@@ -64,6 +68,12 @@ type durableDeleteDocument struct {
 	DocumentID     uint64 `json:"document_id"`
 }
 
+type durableUpsertDocument struct {
+	TenantID       string   `json:"tenant_id"`
+	CollectionName string   `json:"collection_name"`
+	Document       Document `json:"document"`
+}
+
 type canonicalMutation struct {
 	version        uint16
 	typeName       string
@@ -96,9 +106,24 @@ type DurableStore struct {
 	fault  error
 	closed bool
 
+	// usageLoaded records whether the class B usage sidecar was read and
+	// imported at open. It is written once during open and then only read.
+	usageLoaded bool
+
 	// apply is a per-store test seam. Production always points at
 	// applyMutationDirect; an error after append permanently faults the store.
 	apply func(context.Context, canonicalMutation) error
+
+	// appended wakes journal followers. Zero value is usable and costs nothing
+	// until a follower waits on it.
+	appended journalNotifier
+
+	// replica marks the store a read replica: local writes are refused and it
+	// advances only through ApplyReplicated. Deliberately not persisted — which
+	// leader a store follows is configuration, re-supplied by MakeReplica on
+	// every open, so it never has to survive a snapshot format change.
+	replica  bool
+	leaderID [16]byte
 }
 
 // OpenDurableStore opens or initializes a durable unified collection store.
@@ -141,21 +166,20 @@ func openDurableStore(basePath, storagePath string, limits StoreLimits) (*Durabl
 	if err != nil {
 		return fail(nil, nil, err)
 	}
-	journal, records, err := openCollectionJournal(basePath+".journal", basePath+".journal.frozen", metadata.StoreID, metadata.AppliedLSN)
+	journal, replayPlan, err := openCollectionJournalValidated(
+		basePath+".journal",
+		basePath+".journal.frozen",
+		metadata.StoreID,
+		metadata.AppliedLSN,
+		func(record collectionJournalRecord) error {
+			if _, err := decodeDurableMutation(record.Payload); err != nil {
+				return fmt.Errorf("decode collection mutation at LSN %d: %w", record.LSN, err)
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		return fail(manager, tenants, fmt.Errorf("open durable collection journal: %w", err))
-	}
-
-	// Decode every record before changing any loaded state. This makes unknown
-	// versions, operations, fields, and trailing JSON a startup failure rather
-	// than a partially replayed live store.
-	mutations := make([]canonicalMutation, len(records))
-	for i, record := range records {
-		mutation, err := decodeDurableMutation(record.Payload)
-		if err != nil {
-			return fail(manager, tenants, fmt.Errorf("decode collection mutation at LSN %d: %w", record.LSN, err))
-		}
-		mutations[i] = mutation
 	}
 
 	store := &DurableStore{
@@ -168,25 +192,36 @@ func openDurableStore(basePath, storagePath string, limits StoreLimits) (*Durabl
 		lock:     lock,
 	}
 	store.apply = store.applyMutationDirect
-	for i, mutation := range mutations {
+	err = journal.streamReplay(replayPlan, func(record collectionJournalRecord) error {
+		mutation, err := decodeDurableMutation(record.Payload)
+		if err != nil {
+			return fmt.Errorf("decode collection mutation at LSN %d: %w", record.LSN, err)
+		}
 		if err := store.prepareReplayMutation(&mutation); err != nil {
-			return fail(manager, tenants, fmt.Errorf("validate collection mutation at LSN %d: %w", records[i].LSN, err))
+			return fmt.Errorf("validate collection mutation at LSN %d: %w", record.LSN, err)
 		}
 		if err := store.applyMutationDirect(context.Background(), mutation); err != nil {
-			return fail(manager, tenants, fmt.Errorf("replay collection mutation at LSN %d: %w", records[i].LSN, err))
+			return fmt.Errorf("replay collection mutation at LSN %d: %w", record.LSN, err)
 		}
-		store.metadata.AppliedLSN = records[i].LSN
+		store.metadata.AppliedLSN = record.LSN
+		return nil
+	})
+	if err != nil {
+		return fail(manager, tenants, fmt.Errorf("stream durable collection journal replay: %w", err))
 	}
 	// Older snapshots could retain tenant managers after their final collection
 	// was deleted. They carry no tenant data and must not grow the tenant map or
 	// consume persistence on every subsequent checkpoint.
 	store.tenants.pruneEmptyManagers()
 	store.activeTenants, store.collectionCount = store.tenants.resourceCounts()
-	if len(records) > 0 {
-		if err := store.commitSnapshotAndCleanupLocked(true); err != nil {
-			return fail(manager, tenants, fmt.Errorf("checkpoint replayed collection mutations: %w", err))
-		}
-	}
+	// The usage sidecar is class B: it is restored after the canonical state
+	// it annotates, and a failure here can never reach the caller.
+	store.loadUsageSidecar()
+	// Keep the fully validated journal after recovery. Snapshot serialization is
+	// a separate bounded-memory track; invoking the current snapshot writer here
+	// would reintroduce an unbounded startup allocation before callers can choose
+	// when to checkpoint. Explicit Checkpoint and graceful Close still commit a
+	// snapshot before coverage-checked cleanup.
 
 	manager.setDurableReadOnly()
 	tenants.attachDurableStore(store)
@@ -195,7 +230,7 @@ func openDurableStore(basePath, storagePath string, limits StoreLimits) (*Durabl
 
 func (s *DurableStore) Tenants() *TenantManager { return s.tenants }
 
-// LegacyCollectionCount is a checked startup/migration inspection. Canonical
+// LegacyCollectionCount is a checked startup/migration inspection. Live
 // request paths never receive the underlying V2 CollectionManager.
 func (s *DurableStore) LegacyCollectionCount() (int, error) {
 	s.mu.RLock()
@@ -218,6 +253,18 @@ func (s *DurableStore) Err() error {
 	return s.stateErrorLocked()
 }
 
+// UsageLoaded reports whether this store opened with the usage hints it was
+// entitled to. It is false only when a sidecar existed and was discarded —
+// the one case that also logs an error. A store with no sidecar at all had
+// nothing to lose and reports true, so the signal never accuses a fresh
+// deployment of losing data. Transports project it as status
+// signals.usage.loaded.
+func (s *DurableStore) UsageLoaded() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.usageLoaded
+}
+
 func (s *DurableStore) stateErrorLocked() error {
 	if s.closed {
 		return ErrDurableStoreClosed
@@ -235,7 +282,7 @@ func (s *DurableStore) latchFaultLocked(err error) error {
 	return fmt.Errorf("%w: %v", ErrDurableStoreFaulted, s.fault)
 }
 
-// Canonical reads hold a shared store barrier for their full operation. A
+// Reads hold a shared store barrier for their full operation. A
 // mutation/checkpoint has the exclusive side, so a read cannot pass a health
 // check and then observe an append/apply fault or a partially applied batch.
 func (s *DurableStore) getCollection(_, _ string) (*Collection, error) {
@@ -308,6 +355,21 @@ func (s *DurableStore) getTenantStats(tenantID string) (*TenantStats, error) {
 		return nil, err
 	}
 	return s.tenants.getTenantStatsDirect(tenantID)
+}
+
+// getDocument serves a canonical single-document read under the store's shared
+// barrier, so it cannot observe a partially applied mutation or a store fault.
+func (s *DurableStore) getDocument(tenantID, collectionName string, docID uint64) (*Document, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.stateErrorLocked() != nil {
+		return nil, false
+	}
+	coll, err := s.tenants.getCollectionDirect(tenantID, collectionName)
+	if err != nil {
+		return nil, false
+	}
+	return coll.GetDocument(docID)
 }
 
 func (s *DurableStore) createCollection(ctx context.Context, tenantID string, schema CollectionSchema) error {
@@ -389,6 +451,40 @@ func (s *DurableStore) batchAddDocuments(ctx context.Context, tenantID, collecti
 	return nil
 }
 
+func (s *DurableStore) upsertDocument(ctx context.Context, tenantID, collectionName string, doc *Document) error {
+	if doc == nil {
+		return errors.New("document cannot be nil")
+	}
+	if doc.ID == 0 {
+		return errors.New("upsert requires a caller-supplied document ID")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return err
+	}
+	mutation, err := s.prepareUpsertMutation(tenantID, collectionName, *doc)
+	if err != nil {
+		return err
+	}
+	return s.appendApplyLocked(ctx, mutation)
+}
+
+func (s *DurableStore) prepareUpsertMutation(tenantID, collectionName string, doc Document) (canonicalMutation, error) {
+	mutation := canonicalMutation{typeName: mutationUpsertDocument, tenantID: tenantID, collectionName: collectionName}
+	if err := s.prepareCollectionTarget(mutation); err != nil {
+		return mutation, err
+	}
+	coll, _ := s.tenants.getCollectionDirect(tenantID, collectionName)
+	normalized, nextID, err := coll.prepareCanonicalUpsert([]Document{doc})
+	if err != nil {
+		return mutation, err
+	}
+	mutation.documents = normalized
+	mutation.nextID = nextID
+	return mutation, nil
+}
+
 func (s *DurableStore) deleteCollection(ctx context.Context, tenantID, collectionName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -424,11 +520,54 @@ func (s *DurableStore) deleteDocument(ctx context.Context, tenantID, collectionN
 	return s.appendApplyLocked(ctx, mutation)
 }
 
+// ephemeralDocumentMutationLocked reports whether the mutation writes
+// documents into a collection created with durability "ephemeral". Only the
+// four document mutations qualify: create and delete-collection stay class A,
+// so the collection's existence survives a restart while its documents do not.
+// Caller holds mu.
+func (s *DurableStore) ephemeralDocumentMutationLocked(m canonicalMutation) bool {
+	switch m.typeName {
+	case mutationInsertDocument, mutationBatchInsert, mutationUpsertDocument, mutationDeleteDocument:
+	default:
+		return false
+	}
+	coll, err := s.tenants.getCollectionDirect(m.tenantID, m.collectionName)
+	if err != nil || coll == nil {
+		return false
+	}
+	return coll.isEphemeral()
+}
+
 func (s *DurableStore) appendApplyLocked(ctx context.Context, mutation canonicalMutation) error {
+	// Every locally originated write funnels through here, so this one guard
+	// makes a read replica read-only on all six of them at once.
+	if s.replica {
+		return ErrReplicaReadOnly
+	}
+	// Durability class E (ADR 0009): an ephemeral collection's documents are
+	// memory only, so the mutation is applied under the same store mutex but
+	// is neither encoded nor appended, costs no fsync, and does not advance
+	// AppliedLSN. Nothing durable was written, so a failed apply cannot split
+	// journal and memory and must not latch a store-wide fault.
+	if s.ephemeralDocumentMutationLocked(mutation) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return s.apply(context.WithoutCancel(ctx), mutation)
+	}
 	payload, err := encodeDurableMutation(mutation)
 	if err != nil {
 		return err
 	}
+	return s.appendPayloadApplyLocked(ctx, payload, mutation)
+}
+
+// appendPayloadApplyLocked commits an already-encoded mutation: durable append
+// first, then the mandatory in-memory apply. Shared with the replica applier,
+// which appends the leader's exact payload bytes rather than re-encoding, so
+// both journals carry identical records and a replica can be streamed from in
+// turn.
+func (s *DurableStore) appendPayloadApplyLocked(ctx context.Context, payload []byte, mutation canonicalMutation) error {
 	// A request canceled while it was waiting for the store mutex has not
 	// crossed the commit point and must not be appended. Once append begins,
 	// however, cancellation can no longer be allowed to split durable and
@@ -453,6 +592,8 @@ func (s *DurableStore) appendApplyLocked(ctx context.Context, mutation canonical
 		return s.latchFaultLocked(fmt.Errorf("apply LSN %d after durable append: %w", record.LSN, err))
 	}
 	s.metadata.AppliedLSN = record.LSN
+	// The record is durable and applied, so followers may read it now.
+	s.appended.notify()
 	return nil
 }
 
@@ -484,7 +625,7 @@ func (s *DurableStore) prepareCreateMutationWithValidator(
 	m.collectionName = clone.Name
 	m.schema = clone
 	if manager := s.tenants.getManager(m.tenantID); manager != nil && manager.HasCollection(clone.Name) {
-		return fmt.Errorf("collection %s already exists", clone.Name)
+		return fmt.Errorf("%w: %s", ErrCollectionExists, clone.Name)
 	}
 	return nil
 }
@@ -498,13 +639,12 @@ func validateDurableSchemaV1(schema *CollectionSchema) error {
 	}
 	for _, field := range schema.Fields {
 		switch field.Type {
-		case VectorTypeDense:
-			if field.Index.Type != IndexTypeHNSW && field.Index.Type != IndexTypeFLAT {
-				return fmt.Errorf("field %s uses index %s; canonical release supports only HNSW or Flat dense indexes", field.Name, field.Index.Type)
-			}
-		case VectorTypeSparse:
-			if field.Index.Type != IndexTypeInverted {
-				return fmt.Errorf("field %s uses index %s; sparse fields require Inverted", field.Name, field.Index.Type)
+		case VectorTypeDense, VectorTypeSparse:
+			// The v1 admission set and the canonical one coincide because the
+			// vocabulary itself is frozen (ADR 0001): IndexTypes is the whole
+			// RC scope, so reading it here cannot widen or narrow v1.
+			if err := validateFieldIndexType(field); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("field %s uses unsupported vector type %s", field.Name, field.Type)
@@ -520,15 +660,17 @@ func validateCanonicalSchema(schema *CollectionSchema) error {
 	if !IsValidCanonicalIdentifier(schema.Name) {
 		return errors.New("collection name must be 1-64 alphanumeric/hyphen/underscore characters")
 	}
+	switch schema.Durability {
+	case "", DurabilityDurable, DurabilityEphemeral:
+	default:
+		return fmt.Errorf("%w: durability must be %q or %q, got %q",
+			ErrInvalidArgument, DurabilityDurable, DurabilityEphemeral, schema.Durability)
+	}
 	for _, field := range schema.Fields {
 		switch field.Type {
-		case VectorTypeDense:
-			if field.Index.Type != IndexTypeHNSW && field.Index.Type != IndexTypeFLAT {
-				return fmt.Errorf("field %s uses index %s; canonical release supports only HNSW or Flat dense indexes", field.Name, field.Index.Type)
-			}
-		case VectorTypeSparse:
-			if field.Index.Type != IndexTypeInverted {
-				return fmt.Errorf("field %s uses index %s; sparse fields require Inverted", field.Name, field.Index.Type)
+		case VectorTypeDense, VectorTypeSparse:
+			if err := validateFieldIndexType(field); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("field %s uses unsupported vector type %s", field.Name, field.Type)
@@ -547,6 +689,7 @@ func validateCanonicalIndexParams(field VectorField) error {
 		allowed = map[string]bool{
 			"m": true, "ml": true, "ef_search": true,
 			"ef_construction": true, "prenormalize": true,
+			"segments": true,
 		}
 	case IndexTypeFLAT:
 		allowed = map[string]bool{"metric": true}
@@ -578,6 +721,9 @@ func validateCanonicalIndexParams(field VectorField) error {
 			return err
 		}
 		if err := validateCanonicalIntegerParam(field, "ef_construction", 1, 1_000_000); err != nil {
+			return err
+		}
+		if err := validateCanonicalIntegerParam(field, "segments", 1, 64); err != nil {
 			return err
 		}
 		if value, ok, err := canonicalNumericParam(field, "ml"); err != nil {
@@ -677,8 +823,8 @@ func (s *DurableStore) prepareDocumentsMutationWithAdmission(
 	if len(docs) == 0 {
 		return mutation, errors.New("documents cannot be empty")
 	}
-	if enforceCurrentAdmission && len(docs) > CanonicalMaxBatchDocuments {
-		return mutation, fmt.Errorf("document batch exceeds maximum of %d", CanonicalMaxBatchDocuments)
+	if enforceCurrentAdmission && len(docs) > MaxBatchDocuments {
+		return mutation, fmt.Errorf("document batch exceeds maximum of %d", MaxBatchDocuments)
 	}
 	if err := s.prepareCollectionTarget(mutation); err != nil {
 		return mutation, err
@@ -702,7 +848,27 @@ func (s *DurableStore) prepareDeleteDocument(m canonicalMutation) error {
 	}
 	coll, _ := s.tenants.getCollectionDirect(m.tenantID, m.collectionName)
 	if _, ok := coll.GetDocument(m.documentID); !ok {
-		return fmt.Errorf("document %d not found in collection %s", m.documentID, m.collectionName)
+		return fmt.Errorf("%w: %d in collection %s", ErrDocumentNotFound, m.documentID, m.collectionName)
+	}
+	return nil
+}
+
+// normalizeReplayDocuments canonicalizes only documents freshly decoded from
+// the durable journal. Those values are private to the recovery mutation, so
+// replacing JSON-generic vector trees cannot alias a caller. Ordinary live
+// preparation deliberately bypasses this method and continues to preserve
+// caller-provided Go types while making its defensive deep copy.
+func (s *DurableStore) normalizeReplayDocuments(m *canonicalMutation) error {
+	if err := s.prepareCollectionTarget(*m); err != nil {
+		return err
+	}
+	coll, _ := s.tenants.getCollectionDirect(m.tenantID, m.collectionName)
+	coll.mu.RLock()
+	defer coll.mu.RUnlock()
+	for i := range m.documents {
+		if err := normalizeDocumentVectorTypes(&m.documents[i], &coll.schema); err != nil {
+			return fmt.Errorf("document %d vector normalization failed: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -717,6 +883,9 @@ func (s *DurableStore) prepareReplayMutation(m *canonicalMutation) error {
 	case mutationDeleteCollection:
 		return s.prepareCollectionTarget(*m)
 	case mutationInsertDocument, mutationBatchInsert:
+		if err := s.normalizeReplayDocuments(m); err != nil {
+			return err
+		}
 		prepared, err := s.prepareDocumentsMutationWithAdmission(
 			m.typeName,
 			m.tenantID,
@@ -732,6 +901,20 @@ func (s *DurableStore) prepareReplayMutation(m *canonicalMutation) error {
 		return nil
 	case mutationDeleteDocument:
 		return s.prepareDeleteDocument(*m)
+	case mutationUpsertDocument:
+		if len(m.documents) != 1 {
+			return errors.New("upsert mutation must contain exactly one document")
+		}
+		if err := s.normalizeReplayDocuments(m); err != nil {
+			return err
+		}
+		prepared, err := s.prepareUpsertMutation(m.tenantID, m.collectionName, m.documents[0])
+		if err != nil {
+			return err
+		}
+		prepared.version = m.version
+		*m = prepared
+		return nil
 	default:
 		return fmt.Errorf("unknown mutation type %q", m.typeName)
 	}
@@ -750,6 +933,8 @@ func (s *DurableStore) applyMutationDirect(ctx context.Context, m canonicalMutat
 		return nil
 	case mutationInsertDocument, mutationBatchInsert:
 		return s.tenants.addPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID)
+	case mutationUpsertDocument:
+		return s.tenants.upsertPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID)
 	case mutationDeleteDocument:
 		return s.tenants.deleteDocumentDirect(ctx, m.tenantID, m.collectionName, m.documentID)
 	default:
@@ -790,25 +975,131 @@ func (s *DurableStore) commitSnapshotAndCleanupLocked(recovery bool) error {
 	if err := s.journal.cleanupAll(); err != nil {
 		return fmt.Errorf("clean covered collection journals: %w", err)
 	}
+	s.writeUsageSidecarLocked()
+	return nil
+}
+
+func usageSidecarPath(basePath string) string { return basePath + ".usage.json" }
+
+// usageSidecarDocument is the whole store's class B usage state: one
+// version for the file, then the tracker entries of every collection that
+// has any, keyed by the tenant and collection they belong to.
+type usageSidecarDocument struct {
+	Version     int                      `json:"version"`
+	Collections []usageSidecarCollection `json:"collections"`
+}
+
+type usageSidecarCollection struct {
+	TenantID   string        `json:"tenant_id"`
+	Collection string        `json:"collection"`
+	Entries    []UsageRecord `json:"entries"`
+}
+
+// writeUsageSidecarLocked commits the usage sidecar beside the snapshot
+// that was just written. Class B: every failure is logged and swallowed,
+// because a ranking hint that cannot be persisted must not fail a
+// checkpoint that already committed the canonical state. Caller holds mu.
+//
+// ponytail: whole-file rewrite of every tracked entry on every snapshot.
+// Each collection is capped at usageEntryCap entries, so the cost is
+// bounded but linear in tracked documents; past ~250k entries in a store,
+// move the records into the snapshot format as their own framed section
+// (snapshot.go:276) instead of growing a second full-file write.
+func (s *DurableStore) writeUsageSidecarLocked() {
+	doc := usageSidecarDocument{Version: usageDocumentVersion}
+	for _, tenantID := range s.tenants.listTenantsDirect() {
+		for _, name := range s.tenants.listCollectionsDirect(tenantID) {
+			coll, err := s.tenants.getCollectionDirect(tenantID, name)
+			if err != nil {
+				continue
+			}
+			entries := coll.usage.Export().Entries
+			if len(entries) == 0 {
+				continue
+			}
+			doc.Collections = append(doc.Collections, usageSidecarCollection{
+				TenantID:   tenantID,
+				Collection: name,
+				Entries:    entries,
+			})
+		}
+	}
+	path := usageSidecarPath(s.basePath)
+	data, err := json.Marshal(doc)
+	if err == nil {
+		err = writeCollectionFileAtomic(path, data, 0o600)
+	}
+	if err != nil {
+		logging.Default().Error("usage sidecar not written; ranking hints will be lost on restart",
+			"path", path, "error", err)
+	}
+}
+
+// loadUsageSidecar restores the class B usage state. An absent sidecar is
+// not an error — every data directory written before the sidecar existed
+// has none, and an empty tracker is exactly the right starting state. A
+// sidecar that is present but unreadable, corrupt, or of an unknown
+// version is logged and discarded whole: the collection stays up serving
+// correct-by-similarity answers with no ranking hints, and no fault is
+// latched.
+func (s *DurableStore) loadUsageSidecar() {
+	path := usageSidecarPath(s.basePath)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// Nothing was lost, so nothing is reported lost: a store with no
+		// sidecar had no hints to discard.
+		s.usageLoaded = true
+		return
+	}
+	if err == nil {
+		err = s.importUsageSidecar(data)
+	}
+	if err != nil {
+		logging.Default().Error("usage sidecar discarded; collection stays up without ranking hints",
+			"path", path, "error", err)
+		return
+	}
+	s.usageLoaded = true
+}
+
+// importUsageSidecar validates the whole document before importing any of
+// it, so one bad collection cannot leave the store half-restored.
+// Collections named by the sidecar that no longer exist are skipped: a
+// delete after the last checkpoint is ordinary, not corruption.
+func (s *DurableStore) importUsageSidecar(data []byte) error {
+	var doc usageSidecarDocument
+	if err := decodeCollectionJSON(data, &doc); err != nil {
+		return err
+	}
+	if doc.Version != usageDocumentVersion {
+		return fmt.Errorf("unsupported usage sidecar version %d", doc.Version)
+	}
+	type restore struct {
+		tracker *UsageTracker
+		doc     UsageDocument
+	}
+	pending := make([]restore, 0, len(doc.Collections))
+	for _, entry := range doc.Collections {
+		tracked := UsageDocument{Version: usageDocumentVersion, Entries: entry.Entries}
+		if err := validateUsageDocument(tracked); err != nil {
+			return fmt.Errorf("tenant %s collection %s: %w", entry.TenantID, entry.Collection, err)
+		}
+		coll, err := s.tenants.getCollectionDirect(entry.TenantID, entry.Collection)
+		if err != nil {
+			continue
+		}
+		pending = append(pending, restore{tracker: coll.usage, doc: tracked})
+	}
+	for _, item := range pending {
+		if err := item.tracker.Import(item.doc); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (s *DurableStore) verifyJournalCoverageLocked() error {
-	for _, path := range []string{s.journal.frozenPath, s.journal.currentPath} {
-		records, exists, err := readCollectionJournalFile(path, s.metadata.StoreID, s.journal.maxPayload)
-		if err != nil {
-			return fmt.Errorf("verify checkpoint coverage for %q: %w", path, err)
-		}
-		if !exists || len(records) == 0 {
-			continue
-		}
-		for _, record := range records {
-			if record.LSN > s.metadata.AppliedLSN {
-				return fmt.Errorf("refusing journal cleanup: %q LSN %d exceeds snapshot LSN %d", path, record.LSN, s.metadata.AppliedLSN)
-			}
-		}
-	}
-	return nil
+	return s.journal.verifyCovered(s.metadata.AppliedLSN)
 }
 
 func (s *DurableStore) Close() error {
@@ -824,9 +1115,10 @@ func (s *DurableStore) Close() error {
 		checkpointErr = fmt.Errorf("%w: %v", ErrDurableStoreFaulted, s.fault)
 	}
 	s.closed = true
+	journalCloseErr := s.journal.closeWriter()
 	s.manager.closeAll()
 	s.tenants.closeAll()
-	return errors.Join(checkpointErr, s.lock.release())
+	return errors.Join(checkpointErr, journalCloseErr, s.lock.release())
 }
 
 // Abort closes in-memory resources and releases the lifetime lock without
@@ -840,9 +1132,10 @@ func (s *DurableStore) Abort() error {
 		return nil
 	}
 	s.closed = true
+	journalCloseErr := s.journal.closeWriter()
 	s.manager.closeAll()
 	s.tenants.closeAll()
-	return s.lock.release()
+	return errors.Join(journalCloseErr, s.lock.release())
 }
 
 func encodeDurableMutation(m canonicalMutation) ([]byte, error) {
@@ -866,16 +1159,31 @@ func encodeDurableMutationVersion(m canonicalMutation, version uint16) ([]byte, 
 		payload = durableInsertDocument{TenantID: m.tenantID, CollectionName: m.collectionName, Document: m.documents[0]}
 	case mutationBatchInsert:
 		payload = durableBatchInsert{TenantID: m.tenantID, CollectionName: m.collectionName, Documents: m.documents}
+	case mutationUpsertDocument:
+		if len(m.documents) != 1 {
+			return nil, errors.New("upsert mutation must contain exactly one document")
+		}
+		payload = durableUpsertDocument{TenantID: m.tenantID, CollectionName: m.collectionName, Document: m.documents[0]}
 	case mutationDeleteDocument:
 		payload = durableDeleteDocument{TenantID: m.tenantID, CollectionName: m.collectionName, DocumentID: m.documentID}
 	default:
 		return nil, fmt.Errorf("unknown durable mutation type %q", m.typeName)
 	}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal durable mutation payload: %w", err)
-	}
-	return json.Marshal(durableMutationEnvelope{Version: version, Type: m.typeName, Payload: payloadBytes})
+	// Single traversal: the typed payload is marshaled inline instead of being
+	// encoded to an intermediate buffer that a second pass copies into the
+	// envelope. Field order matches durableMutationEnvelope (version, type,
+	// payload), and the payload structs emit identical members nested or
+	// standalone, so journal bytes stay byte-compatible with records written
+	// by earlier encoders.
+	return json.Marshal(struct {
+		Version uint16 `json:"version"`
+		Type    string `json:"type"`
+		Payload any    `json:"payload"`
+	}{
+		Version: version,
+		Type:    m.typeName,
+		Payload: payload,
+	})
 }
 
 func decodeDurableMutation(data []byte) (canonicalMutation, error) {
@@ -922,6 +1230,12 @@ func decodeDurableMutation(data []byte) (canonicalMutation, error) {
 			return m, err
 		}
 		m.tenantID, m.collectionName, m.documents = payload.TenantID, payload.CollectionName, payload.Documents
+	case mutationUpsertDocument:
+		var payload durableUpsertDocument
+		if err := decodeCollectionJSON(envelope.Payload, &payload); err != nil {
+			return m, err
+		}
+		m.tenantID, m.collectionName, m.documents = payload.TenantID, payload.CollectionName, []Document{payload.Document}
 	case mutationDeleteDocument:
 		var payload durableDeleteDocument
 		if err := decodeCollectionJSON(envelope.Payload, &payload); err != nil {
@@ -934,10 +1248,10 @@ func decodeDurableMutation(data []byte) (canonicalMutation, error) {
 	if m.tenantID == "" || m.collectionName == "" {
 		return m, errors.New("durable mutation tenant and collection names cannot be empty")
 	}
-	if (m.typeName == mutationInsertDocument || m.typeName == mutationBatchInsert) && len(m.documents) == 0 {
+	if (m.typeName == mutationInsertDocument || m.typeName == mutationBatchInsert || m.typeName == mutationUpsertDocument) && len(m.documents) == 0 {
 		return m, errors.New("durable insert mutation has no documents")
 	}
-	if m.typeName == mutationInsertDocument || m.typeName == mutationBatchInsert {
+	if m.typeName == mutationInsertDocument || m.typeName == mutationBatchInsert || m.typeName == mutationUpsertDocument {
 		for i := range m.documents {
 			if m.documents[i].ID == 0 {
 				return m, fmt.Errorf("durable insert mutation document %d has an unassigned ID", i)

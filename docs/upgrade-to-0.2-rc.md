@@ -33,7 +33,7 @@ Migration is therefore an explicit offline export/import operation:
 2. Export collection schemas, stable document IDs, metadata, and every caller
    vector without modifying the original root.
 3. Create explicit V3 tenants/collections using only HNSW, Flat, or inverted
-   indexes and insert documents through the five canonical mutations.
+   indexes and insert documents through the six canonical mutations.
 4. Stop and restart the RC server, then verify tenant/collection counts,
    representative IDs and metadata, dense/sparse/hybrid search, and an
    authenticated V3 gRPC read.

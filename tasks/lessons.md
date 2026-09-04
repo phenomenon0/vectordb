@@ -73,3 +73,107 @@
   a crash could replay old database mutations into the imported snapshot.
 - Rule: if an administrative feature cannot cross the durability boundary transactionally,
   disable it explicitly in the RC and document an offline procedure instead of exposing it.
+
+## Caller-Validation Errors Must Be Typed at the Engine Boundary
+
+- Correction: score_floor/usage_boost/fallback contract violations surfaced as
+  HTTP 500 / gRPC Internal because the engine returned plain fmt.Errorf
+  values that transports could not classify.
+- Rule: validate caller-supplied search parameters and wrap the error in a
+  typed sentinel (ErrInvalidSearchArgument); transports map it to HTTP 400 /
+  codes.InvalidArgument. Transport tests must cover the violation paths,
+  not only the happy path through a mocked upstream.
+
+## Fallback and Confidence Floor Share One Weakness Predicate
+
+- Correction: the FallbackParams doc comment claimed the fallback decision was
+  "independent of ScoreFloor" while the code applied the floor to the primary
+  answer before deciding. The floor-aware behavior is the correct one: "no
+  confident result" (zero hits, or wiped out by the floor) must route to the
+  secondary field, so both mechanisms must compose, not bypass each other.
+- Rule: when two post-processing stages (filter + route) consume the same
+  answer, state explicitly which stage runs first in the doc comment and keep
+  the decision a uniform predicate over the post-filter answer.
+
+## Package-Wide gofmt -w Pollutes a Minimal RC Diff
+
+- Correction: running `gofmt -w internal/collection/` reformatted three
+  pre-existing unformatted files unrelated to the change, bloating the RC diff
+  with pure whitespace noise.
+- Rule: format only the files you touched (list them explicitly); if you must
+  format a whole package, check `git status` afterwards and revert unrelated
+  reformatting before committing.
+
+## 2026-08-28 recovery lessons
+
+- Index topology is durable semantics. Do not derive a missing `segments`
+  parameter from `GOMAXPROCS`: the same journal would rebuild into a different
+  graph layout on another host, and high-core machines silently multiply
+  build/search/export concurrency. Keep the historical one-graph default and
+  require an explicit persisted segment count.
+- A Go soft memory limit is guidance, not containment. Production recovery
+  probes need both a measured `GOMEMLIMIT` and an OS/cgroup hard limit; otherwise
+  the allocator can still consume the desktop's RAM and swap under pressure.
+- A locally stored credential is still compromised once it appears in an agent
+  transcript. Bind the recovery service to loopback, never log the token, and
+  rotate it before any LAN exposure.
+- A two-pass bounded loader is safe only when both passes consume the exact
+  same artifact. Matching logical metadata such as store ID and applied LSN is
+  insufficient: two checksum-valid generations can share those values while
+  containing different documents. Rewind one pinned descriptor or compare a
+  full content fingerprint and file identity before publishing rebuilt state.
+- A snapshot writer must prove its own output can be reopened before rename.
+  Validate the retained schema by reconstructing it, reject exhausted or
+  regressed ID cursors, and never silently repair v2 durable semantics on load.
+- Score parity between two rebuilds of one store is exact only for dense
+  distances. BM25 scores inherit the corpus average document length, which
+  internal/sparse keeps as a float32 running total: added on insert, subtracted
+  on delete, re-summed in Go map order on snapshot load. A journal replay and a
+  snapshot cold start of the same 301,816 documents therefore disagree at the
+  sixth digit and swap tied hits. Compare sparse scores with a relative
+  tolerance, or make the accumulator float64 before asserting identity.
+
+## 2026-09-03 two-node lessons
+
+The `spike/multinode` branch recorded three two-node failures and was parked
+unmerged. All three were re-run against `internal/replication` as two live
+processes, a leader and a `deepdata replicate` follower over HTTP, because an
+argument for why current code should be immune is not a result.
+
+- A presence check is answered by the wrong document. Finding 3 was "both nodes
+  report 201 active documents with different documents behind that number". The
+  same hazard invalidated the *test written for finding 2*: a leader that loses
+  its place re-mints IDs from 1, collides with a document the replica already
+  holds, and `GetDocument(id) -> ok` returns true off the stale document while
+  the write under test was never delivered. Assert content between the two
+  nodes, never presence; an ID is a claim about identity that both sides can
+  satisfy while disagreeing.
+- Count equality is not agreement, and a test has to be built so it cannot
+  accidentally rely on it. Pair one delete with one insert: the document count
+  is unchanged, so a replica that applied neither still passes every
+  count-based health probe, and only a document-for-document comparison fails.
+  A divergence test whose mutations move the count is testing the count.
+- Two findings that "should be structurally impossible" both proved fixed, and
+  the live run still cost nothing wasted: it found two defects unit tests
+  cannot see, both in the space between two processes rather than inside one.
+- A store lock is a topology constraint. `runReplicate` and
+  `docs/distributed-architecture.md` both described serving a replica with a
+  `deepdata serve` against the directory `deepdata replicate` is syncing. The
+  collection store takes `LOCK_EX`, so the second process is refused with
+  "collection store is already open". Nothing in the package tests could catch
+  it because the claim is about two processes; only running them did. A replica
+  is a directory kept current for a later read, not a live member of a read
+  fleet.
+- A streaming endpoint defeats graceful shutdown. `http.Server.Shutdown` waits
+  for connections to go idle, and a follow stream never does, so a leader with
+  one follower attached takes the full 30s deadline on every SIGTERM before
+  forcing the close. The Helm chart's 90s grace period covers it; a shorter one
+  would SIGKILL the leader mid-checkpoint. Any long-lived stream added to the
+  server surface has to be counted against the shutdown budget.
+- Never merge `spike/multinode`. Beyond the archived code it restores, its
+  `go.mod` re-admits `github.com/Neumenon/cowrie/go` at
+  `v0.0.0-20260306181650-7d62141ec1de` -- the dependency SYS-03 deliberately
+  removed -- and rolls the toolchain from 1.25.13 back to 1.25.12 with otel from
+  1.44.0/0.69.0 back to 1.43.0/0.68.0. That reverts the bump that closed
+  SEC-01's stdlib CVEs, and a merge would present it as an unrelated cluster
+  spike. Mine the branch for findings; take nothing from its module graph.

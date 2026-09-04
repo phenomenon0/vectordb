@@ -42,6 +42,9 @@ from .models import (
     TenantDeleteDocumentResponse,
     TenantDocument,
     TenantDocumentInput,
+    TenantEmbeddingConfig,
+    TenantFallbackParams,
+    TenantFieldInfo,
     TenantGetCollectionResponse,
     TenantHybridParams,
     TenantIndexConfig,
@@ -49,6 +52,8 @@ from .models import (
     TenantInsertResponse,
     TenantSearchRequest,
     TenantSearchResponse,
+    TenantUpsertDocumentRequest,
+    TenantUpsertResponse,
     TenantVectorField,
 )
 from ._utils import RetryConfig
@@ -74,6 +79,9 @@ __all__ = [
     "TenantDeleteDocumentResponse",
     "TenantDocument",
     "TenantDocumentInput",
+    "TenantEmbeddingConfig",
+    "TenantFallbackParams",
+    "TenantFieldInfo",
     "TenantGetCollectionResponse",
     "TenantHybridParams",
     "TenantIndexConfig",
@@ -81,6 +89,8 @@ __all__ = [
     "TenantInsertResponse",
     "TenantSearchRequest",
     "TenantSearchResponse",
+    "TenantUpsertDocumentRequest",
+    "TenantUpsertResponse",
     "TenantVectorField",
     # Errors
     "APIError",

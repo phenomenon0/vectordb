@@ -13,6 +13,7 @@ import (
 	"time"
 
 	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/security"
 	"google.golang.org/grpc/codes"
@@ -70,9 +71,9 @@ func TestCanonicalDurableLimitsAreSharedAcrossHTTPAndGRPC(t *testing.T) {
 	t.Setenv("TENANT_RPS", "100")
 	t.Setenv("TENANT_BURST", "100")
 
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
@@ -91,8 +92,8 @@ func TestCanonicalDurableLimitsAreSharedAcrossHTTPAndGRPC(t *testing.T) {
 	if _, err := grpcServer.CreateCollection(
 		canonicalGRPCAdminContext("two"),
 		canonicalGRPCCreateCollectionRequest("two", "blocked"),
-	); status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("second tenant gRPC create error = %v, want ResourceExhausted", err)
+	); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("second tenant gRPC create error = %v, want FailedPrecondition (a fixed limit, not a retryable exhaustion)", err)
 	}
 	if _, err := grpcServer.CreateCollection(
 		canonicalGRPCAdminContext("one"),
@@ -102,8 +103,8 @@ func TestCanonicalDurableLimitsAreSharedAcrossHTTPAndGRPC(t *testing.T) {
 	}
 
 	response = canonicalHTTPCreateCollection(t, handler, "one", "third", "")
-	if response.Code != http.StatusTooManyRequests {
-		t.Fatalf("N+1 HTTP collection create returned %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusConflict {
+		t.Fatalf("N+1 HTTP collection create returned %d, want 409 (quota_exceeded is permanent, never 429): %s", response.Code, response.Body.String())
 	}
 }
 
@@ -117,24 +118,24 @@ func TestCanonicalTenantRateLimitIsSharedAcrossHTTPAndGRPCJWTs(t *testing.T) {
 	t.Setenv("MAX_TENANTS", "1")
 	t.Setenv("MAX_RATE_LIMIT_KEYS", "100")
 
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
 	)
 	t.Cleanup(func() { _ = collections.Close() })
 
-	firstToken, err := store.jwtMgr.GenerateTenantToken("acme", []string{"admin"}, nil, time.Hour)
+	firstToken, err := rt.jwtMgr.GenerateTenantToken("acme", []string{"admin"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondToken, err := store.jwtMgr.GenerateTenantToken("acme", []string{"admin", "read"}, nil, time.Hour)
+	secondToken, err := rt.jwtMgr.GenerateTenantToken("acme", []string{"admin", "read"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherToken, err := store.jwtMgr.GenerateTenantToken("other", []string{"read"}, nil, time.Hour)
+	otherToken, err := rt.jwtMgr.GenerateTenantToken("other", []string{"read"}, nil, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,11 +149,11 @@ func TestCanonicalTenantRateLimitIsSharedAcrossHTTPAndGRPCJWTs(t *testing.T) {
 	}
 
 	interceptor := grpcAuthInterceptorWithTenantLimiter(
-		store.jwtMgr,
+		rt.jwtMgr,
 		"",
 		true,
 		testLogger(),
-		store.canonicalTenantRL,
+		rt.canonicalTenantRL,
 	)
 	grpcContext := metadata.NewIncomingContext(
 		context.Background(),
@@ -174,11 +175,11 @@ func TestCanonicalTenantRateLimitIsSharedAcrossHTTPAndGRPCJWTs(t *testing.T) {
 func TestCanonicalResponseBudgetErrorMappings(t *testing.T) {
 	err := fmt.Errorf("search admission: %w", vcollection.ErrSearchResponseBudgetExceeded)
 	response := httptest.NewRecorder()
-	writeCanonicalOperationError(response, "search failed", err, http.StatusInternalServerError)
+	writeCanonicalOperationError(response, err, apierror.CodeInternal)
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("HTTP response budget error mapped to %d, want 413", response.Code)
 	}
-	if got := status.Code(canonicalGRPCError(err, codes.Internal)); got != codes.ResourceExhausted {
+	if got := status.Code(canonicalGRPCError(context.Background(), err, apierror.CodeInternal)); got != codes.ResourceExhausted {
 		t.Fatalf("gRPC response budget error mapped to %v, want ResourceExhausted", got)
 	}
 }
@@ -192,9 +193,9 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	t.Setenv("MAX_TENANTS", "10")
 	t.Setenv("MAX_COLLECTIONS", "10")
 
-	store := NewVectorStore(8, 4)
+	rt := newServerRuntime()
 	handler, collections := newCanonicalHTTPHandler(
-		store,
+		rt,
 		NewHashEmbedder(4),
 		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
@@ -202,7 +203,7 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	t.Cleanup(func() { _ = collections.Close() })
 
 	schema := canonicalResourceSchema("wide")
-	schema.Fields[0].Dim = vcollection.CanonicalMaxVectorDimension
+	schema.Fields[0].Dim = vcollection.MaxVectorDimension
 	createBody, err := json.Marshal(schema)
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +216,7 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 		t.Fatalf("create maximum-dimension collection returned %d: %s", response.Code, response.Body.String())
 	}
 
-	vector := make([]float32, vcollection.CanonicalMaxVectorDimension)
+	vector := make([]float32, vcollection.MaxVectorDimension)
 	vector[0] = 1
 	insertBody, err := json.Marshal(map[string]interface{}{
 		"id":       1,
@@ -236,7 +237,7 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	searchBody := func(includeVectors bool) []byte {
 		body, err := json.Marshal(map[string]interface{}{
 			"queries":         map[string]interface{}{"embedding": vector},
-			"top_k":           vcollection.CanonicalMaxSearchTopK,
+			"top_k":           vcollection.MaxSearchTopK,
 			"include_vectors": includeVectors,
 		})
 		if err != nil {
@@ -276,7 +277,7 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	grpcRequest := &deepdatav3.SearchRequest{
 		TenantId:       "acme",
 		Collection:     "wide",
-		TopK:           int32(vcollection.CanonicalMaxSearchTopK),
+		TopK:           int32(vcollection.MaxSearchTopK),
 		IncludeVectors: true,
 		Queries: map[string]*deepdatav3.VectorData{
 			"embedding": denseProtoVector(vector...),

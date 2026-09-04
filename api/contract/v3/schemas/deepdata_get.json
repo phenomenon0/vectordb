@@ -1,0 +1,63 @@
+{
+ "input": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "Fetch 1-50 documents by id. Ids that do not exist are reported in missing, not as an error.",
+  "properties": {
+   "ids": {
+    "type": "array",
+    "items": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "minItems": 1,
+    "maxItems": 50
+   },
+   "collection": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9_-]{1,64}$",
+    "description": "Collection name; defaults to DEEPDATA_COLLECTION (default 'memory')."
+   }
+  },
+  "required": [
+   "ids"
+  ],
+  "additionalProperties": false
+ },
+ "output": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+   "documents": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "metadata": {
+       "type": "object"
+      }
+     },
+     "additionalProperties": false,
+     "required": [
+      "id"
+     ]
+    }
+   },
+   "missing": {
+    "type": "array",
+    "items": {
+     "type": "integer",
+     "minimum": 1
+    }
+   }
+  },
+  "required": [
+   "documents"
+  ],
+  "additionalProperties": false
+ }
+}
