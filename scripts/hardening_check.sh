@@ -48,6 +48,8 @@ list_checks() {
         go-mod-tidy \
         sdk-smoke \
         backup-restore \
+        release-tag \
+        gates-release \
         soak \
         restart-reclaim \
         go-legacy-migration \
@@ -207,6 +209,14 @@ case "$CHECK_NAME" in
     backup-restore)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="scripts/backup_restore_drill.sh"
+        ;;
+    release-tag)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="python3 scripts/check_version_contract.py && git tag --points-at HEAD"
+        ;;
+    gates-release)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="python3 scripts/gates.py check --release"
         ;;
     adversarial-review)
         CHECK_CWD="$REPO_ROOT"
@@ -556,6 +566,30 @@ run_check() {
             ;;
         backup-restore)
             timeout "${BACKUP_TIMEOUT:-900}s" scripts/backup_restore_drill.sh
+            ;;
+        release-tag)
+            timeout 300s python3 scripts/check_version_contract.py || return 1
+            # `git tag --points-at HEAD` exits 0 and prints nothing when HEAD
+            # carries no tag, so the command the ledger named could never fail
+            # -- it would have reported the RC frozen on an untagged commit.
+            # The claim is that the SHA is frozen under a name, and the name has
+            # to be one .github/workflows/release.yml actually triggers on.
+            local tags
+            tags=$(git tag --points-at HEAD)
+            if [[ -z "$tags" ]]; then
+                echo "HEAD carries no tag; the RC SHA is not frozen" >&2
+                return 1
+            fi
+            if ! grep -qE '^deepdata-v[0-9]' <<<"$tags"; then
+                echo "no deepdata-v* tag at HEAD (found: ${tags//$'\n'/ }); release.yml would not trigger" >&2
+                return 1
+            fi
+            echo "RC frozen at $(git rev-parse --short HEAD) as: ${tags//$'\n'/ }"
+            ;;
+        gates-release)
+            # The meta-gate: every release gate passing, fresh, and taken on a
+            # clean tree. Runs after every other promotion of a run.
+            timeout 60s python3 scripts/gates.py check --release
             ;;
         adversarial-review)
             mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"

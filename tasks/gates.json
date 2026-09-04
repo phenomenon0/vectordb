@@ -372,7 +372,7 @@
     {
       "id": "REL-04",
       "statement": "release candidate SHA frozen; manifests and changelog name the same version and commit",
-      "command": "python3 scripts/check_version_contract.py && git tag --points-at HEAD",
+      "command": "scripts/hardening_check.sh release-tag",
       "scope": [
         "CHANGELOG.md",
         "internal/releaseinfo/version.txt",
@@ -512,7 +512,7 @@
     {
       "id": "EVID-02",
       "statement": "the truth ledger passes gates.py check --release",
-      "command": "python3 scripts/gates.py check --release",
+      "command": "scripts/hardening_check.sh gates-release",
       "scope": [
         "scripts/gates.py"
       ],
