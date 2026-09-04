@@ -547,8 +547,14 @@
         "scripts/gates.py"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "a0161b53dda050d7aaac9b3041a0f08691500900",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-04",
+        "receipt": ".deepdata-run/checks/gates-release/receipt.json",
+        "ci_run": null
+      },
       "note": "scope narrowed to the checker itself. tasks/gates.json and docs/PRE_RELEASE_STATUS.md both change whenever any gate is promoted, so keeping them in scope made this gate stale by the act of recording it; check --release re-reads both from disk at run time anyway. gates.py now skips this gate inside the --release loop for the same reason: it records that the command passed and so cannot also be a precondition of it."
     },
     {
