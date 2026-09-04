@@ -3,11 +3,13 @@ package replication
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -465,4 +467,216 @@ func TestTheReplicaMarkerIsNotMistakenForStoreState(t *testing.T) {
 	if occupied {
 		t.Fatal("the replica marker counts as a durable store artifact; a re-sync would take the resume path over an empty directory")
 	}
+}
+
+// A leader restart must not stall the stream.
+//
+// The recorded two-node failure was a leader whose record order lived in
+// memory. It restarted at 1, the follower asked for everything after 200, the
+// leader answered that its latest was 1 -- so the follower saw nothing to
+// fetch, applied nothing, and logged nothing, while every write taken after the
+// restart stayed on the leader alone. Order is now derived from the durable
+// journal, and this is what holds it there.
+//
+// The leader keeps one address across the restart, because that is what a
+// restarted leader does: the follower reconnects to the same URL and has to be
+// told the truth by a process that just rebuilt its state from disk.
+func TestWritesAfterALeaderRestartStillReachTheReplica(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leaderBase := storePath(t, dir, "leader")
+
+	leader, err := vcollection.OpenDurableStore(leaderBase, leaderBase)
+	if err != nil {
+		t.Fatalf("open leader: %v", err)
+	}
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	handler := mustLeaderHandler(t, leader)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		h := handler
+		mu.Unlock()
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	follower := &Follower{LeaderURL: srv.URL, Token: testToken}
+
+	base := storePath(t, dir, "replica")
+	replica, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatalf("bootstrap replica: %v", err)
+	}
+	t.Cleanup(func() { _ = replica.Close() })
+
+	followCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	fatal := make(chan error, 1)
+	// Mirror the `deepdata replicate` loop rather than calling Follow once: a
+	// dropped stream is retried from the replica's own cursor, and the restart
+	// under test drops it. A single Follow would end at the restart, before the
+	// assertion this test exists for.
+	go func() {
+		for followCtx.Err() == nil {
+			// A resync demand is terminal for an operator -- the directory has
+			// to be discarded -- so it is terminal here too. A leader restart
+			// must never provoke one.
+			if err := follower.Follow(followCtx, replica); errors.Is(err, ErrResyncRequired) {
+				fatal <- err
+				return
+			}
+			select {
+			case <-followCtx.Done():
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+
+	before := testDocument(1)
+	if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &before); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, followCtx, fatal, func() bool {
+		_, ok := replica.Tenants().GetDocument("tenant-a", "docs", before.ID)
+		return ok
+	}, "pre-restart document never reached the replica; the stream was not live before the restart")
+
+	// The restart: the leader's process-local state goes away entirely and the
+	// next one rebuilds from the same directory.
+	if err := leader.Close(); err != nil {
+		t.Fatalf("close leader: %v", err)
+	}
+	restarted, err := vcollection.OpenDurableStore(leaderBase, leaderBase)
+	if err != nil {
+		t.Fatalf("reopen leader after restart: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	mu.Lock()
+	handler = mustLeaderHandler(t, restarted)
+	mu.Unlock()
+	// A process that exits takes its established connections with it. Without
+	// this the follower stays parked on a stream the old leader will never
+	// write to again, which is a hang, not the reconnect under test.
+	srv.CloseClientConnections()
+
+	after := testDocument(2)
+	if err := restarted.Tenants().AddDocument(ctx, "tenant-a", "docs", &after); err != nil {
+		t.Fatal(err)
+	}
+	// Content, not presence. A leader that lost its place would re-mint IDs from
+	// the start and collide with a document the replica already holds, so asking
+	// only whether the ID resolves would be answered by the stale document and
+	// this test would pass while the write was never delivered.
+	waitFor(t, followCtx, fatal, func() bool {
+		return contentOf(replica, after.ID) == contentOf(restarted, after.ID)
+	}, "a write taken after the leader restarted never reached the replica")
+
+	// The restart must not have cost the replica what it already had.
+	if got := contentOf(replica, before.ID); got != contentOf(restarted, before.ID) {
+		t.Errorf("pre-restart document %d did not survive the leader restart intact: replica has %s",
+			before.ID, got)
+	}
+}
+
+// Equal document counts are not agreement.
+//
+// The recorded two-node failure had both nodes reporting 201 active documents
+// with different documents behind that number, which every count-based health
+// check calls healthy. The mutation pair here is chosen to hold the count
+// still: one delete and one insert leave DocCount exactly where it was, so a
+// replica that applied neither still passes the count check and only a
+// document-for-document comparison can fail.
+func TestEqualDocumentCountsAreNotEnoughToCallTwoNodesInSync(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	var seeded []uint64
+	for _, v := range []float32{1, 2, 3} {
+		doc := testDocument(v)
+		if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &doc); err != nil {
+			t.Fatal(err)
+		}
+		seeded = append(seeded, doc.ID)
+	}
+
+	follower := serveLeader(t, leader)
+	base := storePath(t, dir, "replica")
+	replica, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatalf("bootstrap replica: %v", err)
+	}
+	t.Cleanup(func() { _ = replica.Close() })
+
+	followCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	failed := make(chan error, 1)
+	go func() { failed <- follower.Follow(followCtx, replica) }()
+
+	if err := leader.Tenants().DeleteDocument(ctx, "tenant-a", "docs", seeded[0]); err != nil {
+		t.Fatal(err)
+	}
+	replacement := testDocument(4)
+	if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &replacement); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, followCtx, failed, func() bool {
+		_, ok := replica.Tenants().GetDocument("tenant-a", "docs", replacement.ID)
+		return ok
+	}, "the replacement document never reached the replica")
+
+	// The weak check, asserted on purpose: it is what a count-based health probe
+	// sees, and it has to agree here or the comparison below is measuring
+	// something other than divergence behind an equal count.
+	leaderInfo, err := leader.Tenants().GetCollectionInfo("tenant-a", "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replicaInfo, err := replica.Tenants().GetCollectionInfo("tenant-a", "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leaderInfo.DocCount != replicaInfo.DocCount {
+		t.Fatalf("counts already disagree (leader %d, replica %d); this test is about divergence they cannot see",
+			leaderInfo.DocCount, replicaInfo.DocCount)
+	}
+
+	// The check that actually holds: same key, same document.
+	for _, id := range []uint64{seeded[1], seeded[2], replacement.ID} {
+		if want, got := contentOf(leader, id), contentOf(replica, id); want != got {
+			t.Errorf("document %d differs behind an equal count: leader %s, replica %s", id, want, got)
+		}
+	}
+	if got := contentOf(replica, seeded[0]); got != absentDocument {
+		t.Errorf("document %d was deleted on the leader but is still served by the replica: %s", seeded[0], got)
+	}
+}
+
+const absentDocument = "<absent>"
+
+// contentOf renders the parts of a document a reader would receive, so a
+// comparison fails on a difference in served data and not on bookkeeping a
+// caller never sees. Map printing is key-sorted, so the rendering is stable.
+func contentOf(store *vcollection.DurableStore, id uint64) string {
+	doc, ok := store.Tenants().GetDocument("tenant-a", "docs", id)
+	if !ok {
+		return absentDocument
+	}
+	return fmt.Sprintf("metadata=%v vectors=%v", doc.Metadata, doc.Vectors)
+}
+
+func mustLeaderHandler(t *testing.T, store *vcollection.DurableStore) http.Handler {
+	t.Helper()
+	handler, err := NewLeaderHandler(store, LeaderConfig{Token: testToken, SpoolDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
 }

@@ -109,10 +109,15 @@ func bindReplicaReadOnly(collections *CollectionHTTPServer, basePath string) err
 // runReplicate is the `deepdata replicate` subcommand: keep a local replica
 // directory in step with a leader.
 //
-// It only syncs. Serving the directory it maintains is a separate `deepdata
-// serve` against the same path: that process finds the replica marker, opens
-// the store read-only, answers reads normally, refuses every write with a 403,
-// and reports read_only on /readyz so a load balancer stops sending it writes.
+// It only syncs, and it holds the directory for as long as it does: the
+// collection store takes an exclusive lock, so a `deepdata serve` against the
+// same path is refused with "collection store is already open" while this
+// command runs. A replica directory is therefore either tailing its leader or
+// being served, never both at once, and switching between them means stopping
+// one process and starting the other. Serving it is a plain `deepdata serve`
+// against the same path: that process finds the replica marker, answers reads
+// normally, refuses every write with a 403, and reports read_only on /readyz so
+// a load balancer stops sending it writes.
 func runReplicate(args []string, logger *logging.Logger) int {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	leaderURL := fs.String("leader", "", "leader base URL, e.g. http://leader.internal:8080")
