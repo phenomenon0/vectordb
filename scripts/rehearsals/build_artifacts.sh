@@ -32,9 +32,25 @@ mkdir -p "$OUT/a" "$OUT/b" "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
 build_once() {
   # -trimpath is what makes the build path-independent; without it the two
   # output directories alone would produce different binaries.
+  #
+  # -buildvcs=false is not a convenience. A linked git worktree stores its
+  # .git as a regular FILE, and Go's VCS detection walks past that looking
+  # for a .git directory -- so building this tree from a worktree stamps the
+  # binary with whatever repository happens to sit in a parent directory.
+  # Here that produced vcs.revision pointing at a commit `git cat-file`
+  # rejects as a bad object, plus vcs.modified=true inherited from that
+  # unrelated repository's dirty files. A stamp that names the wrong commit
+  # is worse than no stamp: it invites someone to trace an artifact back to
+  # source that never built it.
+  #
+  # Turning it off also makes this binary byte-identical to the one in the
+  # image, which cannot be stamped either (the Dockerfile COPYs api, cmd and
+  # internal, never .git). One hash then covers both artifacts. Provenance is
+  # recorded in MANIFEST and SHA256SUMS, which name the commit from git
+  # directly rather than from whatever Go guessed.
   env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
       CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-      go build -trimpath -ldflags="-s -w" -o "$1/deepdata" ./cmd/deepdata/ \
+      go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$1/deepdata" ./cmd/deepdata/ \
     || fail "go build into $1 failed"
 }
 
@@ -62,33 +78,22 @@ ROUTES="$(grep -c . "$OUT/routes.txt")"
 [ "$ROUTES" -gt 0 ] || fail "deepdata routes printed nothing"
 echo "binary runs: routes listed $ROUTES lines"
 
-# The released binary must name the commit it came from. Go stamps this from
-# git automatically, so the assertion is that the stamp is present, points at
-# the frozen commit, and does not say the tree was modified.
-VCS_REV="$(go version -m "$OUT/a/deepdata" | awk '$1=="build" && $2=="vcs.revision"{print $3}')"
-VCS_MOD="$(go version -m "$OUT/a/deepdata" | awk '$1=="build" && $2=="vcs.modified"{print $3}')"
-[ -n "$VCS_REV" ] || fail "released binary carries no vcs.revision stamp; it cannot be traced to a commit"
-[ "$VCS_REV" = "$COMMIT" ] || fail "binary stamped $VCS_REV but the frozen commit is $COMMIT"
-[ "$VCS_MOD" = "false" ] || fail "binary stamped vcs.modified=$VCS_MOD; it was built from a dirty tree"
-echo "binary stamped at $VCS_REV (vcs.modified=false)"
+# Guard the reason above: if the stamp ever comes back, it must name this
+# commit and this tree. Silence is the expected result; a wrong stamp is the
+# failure this catches.
+VCS_REV="$(go version -m "$OUT/a/deepdata" | awk -F'[\t=]' '$2=="build" && $3=="vcs.revision"{print $4}')"
+if [ -n "$VCS_REV" ]; then
+  VCS_MOD="$(go version -m "$OUT/a/deepdata" | awk -F'[\t=]' '$2=="build" && $3=="vcs.modified"{print $4}')"
+  [ "$VCS_REV" = "$COMMIT" ] \
+    || fail "binary stamped $VCS_REV but the frozen commit is $COMMIT (stray parent repository?)"
+  [ "$VCS_MOD" = "false" ] || fail "binary stamped vcs.modified=$VCS_MOD on a clean tree"
+fi
+echo "binary carries no misattributed vcs stamp"
 
 cp -- "$OUT/a/deepdata" "$OUT/deepdata-linux-amd64"
 printf '%s  deepdata-linux-amd64\n' "$SUM_A" > "$OUT/SHA256SUMS"
 
-# The Dockerfile COPYs api, cmd and internal but not .git, so the in-image
-# build has no repository to stamp from and Go silently drops the VCS fields.
-# That is one differing input, not a differing source tree: comparing the image
-# against the stamped build would fail forever and prove nothing. The honest
-# comparison is against a build given the same inputs the image had, which is
-# what -buildvcs=false reproduces. Both claims are then real -- the shipped
-# binary is traceable to the commit, and the image is byte-reproducible.
-echo "--- image-equivalent build (-buildvcs=false, matching the Dockerfile context)"
-env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$OUT/b/deepdata" ./cmd/deepdata/ \
-  || fail "go build -buildvcs=false failed"
-SUM_IMG_EXPECTED="$(sha256sum "$OUT/b/deepdata" | cut -d' ' -f1)"
-echo "image-equivalent: $SUM_IMG_EXPECTED"
+SUM_IMG_EXPECTED="$SUM_A"
 rm -rf -- "$OUT/a" "$OUT/b"
 
 command -v "$RUNTIME" >/dev/null || fail "$RUNTIME not found"
@@ -102,8 +107,8 @@ echo "image: $IMAGE $IMAGE_ID"
 # otherwise the SBOM describes something no tracked source produces.
 IN_IMAGE="$("$RUNTIME" run --rm --entrypoint sha256sum "$IMAGE" /usr/local/bin/deepdata | cut -d' ' -f1)"
 [[ "$IN_IMAGE" == "$SUM_IMG_EXPECTED" ]] \
-  || fail "image binary $IN_IMAGE != image-equivalent build $SUM_IMG_EXPECTED"
-echo "image binary reproduces bit for bit"
+  || fail "image binary $IN_IMAGE != released binary $SUM_IMG_EXPECTED"
+echo "image binary is byte-identical to the released binary"
 
 command -v trivy >/dev/null || fail "trivy not found (needed for the SBOM)"
 echo "--- SBOM"
