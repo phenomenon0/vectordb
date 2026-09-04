@@ -82,7 +82,7 @@ the RC binary answers it 404; follower restore and snapshot streaming were delet
 
 ## Run from source
 
-Requirements: Linux or macOS and Go 1.25.12 (`go.mod:3`; CI pins the same version at `.github/workflows/ci.yml:10`).
+Requirements: Linux or macOS and Go 1.25.13 (`go.mod:3`; CI pins the same version at `.github/workflows/ci.yml:10`).
 Persistent startup fails closed on every other OS (`internal/collection/store_lock_other.go`). Linux amd64 is the only
 gated release target; macOS persistence is checked by hand with `scripts/darwin_durability_check.py`.
 
@@ -217,8 +217,8 @@ contract, and the five-target compile-proof matrix (`.github/workflows/ci.yml:17
 list compiles under a separate job marked `continue-on-error: true` (`.github/workflows/ci.yml:271-273`).
 
 ```bash
-GOTOOLCHAIN=go1.25.12 go test -count=1 ./internal/collection
-GOTOOLCHAIN=go1.25.12 go test -count=1 ./cmd/deepdata -run '^TestCanonical'
+GOTOOLCHAIN=go1.25.13 go test -count=1 ./internal/collection
+GOTOOLCHAIN=go1.25.13 go test -count=1 ./cmd/deepdata -run '^TestCanonical'
 cd sdk/python && python -m pytest -q && python -m mypy deepdata
 python3 scripts/check_docs_contract.py
 ```

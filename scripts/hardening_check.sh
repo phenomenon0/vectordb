@@ -10,10 +10,10 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 RUN_ROOT="$REPO_ROOT/.deepdata-run/checks"
 GO_BUILD_CACHE="$REPO_ROOT/.deepdata-run/go-build-cache"
 GO_MODULE_CACHE="${DEEPDATA_GO_MODULE_CACHE:-/tmp/deepdata-go-mod}"
-# go.mod requires go >= 1.25.12; the host /usr/lib/golang bin is a custom
+# go.mod requires go >= 1.25.13; the host /usr/lib/golang bin is a custom
 # build whose default GOTOOLCHAIN=local is 1.25.5, so pin the toolchain
 # explicitly. Override per-invocation via DEEPDATA_GO_TOOLCHAIN.
-GO_TOOLCHAIN="${DEEPDATA_GO_TOOLCHAIN:-go1.25.12}"
+GO_TOOLCHAIN="${DEEPDATA_GO_TOOLCHAIN:-go1.25.13}"
 export GOTOOLCHAIN="$GO_TOOLCHAIN"
 
 list_checks() {

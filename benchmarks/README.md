@@ -27,7 +27,7 @@ benchmarks/
 ## Go: index-level scenarios (no server)
 
 `competitive/` and `review/` import `internal/index` directly
-(`competitive/runner.go:9`). Go commands need `GOTOOLCHAIN=go1.25.12`.
+(`competitive/runner.go:9`). Go commands need `GOTOOLCHAIN=go1.25.13`.
 
 ```bash
 go test ./benchmarks/... -short                         # everything at reduced scales

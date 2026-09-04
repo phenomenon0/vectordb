@@ -121,7 +121,7 @@ collection is re-read on the next text call (main.go:272; test TestSchemaCacheDr
   (main.go:484, `DisallowUnknownFields`); an unknown tool is `-32601`; an unparsable frame is `-32700`; a
   wrong `jsonrpc` version is `-32600`.
 
-`GOTOOLCHAIN=go1.25.12 go test ./cmd/deepdata-mcp ./api/contract` runs the tests in
+`GOTOOLCHAIN=go1.25.13 go test ./cmd/deepdata-mcp ./api/contract` runs the tests in
 `cmd/deepdata-mcp/main_test.go` and `api/contract/contract_test.go` against an httptest stand-in; both packages
 are in the vet and test lists of `.github/workflows/ci.yml`, and `scripts/hardening_check.sh go-mcp` is the
 receipt for gates CTL-03 and CI-05.

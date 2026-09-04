@@ -91,7 +91,7 @@ def start_server():
         REQUIRE_AUTH="1",
         TENANT_RPS="500",
         TENANT_BURST="500",
-        GOTOOLCHAIN="go1.25.12",
+        GOTOOLCHAIN="go1.25.13",
     )
     proc = subprocess.Popen(
         [SERVER_BIN, "serve"],
@@ -162,7 +162,7 @@ else:
         ["go", "build", "-trimpath", "-o", SERVER_BIN, "./cmd/deepdata"],
         cwd=REPO,
         check=True,
-        env=dict(os.environ, GOTOOLCHAIN=os.environ.get("GOTOOLCHAIN", "go1.25.12")),
+        env=dict(os.environ, GOTOOLCHAIN=os.environ.get("GOTOOLCHAIN", "go1.25.13")),
     )
 if os.path.exists(STATE):
     subprocess.run(["rm", "-rf", STATE])

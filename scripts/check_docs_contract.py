@@ -100,7 +100,7 @@ KNOWN_EXT = (
 BAD_CHARS = set("*?[]{}|\\<>$\"' \t=@")
 METRIC_NAME = re.compile(r"\b(?:vectordb|deepdata)_[a-z_]+\b")
 MCP_TOOL = re.compile(r'^\s*Name:\s+"([a-z_]+)"', re.M)
-ROUTES_CMD = ["env", "GOTOOLCHAIN=go1.25.12", "go", "run", "./cmd/deepdata", "routes"]
+ROUTES_CMD = ["env", "GOTOOLCHAIN=go1.25.13", "go", "run", "./cmd/deepdata", "routes"]
 FENCE = re.compile(r"^\s*(?:```|~~~)\s*(\w*)")
 JSON_ELIDED = re.compile(r"^\s*(?:\.\.\.|//|/\*)", re.M)
 SDK_PKG = "sdk/python/deepdata"

@@ -175,7 +175,7 @@ def env_for():
         TENANT_RPS="20000",
         TENANT_BURST="20000",
         API_RPS="2000000",
-        GOTOOLCHAIN="go1.25.12",
+        GOTOOLCHAIN="go1.25.13",
     )
     return e
 

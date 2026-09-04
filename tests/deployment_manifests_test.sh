@@ -170,7 +170,7 @@ if grep -Fq -- "kind: NetworkPolicy" "$policy_disabled_rendered"; then
 fi
 
 assert_contains "$repo_root/Dockerfile" "USER 10001:10001"
-assert_contains "$repo_root/Dockerfile" "golang:1.25.12-bookworm@sha256:"
+assert_contains "$repo_root/Dockerfile" "golang:1.25.13-bookworm@sha256:"
 assert_contains "$repo_root/Dockerfile" "debian:bookworm-slim@sha256:"
 assert_contains "$repo_root/Dockerfile" "ENV GRPC_PORT=50051"
 assert_contains "$repo_root/Dockerfile" "EXPOSE 8080 50051"

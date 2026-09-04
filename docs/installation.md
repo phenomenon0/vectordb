@@ -42,7 +42,7 @@ container is stopped.
 
 ## Build from source
 
-Go 1.25.12 or newer is required.
+Go 1.25.13 or newer is required.
 
 ```bash
 git clone https://github.com/phenomenon0/vectordb.git
