@@ -510,6 +510,29 @@ run_check() {
                 go test -count=1 -p 1 -run 'Checkpoint|UnifiedCollectionSnapshot' ./internal/collection
             ;;
         release-contract)
+            # Two separate problems, both of which make this gate report a tool
+            # fault instead of the stale-codegen fault it exists to catch.
+            #
+            # The plugins install into GOPATH/bin, which a non-login shell does
+            # not have on PATH -- without it generate_proto.sh exits 127.
+            #
+            # And generate_proto.sh pins exact plugin versions so api/gen stays
+            # byte-reproducible, while the version installed on this machine has
+            # moved ahead of the pin. Moving the pin would rewrite every .pb.go
+            # at RC freeze and overwriting the machine's copy would be a change
+            # outside the repository, so the pinned plugin lives in a gitignored
+            # repo-local bin that takes precedence. The pin is read from
+            # generate_proto.sh rather than repeated here, so the two cannot
+            # drift apart.
+            PROTOC_BIN_DIR="$REPO_ROOT/.deepdata-run/protoc-bin"
+            PIN=$(sed -n 's/^PROTOC_GEN_GO_VERSION="${PROTOC_GEN_GO_VERSION:-\(.*\)}"$/\1/p' \
+                scripts/generate_proto.sh)
+            [[ -n "$PIN" ]] || { echo "cannot read the protoc-gen-go pin from scripts/generate_proto.sh" >&2; return 1; }
+            if [[ "$("$PROTOC_BIN_DIR/protoc-gen-go" --version 2>/dev/null)" != "protoc-gen-go v$PIN" ]]; then
+                echo "installing pinned protoc-gen-go v$PIN into $PROTOC_BIN_DIR"
+                GOBIN="$PROTOC_BIN_DIR" go install "google.golang.org/protobuf/cmd/protoc-gen-go@v$PIN" || return 1
+            fi
+            PATH="$PROTOC_BIN_DIR:$PATH:$(go env GOPATH)/bin"
             timeout 300s python3 scripts/check_version_contract.py &&
                 timeout 300s scripts/check_proto_generated.sh
             ;;
