@@ -55,15 +55,24 @@ env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
   || { tail -n 40 "$OUT/govulncheck-$COMMIT.txt" >&2; fail "govulncheck found reachable vulnerabilities"; }
 
 echo "--- gosec (HIGH severity, HIGH confidence)"
-# gosec exits non-zero when it reports findings, so the bar is enforced by the
-# filter flags, not by a grep over the output.
-# -quiet suppresses the -out report as well as the console summary, so it is
-# deliberately absent: without the report there is nothing to audit and the
-# load-failure guard below has nothing to read.
+# gosec's exit status is not the bar. It exits non-zero both when it reports
+# findings AND when a package produced a load diagnostic, and this tree always
+# produces one (see below), so keying off the status alone fails a clean scan.
+# The bar is read from the report: the -severity/-confidence flags do the
+# filtering, so any remaining Issue is a HIGH/HIGH finding.
+#
+# -quiet is deliberately absent: it suppresses the -out report as well as the
+# console summary, and without the report there is nothing to audit and the
+# guards below have nothing to read.
 env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
   gosec -severity high -confidence high -fmt json \
-  -out "$OUT/gosec-$COMMIT.json" ./... >"$OUT/gosec-$COMMIT.log" 2>&1 \
-  || { tail -n 20 "$OUT/gosec-$COMMIT.log" >&2; fail "gosec reported HIGH/HIGH findings; see $OUT/gosec-$COMMIT.json"; }
+  -out "$OUT/gosec-$COMMIT.json" ./... >"$OUT/gosec-$COMMIT.log" 2>&1 || true
+[ -s "$OUT/gosec-$COMMIT.json" ] || {
+  tail -n 20 "$OUT/gosec-$COMMIT.log" >&2
+  fail "gosec wrote no report; it did not run"
+}
+jq -e . "$OUT/gosec-$COMMIT.json" >/dev/null 2>&1 || fail "gosec report is not valid JSON"
+
 # gosec reports "0 issues" for a package it could not load, so a load failure
 # has to be a failure and not a clean bill of health -- a wrong GOTOOLCHAIN
 # alone produces "found: 0" over a tree that never compiled. The one benign
@@ -77,8 +86,16 @@ if [ -s "$OUT/gosec-load-errors.txt" ]; then
   cat "$OUT/gosec-load-errors.txt" >&2
   fail "gosec could not load one or more packages; its 0-finding result is meaningless"
 fi
+
 SCANNED="$(jq -r '.Stats.files' "$OUT/gosec-$COMMIT.json")"
 [ "$SCANNED" -gt 0 ] || fail "gosec scanned no files"
+
+FOUND="$(jq -r '.Issues | length' "$OUT/gosec-$COMMIT.json")"
+if [ "$FOUND" -gt 0 ]; then
+  jq -r '.Issues[] | "\(.severity)/\(.confidence) \(.rule_id) \(.file):\(.line) \(.details)"' \
+    "$OUT/gosec-$COMMIT.json" >&2
+  fail "gosec reported $FOUND HIGH/HIGH findings; see $OUT/gosec-$COMMIT.json"
+fi
 NOSEC="$(jq -r '.Stats.nosec' "$OUT/gosec-$COMMIT.json")"
 echo "gosec: 0 HIGH/HIGH findings over $SCANNED files, $NOSEC annotated #nosec sites"
 
