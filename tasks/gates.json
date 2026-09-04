@@ -208,8 +208,14 @@
         "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "c1dfcfb3cadf43804edbba03acfa690f14d2e04d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-legacy-migration/receipt.json",
+        "ci_run": null
+      },
       "note": "previous command named a legacy-migration phase of tests/smoke_test.sh that the script does not contain. Replaced by cmd/deepdata/legacy_migration_test.go, which builds a pre-0.2 root in-process with NewCollectionManager/NewTenantManager, exports it, replays it into a canonical RC over /v3, restarts, and asserts every document is retrievable by its own vector with identical metadata -- then that the legacy artifacts are byte-identical."
     },
     {
@@ -287,8 +293,14 @@
         "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "c1dfcfb3cadf43804edbba03acfa690f14d2e04d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/security-scan/receipt.json",
+        "ci_run": null
+      },
       "note": "the four scanners now run from one tracked script that writes its bar down: gitleaks over full history, govulncheck with nothing reachable, gosec with no HIGH-severity HIGH-confidence finding, trivy with no fixable HIGH/CRITICAL in the image. gosec reports 'found: 0' for a package it failed to load, so the script fails on any load error other than the amd64 assembly stubs rather than reading that as clean."
     },
     {
@@ -522,8 +534,14 @@
         "scripts/hardening_check.sh"
       ],
       "release_gate": true,
-      "status": "open",
-      "evidence": null,
+      "status": "pass",
+      "evidence": {
+        "commit": "c1dfcfb3cadf43804edbba03acfa690f14d2e04d",
+        "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/adversarial-review/receipt.json",
+        "ci_run": null
+      },
       "note": "previous command 'scripts/hardening_check.sh all' is not a check the script accepts; there is no 'all'. Replaced by the tracked persona suites under benchmarks/review, which fail the run on any unpassed check at High or Critical severity."
     },
     {
