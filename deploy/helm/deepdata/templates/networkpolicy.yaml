@@ -18,12 +18,13 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Ingress is limited to the advertised protocols; the empty peer is
-    # intentional: any namespace may reach these ports (the single-node
-    # server's clients live outside its own namespace).
-    - from:
-        - {}
-      ports:
+    # Ingress is limited to the advertised protocols, but not by source: the
+    # single-node server's clients live outside its own namespace. Omitting
+    # `from` is how that is spelled -- a rule with no peers matches all
+    # sources. Writing `from: [- {}]` expresses the same intent in prose and
+    # is rejected by the API server ("spec.ingress[0].from[0]: Required
+    # value: must specify a peer"), which takes the whole chart down with it.
+    - ports:
         - protocol: TCP
           port: {{ .Values.service.port }}
         - protocol: TCP
