@@ -21,8 +21,11 @@ contract.
 ## Runtime and authentication
 
 The server owns one data directory and holds a lifetime filesystem lock. A
-second writer is rejected. Persistent startup on Windows and macOS is rejected
-because their filesystem semantics are not release-qualified.
+second writer is rejected. Persistent startup is rejected on Windows and every
+other non-POSIX target (`store_lock_other.go`): only `linux || darwin` build a
+store lock. macOS runs the same `flock(2)` implementation as Linux, so it starts
+persistently; it is supported code on a platform that is not a gated release
+target, which is not the same thing as a qualified deployment.
 
 Inside that directory the store keeps one file prefix and writes its artifacts
 beside it: `<prefix>.journal` and `<prefix>.snapshot` hold canonical state

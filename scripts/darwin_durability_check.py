@@ -8,11 +8,18 @@ Exercises the ONLY durable HTTP surface (/v3/tenants/...) through:
   phase 3  SIGTERM (graceful) -> checkpoint into snapshot -> cold restart
            from that snapshot must restore the same state
 
-Run on the Mac. Usage: python3 scripts/darwin_durability_check.py <binary> <scratchdir> <port>
+Run on the Mac, from the repo root. Refuses to run anywhere else.
+Writes .deepdata-run/checks/darwin-durability/receipt.json for MAC-01.
+
+    python3 scripts/darwin_durability_check.py bin/deepdata-darwin-arm64 /tmp/dd-mac 18080
 """
 
+import datetime
+import hashlib
 import json
 import os
+import pathlib
+import platform
 import shutil
 import signal
 import subprocess
@@ -20,6 +27,18 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+# This check is the only evidence that the Darwin port works. Every assertion
+# below is platform-neutral, so on Linux it passes without touching darwin and
+# the receipt would name a host that proves nothing. Refuse rather than lie.
+if platform.system() != "Darwin":
+    sys.exit(
+        f"darwin-durability: refusing to run on {platform.system()}; this check "
+        "exists to prove the Darwin port and would pass here without exercising it"
+    )
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+STARTED_AT = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 BIN, SCRATCH, PORT = sys.argv[1], sys.argv[2], int(sys.argv[3])
 BASE = f"http://127.0.0.1:{PORT}"
@@ -294,4 +313,73 @@ print(
     f"RESULT: {'ALL CHECKS PASSED' if not failures else 'FAILURES: ' + ', '.join(failures)}"
 )
 print("=" * 72)
+
+
+def tree_fingerprint():
+    """Same digest hardening_check.sh writes, so a Mac receipt and a Linux
+    receipt are comparable and a dirty Mac tree is as disqualifying as a dirty
+    Linux one. The binary under test belongs in bin/ or outside the repo; both
+    are ignored, so copying it in does not dirty the tree."""
+    digest = hashlib.sha256()
+    digest.update(subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "diff", "--binary", "HEAD", "--"],
+        check=True, stdout=subprocess.PIPE).stdout)
+    untracked = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "--others", "--exclude-standard", "-z"],
+        check=True, stdout=subprocess.PIPE).stdout.split(b"\0")
+    for encoded in sorted(path for path in untracked if path):
+        digest.update(encoded)
+        digest.update(b"\0")
+        path = REPO_ROOT / encoded.decode("utf-8", errors="surrogateescape")
+        if path.is_file():
+            with path.open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
+    return digest.hexdigest()
+
+
+# hardening_check.sh cannot run here -- BSD date has no -Iseconds, timeout is
+# not installed, and its heredocs call `python`, which macOS does not ship -- and
+# a receipt it half-wrote would carry an empty finished_at that fails gates.py's
+# date regex and breaks `gates.py check` for the whole ledger. So this check
+# writes its own, in the same schema-2 shape gates.py promote reads.
+uname = os.uname()
+receipt_dir = REPO_ROOT / ".deepdata-run/checks/darwin-durability"
+receipt_dir.mkdir(parents=True, exist_ok=True)
+receipt = {
+    "schema_version": 2,
+    "check": "darwin-durability",
+    "host": {
+        "hostname": uname.nodename,
+        "kernel": uname.release,
+        "arch": uname.machine,
+        "cpus": os.cpu_count(),
+        "system": platform.system(),
+        "mac_version": platform.mac_ver()[0],
+    },
+    "status": "failed" if failures else "pass",
+    "exit_code": 1 if failures else 0,
+    "started_at": STARTED_AT,
+    "finished_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+    "git_commit": subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+        check=True, stdout=subprocess.PIPE, text=True).stdout.strip(),
+    "tree_fingerprint": tree_fingerprint(),
+    "working_directory": str(REPO_ROOT),
+    "command": " ".join([sys.executable, *sys.argv]),
+    # The terminal transcript is the log; what a reader needs from the receipt
+    # is which assertions failed, so carry those instead of a path to a file
+    # this check does not write.
+    "log_path": None,
+    "failures": failures,
+}
+tmp = receipt_dir / f".receipt.{os.getpid()}.tmp"
+with tmp.open("w", encoding="utf-8") as handle:
+    json.dump(receipt, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+os.replace(tmp, receipt_dir / "receipt.json")
+print(f"receipt: {receipt_dir / 'receipt.json'}")
+
 sys.exit(1 if failures else 0)

@@ -37,7 +37,9 @@ manager, authorization model, and append-before-apply durability boundary.
 
 - A managed service or a control plane that hides infrastructure operations.
 - Built-in replication, automatic failover, clustering, or multi-node scale.
-- Persistent Windows or macOS deployment.
+- Persistent Windows deployment: only Linux and macOS build a store lock.
+  macOS starts persistently on the same POSIX implementation Linux uses, but
+  Linux amd64 is the only gated release target.
 - Switching the embedder at runtime: one per process, chosen at startup.
 - GraphRAG, extraction, recommendations, discovery, or feedback loops.
 - DiskANN, IVF, binary/PQ quantization, or CUDA acceleration.

@@ -565,7 +565,7 @@
     {
       "id": "REV-01",
       "statement": "every open gate has a named owner decision recorded in tasks/todo.md before freeze",
-      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s — '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
+      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s \u2014 '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
       "scope": [
         "tasks/todo.md"
       ],
@@ -982,6 +982,20 @@
         "ci_run": null
       },
       "note": "Prefix = exported Canonical<Name> identifiers: the eight admission limits in internal/collection/limits.go became Max<Name>, storage.CanonicalFormatVersion became StrictFormatVersion (version 3, the first strict checksum; CurrentFormatVersion stays 4). Lowercase canonical* identifiers, file names and the English word in SDK docstrings are not the prefix and stay. go-canonical asserts no \\bCanonical[A-Z] in Go/Python/proto under cmd, internal, api, sdk, a gofmt-clean doc.go in every go list ./cmd/... ./internal/... package, build and vet. The 14 gofmt-unclean files under cmd/internal predate SYS-04 and are out of its scope."
+    },
+    {
+      "id": "MAC-01",
+      "statement": "darwin/arm64 binary survives boot, SIGKILL journal replay, and SIGTERM checkpoint cold start on real Apple hardware",
+      "command": "python3 scripts/darwin_durability_check.py bin/deepdata-darwin-arm64 /tmp/dd-mac 18080",
+      "scope": [
+        "internal/collection",
+        "cmd/deepdata",
+        "scripts/darwin_durability_check.py"
+      ],
+      "release_gate": false,
+      "status": "open",
+      "evidence": null,
+      "note": "Not a release gate: Linux amd64 is the only gated release target, and widening what a release must pass is a separate decision from proving the darwin claim. The claim needs proving because store_lock_unix.go builds for `linux || darwin` and darwin binaries ship in bin/, while nothing has ever run one. The check writes its own schema-2 receipt to .deepdata-run/checks/darwin-durability/ instead of going through hardening_check.sh, which cannot run on macOS: BSD date has no -Iseconds, timeout is not installed, and its heredocs invoke `python`, which macOS does not ship. An empty finished_at from a half-written receipt fails gates.py's date regex and breaks `gates.py check` for the whole ledger, so a Mac receipt from hardening_check.sh would be worse than none. The check refuses to run off Darwin, because every assertion in it is platform-neutral and would pass on Linux without touching the port. Known Linux-only outside this check: soak.py and restart_reclaim_probe.py read /proc/<pid>/status VmRSS -- soak.py raises IndexError on the empty series and the reclaim probe silently returns -1 and reports a meaningless verdict; canonical_process_test.go:1131 asserts an exact os.ReadDir count that a .DS_Store breaks; and F_FULLFSYNC costs ~4.0ms/op against ~0.08ms on Linux, so per-document write loops may exceed Linux-tuned timeouts."
     },
     {
       "id": "MEM-01",
