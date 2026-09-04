@@ -422,7 +422,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "f0cf6e4ebef34de366e3798266315ef266839ba7",
+        "commit": "f70277a244c1361c34f67bd763fb6b462e19a132",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-04",
         "receipt": ".deepdata-run/checks/release-tag/receipt.json",

@@ -46,7 +46,7 @@ Readiness: 26 release gates, 26 pass and fresh, 0 pass (stale), 0 not passed. A 
 | REL-01 | pass | 5a2d82a | 2026-09-04 | version parity across version.txt, Python SDK, Helm chart and Dockerfile; generated proto is fr… |
 | REL-02 | pass | 5a2d82a | 2026-09-04 | repository carries an Apache-2.0 LICENSE and the chart, SDK and README declare it |
 | REL-03 | pass | 5a2d82a | 2026-09-04 | go.mod and go.sum are tidy (go mod tidy -diff is empty) |
-| REL-04 | pass | f0cf6e4 | 2026-09-04 | release candidate SHA frozen; manifests and changelog name the same version and commit |
+| REL-04 | pass | f70277a | 2026-09-04 | release candidate SHA frozen; manifests and changelog name the same version and commit |
 
 | CI | status | commit | date | statement |
 |---|---|---|---|---|
