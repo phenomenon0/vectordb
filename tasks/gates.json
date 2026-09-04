@@ -297,6 +297,22 @@
       "note": "fix landed at 14d1442 with local receipts (memdrift-fix/restart_reclaim_receipt.json) that carry no commit or fingerprint; cannot bind honestly. Now a receipt-backed check (restart-reclaim) with the probe tracked at scripts/rehearsals/restart_reclaim_probe.py"
     },
     {
+      "id": "REP-01",
+      "statement": "a leader and a `deepdata replicate` follower stay agreed document for document across a leader restart, and a replica directory refuses both a second writer and a local write",
+      "command": "scripts/hardening_check.sh multinode",
+      "scope": [
+        "internal/replication",
+        "internal/collection/journal_replica.go",
+        "cmd/deepdata/replication.go",
+        "scripts/rehearsals/multinode_probe.py",
+        "scripts/hardening_check.sh"
+      ],
+      "release_gate": true,
+      "status": "open",
+      "evidence": null,
+      "note": "Added 2026-09-04. internal/replication and cmd/deepdata/replication.go shipped in the RC with no gate at all: grepping the ledger for replic|node|multi|cluster|distrib returned nothing across 54 gates, so ~900 lines of a user-reachable subcommand had zero coverage. A release gate rather than a MAC-01-style exemption, because unlike the darwin port this is a feature on the gated target -- Linux amd64 -- and the bar for a release should include what the release ships. Binds the three spike/multinode findings, which no package test can hold because each is about the space between two processes: a replica accepting a local write (split brain), post-restart writes never reaching the follower, and equal document counts hiding divergent contents. The probe compares content and never presence, and its mutation is count-neutral (one delete paired with one insert) so a replica that applied neither still passes every count-based health probe and only the document-for-document comparison fails it."
+    },
+    {
       "id": "SEC-01",
       "statement": "gitleaks, govulncheck, gosec and trivy scans are clean on the frozen tree",
       "command": "scripts/hardening_check.sh security-scan",
@@ -583,7 +599,7 @@
     {
       "id": "REV-01",
       "statement": "every open gate has a named owner decision recorded in tasks/todo.md before freeze",
-      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s — '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
+      "command": "python3 -c \"import json;t=open('tasks/todo.md').read().split('## Owner decisions')[1].split('\\n## ')[0];g=[x['id'] for x in json.load(open('tasks/gates.json'))['gates'] if x['status'] in ('open','blocked')];m=[i for i in g if '- %s \u2014 '%i not in t];assert not m,m;print('REV-01: %d open or blocked gates, all decided'%len(g))\"",
       "scope": [
         "tasks/todo.md"
       ],

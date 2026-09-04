@@ -52,6 +52,7 @@ list_checks() {
         gates-release \
         soak \
         restart-reclaim \
+        multinode \
         go-legacy-migration \
         adversarial-review \
         build-artifacts \
@@ -177,6 +178,10 @@ case "$CHECK_NAME" in
     restart-reclaim)
         CHECK_CWD="$REPO_ROOT"
         CHECK_DESCRIPTION="DRIFT_MINUTES=${DRIFT_MINUTES:-4} N_HNSW=${N_HNSW:-6000} python3 scripts/rehearsals/restart_reclaim_probe.py"
+        ;;
+    multinode)
+        CHECK_CWD="$REPO_ROOT"
+        CHECK_DESCRIPTION="python3 scripts/rehearsals/multinode_probe.py"
         ;;
     go-legacy-migration)
         CHECK_CWD="$REPO_ROOT"
@@ -502,6 +507,18 @@ run_check() {
                     go build -trimpath -o "$RECLAIM_WORK/deepdata" ./cmd/deepdata || return 1
             fi
             timeout "${RECLAIM_TIMEOUT:-2400}s" python3 scripts/rehearsals/restart_reclaim_probe.py
+            ;;
+        multinode)
+            MULTINODE_WORK="$REPO_ROOT/.deepdata-run/rehearsals/multinode"
+            rm -rf "$MULTINODE_WORK/leader" "$MULTINODE_WORK/replica"
+            if [[ -n "${BIN:-}" && -x "${BIN}" ]]; then
+                echo "using prebuilt binary $BIN"
+            else
+                mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE" "$MULTINODE_WORK"
+                env GOCACHE="$GO_BUILD_CACHE" GOMODCACHE="$GO_MODULE_CACHE" \
+                    go build -trimpath -o "$MULTINODE_WORK/deepdata" ./cmd/deepdata || return 1
+            fi
+            timeout "${MULTINODE_TIMEOUT:-900}s" python3 scripts/rehearsals/multinode_probe.py
             ;;
         go-legacy-migration)
             mkdir -p "$GO_BUILD_CACHE" "$GO_MODULE_CACHE"
