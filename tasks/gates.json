@@ -35,7 +35,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "bc8a807c02f339fe61e77eaa253d003cb9d31910",
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-storage/receipt.json",
@@ -117,9 +117,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "a36faa457912ac9eeba42dc05826691fec3093bf",
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-02",
+        "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/python-unit/receipt.json",
         "ci_run": null
       },
@@ -149,9 +149,9 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "a3de51621d35f2cde72b4c0025f4d5cc3d805fce",
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-08-07",
+        "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/python-build/receipt.json",
         "ci_run": null
       },
@@ -233,7 +233,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "78bad247be6aaee9bc6d8aa352dbd3086cfee541",
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/deploy-lifecycle/receipt.json",
@@ -318,10 +318,10 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "a3b4cfbfda5b998028daa5ff6cd5bd2845c6143c",
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-02",
-        "receipt": null,
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/release-contract/receipt.json",
         "ci_run": null
       },
       "note": "CI run https://github.com/phenomenon0/vectordb/actions/runs/29977008196 on PR #4 checked out f5d4582; re-run locally at a3b4cfb (exit 0) after CTL-02/CTL-04 changed api/ (texts, embedding, score_direction, query_time_ms, request_id; operations.json); fingerprint is the clean-tree constant"
@@ -339,10 +339,10 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "7456427d7d09a33d247287fe688d2140e58029e6",
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
-        "receipt": null,
+        "receipt": ".deepdata-run/checks/license/receipt.json",
         "ci_run": null
       },
       "note": "todo.md:198 box closed at b1f28be; re-verified 2026-09-01 with git cat-file -e b1f28be:LICENSE (Apache License 2.0); re-run at 7db4878 (command exit 0) after the docs phase and CTL-04 rewrote README.md; re-run at 6c01620 (exit 0) after SYS-03 refreshed README.md's source citations; re-run at 7456427 (command exit 0) after the platform-claim correction rewrote README.md"
@@ -573,10 +573,10 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "a3b4cfbfda5b998028daa5ff6cd5bd2845c6143c",
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-02",
-        "receipt": null,
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-replay/receipt.json",
         "ci_run": null
       },
       "note": "session-verified at 9a30758 (command exit 0) after CTL-01 wrapped durable_store.go errors in sentinels; earlier at 39bfe42: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt; re-run at 7db4878 (exit 0) after CTL-05's usage sidecar and SYS-02's index vocabulary changed durable_store.go; re-run at 6c01620 (exit 0) after CTL-05's usage sidecar and SYS-02's index vocabulary changed durable_store.go; re-run at 835aaf4 (exit 0) after SYS-04 renamed the admission limits durable_store.go reads; re-run at 6869b5e (exit 0) after MED-01 routed ephemeral document mutations around the journal in durable_store.go; re-run at 4ec2dcc (exit 0) after RCV-04 added rejectCompleteFrameAsPartialTail to validateAndRepair in journal.go; re-run at a3b4cfb (exit 0) after RCV-04 added rejectCompleteFrameAsPartialTail to validateAndRepair in journal.go"
@@ -592,10 +592,10 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "a3b4cfbfda5b998028daa5ff6cd5bd2845c6143c",
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "date": "2026-09-02",
-        "receipt": null,
+        "date": "2026-09-03",
+        "receipt": ".deepdata-run/checks/go-checkpoint/receipt.json",
         "ci_run": null
       },
       "note": "session-verified: go build/vet, go test -count=1 -p 1 ./internal/collection ./cmd/deepdata, go test -race ./internal/collection; no receipt; the earlier command (-run Coverage) matched no test at any commit since 39bfe42, so its exit 0 proved nothing. verifyCovered (internal/collection/journal.go:530) streams both artifacts with one reused payload buffer and is reached only through DurableStore.Checkpoint; the command now runs every Checkpoint-named test plus the snapshot-stream tests (header before payload: V1OversizeFailsBeforeAllocation, V2ChecksMarkerBeforeBuild). No test asserts a memory bound for coverage verification itself; that assertion belongs to RCV-03. Re-run at 6869b5e (exit 0) after MED-01 changed snapshot.go; re-run at 4ec2dcc (exit 0); re-run at a3b4cfb (exit 0)"
@@ -613,7 +613,7 @@
       "release_gate": true,
       "status": "pass",
       "evidence": {
-        "commit": "db7adb41979bcb86f7464b357c207d8e455c73a0",
+        "commit": "86993d0afc0cc4ddccb72a13301c7979f2be750f",
         "tree_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "date": "2026-09-03",
         "receipt": ".deepdata-run/checks/go-recovery-snapshot/receipt.json",
