@@ -17,7 +17,7 @@ func canonicalLeaderForTest(t *testing.T) (http.Handler, *CollectionHTTPServer, 
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("REQUIRE_AUTH", "1")
 	indexPath := filepath.Join(t.TempDir(), "index.gob")
-	handler, collections := newCanonicalHTTPHandler(newServerRuntime(), NewHashEmbedder(4), nil, indexPath)
+	handler, collections := newCanonicalHTTPHandler(newServerRuntime(), NewHashEmbedder(4), indexPath)
 	t.Cleanup(func() { _ = collections.Close() })
 	if !collections.IsDurable() {
 		t.Fatal("test leader has no durable store to replicate")

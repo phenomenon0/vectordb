@@ -55,7 +55,7 @@ func newServerRuntime() *serverRuntime {
 
 // ensureLimiters fills in any limiter the caller did not preset. Tests preset
 // them; the server leaves them nil and gets the env-configured defaults.
-func (rt *serverRuntime) ensureLimiters(canonicalOnly bool) {
+func (rt *serverRuntime) ensureLimiters() {
 	if rt.rl == nil {
 		rps := envInt("API_RPS", 100)
 		rt.rl = newRateLimiter(rps, rps, envInt("MAX_RATE_LIMIT_KEYS", 100_000), time.Minute)
@@ -68,7 +68,7 @@ func (rt *serverRuntime) ensureLimiters(canonicalOnly bool) {
 			time.Second,
 		)
 	}
-	if canonicalOnly && rt.canonicalTenantRL == nil {
+	if rt.canonicalTenantRL == nil {
 		rt.canonicalTenantRL = newRateLimiter(
 			envInt("TENANT_RPS", 100),
 			envInt("TENANT_BURST", 100),
@@ -80,7 +80,7 @@ func (rt *serverRuntime) ensureLimiters(canonicalOnly bool) {
 
 // httpGuard is the HTTP authentication and rate-limit middleware. TRUST_PROXY
 // is read once, when the handler is built.
-func (rt *serverRuntime) httpGuard(canonicalOnly bool) func(http.HandlerFunc) http.HandlerFunc {
+func (rt *serverRuntime) httpGuard() func(http.HandlerFunc) http.HandlerFunc {
 	trustProxy := os.Getenv("TRUST_PROXY") == "1"
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +210,7 @@ func (rt *serverRuntime) httpGuard(canonicalOnly bool) func(http.HandlerFunc) ht
 				}
 			}
 
-			if canonicalOnly && rt.canonicalTenantRL != nil {
+			if rt.canonicalTenantRL != nil {
 				tenantKey := canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
 				if !rt.canonicalTenantRL.allow(tenantKey) {
 					apierror.WriteHTTP(w, apierror.New(apierror.CodeRateLimited, "tenant rate limited"))

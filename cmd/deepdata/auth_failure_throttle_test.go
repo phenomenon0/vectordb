@@ -81,7 +81,6 @@ func TestFailedAuthenticationThrottleIsSharedAcrossHTTPAndGRPC(t *testing.T) {
 			handler, collections := newCanonicalHTTPHandler(
 				rt,
 				NewHashEmbedder(4),
-				nil,
 				filepath.Join(t.TempDir(), "index.gob"),
 			)
 			t.Cleanup(func() { _ = collections.Close() })

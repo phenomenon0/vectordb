@@ -30,7 +30,7 @@ func newTextTestHandler(t *testing.T, emb Embedder) http.Handler {
 	t.Setenv("REQUIRE_AUTH", "0")
 	rt := newServerRuntime()
 	indexPath := filepath.Join(t.TempDir(), "index.gob")
-	handler, collections := newCanonicalHTTPHandler(rt, emb, nil, indexPath)
+	handler, collections := newCanonicalHTTPHandler(rt, emb, indexPath)
 	if err := collections.PersistenceError(); err != nil {
 		t.Fatalf("open canonical persistence: %v", err)
 	}

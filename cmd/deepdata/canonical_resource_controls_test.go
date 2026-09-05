@@ -75,7 +75,6 @@ func TestCanonicalDurableLimitsAreSharedAcrossHTTPAndGRPC(t *testing.T) {
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),
-		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
 	)
 	t.Cleanup(func() { _ = collections.Close() })
@@ -122,7 +121,6 @@ func TestCanonicalTenantRateLimitIsSharedAcrossHTTPAndGRPCJWTs(t *testing.T) {
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),
-		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
 	)
 	t.Cleanup(func() { _ = collections.Close() })
@@ -197,7 +195,6 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),
-		nil,
 		filepath.Join(t.TempDir(), "index.gob"),
 	)
 	t.Cleanup(func() { _ = collections.Close() })

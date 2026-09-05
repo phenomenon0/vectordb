@@ -81,7 +81,7 @@ func TestCanonicalHTTPRateLimitedErrorCarriesRetryAfter(t *testing.T) {
 	rt.rl = newRateLimiter(100, 100, 100, time.Hour)
 	rt.canonicalTenantRL = newRateLimiter(100, 100, 100, time.Hour)
 	rt.authFailureRL = newAuthFailureLimiter(1, 1, 100, time.Hour)
-	handler, collections := newCanonicalHTTPHandler(rt, NewHashEmbedder(4), nil, filepath.Join(t.TempDir(), "index.gob"))
+	handler, collections := newCanonicalHTTPHandler(rt, NewHashEmbedder(4), filepath.Join(t.TempDir(), "index.gob"))
 	t.Cleanup(func() { _ = collections.Close() })
 
 	if response := authThrottleHTTPRequest(handler, "wrong"); response.Code != http.StatusUnauthorized {

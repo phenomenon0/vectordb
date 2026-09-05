@@ -3171,22 +3171,19 @@ func main() {
 	// collection engine. Historical handlers remain in source for offline
 	// migration tests, but no runtime environment switch may re-enable them in
 	// the RC binary.
-	const canonicalOnly = true
-	if canonicalOnly {
-		if err := validateCanonicalAuthEnvironment(); err != nil {
-			logger.Error("canonical authentication configuration rejected", "error", err)
+	if err := validateCanonicalAuthEnvironment(); err != nil {
+		logger.Error("canonical authentication configuration rejected", "error", err)
+		os.Exit(1)
+	}
+	configuredMode := strings.ToLower(strings.TrimSpace(os.Getenv("VECTORDB_MODE")))
+	if configuredMode == "" {
+		if err := os.Setenv("VECTORDB_MODE", string(ModeLocal)); err != nil {
+			logger.Error("failed to select canonical local data path", "error", err)
 			os.Exit(1)
 		}
-		configuredMode := strings.ToLower(strings.TrimSpace(os.Getenv("VECTORDB_MODE")))
-		if configuredMode == "" {
-			if err := os.Setenv("VECTORDB_MODE", string(ModeLocal)); err != nil {
-				logger.Error("failed to select canonical local data path", "error", err)
-				os.Exit(1)
-			}
-		} else if configuredMode != string(ModeLocal) {
-			logger.Error("canonical RC accepts caller-supplied vectors and supports only the local persistence path", "VECTORDB_MODE", configuredMode)
-			os.Exit(1)
-		}
+	} else if configuredMode != string(ModeLocal) {
+		logger.Error("canonical RC accepts caller-supplied vectors and supports only the local persistence path", "VECTORDB_MODE", configuredMode)
+		os.Exit(1)
 	}
 
 	// ==========================================================================
@@ -3233,31 +3230,27 @@ func main() {
 	// One text embedder per process, named by DEEPDATA_EMBEDDER (default none:
 	// callers send vectors). A configured-but-unreachable embedder refuses to
 	// start, like unreadable persistence below.
-	var embedder Embedder
-	if canonicalOnly {
-		serverEmb, embErr := newServerEmbedderFromEnv()
-		if embErr != nil {
-			logger.Error("refusing to start with an unusable text embedder", "error", embErr)
-			os.Exit(1)
-		}
-		if serverEmb != nil {
-			embedder = serverEmb
-			logger.Info("text embedder ready", "embedder", serverEmb.Label(), "dim", serverEmb.Dim())
-		} else {
-			logger.Info("no text embedder configured (DEEPDATA_EMBEDDER=none); clients must provide vectors")
-		}
+	var embedder *serverEmbedder
+	serverEmb, embErr := newServerEmbedderFromEnv()
+	if embErr != nil {
+		logger.Error("refusing to start with an unusable text embedder", "error", embErr)
+		os.Exit(1)
+	}
+	if serverEmb != nil {
+		embedder = serverEmb
+		logger.Info("text embedder ready", "embedder", serverEmb.Label(), "dim", serverEmb.Dim())
+	} else {
+		logger.Info("no text embedder configured (DEEPDATA_EMBEDDER=none); clients must provide vectors")
 	}
 
-	if canonicalOnly {
-		legacyArtifacts, inspectErr := existingLegacyRootArtifacts(indexPath)
-		if inspectErr != nil {
-			logger.Error("failed to inspect unsupported legacy persistence", "error", inspectErr)
-			os.Exit(1)
-		}
-		if len(legacyArtifacts) > 0 {
-			logger.Error("legacy root persistence requires an explicit offline migration before canonical RC startup", "artifacts", legacyArtifacts)
-			os.Exit(1)
-		}
+	legacyArtifacts, inspectErr := existingLegacyRootArtifacts(indexPath)
+	if inspectErr != nil {
+		logger.Error("failed to inspect unsupported legacy persistence", "error", inspectErr)
+		os.Exit(1)
+	}
+	if len(legacyArtifacts) > 0 {
+		logger.Error("legacy root persistence requires an explicit offline migration before canonical RC startup", "artifacts", legacyArtifacts)
+		os.Exit(1)
 	}
 
 	// The V3 surface keeps its authentication and limit state here; the legacy
@@ -3265,28 +3258,26 @@ func main() {
 	rt := newServerRuntime()
 
 	// HTTP API with graceful shutdown
-	handler, collectionHTTP := newCanonicalHTTPHandler(rt, embedder, nil, indexPath)
+	handler, collectionHTTP := newCanonicalHTTPHandler(rt, embedder, indexPath)
 	if err := collectionHTTP.PersistenceError(); err != nil {
 		logger.Error("refusing to start with unreadable collection persistence state", "path", indexPath+".collections", "error", err)
 		os.Exit(1)
 	}
-	if canonicalOnly {
-		legacyCollectionCount, inspectErr := collectionHTTP.LegacyCollectionCount()
-		if inspectErr != nil {
-			logger.Error("failed to inspect unified collection state", "error", inspectErr)
-			if abortErr := collectionHTTP.Abort(); abortErr != nil {
-				logger.Error("failed to release collection store after inspection failure", "error", abortErr)
-			}
-			os.Exit(1)
+	legacyCollectionCount, inspectErr := collectionHTTP.LegacyCollectionCount()
+	if inspectErr != nil {
+		logger.Error("failed to inspect unified collection state", "error", inspectErr)
+		if abortErr := collectionHTTP.Abort(); abortErr != nil {
+			logger.Error("failed to release collection store after inspection failure", "error", abortErr)
 		}
-		if legacyCollectionCount != 0 {
-			logger.Error("refusing canonical startup with legacy V2 collections; migrate them into tenant-aware V3 collections first",
-				"path", indexPath+".collections", "legacy_collections", legacyCollectionCount)
-			if abortErr := collectionHTTP.Abort(); abortErr != nil {
-				logger.Error("failed to release collection store after migration refusal", "error", abortErr)
-			}
-			os.Exit(1)
+		os.Exit(1)
+	}
+	if legacyCollectionCount != 0 {
+		logger.Error("refusing canonical startup with legacy V2 collections; migrate them into tenant-aware V3 collections first",
+			"path", indexPath+".collections", "legacy_collections", legacyCollectionCount)
+		if abortErr := collectionHTTP.Abort(); abortErr != nil {
+			logger.Error("failed to release collection store after migration refusal", "error", abortErr)
 		}
+		os.Exit(1)
 	}
 	addr, grpcAddr, err := canonicalListenerAddresses(
 		envInt("PORT", 8080),
