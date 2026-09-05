@@ -411,8 +411,8 @@ func TestBootstrappedReplicaCarriesEveryTenantAtItsReportedLSN(t *testing.T) {
 			if got := doc.Metadata["value"]; got != float64(i+1) && got != float32(i+1) {
 				t.Fatalf("replica %s document %d value = %v, want %d", tenant, id, got, i+1)
 			}
-			vec, ok := doc.Vectors["embedding"].([]float32)
-			if !ok || len(vec) != 4 || vec[0] != float32(i+1) {
+			vec := doc.Vectors["embedding"].Dense
+			if len(vec) != 4 || vec[0] != float32(i+1) {
 				t.Fatalf("replica %s document %d vector = %v, want [%d 0 0 0]", tenant, id, doc.Vectors["embedding"], i+1)
 			}
 		}

@@ -28,13 +28,13 @@ const (
 func wireStressDocument(id uint64) Document {
 	return Document{
 		ID: id,
-		Vectors: map[string]interface{}{
-			"embedding": []float32{0.1, -0.0, 1e-8, 3.4028235e38, 16777217, 1.0 / 3.0},
-			"keywords": &sparse.SparseVector{
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{0.1, -0.0, 1e-8, 3.4028235e38, 16777217, 1.0 / 3.0}},
+			"keywords": Vector{Sparse: &sparse.SparseVector{
 				Indices: []uint32{2, 4},
 				Values:  []float32{1e-8, 3.4028235e38},
 				Dim:     2048,
-			},
+			}},
 		},
 	}
 }
@@ -200,7 +200,7 @@ func BenchmarkDecodeSnapshotDocument128d(b *testing.B) {
 			},
 		},
 	}
-	doc := Document{ID: 1, Vectors: map[string]interface{}{"embedding": dense}}
+	doc := Document{ID: 1, Vectors: map[string]Vector{"embedding": {Dense: dense}}}
 	frame, err := json.Marshal(collectionSnapshotV2Document{ID: doc.ID, Document: &doc})
 	if err != nil {
 		b.Fatalf("marshal frame: %v", err)
@@ -235,7 +235,7 @@ func TestHeapFootprint100kDocuments(t *testing.T) {
 		}
 		docs[i] = Document{
 			ID:      uint64(i + 1),
-			Vectors: map[string]interface{}{"embedding": dense},
+			Vectors: map[string]Vector{"embedding": {Dense: dense}},
 		}
 	}
 

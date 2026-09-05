@@ -224,7 +224,7 @@ func (s *CollectionGRPCServer) Insert(ctx context.Context, req *deepdatav3.Inser
 	if _, err := s.applyTexts(ctx, req.TenantId, req.Collection, req.Texts, vectors, false); err != nil {
 		return nil, err
 	}
-	doc := &vcollection.Document{ID: req.Id, Vectors: vectors, Metadata: structToMap(req.Metadata)}
+	doc := &vcollection.Document{ID: req.Id, Vectors: toDocumentVectors(vectors), Metadata: structToMap(req.Metadata)}
 	if err := s.tenants.AddDocument(ctx, req.TenantId, req.Collection, doc); err != nil {
 		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
 	}
@@ -277,7 +277,7 @@ func (s *CollectionGRPCServer) BatchInsert(ctx context.Context, req *deepdatav3.
 				return nil, aerr.GRPC(ctx)
 			}
 		}
-		docs[i] = vcollection.Document{ID: batchDoc.Id, Vectors: vectors, Metadata: structToMap(batchDoc.Metadata)}
+		docs[i] = vcollection.Document{ID: batchDoc.Id, Vectors: toDocumentVectors(vectors), Metadata: structToMap(batchDoc.Metadata)}
 	}
 	if err := s.tenants.BatchAddDocuments(ctx, req.TenantId, req.Collection, docs); err != nil {
 		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
@@ -412,7 +412,7 @@ func (s *CollectionGRPCServer) Upsert(ctx context.Context, req *deepdatav3.Upser
 	if _, err := s.applyTexts(ctx, req.TenantId, req.Collection, req.Texts, vectors, false); err != nil {
 		return nil, err
 	}
-	doc := &vcollection.Document{ID: req.Id, Vectors: vectors, Metadata: structToMap(req.Metadata)}
+	doc := &vcollection.Document{ID: req.Id, Vectors: toDocumentVectors(vectors), Metadata: structToMap(req.Metadata)}
 	if err := s.tenants.UpsertDocument(ctx, req.TenantId, req.Collection, doc); err != nil {
 		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
 	}
@@ -495,34 +495,37 @@ func protoVectorsToInterface(vectors map[string]*deepdatav3.VectorData) (map[str
 	return converted, nil
 }
 
-func vectorDataToInterface(vector *deepdatav3.VectorData) (interface{}, error) {
+func vectorDataToInterface(vector *deepdatav3.VectorData) (vcollection.Vector, error) {
 	if vector == nil {
-		return nil, errors.New("nil vector data")
+		return vcollection.Vector{}, errors.New("nil vector data")
 	}
 	switch data := vector.Data.(type) {
 	case *deepdatav3.VectorData_Dense:
 		if data.Dense == nil || len(data.Dense.Values) == 0 {
-			return nil, errors.New("dense vector cannot be empty")
+			return vcollection.Vector{}, errors.New("dense vector cannot be empty")
 		}
-		values := append([]float32(nil), data.Dense.Values...)
-		if err := validateFiniteFloat32(values); err != nil {
-			return nil, fmt.Errorf("dense vector: %w", err)
+		if err := validateFiniteFloat32(data.Dense.Values); err != nil {
+			return vcollection.Vector{}, fmt.Errorf("dense vector: %w", err)
 		}
-		return values, nil
+		return vcollection.Vector{Dense: data.Dense.Values}, nil
 	case *deepdatav3.VectorData_Sparse:
 		if data.Sparse == nil || data.Sparse.Dim <= 0 {
-			return nil, errors.New("sparse vector dimension must be positive")
+			return vcollection.Vector{}, errors.New("sparse vector dimension must be positive")
 		}
 		if err := validateFiniteFloat32(data.Sparse.Values); err != nil {
-			return nil, fmt.Errorf("sparse vector: %w", err)
+			return vcollection.Vector{}, fmt.Errorf("sparse vector: %w", err)
 		}
-		return sparse.NewSparseVector(data.Sparse.Indices, data.Sparse.Values, int(data.Sparse.Dim))
+		sv, err := sparse.NewSparseVector(data.Sparse.Indices, data.Sparse.Values, int(data.Sparse.Dim))
+		if err != nil {
+			return vcollection.Vector{}, err
+		}
+		return vcollection.Vector{Sparse: sv}, nil
 	default:
-		return nil, errors.New("vector data must contain dense or sparse values")
+		return vcollection.Vector{}, errors.New("vector data must contain dense or sparse values")
 	}
 }
 
-func interfaceVectorsToProto(vectors map[string]interface{}) (map[string]*deepdatav3.VectorData, error) {
+func interfaceVectorsToProto(vectors map[string]vcollection.Vector) (map[string]*deepdatav3.VectorData, error) {
 	if len(vectors) == 0 {
 		return nil, nil
 	}
@@ -537,51 +540,16 @@ func interfaceVectorsToProto(vectors map[string]interface{}) (map[string]*deepda
 	return converted, nil
 }
 
-func vectorInterfaceToProto(value interface{}) (*deepdatav3.VectorData, error) {
-	switch typed := value.(type) {
-	case []float32:
-		values := append([]float32(nil), typed...)
+func vectorInterfaceToProto(value vcollection.Vector) (*deepdatav3.VectorData, error) {
+	switch {
+	case value.Dense != nil:
+		values := append([]float32(nil), value.Dense...)
 		if err := validateFiniteFloat32(values); err != nil {
 			return nil, err
 		}
 		return denseVectorData(values), nil
-	case []float64:
-		values, err := float32Values(typed)
-		if err != nil {
-			return nil, err
-		}
-		return denseVectorData(values), nil
-	case []interface{}:
-		values, err := float32Values(typed)
-		if err != nil {
-			return nil, err
-		}
-		return denseVectorData(values), nil
-	case *sparse.SparseVector:
-		if typed == nil {
-			return nil, errors.New("nil sparse vector")
-		}
-		return sparseVectorData(typed)
-	case sparse.SparseVector:
-		return sparseVectorData(&typed)
-	case map[string]interface{}:
-		indices, err := uint32Values(typed["indices"])
-		if err != nil {
-			return nil, fmt.Errorf("sparse indices: %w", err)
-		}
-		values, err := float32Values(typed["values"])
-		if err != nil {
-			return nil, fmt.Errorf("sparse values: %w", err)
-		}
-		dim, err := positiveInt32(typed["dim"])
-		if err != nil {
-			return nil, fmt.Errorf("sparse dimension: %w", err)
-		}
-		validated, err := sparse.NewSparseVector(indices, values, int(dim))
-		if err != nil {
-			return nil, err
-		}
-		return sparseVectorData(validated)
+	case value.Sparse != nil:
+		return sparseVectorData(value.Sparse)
 	default:
 		return nil, fmt.Errorf("unsupported vector representation %T", value)
 	}
@@ -678,98 +646,6 @@ func validateFiniteFloat32(values []float32) error {
 		}
 	}
 	return nil
-}
-
-func float32Values(value interface{}) ([]float32, error) {
-	switch typed := value.(type) {
-	case []float32:
-		values := append([]float32(nil), typed...)
-		if err := validateFiniteFloat32(values); err != nil {
-			return nil, err
-		}
-		return values, nil
-	case []float64:
-		values := make([]float32, len(typed))
-		for i, number := range typed {
-			if math.IsNaN(number) || math.IsInf(number, 0) || number > math.MaxFloat32 || number < -math.MaxFloat32 {
-				return nil, fmt.Errorf("element %d is outside finite float32 range", i)
-			}
-			values[i] = float32(number)
-		}
-		return values, nil
-	case []interface{}:
-		values := make([]float32, len(typed))
-		for i, item := range typed {
-			number, ok := finiteFloat64(item)
-			if !ok || number > math.MaxFloat32 || number < -math.MaxFloat32 {
-				return nil, fmt.Errorf("element %d is not a finite float32 number", i)
-			}
-			values[i] = float32(number)
-		}
-		return values, nil
-	default:
-		return nil, fmt.Errorf("expected numeric array, got %T", value)
-	}
-}
-
-func uint32Values(value interface{}) ([]uint32, error) {
-	switch typed := value.(type) {
-	case []uint32:
-		return append([]uint32(nil), typed...), nil
-	case []interface{}:
-		values := make([]uint32, len(typed))
-		for i, item := range typed {
-			number, ok := finiteFloat64(item)
-			if !ok || number < 0 || number > math.MaxUint32 || number != math.Trunc(number) {
-				return nil, fmt.Errorf("element %d is not a uint32", i)
-			}
-			values[i] = uint32(number)
-		}
-		return values, nil
-	default:
-		return nil, fmt.Errorf("expected uint32 array, got %T", value)
-	}
-}
-
-func positiveInt32(value interface{}) (int32, error) {
-	number, ok := finiteFloat64(value)
-	if !ok || number < 1 || number > math.MaxInt32 || number != math.Trunc(number) {
-		return 0, fmt.Errorf("expected positive int32, got %v", value)
-	}
-	return int32(number), nil
-}
-
-func finiteFloat64(value interface{}) (float64, bool) {
-	var number float64
-	switch typed := value.(type) {
-	case float64:
-		number = typed
-	case float32:
-		number = float64(typed)
-	case int:
-		number = float64(typed)
-	case int8:
-		number = float64(typed)
-	case int16:
-		number = float64(typed)
-	case int32:
-		number = float64(typed)
-	case int64:
-		number = float64(typed)
-	case uint:
-		number = float64(typed)
-	case uint8:
-		number = float64(typed)
-	case uint16:
-		number = float64(typed)
-	case uint32:
-		number = float64(typed)
-	case uint64:
-		number = float64(typed)
-	default:
-		return 0, false
-	}
-	return number, !math.IsNaN(number) && !math.IsInf(number, 0)
 }
 
 func nonNegativeUint64(value int) uint64 {

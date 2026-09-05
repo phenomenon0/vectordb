@@ -295,7 +295,7 @@ func TestGeneratedJournalEmptySparseVectorReplays(t *testing.T) {
 		mustSparseVector(t, []uint32{1}, []float32{1}, 8),
 		mustSparseVector(t, nil, nil, 8),
 	} {
-		doc := Document{Vectors: map[string]interface{}{"embedding": []float32{1, 0, 0, 0}, "text": sparseVec}}
+		doc := Document{Vectors: map[string]Vector{"embedding": Vector{Dense: []float32{1, 0, 0, 0}}, "text": Vector{Sparse: sparseVec}}}
 		if err := store.Tenants().AddDocument(ctx, "tenant", "docs", &doc); err != nil {
 			t.Fatal(err)
 		}
@@ -321,7 +321,7 @@ func TestGeneratedJournalEmptySparseVectorReplays(t *testing.T) {
 	if !ok {
 		t.Fatal("document 2 (empty sparse) missing after replay")
 	}
-	if sv, isSparse := doc.Vectors["text"].(*sparse.SparseVector); !isSparse || len(sv.Indices) != 0 || sv.Dim != 8 {
+	if sv := doc.Vectors["text"].Sparse; sv == nil || len(sv.Indices) != 0 || sv.Dim != 8 {
 		t.Fatalf("document 2 sparse field = %#v, want empty *sparse.SparseVector over dim 8", doc.Vectors["text"])
 	}
 	abandonDurableStoreForTest(t, reopened)

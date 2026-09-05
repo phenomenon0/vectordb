@@ -131,8 +131,8 @@ func TestCollection_AddDense(t *testing.T) {
 
 	// Add document
 	doc := Document{
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1.0, 2.0, 3.0, 4.0},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1.0, 2.0, 3.0, 4.0}},
 		},
 		Metadata: map[string]interface{}{
 			"title": "test doc",
@@ -178,8 +178,8 @@ func TestCollection_AddSparse(t *testing.T) {
 	}
 
 	doc := Document{
-		Vectors: map[string]interface{}{
-			"keywords": sparseVec,
+		Vectors: map[string]Vector{
+			"keywords": Vector{Sparse: sparseVec},
 		},
 		Metadata: map[string]interface{}{
 			"title": "test doc",
@@ -227,9 +227,9 @@ func TestCollection_AddMultiVector(t *testing.T) {
 	)
 
 	doc := Document{
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1.0, 2.0, 3.0, 4.0},
-			"keywords":  sparseVec,
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1.0, 2.0, 3.0, 4.0}},
+			"keywords":  Vector{Sparse: sparseVec},
 		},
 		Metadata: map[string]interface{}{
 			"title": "test doc",
@@ -268,20 +268,20 @@ func TestCollection_SearchDense(t *testing.T) {
 	ctx := context.Background()
 	docs := []Document{
 		{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{1.0, 0.0, 0.0, 0.0},
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{1.0, 0.0, 0.0, 0.0}},
 			},
 			Metadata: map[string]interface{}{"id": 1},
 		},
 		{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{0.0, 1.0, 0.0, 0.0},
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{0.0, 1.0, 0.0, 0.0}},
 			},
 			Metadata: map[string]interface{}{"id": 2},
 		},
 		{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{0.0, 0.0, 1.0, 0.0},
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{0.0, 0.0, 1.0, 0.0}},
 			},
 			Metadata: map[string]interface{}{"id": 3},
 		},
@@ -345,14 +345,14 @@ func TestCollection_SearchSparse(t *testing.T) {
 
 	docs := []Document{
 		{
-			Vectors: map[string]interface{}{
-				"keywords": vec1,
+			Vectors: map[string]Vector{
+				"keywords": Vector{Sparse: vec1},
 			},
 			Metadata: map[string]interface{}{"id": 1},
 		},
 		{
-			Vectors: map[string]interface{}{
-				"keywords": vec2,
+			Vectors: map[string]Vector{
+				"keywords": Vector{Sparse: vec2},
 			},
 			Metadata: map[string]interface{}{"id": 2},
 		},
@@ -415,16 +415,16 @@ func TestCollection_SearchHybrid(t *testing.T) {
 
 	docs := []Document{
 		{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{1.0, 0.0, 0.0, 0.0},
-				"keywords":  vec1,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{1.0, 0.0, 0.0, 0.0}},
+				"keywords":  Vector{Sparse: vec1},
 			},
 			Metadata: map[string]interface{}{"id": 1},
 		},
 		{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{0.0, 1.0, 0.0, 0.0},
-				"keywords":  vec2,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{0.0, 1.0, 0.0, 0.0}},
+				"keywords":  Vector{Sparse: vec2},
 			},
 			Metadata: map[string]interface{}{"id": 2},
 		},
@@ -563,8 +563,8 @@ func TestCollection_SearchCanOmitVectors(t *testing.T) {
 	}
 
 	doc := Document{
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1.0, 0.0, 0.0, 0.0},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1.0, 0.0, 0.0, 0.0}},
 		},
 	}
 	ctx := context.Background()
@@ -747,8 +747,8 @@ func TestCollection_BatchAdd(t *testing.T) {
 	docs := make([]Document, 10)
 	for i := range docs {
 		docs[i] = Document{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{float32(i), 0.0, 0.0, 0.0},
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{float32(i), 0.0, 0.0, 0.0}},
 			},
 		}
 	}
@@ -784,8 +784,8 @@ func TestCollection_Delete(t *testing.T) {
 	// Add document
 	doc := Document{
 		ID: 123,
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1.0, 2.0, 3.0, 4.0},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1.0, 2.0, 3.0, 4.0}},
 		},
 	}
 
@@ -829,8 +829,8 @@ func TestCollection_GetDocument(t *testing.T) {
 
 	doc := Document{
 		ID: 456,
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1.0, 2.0, 3.0, 4.0},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1.0, 2.0, 3.0, 4.0}},
 		},
 		Metadata: map[string]interface{}{
 			"title": "test",
@@ -875,27 +875,17 @@ func TestCollection_ValidationErrors(t *testing.T) {
 
 	// Missing vector field
 	doc1 := Document{
-		Vectors: map[string]interface{}{},
+		Vectors: map[string]Vector{},
 	}
 	if err := coll.Add(ctx, &doc1); err == nil {
 		t.Error("should error on missing vector field")
 	}
 
-	// Wrong vector type
-	doc2 := Document{
-		Vectors: map[string]interface{}{
-			"embedding": "not a vector",
-		},
-	}
-	if err := coll.Add(ctx, &doc2); err == nil {
-		t.Error("should error on wrong vector type")
-	}
-
 	// Extra field
 	doc3 := Document{
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1.0, 2.0, 3.0, 4.0},
-			"extra":     []float32{1.0, 2.0},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1.0, 2.0, 3.0, 4.0}},
+			"extra":     Vector{Dense: []float32{1.0, 2.0}},
 		},
 	}
 	if err := coll.Add(ctx, &doc3); err == nil {
@@ -927,8 +917,8 @@ func BenchmarkCollection_AddDense(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		doc := Document{
-			Vectors: map[string]interface{}{
-				"embedding": vec,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: vec},
 			},
 		}
 		_ = coll.Add(ctx, &doc)
@@ -973,9 +963,9 @@ func BenchmarkCollection_AddMultiVector(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		doc := Document{
-			Vectors: map[string]interface{}{
-				"embedding": denseVec,
-				"keywords":  sparseVec,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: denseVec},
+				"keywords":  Vector{Sparse: sparseVec},
 			},
 		}
 		_ = coll.Add(ctx, &doc)
@@ -1020,9 +1010,9 @@ func BenchmarkCollection_SearchHybrid(b *testing.B) {
 		sparseVec, _ := sparse.NewSparseVector(indices, values, 10000)
 
 		doc := Document{
-			Vectors: map[string]interface{}{
-				"embedding": denseVec,
-				"keywords":  sparseVec,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: denseVec},
+				"keywords":  Vector{Sparse: sparseVec},
 			},
 		}
 		_ = coll.Add(ctx, &doc)

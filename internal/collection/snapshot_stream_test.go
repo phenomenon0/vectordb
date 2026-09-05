@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	vectorindex "github.com/phenomenon0/vectordb/internal/index"
+	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
 type snapshotExportRejectingIndex struct {
@@ -189,7 +190,7 @@ func TestUnifiedCollectionSnapshotV2RoundTripsFieldPartialDocuments(t *testing.T
 		if err != nil {
 			t.Fatalf("get document %d: %v", id, err)
 		}
-		if doc.ID != id || len(doc.Vectors) != 1 || doc.Vectors["first"] == nil {
+		if doc.ID != id || len(doc.Vectors) != 1 || doc.Vectors["first"].IsZero() {
 			t.Fatalf("partial document %d = %+v", id, doc)
 		}
 	}
@@ -212,13 +213,13 @@ func TestUnifiedCollectionSnapshotV2RebuildsDenseAndSparseIndexes(t *testing.T) 
 		t.Fatal(err)
 	}
 	doc := &Document{
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1, 0},
-			"tokens": map[string]interface{}{
-				"indices": []uint32{2},
-				"values":  []float32{1},
-				"dim":     8,
-			},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1, 0}},
+			"tokens": Vector{Sparse: &sparse.SparseVector{
+				Indices: []uint32{2},
+				Values:  []float32{1},
+				Dim:     8,
+			}},
 		},
 		Metadata: map[string]interface{}{"title": "kept"},
 	}

@@ -398,7 +398,7 @@ func (cs *CollectionSchema) FieldCount() int {
 // Document represents a single document with multiple vector fields.
 type Document struct {
 	ID       uint64                 `json:"id"`                 // Document ID
-	Vectors  map[string]interface{} `json:"vectors,omitempty"`  // Field name -> vector data
+	Vectors  map[string]Vector      `json:"vectors,omitempty"`  // Field name -> vector data
 	Metadata map[string]interface{} `json:"metadata,omitempty"` // Document metadata
 }
 
@@ -423,20 +423,6 @@ func (d *Document) Validate(schema *CollectionSchema) error {
 	}
 
 	return nil
-}
-
-// GetVector retrieves a vector field by name.
-func (d *Document) GetVector(fieldName string) (interface{}, bool) {
-	vec, ok := d.Vectors[fieldName]
-	return vec, ok
-}
-
-// SetVector sets a vector field.
-func (d *Document) SetVector(fieldName string, vector interface{}) {
-	if d.Vectors == nil {
-		d.Vectors = make(map[string]interface{})
-	}
-	d.Vectors[fieldName] = vector
 }
 
 // GetMetadata retrieves a metadata field.

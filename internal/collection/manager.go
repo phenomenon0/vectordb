@@ -631,20 +631,18 @@ func validatePersistedDocument(doc *Document, schema *CollectionSchema) error {
 		}
 		switch field.Type {
 		case VectorTypeDense:
-			dense, err := coerceDenseVector(vector)
-			if err != nil {
-				return fmt.Errorf("field %s: %w", fieldName, err)
+			if vector.Dense == nil {
+				return fmt.Errorf("field %s: expected dense vector", fieldName)
 			}
-			if len(dense) != field.Dim {
-				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, len(dense), field.Dim)
+			if len(vector.Dense) != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, len(vector.Dense), field.Dim)
 			}
 		case VectorTypeSparse:
-			sparseVector, err := coerceSparseVector(vector)
-			if err != nil {
-				return fmt.Errorf("field %s: %w", fieldName, err)
+			if vector.Sparse == nil {
+				return fmt.Errorf("field %s: expected sparse vector", fieldName)
 			}
-			if sparseVector.Dim != field.Dim {
-				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, sparseVector.Dim, field.Dim)
+			if vector.Sparse.Dim != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, vector.Sparse.Dim, field.Dim)
 			}
 		default:
 			return fmt.Errorf("unsupported vector type %s for field %s", field.Type, fieldName)

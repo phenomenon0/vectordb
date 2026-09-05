@@ -3,7 +3,6 @@ package collection
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -84,13 +83,13 @@ func goldenTestSchema() CollectionSchema {
 func goldenTestDocument(id uint64) Document {
 	return Document{
 		ID: id,
-		Vectors: map[string]interface{}{
-			"embedding": []float32{0.25, 0.5, 0.75, 1},
-			"keywords": &sparse.SparseVector{
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{0.25, 0.5, 0.75, 1}},
+			"keywords": Vector{Sparse: &sparse.SparseVector{
 				Indices: []uint32{1, 5},
 				Values:  []float32{0.5, 2},
 				Dim:     1024,
-			},
+			}},
 		},
 		Metadata: map[string]interface{}{
 			"title":  "alpha & <beta>",
@@ -109,13 +108,13 @@ func goldenTestDocument(id uint64) Document {
 func expectedDecodedGoldenDocument(id uint64) Document {
 	return Document{
 		ID: id,
-		Vectors: map[string]interface{}{
-			"embedding": []interface{}{float64(0.25), float64(0.5), float64(0.75), float64(1)},
-			"keywords": map[string]interface{}{
-				"indices": []interface{}{float64(1), float64(5)},
-				"values":  []interface{}{float64(0.5), float64(2)},
-				"dim":     float64(1024),
-			},
+		Vectors: map[string]Vector{
+			"embedding": {Dense: []float32{0.25, 0.5, 0.75, 1}},
+			"keywords": {Sparse: &sparse.SparseVector{
+				Indices: []uint32{1, 5},
+				Values:  []float32{0.5, 2},
+				Dim:     1024,
+			}},
 		},
 		Metadata: map[string]interface{}{
 			"title":  "alpha & <beta>",
@@ -130,7 +129,7 @@ func TestDurableMutationEncodingSinglePassMatchesLegacyBytes(t *testing.T) {
 	schema := goldenTestSchema()
 	docA := goldenTestDocument(7)
 	docB := goldenTestDocument(9)
-	docB.Vectors = map[string]interface{}{"embedding": []float32{-0.5, -0.25, 0.125, 0}}
+	docB.Vectors = map[string]Vector{"embedding": {Dense: []float32{-0.5, -0.25, 0.125, 0}}}
 
 	mutations := []struct {
 		name    string
@@ -160,7 +159,7 @@ func TestDurableMutationEncodingSinglePassMatchesLegacyBytes(t *testing.T) {
 			verify: func(t *testing.T, decoded canonicalMutation) {
 				want := []Document{expectedDecodedGoldenDocument(7), {
 					ID:       9,
-					Vectors:  map[string]interface{}{"embedding": []interface{}{float64(-0.5), float64(-0.25), float64(0.125), float64(0)}},
+					Vectors:  map[string]Vector{"embedding": {Dense: []float32{-0.5, -0.25, 0.125, 0}}},
 					Metadata: expectedDecodedGoldenDocument(9).Metadata,
 				}}
 				if !reflect.DeepEqual(decoded.documents, want) {
@@ -259,9 +258,9 @@ func TestDocumentClonerIsolatesCallerCompositeTypes(t *testing.T) {
 	inputGrid := [][]float32{{1, 2}, {3, 4}}
 	doc := Document{
 		ID: 1,
-		Vectors: map[string]interface{}{
-			"embedding": inputVector,
-			"keywords":  inputSparse,
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: inputVector},
+			"keywords":  Vector{Sparse: inputSparse},
 		},
 		Metadata: map[string]interface{}{
 			"tags":  inputTags,
@@ -283,7 +282,7 @@ func TestDocumentClonerIsolatesCallerCompositeTypes(t *testing.T) {
 	inputSparse.Values[0] = 999
 	inputGrid[0][0] = 999
 
-	if got := clone.Vectors["embedding"].([]float32); got[0] != 1 {
+	if got := clone.Vectors["embedding"].Dense; got[0] != 1 {
 		t.Fatalf("caller dense-vector mutation leaked into clone: %v", got)
 	}
 	if got, ok := clone.Metadata["tags"].([]string); ok && got[0] != "keep" {
@@ -305,7 +304,7 @@ func TestDocumentClonerIsolatesCallerCompositeTypes(t *testing.T) {
 	if _, leaked := deep["added"]; leaked {
 		t.Fatal("caller map insertion leaked into clone")
 	}
-	if got := clone.Vectors["keywords"].(*sparse.SparseVector); got.Values[0] != 0.25 {
+	if got := clone.Vectors["keywords"].Sparse; got.Values[0] != 0.25 {
 		t.Fatalf("caller sparse-vector mutation leaked into clone: %v", got.Values)
 	}
 	grid := clone.Metadata["grid"].([][]float32)
@@ -314,7 +313,7 @@ func TestDocumentClonerIsolatesCallerCompositeTypes(t *testing.T) {
 	}
 
 	// Reverse direction: mutating the CLONE must not reach the caller either.
-	clone.Vectors["embedding"].([]float32)[1] = -999
+	clone.Vectors["embedding"].Dense[1] = -999
 	clone.Metadata["tags"].([]string)[0] = "clone-write"
 	if inputVector[1] != 2 || inputTags[0] != "mutated" {
 		t.Fatalf("clone mutation reached caller state: vector=%v tags=%v", inputVector, inputTags)
@@ -344,8 +343,8 @@ func TestDurableStoreBatchInsertIsolatesCallerState(t *testing.T) {
 		"deep":  map[string]interface{}{"list": []interface{}{"original"}},
 	}
 	batch := []Document{
-		{Vectors: map[string]interface{}{"embedding": callerVector}, Metadata: callerMetadata},
-		{ID: 50, Vectors: map[string]interface{}{"embedding": []float32{5, 6, 7, 8}}},
+		{Vectors: map[string]Vector{"embedding": {Dense: callerVector}}, Metadata: callerMetadata},
+		{ID: 50, Vectors: map[string]Vector{"embedding": Vector{Dense: []float32{5, 6, 7, 8}}}},
 	}
 	if err := tenants.BatchAddDocuments(ctx, "t", "docs", batch); err != nil {
 		t.Fatal(err)
@@ -367,7 +366,7 @@ func TestDurableStoreBatchInsertIsolatesCallerState(t *testing.T) {
 	if !ok {
 		t.Fatal("stored document missing after batch insert")
 	}
-	if got := stored.Vectors["embedding"].([]float32); got[0] != 1 {
+	if got := stored.Vectors["embedding"].Dense; got[0] != 1 {
 		t.Fatalf("caller vector mutation leaked into store: %v", got)
 	}
 	if stored.Metadata["count"] != float64(42) {
@@ -379,18 +378,17 @@ func TestDurableStoreBatchInsertIsolatesCallerState(t *testing.T) {
 	if got := stored.Metadata["deep"].(map[string]interface{})["list"].([]interface{})[0]; got != "original" {
 		t.Fatalf("caller nested metadata mutation leaked into store: %v", got)
 	}
-	// Preserved Go typing is the point of the swap: index insertion takes
-	// coerceDenseVector's zero-copy []float32 fast path for stored vectors.
-	if _, isFloat32 := stored.Vectors["embedding"].([]float32); !isFloat32 {
-		t.Fatalf("stored dense vector lost its []float32 type: %T", stored.Vectors["embedding"])
-
+	// Preserved Go typing is the point of the swap: Vector.Dense is always
+	// []float32, so index insertion uses the caller's slice with no unboxing.
+	if stored.Vectors["embedding"].Dense == nil {
+		t.Fatalf("stored dense vector missing: %+v", stored.Vectors["embedding"])
 	}
 
 	upsertVector := []float32{5, 6, 7, 8}
 	upsertMetadata := map[string]interface{}{"count": float64(7)}
 	upserted := Document{
 		ID:       50,
-		Vectors:  map[string]interface{}{"embedding": upsertVector},
+		Vectors:  map[string]Vector{"embedding": {Dense: upsertVector}},
 		Metadata: upsertMetadata,
 	}
 	if err := tenants.UpsertDocument(ctx, "t", "docs", &upserted); err != nil {
@@ -401,7 +399,7 @@ func TestDurableStoreBatchInsertIsolatesCallerState(t *testing.T) {
 	if !ok {
 		t.Fatal("upserted document missing")
 	}
-	if got := storedUpserted.Vectors["embedding"].([]float32); got[1] != 6 {
+	if got := storedUpserted.Vectors["embedding"].Dense; got[1] != 6 {
 		t.Fatalf("caller vector mutation leaked into upsert: %v", got)
 	}
 	if err := store.Close(); err != nil {
@@ -417,113 +415,14 @@ func TestDurableStoreBatchInsertIsolatesCallerState(t *testing.T) {
 	if !ok {
 		t.Fatal("document lost across checkpoint reload")
 	}
-	vector, ok := reloaded.Vectors["embedding"].([]float32)
-	if !ok {
-		t.Fatalf("reloaded dense vector is not compact []float32: %T", reloaded.Vectors["embedding"])
+	vector := reloaded.Vectors["embedding"].Dense
+	if vector == nil {
+		t.Fatalf("reloaded dense vector missing: %+v", reloaded.Vectors["embedding"])
 	}
 	if vector[0] != 1 {
 		t.Fatalf("reloaded vector value drifted: %v", vector)
 	}
 	if got := reloaded.Metadata["tags"].([]interface{})[0]; got != "keep" {
 		t.Fatalf("reloaded metadata value drifted: %v", got)
-	}
-}
-
-// TestDurableReplayCompactsOnlyPersistenceOwnedVectors distinguishes the two
-// ownership contracts explicitly. Live preparation must preserve caller Go
-// types while isolating their containers; replay owns its JSON-decoded values
-// and must compact dense/sparse vector trees before retaining them.
-func TestDurableReplayCompactsOnlyPersistenceOwnedVectors(t *testing.T) {
-	ctx := context.Background()
-	base := filepath.Join(t.TempDir(), "collections")
-	store, err := OpenDurableStore(base, base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema := CollectionSchema{
-		Name: "hybrid",
-		Fields: []VectorField{
-			{Name: "dense", Type: VectorTypeDense, Dim: 4, Index: IndexConfig{Type: IndexTypeFLAT}},
-			{Name: "sparse", Type: VectorTypeSparse, Dim: 16, Index: IndexConfig{Type: IndexTypeInverted}},
-		},
-	}
-	if _, err := store.Tenants().CreateCollection(ctx, "tenant", schema); err != nil {
-		t.Fatal(err)
-	}
-
-	wantDense0 := math.Float32frombits(0x3eaaaaab)
-	dense := []interface{}{float64(wantDense0), float64(-0.5), float64(0), float64(1)}
-	indices := []interface{}{float64(7), float64(2)}
-	values := []interface{}{float64(0.75), float64(-0.5)}
-	sparseMap := map[string]interface{}{
-		"indices": indices,
-		"values":  values,
-		"dim":     float64(16),
-	}
-	doc := Document{
-		Vectors: map[string]interface{}{
-			"dense":  dense,
-			"sparse": sparseMap,
-		},
-		Metadata: map[string]interface{}{"nested": []string{"metadata-is-not-a-vector"}},
-	}
-	if err := store.Tenants().AddDocument(ctx, "tenant", "hybrid", &doc); err != nil {
-		t.Fatal(err)
-	}
-
-	// Ordinary live preparation preserves the caller's concrete vector types.
-	live, ok := durableTestStoredDocument(t, store, "tenant", "hybrid", doc.ID)
-	if !ok {
-		t.Fatal("live document missing")
-	}
-	if _, ok := live.Vectors["dense"].([]interface{}); !ok {
-		t.Fatalf("live preparation changed caller dense type: %T", live.Vectors["dense"])
-	}
-	if _, ok := live.Vectors["sparse"].(map[string]interface{}); !ok {
-		t.Fatalf("live preparation changed caller sparse type: %T", live.Vectors["sparse"])
-	}
-	if _, ok := live.Metadata["nested"].([]string); !ok {
-		t.Fatalf("live preparation changed caller metadata type: %T", live.Metadata["nested"])
-	}
-
-	// Caller mutation cannot reach the prepared document or its WAL bytes.
-	dense[0] = float64(999)
-	indices[0] = float64(1)
-	values[0] = float64(999)
-	live, _ = durableTestStoredDocument(t, store, "tenant", "hybrid", doc.ID)
-	if got := live.Vectors["dense"].([]interface{})[0]; got != float64(wantDense0) {
-		t.Fatalf("caller dense mutation leaked into live store: %v", got)
-	}
-	if got := live.Vectors["sparse"].(map[string]interface{})["indices"].([]interface{})[0]; got != float64(7) {
-		t.Fatalf("caller sparse mutation leaked into live store: %v", got)
-	}
-
-	abandonDurableStoreForTest(t, store)
-	reopened, err := OpenDurableStore(base, base)
-	if err != nil {
-		t.Fatalf("replay compact-vector journal: %v", err)
-	}
-	defer reopened.Close()
-	replayed, ok := durableTestStoredDocument(t, reopened, "tenant", "hybrid", doc.ID)
-	if !ok {
-		t.Fatal("replayed document missing")
-	}
-	replayedDense, ok := replayed.Vectors["dense"].([]float32)
-	if !ok {
-		t.Fatalf("replay retained JSON-generic dense vector: %T", replayed.Vectors["dense"])
-	}
-	if math.Float32bits(replayedDense[0]) != math.Float32bits(wantDense0) || replayedDense[1] != -0.5 || replayedDense[3] != 1 {
-		t.Fatalf("replayed dense vector drifted: %v", replayedDense)
-	}
-	replayedSparse, ok := replayed.Vectors["sparse"].(*sparse.SparseVector)
-	if !ok {
-		t.Fatalf("replay retained JSON-generic sparse vector: %T", replayed.Vectors["sparse"])
-	}
-	if len(replayedSparse.Indices) != 2 || replayedSparse.Indices[0] != 2 || replayedSparse.Indices[1] != 7 ||
-		len(replayedSparse.Values) != 2 || replayedSparse.Values[0] != -0.5 || replayedSparse.Values[1] != 0.75 {
-		t.Fatalf("replayed sparse vector lost sorted index/value alignment: %+v", replayedSparse)
-	}
-	if _, ok := replayed.Metadata["nested"].([]interface{}); !ok {
-		t.Fatalf("replay vector normalization unexpectedly rewrote metadata: %T", replayed.Metadata["nested"])
 	}
 }

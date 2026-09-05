@@ -143,8 +143,8 @@ func (mt *MigrationTool) MigrateDocuments(ctx context.Context, config MigrationC
 // convertDocument converts a v1 document to v2 format with sparse vectors
 func (mt *MigrationTool) convertDocument(config MigrationConfig, v1Doc V1Document) (Document, error) {
 	// Create v2 document with dense vector
-	vectors := make(map[string]interface{})
-	vectors[config.DenseFieldName] = v1Doc.Vector
+	vectors := make(map[string]Vector)
+	vectors[config.DenseFieldName] = Vector{Dense: v1Doc.Vector}
 
 	// Generate sparse vector if enabled
 	if config.EnableSparse && config.GenerateSparseFromText {
@@ -163,7 +163,7 @@ func (mt *MigrationTool) convertDocument(config MigrationConfig, v1Doc V1Documen
 			if err != nil {
 				return Document{}, fmt.Errorf("failed to generate sparse vector: %w", err)
 			}
-			vectors[config.SparseFieldName] = sparseVec
+			vectors[config.SparseFieldName] = Vector{Sparse: sparseVec}
 		}
 	}
 

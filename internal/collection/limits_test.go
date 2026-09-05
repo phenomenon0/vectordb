@@ -391,7 +391,7 @@ func TestSearchIncludeVectorsHonorsResponseBudget(t *testing.T) {
 	query[0] = 1
 	if err := coll.Add(context.Background(), &Document{
 		ID:      1,
-		Vectors: map[string]interface{}{"embedding": append([]float32(nil), query...)},
+		Vectors: map[string]Vector{"embedding": {Dense: append([]float32(nil), query...)}},
 		Metadata: map[string]interface{}{
 			"kind": "budget-test",
 		},
@@ -437,7 +437,7 @@ func TestSearchMetadataHonorsResponseBudgetBeforeCloning(t *testing.T) {
 	for id := uint64(1); id <= 3; id++ {
 		if err := coll.Add(context.Background(), &Document{
 			ID:       id,
-			Vectors:  map[string]interface{}{"embedding": []float32{1, 0, 0, 0}},
+			Vectors:  map[string]Vector{"embedding": Vector{Dense: []float32{1, 0, 0, 0}}},
 			Metadata: map[string]interface{}{"payload": largeValue},
 		}); err != nil {
 			t.Fatalf("add metadata-heavy document %d: %v", id, err)

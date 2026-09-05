@@ -44,17 +44,17 @@ func legacyMigrationFixture() []legacyMigrationExport {
 				},
 			},
 			Documents: []vcollection.Document{
-				{ID: 101, Vectors: map[string]interface{}{
-					"embedding": []float32{1, 0, 0, 0}, "keywords": sparseVector(2)},
+				{ID: 101, Vectors: map[string]vcollection.Vector{
+					"embedding": vcollection.Vector{Dense: []float32{1, 0, 0, 0}}, "keywords": vcollection.Vector{Sparse: sparseVector(2)}},
 					Metadata: map[string]interface{}{"source": "legacy", "lang": "en", "rank": 1}},
-				{ID: 102, Vectors: map[string]interface{}{
-					"embedding": []float32{0, 1, 0, 0}, "keywords": sparseVector(5)},
+				{ID: 102, Vectors: map[string]vcollection.Vector{
+					"embedding": vcollection.Vector{Dense: []float32{0, 1, 0, 0}}, "keywords": vcollection.Vector{Sparse: sparseVector(5)}},
 					Metadata: map[string]interface{}{"source": "legacy", "lang": "fr", "rank": 2}},
-				{ID: 103, Vectors: map[string]interface{}{
-					"embedding": []float32{0, 0, 1, 0}, "keywords": sparseVector(9)},
+				{ID: 103, Vectors: map[string]vcollection.Vector{
+					"embedding": vcollection.Vector{Dense: []float32{0, 0, 1, 0}}, "keywords": vcollection.Vector{Sparse: sparseVector(9)}},
 					Metadata: map[string]interface{}{"source": "legacy", "lang": "de", "rank": 3}},
-				{ID: 104, Vectors: map[string]interface{}{
-					"embedding": []float32{0, 0, 0, 1}, "keywords": sparseVector(13)},
+				{ID: 104, Vectors: map[string]vcollection.Vector{
+					"embedding": vcollection.Vector{Dense: []float32{0, 0, 0, 1}}, "keywords": vcollection.Vector{Sparse: sparseVector(13)}},
 					Metadata: map[string]interface{}{"source": "legacy", "lang": "es", "rank": 4}},
 			},
 		},
@@ -69,11 +69,11 @@ func legacyMigrationFixture() []legacyMigrationExport {
 				},
 			},
 			Documents: []vcollection.Document{
-				{ID: 501, Vectors: map[string]interface{}{"vector": []float32{1, 1, 0, 0}},
+				{ID: 501, Vectors: map[string]vcollection.Vector{"vector": vcollection.Vector{Dense: []float32{1, 1, 0, 0}}},
 					Metadata: map[string]interface{}{"owner": "ops"}},
-				{ID: 502, Vectors: map[string]interface{}{"vector": []float32{0, 1, 1, 0}},
+				{ID: 502, Vectors: map[string]vcollection.Vector{"vector": vcollection.Vector{Dense: []float32{0, 1, 1, 0}}},
 					Metadata: map[string]interface{}{"owner": "sre"}},
-				{ID: 503, Vectors: map[string]interface{}{"vector": []float32{0, 0, 1, 1}},
+				{ID: 503, Vectors: map[string]vcollection.Vector{"vector": vcollection.Vector{Dense: []float32{0, 0, 1, 1}}},
 					Metadata: map[string]interface{}{"owner": "eng"}},
 			},
 		},

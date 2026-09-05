@@ -30,7 +30,7 @@ func addVec(t *testing.T, coll *Collection, id uint64, field string, vec []float
 	t.Helper()
 	if err := coll.Add(context.Background(), &Document{
 		ID:      id,
-		Vectors: map[string]interface{}{field: vec},
+		Vectors: map[string]Vector{field: {Dense: vec}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -132,15 +132,15 @@ func TestSearchFallbackLadder(t *testing.T) {
 
 	// Documents must carry both fields. Primary distances are 1.0 (bad),
 	// secondary distances are 0.2 / 0.293 (good) against q.
-	if err := coll.Add(ctx, &Document{ID: 1, Vectors: map[string]interface{}{
-		"primary":   []float32{0, 0, 1, 0},
-		"secondary": []float32{0.8, 0.6, 0, 0},
+	if err := coll.Add(ctx, &Document{ID: 1, Vectors: map[string]Vector{
+		"primary":   Vector{Dense: []float32{0, 0, 1, 0}},
+		"secondary": Vector{Dense: []float32{0.8, 0.6, 0, 0}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := coll.Add(ctx, &Document{ID: 2, Vectors: map[string]interface{}{
-		"primary":   []float32{0, 0, 0, 1},
-		"secondary": []float32{0.7, 0.7, 0, 0},
+	if err := coll.Add(ctx, &Document{ID: 2, Vectors: map[string]Vector{
+		"primary":   Vector{Dense: []float32{0, 0, 0, 1}},
+		"secondary": Vector{Dense: []float32{0.7, 0.7, 0, 0}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -500,8 +500,8 @@ func TestSearchReportsScoreDirectionAndQueryTime(t *testing.T) {
 	}
 	kw := &sparse.SparseVector{Indices: []uint32{3}, Values: []float32{1}, Dim: 16}
 	for _, id := range []uint64{1, 2} {
-		if err := coll.Add(ctx, &Document{ID: id, Vectors: map[string]interface{}{
-			"dense": []float32{0, 0, 1, 0}, "keywords": kw,
+		if err := coll.Add(ctx, &Document{ID: id, Vectors: map[string]Vector{
+			"dense": Vector{Dense: []float32{0, 0, 1, 0}}, "keywords": Vector{Sparse: kw},
 		}}); err != nil {
 			t.Fatal(err)
 		}

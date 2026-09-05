@@ -5,6 +5,8 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/phenomenon0/vectordb/internal/sparse"
 )
 
 // indexTypeFixture returns a one-field schema and two documents for it, shaped
@@ -22,13 +24,13 @@ func indexTypeFixture(t *testing.T, indexType IndexType) (CollectionSchema, []Do
 	switch kind {
 	case VectorTypeDense:
 		return schema, []Document{
-			{Vectors: map[string]interface{}{"field": []float32{1, 0, 0, 0, 0, 0, 0, 0}}, Metadata: map[string]interface{}{"n": 1}},
-			{Vectors: map[string]interface{}{"field": []float32{0, 1, 0, 0, 0, 0, 0, 0}}, Metadata: map[string]interface{}{"n": 2}},
+			{Vectors: map[string]Vector{"field": Vector{Dense: []float32{1, 0, 0, 0, 0, 0, 0, 0}}}, Metadata: map[string]interface{}{"n": 1}},
+			{Vectors: map[string]Vector{"field": Vector{Dense: []float32{0, 1, 0, 0, 0, 0, 0, 0}}}, Metadata: map[string]interface{}{"n": 2}},
 		}, []float32{1, 0, 0, 0, 0, 0, 0, 0}
 	case VectorTypeSparse:
 		return schema, []Document{
-			{Vectors: map[string]interface{}{"field": map[string]interface{}{"indices": []uint32{1}, "values": []float32{2}, "dim": 8}}, Metadata: map[string]interface{}{"n": 1}},
-			{Vectors: map[string]interface{}{"field": map[string]interface{}{"indices": []uint32{5}, "values": []float32{2}, "dim": 8}}, Metadata: map[string]interface{}{"n": 2}},
+			{Vectors: map[string]Vector{"field": {Sparse: &sparse.SparseVector{Indices: []uint32{1}, Values: []float32{2}, Dim: 8}}}, Metadata: map[string]interface{}{"n": 1}},
+			{Vectors: map[string]Vector{"field": {Sparse: &sparse.SparseVector{Indices: []uint32{5}, Values: []float32{2}, Dim: 8}}}, Metadata: map[string]interface{}{"n": 2}},
 		}, map[string]interface{}{"indices": []uint32{1}, "values": []float32{2}, "dim": 8}
 	default:
 		t.Fatalf("no fixture for vector kind %s", kind)

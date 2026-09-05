@@ -180,7 +180,7 @@ func TestCollectionManagerRoundTripsFieldPartialBulkDocuments(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get bulk document %d: %v", id, err)
 		}
-		if doc.ID != id || len(doc.Vectors) != 1 || doc.Vectors["first"] == nil {
+		if doc.ID != id || len(doc.Vectors) != 1 || doc.Vectors["first"].IsZero() {
 			t.Fatalf("bulk document %d = %+v", id, doc)
 		}
 	}
@@ -193,7 +193,7 @@ func TestCollectionManagerRoundTripsFieldPartialBulkDocuments(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(doc.Vectors) != 2 || doc.Vectors["first"] == nil || doc.Vectors["second"] == nil {
+		if len(doc.Vectors) != 2 || doc.Vectors["first"].IsZero() || doc.Vectors["second"].IsZero() {
 			t.Fatalf("second field import discarded document vectors for %d: %+v", id, doc.Vectors)
 		}
 	}

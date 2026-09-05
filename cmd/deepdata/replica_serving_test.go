@@ -52,7 +52,7 @@ func replicaDirectoryForTest(t *testing.T) (indexPath string, docID uint64) {
 		t.Fatalf("create collection on leader: %v", err)
 	}
 	doc := vcollection.Document{
-		Vectors:  map[string]interface{}{"dense": []float32{1, 0}},
+		Vectors:  map[string]vcollection.Vector{"dense": vcollection.Vector{Dense: []float32{1, 0}}},
 		Metadata: map[string]interface{}{"origin": "leader"},
 	}
 	if err := leader.Tenants().AddDocument(ctx, "acme", "docs", &doc); err != nil {

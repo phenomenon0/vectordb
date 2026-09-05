@@ -52,8 +52,8 @@ func seedUsageDurabilityCollection(t *testing.T, store *DurableStore) (exactID, 
 	}); err != nil {
 		t.Fatalf("create collection: %v", err)
 	}
-	exact := Document{Vectors: map[string]interface{}{"dense": usageProbeQuery}}
-	near := Document{Vectors: map[string]interface{}{"dense": usageNearVector}}
+	exact := Document{Vectors: map[string]Vector{"dense": {Dense: usageProbeQuery}}}
+	near := Document{Vectors: map[string]Vector{"dense": {Dense: usageNearVector}}}
 	for _, doc := range []*Document{&exact, &near} {
 		if err := store.Tenants().AddDocument(ctx, usageDurabilityTenant, "docs", doc); err != nil {
 			t.Fatalf("add document: %v", err)

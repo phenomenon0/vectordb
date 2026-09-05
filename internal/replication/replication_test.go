@@ -32,7 +32,7 @@ func testSchema(name string) vcollection.CollectionSchema {
 
 func testDocument(value float32) vcollection.Document {
 	return vcollection.Document{
-		Vectors:  map[string]interface{}{"embedding": []float32{value, 0, 0, 0}},
+		Vectors:  map[string]vcollection.Vector{"embedding": vcollection.Vector{Dense: []float32{value, 0, 0, 0}}},
 		Metadata: map[string]interface{}{"value": value},
 	}
 }

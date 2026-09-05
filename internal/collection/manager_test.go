@@ -302,8 +302,8 @@ func TestCollectionManager_AddDocument(t *testing.T) {
 	}
 
 	doc := Document{
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1.0, 2.0, 3.0, 4.0},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1.0, 2.0, 3.0, 4.0}},
 		},
 		Metadata: map[string]interface{}{
 			"title": "test doc",
@@ -346,8 +346,8 @@ func TestCollectionManager_BatchAddDocuments(t *testing.T) {
 	docs := make([]Document, 5)
 	for i := range docs {
 		docs[i] = Document{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{float32(i), 0.0, 0.0, 0.0},
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{float32(i), 0.0, 0.0, 0.0}},
 			},
 		}
 	}
@@ -388,13 +388,13 @@ func TestCollectionManager_SearchCollection(t *testing.T) {
 	// Add documents
 	docs := []Document{
 		{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{1.0, 0.0, 0.0, 0.0},
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{1.0, 0.0, 0.0, 0.0}},
 			},
 		},
 		{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{0.0, 1.0, 0.0, 0.0},
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{0.0, 1.0, 0.0, 0.0}},
 			},
 		},
 	}
@@ -446,8 +446,8 @@ func TestCollectionManager_DeleteDocument(t *testing.T) {
 
 	doc := Document{
 		ID: 123,
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1.0, 2.0, 3.0, 4.0},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1.0, 2.0, 3.0, 4.0}},
 		},
 	}
 
@@ -492,8 +492,8 @@ func TestCollectionManager_GetDocument(t *testing.T) {
 
 	doc := Document{
 		ID: 456,
-		Vectors: map[string]interface{}{
-			"embedding": []float32{1.0, 2.0, 3.0, 4.0},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{1.0, 2.0, 3.0, 4.0}},
 		},
 		Metadata: map[string]interface{}{
 			"title": "test",
@@ -546,8 +546,8 @@ func TestCollectionManager_GetStats(t *testing.T) {
 		// Add i documents to collection i
 		for j := 0; j < i; j++ {
 			doc := Document{
-				Vectors: map[string]interface{}{
-					"embedding": []float32{float32(j), 0.0, 0.0, 0.0},
+				Vectors: map[string]Vector{
+					"embedding": Vector{Dense: []float32{float32(j), 0.0, 0.0, 0.0}},
 				},
 			}
 			cm.AddDocument(ctx, fmt.Sprintf("coll%d", i), &doc)
@@ -692,15 +692,15 @@ func TestCollectionManager_HybridSearch(t *testing.T) {
 
 	docs := []Document{
 		{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{1.0, 0.0, 0.0, 0.0},
-				"keywords":  vec1,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{1.0, 0.0, 0.0, 0.0}},
+				"keywords":  Vector{Sparse: vec1},
 			},
 		},
 		{
-			Vectors: map[string]interface{}{
-				"embedding": []float32{0.0, 1.0, 0.0, 0.0},
-				"keywords":  vec2,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: []float32{0.0, 1.0, 0.0, 0.0}},
+				"keywords":  Vector{Sparse: vec2},
 			},
 		},
 	}
@@ -763,8 +763,8 @@ func BenchmarkCollectionManager_AddDocument(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		doc := Document{
-			Vectors: map[string]interface{}{
-				"embedding": vec,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: vec},
 			},
 		}
 		_ = cm.AddDocument(ctx, "bench", &doc)
@@ -797,8 +797,8 @@ func BenchmarkCollectionManager_SearchCollection(b *testing.B) {
 		}
 
 		doc := Document{
-			Vectors: map[string]interface{}{
-				"embedding": vec,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: vec},
 			},
 		}
 		cm.AddDocument(ctx, "bench", &doc)

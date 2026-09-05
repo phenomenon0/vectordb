@@ -245,156 +245,13 @@ func (c *Collection) Add(ctx context.Context, doc *Document) error {
 	return nil
 }
 
-func coerceDenseVector(vector interface{}) ([]float32, error) {
-	switch v := vector.(type) {
-	case []float32:
-		// Zero-alloc fast path: returns the input slice directly.
-		// Safe because: (1) HTTP handlers create a fresh []float32 per request,
-		// (2) HNSW Search does not mutate the query vector, and
-		// (3) HNSW Add makes a defensive copy in idx.Add().
-		return v, nil
-	case []float64:
-		out := make([]float32, len(v))
-		for i, value := range v {
-			out[i] = float32(value)
-		}
-		return out, nil
-	case []interface{}:
-		out := make([]float32, len(v))
-		for i, value := range v {
-			switch n := value.(type) {
-			case float64:
-				out[i] = float32(n)
-			case float32:
-				out[i] = n
-			case int:
-				out[i] = float32(n)
-			default:
-				return nil, fmt.Errorf("invalid dense vector element type %T", value)
-			}
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("expected dense vector, got %T", vector)
-	}
-}
-
-func coerceUint32Slice(value interface{}) ([]uint32, error) {
-	switch v := value.(type) {
-	case nil:
-		// A nil index slice is the legacy ingest's encoding of an EMPTY sparse
-		// vector (a document with no terms). NewSparseVector treats an empty
-		// slice the same way, so accept nil here for journal format
-		// compatibility (see 2026-08-28-bounded-recovery journal).
-		return []uint32{}, nil
-	case []uint32:
-		out := make([]uint32, len(v))
-		copy(out, v)
-		return out, nil
-	case []interface{}:
-		out := make([]uint32, len(v))
-		for i, item := range v {
-			switch n := item.(type) {
-			case float64:
-				out[i] = uint32(n)
-			case float32:
-				out[i] = uint32(n)
-			case int:
-				out[i] = uint32(n)
-			default:
-				return nil, fmt.Errorf("invalid uint32 slice element type %T", item)
-			}
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("expected []uint32-compatible value, got %T", value)
-	}
-}
-
-func coerceFloat32Slice(value interface{}) ([]float32, error) {
-	switch v := value.(type) {
-	case nil:
-		// Companion to coerceUint32Slice: a nil values slice is an empty sparse.
-		return []float32{}, nil
-	case []float32:
-		out := make([]float32, len(v))
-		copy(out, v)
-		return out, nil
-	case []float64:
-		out := make([]float32, len(v))
-		for i, item := range v {
-			out[i] = float32(item)
-		}
-		return out, nil
-	case []interface{}:
-		out := make([]float32, len(v))
-		for i, item := range v {
-			switch n := item.(type) {
-			case float64:
-				out[i] = float32(n)
-			case float32:
-				out[i] = n
-			case int:
-				out[i] = float32(n)
-			default:
-				return nil, fmt.Errorf("invalid float32 slice element type %T", item)
-			}
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("expected []float32-compatible value, got %T", value)
-	}
-}
-
-func coerceInt(value interface{}) (int, error) {
-	switch v := value.(type) {
-	case int:
-		return v, nil
-	case float64:
-		return int(v), nil
-	case float32:
-		return int(v), nil
-	default:
-		return 0, fmt.Errorf("expected int-compatible value, got %T", value)
-	}
-}
-
-func coerceSparseVector(vector interface{}) (*sparse.SparseVector, error) {
-	switch v := vector.(type) {
-	case *sparse.SparseVector:
-		return v, nil
-	case map[string]interface{}:
-		indices, err := coerceUint32Slice(v["indices"])
-		if err != nil {
-			return nil, fmt.Errorf("invalid sparse indices: %w", err)
-		}
-		values, err := coerceFloat32Slice(v["values"])
-		if err != nil {
-			return nil, fmt.Errorf("invalid sparse values: %w", err)
-		}
-		dim, err := coerceInt(v["dim"])
-		if err != nil {
-			return nil, fmt.Errorf("invalid sparse dimension: %w", err)
-		}
-		sparseVec, err := sparse.NewSparseVector(indices, values, dim)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create sparse vector: %w", err)
-		}
-		return sparseVec, nil
-	default:
-		return nil, fmt.Errorf("expected *SparseVector or map, got %T", vector)
-	}
-}
-
-// normalizeDocumentVectorTypes converts JSON-decoded vector containers into
-// the compact typed representations the indexes consume. It is intentionally
-// separate from ordinary document preparation: live callers keep the concrete
-// Go types they supplied, while persistence recovery owns its freshly decoded
-// documents and can canonicalize them without weakening caller isolation.
+// normalizeDocumentVectorTypes checks that every vector field on doc matches
+// its schema's vector kind and dimension. Vector is already typed by the time
+// this runs (JSON decode produces Dense or Sparse directly), so this is a
+// validation pass, not a conversion.
 //
-// Snapshot V2 load and durable-journal replay share this helper so both cold
-// start paths retain []float32 dense vectors and *sparse.SparseVector sparse
-// vectors instead of keeping allocation-heavy []interface{} JSON trees alive.
+// Snapshot V2 load and durable-journal replay share this helper as their
+// cold-start validation step.
 func normalizeDocumentVectorTypes(doc *Document, schema *CollectionSchema) error {
 	for fieldName, vector := range doc.Vectors {
 		field := schema.GetField(fieldName)
@@ -403,23 +260,19 @@ func normalizeDocumentVectorTypes(doc *Document, schema *CollectionSchema) error
 		}
 		switch field.Type {
 		case VectorTypeDense:
-			dense, err := coerceDenseVector(vector)
-			if err != nil {
-				return fmt.Errorf("field %s: %w", fieldName, err)
+			if vector.Dense == nil {
+				return fmt.Errorf("field %s: expected dense vector", fieldName)
 			}
-			if len(dense) != field.Dim {
-				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, len(dense), field.Dim)
+			if len(vector.Dense) != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, len(vector.Dense), field.Dim)
 			}
-			doc.Vectors[fieldName] = dense
 		case VectorTypeSparse:
-			sparseVector, err := coerceSparseVector(vector)
-			if err != nil {
-				return fmt.Errorf("field %s: %w", fieldName, err)
+			if vector.Sparse == nil {
+				return fmt.Errorf("field %s: expected sparse vector", fieldName)
 			}
-			if sparseVector.Dim != field.Dim {
-				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, sparseVector.Dim, field.Dim)
+			if vector.Sparse.Dim != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, vector.Sparse.Dim, field.Dim)
 			}
-			doc.Vectors[fieldName] = sparseVector
 		default:
 			return fmt.Errorf("unsupported vector type %s for field %s", field.Type, fieldName)
 		}
@@ -428,12 +281,11 @@ func normalizeDocumentVectorTypes(doc *Document, schema *CollectionSchema) error
 }
 
 // addToIndex adds a vector to the appropriate index.
-func (c *Collection) addToIndex(ctx context.Context, field VectorField, docID uint64, vector interface{}) error {
+func (c *Collection) addToIndex(ctx context.Context, field VectorField, docID uint64, vector Vector) error {
 	switch field.Type {
 	case VectorTypeDense:
-		denseVec, err := coerceDenseVector(vector)
-		if err != nil {
-			return fmt.Errorf("invalid dense field %s: %w", field.Name, err)
+		if vector.Dense == nil {
+			return fmt.Errorf("invalid dense field %s: expected dense vector", field.Name)
 		}
 
 		idx, ok := c.indexes[field.Name]
@@ -441,12 +293,11 @@ func (c *Collection) addToIndex(ctx context.Context, field VectorField, docID ui
 			return fmt.Errorf("index not found for field: %s", field.Name)
 		}
 
-		return idx.Add(ctx, docID, denseVec)
+		return idx.Add(ctx, docID, vector.Dense)
 
 	case VectorTypeSparse:
-		sparseVec, err := coerceSparseVector(vector)
-		if err != nil {
-			return fmt.Errorf("invalid sparse field %s: %w", field.Name, err)
+		if vector.Sparse == nil {
+			return fmt.Errorf("invalid sparse field %s: expected sparse vector", field.Name)
 		}
 
 		idx, ok := c.sparse[field.Name]
@@ -454,7 +305,7 @@ func (c *Collection) addToIndex(ctx context.Context, field VectorField, docID ui
 			return fmt.Errorf("sparse index not found for field: %s", field.Name)
 		}
 
-		return idx.Add(ctx, docID, sparseVec)
+		return idx.Add(ctx, docID, vector.Sparse)
 
 	default:
 		return fmt.Errorf("unsupported vector type: %d", field.Type)
@@ -723,6 +574,152 @@ func (c *Collection) recordSearchUsage(resp *SearchResponse) {
 	}
 }
 
+// queryDenseVector extracts a dense query vector from a SearchRequest.Queries
+// entry. Unlike Document.Vectors, SearchRequest.Queries stays interface{}-typed
+// (it is unrelated to the Document.Vectors wire format): direct Go API callers
+// pass a raw []float32, HTTP/gRPC decode now passes a Vector, and callers who
+// json.Unmarshal straight into SearchRequest get the classic JSON-generic
+// []float64/[]interface{} shapes, so all of those must still be accepted.
+func queryDenseVector(queryVec interface{}) ([]float32, error) {
+	switch v := queryVec.(type) {
+	case []float32:
+		return v, nil
+	case Vector:
+		if v.Dense != nil {
+			return v.Dense, nil
+		}
+	case []float64:
+		out := make([]float32, len(v))
+		for i, value := range v {
+			out[i] = float32(value)
+		}
+		return out, nil
+	case []interface{}:
+		out := make([]float32, len(v))
+		for i, value := range v {
+			switch n := value.(type) {
+			case float64:
+				out[i] = float32(n)
+			case float32:
+				out[i] = n
+			case int:
+				out[i] = float32(n)
+			default:
+				return nil, fmt.Errorf("invalid dense vector element type %T", value)
+			}
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("expected dense vector, got %T", queryVec)
+}
+
+// querySparseVector is the sparse counterpart of queryDenseVector.
+func querySparseVector(queryVec interface{}) (*sparse.SparseVector, error) {
+	switch v := queryVec.(type) {
+	case *sparse.SparseVector:
+		return v, nil
+	case Vector:
+		if v.Sparse != nil {
+			return v.Sparse, nil
+		}
+	case map[string]interface{}:
+		indices, err := coerceUint32Slice(v["indices"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid sparse indices: %w", err)
+		}
+		values, err := coerceFloat32Slice(v["values"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid sparse values: %w", err)
+		}
+		dim, err := coerceInt(v["dim"])
+		if err != nil {
+			return nil, fmt.Errorf("invalid sparse dimension: %w", err)
+		}
+		return sparse.NewSparseVector(indices, values, dim)
+	}
+	return nil, fmt.Errorf("expected *SparseVector, got %T", queryVec)
+}
+
+// coerceUint32Slice and coerceFloat32Slice/coerceInt below back
+// querySparseVector's map[string]interface{} case: a JSON-decoded sparse
+// query (e.g. json.Unmarshal straight into SearchRequest.Queries) arrives as
+// a generic map with []interface{} index/value arrays and a float64 dim.
+
+func coerceUint32Slice(value interface{}) ([]uint32, error) {
+	switch v := value.(type) {
+	case nil:
+		return []uint32{}, nil
+	case []uint32:
+		out := make([]uint32, len(v))
+		copy(out, v)
+		return out, nil
+	case []interface{}:
+		out := make([]uint32, len(v))
+		for i, item := range v {
+			switch n := item.(type) {
+			case float64:
+				out[i] = uint32(n)
+			case float32:
+				out[i] = uint32(n)
+			case int:
+				out[i] = uint32(n)
+			default:
+				return nil, fmt.Errorf("invalid uint32 slice element type %T", item)
+			}
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("expected []uint32-compatible value, got %T", value)
+	}
+}
+
+func coerceFloat32Slice(value interface{}) ([]float32, error) {
+	switch v := value.(type) {
+	case nil:
+		return []float32{}, nil
+	case []float32:
+		out := make([]float32, len(v))
+		copy(out, v)
+		return out, nil
+	case []float64:
+		out := make([]float32, len(v))
+		for i, item := range v {
+			out[i] = float32(item)
+		}
+		return out, nil
+	case []interface{}:
+		out := make([]float32, len(v))
+		for i, item := range v {
+			switch n := item.(type) {
+			case float64:
+				out[i] = float32(n)
+			case float32:
+				out[i] = n
+			case int:
+				out[i] = float32(n)
+			default:
+				return nil, fmt.Errorf("invalid float32 slice element type %T", item)
+			}
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("expected []float32-compatible value, got %T", value)
+	}
+}
+
+func coerceInt(value interface{}) (int, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case float64:
+		return int(v), nil
+	case float32:
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("expected int-compatible value, got %T", value)
+	}
+}
+
 // searchSingleField performs a search on a single vector field.
 // usageBlend is the opt-in frecency weight applied to the raw ranking
 // (0 keeps the index order exactly). Response post-processing (floor,
@@ -738,7 +735,7 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 
 	switch field.Type {
 	case VectorTypeDense:
-		denseQuery, err := coerceDenseVector(queryVec)
+		denseQuery, err := queryDenseVector(queryVec)
 		if err != nil {
 			return nil, fmt.Errorf("invalid dense query for %s: %w", fieldName, err)
 		}
@@ -778,7 +775,7 @@ func (c *Collection) searchSingleField(ctx context.Context, fieldName string, qu
 		}
 
 	case VectorTypeSparse:
-		sparseQuery, err := coerceSparseVector(queryVec)
+		sparseQuery, err := querySparseVector(queryVec)
 		if err != nil {
 			return nil, fmt.Errorf("invalid sparse query for %s: %w", fieldName, err)
 		}
@@ -859,14 +856,14 @@ func (c *Collection) searchHybrid(ctx context.Context, req SearchRequest, efSear
 			denseField = fieldName
 			denseFieldConfig = *field
 			var err error
-			denseQuery, err = coerceDenseVector(queryVec)
+			denseQuery, err = queryDenseVector(queryVec)
 			if err != nil {
 				return nil, fmt.Errorf("invalid dense query for %s: %w", fieldName, err)
 			}
 		case VectorTypeSparse:
 			sparseField = fieldName
 			var err error
-			sparseQuery, err = coerceSparseVector(queryVec)
+			sparseQuery, err = querySparseVector(queryVec)
 			if err != nil {
 				return nil, fmt.Errorf("invalid sparse query for %s: %w", fieldName, err)
 			}
@@ -1045,15 +1042,11 @@ func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
 // changing collection or caller-owned state. IDs are resolved before WAL
 // append, including explicit IDs, so replay cannot make a different choice.
 //
-// The clone preserves caller Go types instead of round-tripping through JSON.
-// This is deliberate: Validate and validatePersistedDocument coerce by value
-// shape rather than concrete type, journal replay re-decodes every record
-// from JSON anyway, and snapshots marshal stored documents wholesale, so no
-// consumer depends on JSON-normalized types. Preserved []float32 vectors let
-// index insertion take coerceDenseVector's zero-copy fast path instead of
-// unboxing a per-dimension float64 map on every batch. Deep-copy isolation is
-// unchanged: cloneDocumentPreservingTypes copies every reachable slice, map,
-// and pointer, so later caller mutations cannot reach stored state.
+// Vector fields are typed (Dense []float32 or Sparse *sparse.SparseVector),
+// so index insertion uses the caller's dense slice directly with no
+// unboxing. Deep-copy isolation is unchanged: cloneDocumentPreservingTypes
+// copies every reachable slice, map, and pointer, so later caller mutations
+// cannot reach stored state.
 func (c *Collection) prepareCanonicalDocuments(docs []Document) ([]Document, uint64, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -1124,9 +1117,9 @@ func (c *Collection) prepareCanonicalUpsert(docs []Document) ([]Document, uint64
 func cloneDocumentPreservingTypes(doc Document) Document {
 	clone := Document{ID: doc.ID}
 	if doc.Vectors != nil {
-		clone.Vectors = make(map[string]interface{}, len(doc.Vectors))
+		clone.Vectors = make(map[string]Vector, len(doc.Vectors))
 		for key, value := range doc.Vectors {
-			clone.Vectors[key] = cloneDocumentValue(value)
+			clone.Vectors[key] = value.Clone()
 		}
 	}
 	if doc.Metadata != nil {
@@ -1295,11 +1288,11 @@ func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Docu
 			if batcher, ok := idx.(index.BatchAdder); ok {
 				batch := make(map[uint64][]float32, len(docs))
 				for i := range docs {
-					vec, err := coerceDenseVector(docs[i].Vectors[field.Name])
-					if err != nil {
-						return fmt.Errorf("doc %d field %s: %w", i, field.Name, err)
+					vec := docs[i].Vectors[field.Name]
+					if vec.Dense == nil {
+						return fmt.Errorf("doc %d field %s: expected dense vector, got %T", i, field.Name, vec)
 					}
-					batch[docs[i].ID] = vec
+					batch[docs[i].ID] = vec.Dense
 				}
 				if err := batcher.BatchAdd(ctx, batch); err != nil {
 					return fmt.Errorf("batch add to index %s: %w", field.Name, err)
@@ -1307,11 +1300,11 @@ func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Docu
 			} else {
 				// Fallback: per-vector add (still under the single collection lock)
 				for i := range docs {
-					vec, err := coerceDenseVector(docs[i].Vectors[field.Name])
-					if err != nil {
-						return fmt.Errorf("doc %d field %s: %w", i, field.Name, err)
+					vec := docs[i].Vectors[field.Name]
+					if vec.Dense == nil {
+						return fmt.Errorf("doc %d field %s: expected dense vector, got %T", i, field.Name, vec)
 					}
-					if err := idx.Add(ctx, docs[i].ID, vec); err != nil {
+					if err := idx.Add(ctx, docs[i].ID, vec.Dense); err != nil {
 						return fmt.Errorf("doc %d add to index %s: %w", i, field.Name, err)
 					}
 				}
@@ -1322,11 +1315,11 @@ func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Docu
 				return fmt.Errorf("sparse index not found for field: %s", field.Name)
 			}
 			for i := range docs {
-				sv, err := coerceSparseVector(docs[i].Vectors[field.Name])
-				if err != nil {
-					return fmt.Errorf("doc %d field %s: %w", i, field.Name, err)
+				vec := docs[i].Vectors[field.Name]
+				if vec.Sparse == nil {
+					return fmt.Errorf("doc %d field %s: expected sparse vector, got %T", i, field.Name, vec)
 				}
-				if err := sparseIdx.Add(ctx, docs[i].ID, sv); err != nil {
+				if err := sparseIdx.Add(ctx, docs[i].ID, vec.Sparse); err != nil {
 					return fmt.Errorf("doc %d add to sparse index %s: %w", i, field.Name, err)
 				}
 			}
@@ -1470,12 +1463,12 @@ func (c *Collection) BulkAddDense(ctx context.Context, fieldName string, ids []u
 	for i, id := range ids {
 		doc := c.documents[id]
 		if doc == nil {
-			doc = &Document{ID: id, Vectors: make(map[string]interface{})}
+			doc = &Document{ID: id, Vectors: make(map[string]Vector)}
 			c.documents[id] = doc
 		} else if doc.Vectors == nil {
-			doc.Vectors = make(map[string]interface{})
+			doc.Vectors = make(map[string]Vector)
 		}
-		doc.Vectors[fieldName] = vectors[i]
+		doc.Vectors[fieldName] = Vector{Dense: vectors[i]}
 		// Update nextID to stay ahead
 		if id >= c.nextID {
 			c.nextID = id + 1
@@ -1772,7 +1765,11 @@ func (c *Collection) getDocumentVector(docID uint64, fieldName string) ([]float3
 	if !ok {
 		return nil, fmt.Errorf("document %d not found", docID)
 	}
-	return coerceDenseVector(doc.Vectors[fieldName])
+	vec := doc.Vectors[fieldName]
+	if vec.Dense == nil {
+		return nil, fmt.Errorf("expected dense vector, got %+v", vec)
+	}
+	return vec.Dense, nil
 }
 
 func l2NormalizeInPlace(vec []float32) {

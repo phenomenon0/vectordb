@@ -110,7 +110,7 @@ func BenchmarkDurableInsertBatch100HNSW(b *testing.B) {
 			for j := range vec {
 				vec[j] = float32((i*31+j)%97) / 97
 			}
-			batch[i] = Document{Vectors: map[string]interface{}{"embedding": vec}}
+			batch[i] = Document{Vectors: map[string]Vector{"embedding": {Dense: vec}}}
 		}
 		return batch
 	}

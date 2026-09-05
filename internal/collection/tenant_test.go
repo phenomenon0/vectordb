@@ -29,7 +29,7 @@ func testSchema(name string, dim int) CollectionSchema {
 func testDoc(dim int) *Document {
 	vec := make([]float32, dim)
 	return &Document{
-		Vectors:  map[string]interface{}{"embedding": vec},
+		Vectors:  map[string]Vector{"embedding": {Dense: vec}},
 		Metadata: map[string]interface{}{"source": "test"},
 	}
 }
@@ -325,7 +325,7 @@ func TestTenantUpsertReplace(t *testing.T) {
 	// Upsert a brand-new caller-supplied ID acts as an insert.
 	first := &Document{
 		ID:       42,
-		Vectors:  map[string]interface{}{"embedding": []float32{1, 0, 0, 0}},
+		Vectors:  map[string]Vector{"embedding": Vector{Dense: []float32{1, 0, 0, 0}}},
 		Metadata: map[string]interface{}{"source": "first"},
 	}
 	if err := tm.UpsertDocument(ctx, tenantID, "docs", first); err != nil {
@@ -340,7 +340,7 @@ func TestTenantUpsertReplace(t *testing.T) {
 	// vector, which is exactly WHY upsert differs from insert.
 	replacement := &Document{
 		ID:       42,
-		Vectors:  map[string]interface{}{"embedding": []float64{1, 1, 0, 0}},
+		Vectors:  map[string]Vector{"embedding": {Dense: []float32{1, 1, 0, 0}}},
 		Metadata: map[string]interface{}{"source": "replacement"},
 	}
 	if err := tm.UpsertDocument(ctx, tenantID, "docs", replacement); err != nil {
@@ -364,7 +364,7 @@ func TestTenantUpsertReplace(t *testing.T) {
 	// Upserting an ID owned by no live document is a regular insert by number.
 	if err := tm.UpsertDocument(ctx, tenantID, "docs", &Document{
 		ID:       7,
-		Vectors:  map[string]interface{}{"embedding": []float64{0, 1, 0, 0}},
+		Vectors:  map[string]Vector{"embedding": {Dense: []float32{0, 1, 0, 0}}},
 		Metadata: map[string]interface{}{"source": "seven"},
 	}); err != nil {
 		t.Fatalf("second upsert failed: %v", err)
@@ -392,7 +392,7 @@ func TestTenantUpsertIDContract(t *testing.T) {
 	}
 
 	// Missing collection must not panic the tenant manager.
-	if err := tm.UpsertDocument(ctx, tenantID, "ghost", &Document{ID: 1, Vectors: map[string]interface{}{"embedding": []float64{1, 0, 0, 0}}}); err == nil {
+	if err := tm.UpsertDocument(ctx, tenantID, "ghost", &Document{ID: 1, Vectors: map[string]Vector{"embedding": {Dense: []float32{1, 0, 0, 0}}}}); err == nil {
 		t.Fatal("upsert into a missing collection should fail")
 	}
 
@@ -414,9 +414,9 @@ func TestTenantUpsertHNSWReplacement(t *testing.T) {
 		Name: "docs",
 		Fields: []VectorField{
 			{
-				Name: "vec",
-				Type: VectorTypeDense,
-				Dim:  2,
+				Name:  "vec",
+				Type:  VectorTypeDense,
+				Dim:   2,
 				Index: IndexConfig{Type: IndexTypeHNSW, Params: map[string]interface{}{}},
 			},
 		},
@@ -426,13 +426,13 @@ func TestTenantUpsertHNSWReplacement(t *testing.T) {
 	}
 	if err := tm.UpsertDocument(ctx, tenantID, "docs", &Document{
 		ID:      1,
-		Vectors: map[string]interface{}{"vec": []float32{0, 0}},
+		Vectors: map[string]Vector{"vec": Vector{Dense: []float32{0, 0}}},
 	}); err != nil {
 		t.Fatalf("first HNSW upsert failed: %v", err)
 	}
 	if err := tm.UpsertDocument(ctx, tenantID, "docs", &Document{
 		ID:      1,
-		Vectors: map[string]interface{}{"vec": []float32{2, 2}},
+		Vectors: map[string]Vector{"vec": Vector{Dense: []float32{2, 2}}},
 	}); err != nil {
 		t.Fatalf("replacement HNSW upsert failed: %v", err)
 	}
@@ -450,11 +450,8 @@ func TestTenantUpsertHNSWReplacement(t *testing.T) {
 	if !ok {
 		t.Fatal("HNSW-upserted document not found")
 	}
-	// Live tenant preparation preserves the caller's []float32 representation;
-	// read through the coercion layer here because this test is about upsert
-	// value/count semantics rather than the separate persistence type contract.
-	vec, err := coerceDenseVector(got.Vectors["vec"])
-	if err != nil || len(vec) != 2 || vec[0] != 2 {
+	vec := got.Vectors["vec"].Dense
+	if len(vec) != 2 || vec[0] != 2 {
 		t.Fatalf("expected replaced vector [2 2], got %v", got.Vectors["vec"])
 	}
 }
@@ -481,7 +478,7 @@ func TestTenantUpsertPreservesIDCursor(t *testing.T) {
 	// Upserting an old caller-supplied ID (1) must not rewind the cursor.
 	if err := tm.UpsertDocument(ctx, tenantID, "docs", &Document{
 		ID:      1,
-		Vectors: map[string]interface{}{"embedding": []float32{1, 0, 0, 0}},
+		Vectors: map[string]Vector{"embedding": Vector{Dense: []float32{1, 0, 0, 0}}},
 	}); err != nil {
 		t.Fatal(err)
 	}

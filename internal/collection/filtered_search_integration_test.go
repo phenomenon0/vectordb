@@ -57,8 +57,8 @@ func TestCollectionFilteredSearch(t *testing.T) {
 
 		doc := Document{
 			ID: td.id,
-			Vectors: map[string]interface{}{
-				"embedding": vec,
+			Vectors: map[string]Vector{
+				"embedding": Vector{Dense: vec},
 			},
 			Metadata: map[string]interface{}{
 				"category": td.category,
@@ -273,9 +273,9 @@ func TestCollectionFilteredSearch(t *testing.T) {
 // TestFilterFromMap validates the filter.FromMap function
 func TestFilterFromMap(t *testing.T) {
 	testCases := []struct {
-		name      string
-		filterMap map[string]interface{}
-		metadata  map[string]interface{}
+		name        string
+		filterMap   map[string]interface{}
+		metadata    map[string]interface{}
 		shouldMatch bool
 	}{
 		{

@@ -540,75 +540,94 @@ func isValidTenantID(id string) bool {
 // form. Dense arrays — the ingest-dominant shape — take a boxing-free fast
 // path; sparse objects and any other shape fall back to the generic decoder
 // so their exact validation error contract is unchanged.
-func decodeCanonicalVectorRaw(fieldName string, raw json.RawMessage) (interface{}, error) {
+func decodeCanonicalVectorRaw(fieldName string, raw json.RawMessage) (vcollection.Vector, error) {
 	trimmed := bytes.TrimLeft(raw, " \t\n\r")
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		vec, err := decodeDenseVectorFast(raw)
 		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", fieldName, err)
+			return vcollection.Vector{}, fmt.Errorf("field %s: %w", fieldName, err)
 		}
-		return vec, nil
+		return vcollection.Vector{Dense: vec}, nil
 	}
 	var generic interface{}
 	if err := json.Unmarshal(raw, &generic); err != nil {
-		return nil, fmt.Errorf("field %s: %v", fieldName, err)
+		return vcollection.Vector{}, fmt.Errorf("field %s: %v", fieldName, err)
 	}
 	return decodeCanonicalVector(fieldName, generic)
 }
 
-func decodeCanonicalVector(fieldName string, value interface{}) (interface{}, error) {
+func decodeCanonicalVector(fieldName string, value interface{}) (vcollection.Vector, error) {
 	switch vector := value.(type) {
 	case []interface{}:
 		dense := make([]float32, len(vector))
 		for i, item := range vector {
 			number, ok := item.(float64)
 			if !ok || math.IsNaN(number) || math.IsInf(number, 0) {
-				return nil, fmt.Errorf("field %s dense element %d must be a finite number", fieldName, i)
+				return vcollection.Vector{}, fmt.Errorf("field %s dense element %d must be a finite number", fieldName, i)
 			}
 			dense[i] = float32(number)
 			if math.IsInf(float64(dense[i]), 0) {
-				return nil, fmt.Errorf("field %s dense element %d exceeds float32 range", fieldName, i)
+				return vcollection.Vector{}, fmt.Errorf("field %s dense element %d exceeds float32 range", fieldName, i)
 			}
 		}
-		return dense, nil
+		return vcollection.Vector{Dense: dense}, nil
 
 	case map[string]interface{}:
 		indicesRaw, indicesOK := vector["indices"].([]interface{})
 		valuesRaw, valuesOK := vector["values"].([]interface{})
 		dimRaw, dimOK := vector["dim"].(float64)
 		if !indicesOK || !valuesOK || !dimOK || dimRaw < 1 || dimRaw != math.Trunc(dimRaw) || dimRaw > float64(limitMaxDimension) {
-			return nil, fmt.Errorf("field %s sparse vector requires integer dim in [1,%d] plus indices and values arrays", fieldName, limitMaxDimension)
+			return vcollection.Vector{}, fmt.Errorf("field %s sparse vector requires integer dim in [1,%d] plus indices and values arrays", fieldName, limitMaxDimension)
 		}
 		if len(indicesRaw) != len(valuesRaw) {
-			return nil, fmt.Errorf("field %s sparse indices and values lengths differ", fieldName)
+			return vcollection.Vector{}, fmt.Errorf("field %s sparse indices and values lengths differ", fieldName)
 		}
 		indices := make([]uint32, len(indicesRaw))
 		values := make([]float32, len(valuesRaw))
 		for i, item := range indicesRaw {
 			number, ok := item.(float64)
 			if !ok || number < 0 || number != math.Trunc(number) || number > math.MaxUint32 {
-				return nil, fmt.Errorf("field %s sparse index %d must be a uint32", fieldName, i)
+				return vcollection.Vector{}, fmt.Errorf("field %s sparse index %d must be a uint32", fieldName, i)
 			}
 			indices[i] = uint32(number)
 		}
 		for i, item := range valuesRaw {
 			number, ok := item.(float64)
 			if !ok || math.IsNaN(number) || math.IsInf(number, 0) {
-				return nil, fmt.Errorf("field %s sparse value %d must be a finite number", fieldName, i)
+				return vcollection.Vector{}, fmt.Errorf("field %s sparse value %d must be a finite number", fieldName, i)
 			}
 			values[i] = float32(number)
 			if math.IsInf(float64(values[i]), 0) {
-				return nil, fmt.Errorf("field %s sparse value %d exceeds float32 range", fieldName, i)
+				return vcollection.Vector{}, fmt.Errorf("field %s sparse value %d exceeds float32 range", fieldName, i)
 			}
 		}
 		result, err := sparse.NewSparseVector(indices, values, int(dimRaw))
 		if err != nil {
-			return nil, fmt.Errorf("field %s sparse vector: %w", fieldName, err)
+			return vcollection.Vector{}, fmt.Errorf("field %s sparse vector: %w", fieldName, err)
 		}
-		return result, nil
+		return vcollection.Vector{Sparse: result}, nil
 	default:
-		return nil, fmt.Errorf("field %s must be a dense array or sparse vector object", fieldName)
+		return vcollection.Vector{}, fmt.Errorf("field %s must be a dense array or sparse vector object", fieldName)
 	}
+}
+
+// toDocumentVectors converts the interface{}-boxed vectors map built by the
+// decode + text-embedding steps into the typed map Document.Vectors requires.
+// Entries are either a vcollection.Vector (from decodeCanonicalVectorRaw) or
+// a raw []float32/*sparse.SparseVector (from resolveTexts's embeddings).
+func toDocumentVectors(m map[string]interface{}) map[string]vcollection.Vector {
+	out := make(map[string]vcollection.Vector, len(m))
+	for k, v := range m {
+		switch t := v.(type) {
+		case vcollection.Vector:
+			out[k] = t
+		case []float32:
+			out[k] = vcollection.Vector{Dense: t}
+		case *sparse.SparseVector:
+			out[k] = vcollection.Vector{Sparse: t}
+		}
+	}
+	return out
 }
 
 // handleTenantInfo returns info about a tenant (collection count, stats).
@@ -790,7 +809,7 @@ func (s *CollectionHTTPServer) handleTenantDocs(w http.ResponseWriter, r *http.R
 
 		doc := vcollection.Document{
 			ID:       req.ID,
-			Vectors:  vectors,
+			Vectors:  toDocumentVectors(vectors),
 			Metadata: req.Metadata,
 		}
 
@@ -901,7 +920,7 @@ func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *h
 
 	doc := vcollection.Document{
 		ID:       docID,
-		Vectors:  vectors,
+		Vectors:  toDocumentVectors(vectors),
 		Metadata: req.Metadata,
 	}
 	if err := s.tenantManager.UpsertDocument(r.Context(), tenantID, collectionName, &doc); err != nil {
@@ -1007,7 +1026,7 @@ func (s *CollectionHTTPServer) handleTenantBatchDocs(w http.ResponseWriter, r *h
 				return
 			}
 		}
-		docs[i] = vcollection.Document{ID: input.ID, Vectors: vectors, Metadata: input.Metadata}
+		docs[i] = vcollection.Document{ID: input.ID, Vectors: toDocumentVectors(vectors), Metadata: input.Metadata}
 	}
 
 	if err := s.tenantManager.BatchAddDocuments(r.Context(), tenantID, collectionName, docs); err != nil {

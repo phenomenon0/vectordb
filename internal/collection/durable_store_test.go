@@ -30,8 +30,8 @@ func durableTestSchema(name string) CollectionSchema {
 
 func durableTestDocument(value float32) Document {
 	return Document{
-		Vectors: map[string]interface{}{
-			"embedding": []float32{value, 0, 0, 0},
+		Vectors: map[string]Vector{
+			"embedding": Vector{Dense: []float32{value, 0, 0, 0}},
 		},
 		Metadata: map[string]interface{}{"value": value},
 	}
@@ -216,7 +216,7 @@ func TestDurableStoreUpsertReplacesAndReplays(t *testing.T) {
 	// A new caller-supplied ID behaves like an insert.
 	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &Document{
 		ID:       42,
-		Vectors:  map[string]interface{}{"embedding": []float64{1, 0, 0, 0}},
+		Vectors:  map[string]Vector{"embedding": {Dense: []float32{1, 0, 0, 0}}},
 		Metadata: map[string]interface{}{"source": "first"},
 	}); err != nil {
 		t.Fatal(err)
@@ -228,7 +228,7 @@ func TestDurableStoreUpsertReplacesAndReplays(t *testing.T) {
 	// Replacing an existing live ID keeps exactly one storage entry.
 	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &Document{
 		ID:       42,
-		Vectors:  map[string]interface{}{"embedding": []float32{4, 0, 0, 0}},
+		Vectors:  map[string]Vector{"embedding": Vector{Dense: []float32{4, 0, 0, 0}}},
 		Metadata: map[string]interface{}{"source": "replaced"},
 	}); err != nil {
 		t.Fatal(err)
@@ -259,9 +259,9 @@ func TestDurableStoreUpsertReplacesAndReplays(t *testing.T) {
 	if got.Metadata["source"] != "replaced" {
 		t.Fatalf("replay applied first upsert instead of replacement: %+v", got.Metadata)
 	}
-	replayedVector, ok := got.Vectors["embedding"].([]float32)
-	if !ok || len(replayedVector) != 4 || replayedVector[0] != 4 {
-		t.Fatalf("upsert replay retained non-compact dense vector: %T %v", got.Vectors["embedding"], got.Vectors["embedding"])
+	replayedVector := got.Vectors["embedding"].Dense
+	if len(replayedVector) != 4 || replayedVector[0] != 4 {
+		t.Fatalf("upsert replay retained non-compact dense vector: %+v", got.Vectors["embedding"])
 	}
 }
 
@@ -290,7 +290,7 @@ func TestDurableStoreUpsertContractAndReadNotFound(t *testing.T) {
 	}
 	if err := tenants.UpsertDocument(ctx, "tenant-a", "docs", &Document{
 		ID:       7,
-		Vectors:  map[string]interface{}{"embedding": []float32{7, 0, 0, 0}},
+		Vectors:  map[string]Vector{"embedding": Vector{Dense: []float32{7, 0, 0, 0}}},
 		Metadata: map[string]interface{}{"value": float64(7)},
 	}); err != nil {
 		t.Fatal(err)
@@ -489,9 +489,9 @@ func TestDurableStoreReplaysSupportedHNSWAndSparseState(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := Document{
-		Vectors: map[string]interface{}{
-			"dense":  []float32{1, 0, 0, 0},
-			"sparse": map[string]interface{}{"indices": []uint32{1, 3}, "values": []float32{2, 1}, "dim": 16},
+		Vectors: map[string]Vector{
+			"dense":  Vector{Dense: []float32{1, 0, 0, 0}},
+			"sparse": {Sparse: &sparse.SparseVector{Indices: []uint32{1, 3}, Values: []float32{2, 1}, Dim: 16}},
 		},
 		Metadata: map[string]interface{}{"kind": "hybrid"},
 	}
@@ -513,14 +513,14 @@ func TestDurableStoreReplaysSupportedHNSWAndSparseState(t *testing.T) {
 	if !ok {
 		t.Fatal("hybrid document missing after replay")
 	}
-	dense, ok := replayed.Vectors["dense"].([]float32)
-	if !ok || len(dense) != 4 || dense[0] != 1 {
-		t.Fatalf("WAL replay retained non-compact dense vector: %T %v", replayed.Vectors["dense"], replayed.Vectors["dense"])
+	dense := replayed.Vectors["dense"].Dense
+	if len(dense) != 4 || dense[0] != 1 {
+		t.Fatalf("WAL replay retained non-compact dense vector: %+v", replayed.Vectors["dense"])
 	}
-	sparseVector, ok := replayed.Vectors["sparse"].(*sparse.SparseVector)
-	if !ok || len(sparseVector.Indices) != 2 || sparseVector.Indices[0] != 1 || sparseVector.Indices[1] != 3 ||
+	sparseVector := replayed.Vectors["sparse"].Sparse
+	if sparseVector == nil || len(sparseVector.Indices) != 2 || sparseVector.Indices[0] != 1 || sparseVector.Indices[1] != 3 ||
 		len(sparseVector.Values) != 2 || sparseVector.Values[0] != 2 || sparseVector.Values[1] != 1 {
-		t.Fatalf("WAL replay retained non-compact or misaligned sparse vector: %T %+v", replayed.Vectors["sparse"], replayed.Vectors["sparse"])
+		t.Fatalf("WAL replay retained non-compact or misaligned sparse vector: %+v", replayed.Vectors["sparse"])
 	}
 	response, err := reopened.Tenants().SearchCollection(ctx, "t", SearchRequest{
 		CollectionName: "hybrid",
@@ -774,13 +774,13 @@ func TestDurableStoreCanonicalIDsValidationAndDefensiveClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	invalid := durableTestDocument(0)
-	invalid.Vectors["embedding"] = []float32{1, 2}
+	invalid.Vectors["embedding"] = Vector{Dense: []float32{1, 2}}
 	if err := tenants.AddDocument(ctx, "t", "docs", &invalid); err == nil {
 		t.Fatal("dimension mismatch unexpectedly succeeded")
 	}
 	auto := durableTestDocument(41)
 	auto.Metadata["nested"] = map[string]interface{}{"key": "original"}
-	inputVector := auto.Vectors["embedding"].([]float32)
+	inputVector := auto.Vectors["embedding"].Dense
 	if err := tenants.AddDocument(ctx, "t", "docs", &auto); err != nil {
 		t.Fatal(err)
 	}
