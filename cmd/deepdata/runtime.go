@@ -16,9 +16,8 @@ import (
 
 // serverRuntime is the process-wide authentication and limit state the V3
 // surface actually needs. The RC used to borrow these fields from the legacy
-// VectorStore; they live here now so the live server never constructs that
-// engine (SYS-01). VectorStore embeds it so the historical handlers kept for
-// offline migration tests keep reading the very same state.
+// v1 engine; they live here now so the live server never constructs that
+// engine (SYS-01).
 type serverRuntime struct {
 	apiToken          string
 	jwtMgr            *security.JWTManager  // JWT token manager
@@ -30,7 +29,7 @@ type serverRuntime struct {
 	authFailureRL     *authFailureLimiter   // shared HTTP/gRPC failed-auth budget keyed by peer IP
 }
 
-// newServerRuntime reads exactly the environment NewVectorStore read for these
+// newServerRuntime reads exactly the environment the legacy engine constructor read for these
 // fields: JWT_SECRET and JWT_ISSUER for the token manager, API_TOKEN for the
 // static credential, and REQUIRE_AUTH to force authentication when neither is
 // configured.

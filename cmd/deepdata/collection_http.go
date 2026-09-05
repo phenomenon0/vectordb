@@ -129,45 +129,8 @@ func NewCollectionHTTPServer(storagePath string) *CollectionHTTPServer {
 	}
 }
 
-// Save persists V2 and V3 state as one checksummed generation.
-func (s *CollectionHTTPServer) Save(basePath string) error {
-	s.persistenceMu.Lock()
-	defer s.persistenceMu.Unlock()
-	if s.durableStore != nil {
-		if basePath != "" && basePath != s.collectionStorePath {
-			return fmt.Errorf("durable collection store path is fixed at %q", s.collectionStorePath)
-		}
-		if err := s.durableStore.Checkpoint(); err != nil {
-			s.persistenceErr = err
-			return err
-		}
-		s.persistenceErr = nil
-		return nil
-	}
-	if basePath == "" {
-		return nil
-	}
-	metadata := s.snapshotMetadata
-	var zero [16]byte
-	if metadata.StoreID == zero {
-		var err error
-		metadata, err = vcollection.NewCollectionSnapshotMetadata()
-		if err != nil {
-			return err
-		}
-	}
-	if err := vcollection.SaveUnifiedCollectionSnapshot(basePath, s.manager, s.tenantManager, metadata); err != nil {
-		s.persistenceErr = err
-		return err
-	}
-	s.snapshotMetadata = metadata
-	s.persistenceErr = nil
-	s.collectionStorePath = basePath
-	return nil
-}
-
 // Load stages and validates the complete V2/V3 generation before swapping
-// either live manager. A fresh store is durably initialized before success.
+// either live manager. Retained for collection_http_test.go coverage.
 func (s *CollectionHTTPServer) Load(basePath string) error {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
@@ -190,9 +153,8 @@ func (s *CollectionHTTPServer) Load(basePath string) error {
 	return nil
 }
 
-// LoadDurable opens the canonical Linux-only journaled store. All V3 and gRPC
-// mutations subsequently flow through the returned TenantManager and its
-// append-before-apply boundary.
+// LoadDurable opens the canonical Linux-only journaled store. Retained for
+// collection_http_test.go coverage.
 func (s *CollectionHTTPServer) LoadDurable(basePath string) error {
 	return s.loadDurable(basePath, nil)
 }
@@ -333,12 +295,6 @@ func (s *CollectionHTTPServer) Abort() error {
 	return nil
 }
 
-// Manager returns the legacy V2 manager for explicit migration/compatibility
-// code. The canonical durable state is never installed into this raw manager.
-func (s *CollectionHTTPServer) Manager() *vcollection.CollectionManager {
-	return s.manager
-}
-
 // LegacyCollectionCount is the checked canonical startup inspection for V2
 // collections embedded in an already-unified snapshot. It does not expose the
 // durable store's raw CollectionManager to request code.
@@ -355,11 +311,6 @@ func (s *CollectionHTTPServer) LegacyCollectionCount() (int, error) {
 // and gRPC in the production RC.
 func (s *CollectionHTTPServer) TenantManager() *vcollection.TenantManager {
 	return s.tenantManager
-}
-
-// EnableGraphRAG activates the GraphRAG index for graph-boosted hybrid search.
-func (s *CollectionHTTPServer) EnableGraphRAG(cfg graph.Config) {
-	s.graphIndex = graph.NewGraphIndex(cfg)
 }
 
 // RegisterCanonicalHandlers exposes only the tenant-aware RC contract. Legacy

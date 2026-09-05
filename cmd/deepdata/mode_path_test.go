@@ -63,7 +63,7 @@ func TestLoadModeDataDirectoryMatchesRuntimePath(t *testing.T) {
 	if config.DataDirectory != override {
 		t.Fatalf("loaded config directory = %q, want %q", config.DataDirectory, override)
 	}
-	if got := GetModeInfo(config).DataDirectory; got != override {
+	if got := GetDataDirectory(ModeLocal); got != override {
 		t.Fatalf("reported directory = %q, want %q", got, override)
 	}
 }

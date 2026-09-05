@@ -1,11 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -213,71 +211,24 @@ func (mc *MetricsCollector) Handler() http.Handler {
 	return promhttp.HandlerFor(mc.registry, promhttp.HandlerOpts{})
 }
 
-// RecordOperation records a completed operation
-func (mc *MetricsCollector) RecordOperation(operation string, shardID int, duration time.Duration, err error) {
-	status := "success"
-	if err != nil {
-		status = "error"
-		mc.operationErrors.WithLabelValues(operation, fmt.Sprintf("%d", shardID), "unknown").Inc()
-	}
-
-	mc.operationsTotal.WithLabelValues(operation, fmt.Sprintf("%d", shardID), status).Inc()
-	mc.operationDuration.WithLabelValues(operation, fmt.Sprintf("%d", shardID)).Observe(duration.Seconds())
+// responseWriter wraps http.ResponseWriter to capture status code
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
 }
 
-// RecordQuery records query metrics
-func (mc *MetricsCollector) RecordQuery(mode string, collections []string, duration time.Duration, resultCount int, shardsFanout int) {
-	collectionsLabel := fmt.Sprintf("%d", len(collections))
-	if len(collections) == 0 {
-		collectionsLabel = "all"
-	}
+// ===========================================================================================
+// GLOBAL METRICS INSTANCE
+// ===========================================================================================
 
-	mc.queryLatency.WithLabelValues(mode, collectionsLabel).Observe(duration.Seconds())
-	mc.queryResultsTotal.WithLabelValues(mode).Observe(float64(resultCount))
-	mc.queryShardsFanout.WithLabelValues(mode).Observe(float64(shardsFanout))
+var globalMetrics *MetricsCollector
+
+// initMetrics initializes the global metrics collector
+func initMetrics() {
+	globalMetrics = NewMetricsCollector()
 }
 
-// UpdateShardHealth updates shard health metrics
-func (mc *MetricsCollector) UpdateShardHealth(shardID int, nodeID string, role string, healthy bool, replicationLag int) {
-	healthValue := 0.0
-	if healthy {
-		healthValue = 1.0
-	}
-
-	mc.shardHealthStatus.WithLabelValues(
-		fmt.Sprintf("%d", shardID),
-		nodeID,
-		role,
-	).Set(healthValue)
-
-	if role == "replica" {
-		mc.shardReplicationLag.WithLabelValues(
-			fmt.Sprintf("%d", shardID),
-			nodeID,
-		).Set(float64(replicationLag))
-	}
-}
-
-// HTTPMiddleware returns middleware that instruments HTTP requests
-func (mc *MetricsCollector) HTTPMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-
-		// Wrap response writer to capture status code
-		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
-		next.ServeHTTP(wrapped, r)
-
-		duration := time.Since(start)
-		// FIX #11: Normalize path to prevent unbounded Prometheus label cardinality.
-		// Dynamic path segments (tenant IDs, collection names) are replaced with
-		// placeholders so attackers can't generate infinite time series.
-		mc.RecordHTTPRequest(r.Method, normalizeMetricsPath(r.URL.Path), wrapped.statusCode, duration)
-	})
-}
-
-// normalizeMetricsPath replaces dynamic path segments with placeholders
-// to prevent unbounded Prometheus label cardinality.
+// normalizeMetricsPath is retained for contract_test.go coverage.
 func normalizeMetricsPath(path string) string {
 	// Fast path for v1 endpoints (no dynamic segments)
 	if !strings.Contains(path, "/v2/") && !strings.Contains(path, "/v3/") {
@@ -299,52 +250,4 @@ func normalizeMetricsPath(path string) string {
 		}
 	}
 	return strings.Join(parts, "/")
-}
-
-// responseWriter wraps http.ResponseWriter to capture status code
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-// RecordHTTPRequest records an HTTP request
-func (mc *MetricsCollector) RecordHTTPRequest(method, endpoint string, status int, duration time.Duration) {
-	mc.httpRequestsTotal.WithLabelValues(
-		method,
-		endpoint,
-		fmt.Sprintf("%d", status),
-	).Inc()
-
-	mc.httpRequestDuration.WithLabelValues(method, endpoint).Observe(duration.Seconds())
-}
-
-// ===========================================================================================
-// GLOBAL METRICS INSTANCE
-// ===========================================================================================
-
-var globalMetrics *MetricsCollector
-
-// initMetrics initializes the global metrics collector
-func initMetrics() {
-	globalMetrics = NewMetricsCollector()
-}
-
-// withMetrics wraps an HTTP handler with metrics collection
-func withMetrics(endpoint string, handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
-		handler(rw, r)
-
-		duration := time.Since(start)
-		if globalMetrics != nil {
-			globalMetrics.RecordHTTPRequest(r.Method, endpoint, rw.statusCode, duration)
-		}
-	}
 }

@@ -152,11 +152,6 @@ func GetIndexPath(mode VectorDBMode) string {
 	return filepath.Join(GetDataDirectory(mode), "index.gob")
 }
 
-// GetWALPath returns the path to the WAL file for the current mode
-func GetWALPath(mode VectorDBMode) string {
-	return filepath.Join(GetDataDirectory(mode), "index.gob.wal")
-}
-
 // ModeInfo returns a struct suitable for JSON serialization in API responses
 type ModeInfo struct {
 	Mode           string  `json:"mode"`
@@ -168,48 +163,4 @@ type ModeInfo struct {
 	DataDirectory  string  `json:"data_directory"`
 	IsPro          bool    `json:"is_pro"`
 	IsFree         bool    `json:"is_free"`
-}
-
-// GetModeInfo returns mode information for API responses
-func GetModeInfo(config *ModeConfig) ModeInfo {
-	return ModeInfo{
-		Mode:           string(config.Mode),
-		Dimension:      config.Dimension,
-		EmbedderType:   config.EmbedderType,
-		EmbedderModel:  config.EmbedderModel,
-		CostPer1MToken: config.CostPer1MToken,
-		Description:    config.Description,
-		DataDirectory:  GetDataDirectory(config.Mode),
-		IsPro:          config.Mode == ModePro,
-		IsFree:         config.CostPer1MToken == 0,
-	}
-}
-
-// PrintModeBanner prints a startup banner showing the current mode
-func PrintModeBanner(config *ModeConfig) {
-	var modeIcon, modeColor string
-	if config.Mode == ModeLocal {
-		modeIcon = "🏠"
-		modeColor = "\033[32m" // Green
-	} else {
-		modeIcon = "⚡"
-		modeColor = "\033[33m" // Yellow/Gold
-	}
-	reset := "\033[0m"
-
-	fmt.Println()
-	fmt.Println("╔════════════════════════════════════════════════════════════════╗")
-	fmt.Printf("║  %s%s VectorDB %s Mode%s                                            ║\n",
-		modeColor, modeIcon, strings.ToUpper(string(config.Mode)), reset)
-	fmt.Println("╠════════════════════════════════════════════════════════════════╣")
-	fmt.Printf("║  Embedder:  %-50s ║\n", config.EmbedderType+"/"+config.EmbedderModel)
-	fmt.Printf("║  Dimension: %-50d ║\n", config.Dimension)
-	if config.CostPer1MToken > 0 {
-		fmt.Printf("║  Cost:      $%.2f per 1M tokens                               ║\n", config.CostPer1MToken)
-	} else {
-		fmt.Printf("║  Cost:      %-50s ║\n", "FREE")
-	}
-	fmt.Printf("║  Data:      %-50s ║\n", GetDataDirectory(config.Mode))
-	fmt.Println("╚════════════════════════════════════════════════════════════════╝")
-	fmt.Println()
 }
