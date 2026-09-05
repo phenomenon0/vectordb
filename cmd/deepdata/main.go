@@ -16,6 +16,7 @@ import (
 
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -504,9 +505,72 @@ type SimpleReranker struct {
 	Embedder Embedder
 }
 
+func (r *SimpleReranker) Rerank(query string, docs []string, topK int) ([]string, []float32, string, error) {
+	qVec, err := r.Embedder.EmbedQuery(query)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if topK <= 0 || topK > len(docs) {
+		topK = len(docs)
+	}
+	bestDocs := make([]string, 0, topK)
+	bestScores := make([]float32, 0, topK)
+
+	for _, doc := range docs {
+		dVec, err := r.Embedder.Embed(doc)
+		if err != nil {
+			continue
+		}
+		score := DotProduct(qVec, dVec)
+		if len(bestDocs) < topK {
+			bestDocs = append(bestDocs, doc)
+			bestScores = append(bestScores, score)
+			continue
+		}
+		minIdx := 0
+		for i := 1; i < len(bestScores); i++ {
+			if bestScores[i] < bestScores[minIdx] {
+				minIdx = i
+			}
+		}
+		if score > bestScores[minIdx] {
+			bestScores[minIdx] = score
+			bestDocs[minIdx] = doc
+		}
+	}
+
+	order := make([]int, len(bestScores))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool {
+		return bestScores[order[i]] > bestScores[order[j]]
+	})
+
+	sortedDocs := make([]string, 0, len(order))
+	sortedScores := make([]float32, 0, len(order))
+	for _, idx := range order {
+		sortedDocs = append(sortedDocs, bestDocs[idx])
+		sortedScores = append(sortedScores, bestScores[idx])
+	}
+
+	return sortedDocs, sortedScores, "Simple rerank", nil
+}
+
 // ======================================================================================
 // Utility
 // ======================================================================================
+
+func DotProduct(a, b []float32) float32 {
+	if len(a) != len(b) {
+		return 0
+	}
+	var sum float32
+	for i := range a {
+		sum += a[i] * b[i]
+	}
+	return sum
+}
 
 func syncParentDirectory(path string) error {
 	dir, err := os.Open(filepath.Dir(path))
