@@ -49,10 +49,15 @@ var simdNormalizedCosineDistance hnsw.DistanceFunc = simd.NormalizedCosineDistan
 //
 // Thread-safety: Safe for concurrent reads, writes are serialized by mutex.
 type HNSWIndex struct {
-	mu    sync.RWMutex
-	graph *hnsw.Graph[uint64]
-	dim   int
-	count int
+	// writeMu serializes mutators so BatchAdd/BatchAddNoCopy can drop mu to
+	// RLock during the graph-build phase (letting Search proceed) without a
+	// second mutator racing in through the gap. Lock order is always
+	// writeMu -> mu; readers (Search, Stats) never take writeMu.
+	writeMu sync.Mutex
+	mu      sync.RWMutex
+	graph   *hnsw.Graph[uint64]
+	dim     int
+	count   int
 
 	// Mapping from external ID to internal index
 	idToIdx map[uint64]int
@@ -200,6 +205,9 @@ func (h *HNSWIndex) Add(ctx context.Context, id uint64, vector []float32) error 
 		return fmt.Errorf("vector dimension mismatch: expected %d, got %d", h.dim, len(vector))
 	}
 
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -258,6 +266,9 @@ func (h *HNSWIndex) Add(ctx context.Context, id uint64, vector []float32) error 
 // SetMetadata sets or updates the metadata for a vector.
 // This is used for filtered search. Metadata can be set after vector insertion.
 func (h *HNSWIndex) SetMetadata(id uint64, metadata map[string]interface{}) error {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -307,17 +318,24 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 		}
 	}
 
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	originalCount := h.count
 
-	// 1. Sequential: validate duplicates, handle resurrections, collect new nodes.
+	// 1. Sequential: validate duplicates, handle resurrections, collect new
+	// nodes, and register bookkeeping (stored vector, idToIdx, count) up
+	// front — before the graph phase below may drop to RLock — so a
+	// concurrent Search/Stats/Export never observes a graph node whose
+	// bookkeeping is still pending.
 	newNodes := make([]hnsw.Node[uint64], 0, len(vectors))
 	var resurrected []uint64
 	for id, vec := range vectors {
 		if _, exists := h.idToIdx[id]; exists {
 			if !h.deleted[id] {
+				h.mu.Unlock()
 				return fmt.Errorf("vector with ID %d already exists", id)
 			}
 			// Tombstoned — resurrect via Update
@@ -329,6 +347,7 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 			if err := h.storeVectorLocked(id, vecCopy); err != nil {
 				// Roll back the resurrection so the batch leaves no trace.
 				h.deleted[id] = true
+				h.mu.Unlock()
 				return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
 			}
 			resurrected = append(resurrected, id)
@@ -338,18 +357,27 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 		vecCopy := make([]float32, h.dim)
 		copy(vecCopy, vec)
 		h.maybeNormalize(vecCopy)
-		newNodes = append(newNodes, hnsw.MakeNode(id, vecCopy))
+		node := hnsw.MakeNode(id, vecCopy)
+		if err := h.storeVectorLocked(id, vecCopy); err != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("failed to store vector %d: %w", id, err)
+		}
+		h.idToIdx[id] = h.count
+		h.count++
+		newNodes = append(newNodes, node)
 	}
 
 	if len(newNodes) == 0 {
-		return h.maybeTrainQuantizerLocked()
+		err := h.maybeTrainQuantizerLocked()
+		h.mu.Unlock()
+		return err
 	}
 
 	// rollback undoes every mutation the batch made so far. It is only called
 	// on failure; the batch must be atomic, so nothing is left half-applied.
 	// Every step is idempotent: graph.Delete and the map deletions are no-ops
 	// for nodes that were never reached, and count is restored to its original
-	// value.
+	// value. Caller must hold h.mu exclusively when invoking this.
 	rollback := func() {
 		for _, id := range resurrected {
 			h.deleted[id] = true
@@ -362,26 +390,32 @@ func (h *HNSWIndex) BatchAdd(ctx context.Context, vectors map[uint64][]float32) 
 		h.count = originalCount
 	}
 
-	// 2. Graph insertion. The graph uses each node's own vector, so the index
-	// metadata maps are not needed during insertion; deferring registration
-	// until after the graph is fully built keeps a failed batch rollback-clean.
-	if err := h.parallelGraphInsert(ctx, newNodes); err != nil {
+	// 2. Graph insertion. Nodes are already registered in step 1, so a
+	// concurrent Search reaching one mid-insert resolves it straight from the
+	// graph node's own Value field — it never touches idToIdx/vectors for
+	// that. Large batches fan out across goroutines via AddConcurrent, which
+	// tolerates concurrent readers (see hnsw/graph.go), so drop to RLock and
+	// let searches proceed; small batches use the sequential h.graph.Add
+	// path, which is NOT concurrent-safe, so the exclusive lock stays held.
+	concurrent := canParallelInsert(len(newNodes))
+	if concurrent {
+		h.mu.Unlock()
+		h.mu.RLock()
+	}
+	err := h.parallelGraphInsert(ctx, newNodes)
+	if concurrent {
+		h.mu.RUnlock()
+		h.mu.Lock()
+	}
+	if err != nil {
 		rollback()
+		h.mu.Unlock()
 		return err
 	}
 
-	// 3. Sequential: register metadata only after graph insertion succeeded.
-	// Node at index i is visible only once its registration completes.
-	for _, node := range newNodes {
-		if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
-			rollback()
-			return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
-		}
-		h.idToIdx[node.Key] = h.count
-		h.count++
-	}
-
-	return h.maybeTrainQuantizerLocked()
+	err = h.maybeTrainQuantizerLocked()
+	h.mu.Unlock()
+	return err
 }
 
 // BatchAddNoCopy inserts multiple vectors without copying them.
@@ -402,18 +436,23 @@ func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]flo
 		}
 	}
 
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	originalCount := h.count
 
-	// 1. Sequential: validate duplicates, handle resurrections, collect new IDs.
+	// 1. Sequential: validate duplicates, handle resurrections, collect new
+	// nodes, and register bookkeeping up front — see BatchAdd for why this
+	// must happen before the graph phase below may drop to RLock.
 	newNodes := make([]hnsw.Node[uint64], 0, len(vectors))
 	var resurrected []uint64
 	for id, vec := range vectors {
 		h.maybeNormalize(vec) // NB: mutates caller's slice (NoCopy contract)
 		if _, exists := h.idToIdx[id]; exists {
 			if !h.deleted[id] {
+				h.mu.Unlock()
 				return fmt.Errorf("vector with ID %d already exists", id)
 			}
 			// Tombstoned — resurrect via Update
@@ -422,16 +461,26 @@ func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]flo
 			if err := h.storeVectorLocked(id, vec); err != nil {
 				// Roll back the resurrection so the batch leaves no trace.
 				h.deleted[id] = true
+				h.mu.Unlock()
 				return fmt.Errorf("failed to store resurrected vector %d: %w", id, err)
 			}
 			resurrected = append(resurrected, id)
 			continue
 		}
-		newNodes = append(newNodes, hnsw.MakeNode(id, vec))
+		node := hnsw.MakeNode(id, vec)
+		if err := h.storeVectorLocked(id, vec); err != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("failed to store vector %d: %w", id, err)
+		}
+		h.idToIdx[id] = h.count
+		h.count++
+		newNodes = append(newNodes, node)
 	}
 
 	if len(newNodes) == 0 {
-		return h.maybeTrainQuantizerLocked()
+		err := h.maybeTrainQuantizerLocked()
+		h.mu.Unlock()
+		return err
 	}
 
 	rollback := func() {
@@ -446,41 +495,60 @@ func (h *HNSWIndex) BatchAddNoCopy(ctx context.Context, vectors map[uint64][]flo
 		h.count = originalCount
 	}
 
-	// 2. Graph insertion before any metadata registration, so a failure cannot
-	// expose half-registered nodes or a count that does not match the graph.
-	if err := h.parallelGraphInsert(ctx, newNodes); err != nil {
+	// 2. Graph insertion. See BatchAdd for the RLock-downgrade rationale.
+	concurrent := canParallelInsert(len(newNodes))
+	if concurrent {
+		h.mu.Unlock()
+		h.mu.RLock()
+	}
+	err := h.parallelGraphInsert(ctx, newNodes)
+	if concurrent {
+		h.mu.RUnlock()
+		h.mu.Lock()
+	}
+	if err != nil {
 		rollback()
+		h.mu.Unlock()
 		return err
 	}
 
-	// 3. Sequential: register metadata after the graph is fully built.
-	for _, node := range newNodes {
-		if err := h.storeVectorLocked(node.Key, node.Value); err != nil {
-			rollback()
-			return fmt.Errorf("failed to store vector %d: %w", node.Key, err)
-		}
-		h.idToIdx[node.Key] = h.count
-		h.count++
-	}
-
-	return h.maybeTrainQuantizerLocked()
+	err = h.maybeTrainQuantizerLocked()
+	h.mu.Unlock()
+	return err
 }
 
 // parallelGraphInsert fans out graph insertion across multiple goroutines.
 // Must be called with h.mu held. Nodes must already be registered in idToIdx/vectors.
+// canParallelInsert reports whether a batch of n new nodes is large enough to
+// justify fanning graph insertion out across goroutines via AddConcurrent
+// (parallelGraphInsert) rather than the sequential graph.Add path. BatchAdd
+// and BatchAddNoCopy use this same predicate to decide whether they may drop
+// h.mu to RLock during the graph phase, since the sequential path is NOT
+// safe alongside concurrent readers and must keep the exclusive lock.
+func canParallelInsert(n int) bool {
+	numWorkers := runtime.GOMAXPROCS(0)
+	if numWorkers > 8 {
+		numWorkers = 8
+	}
+	if numWorkers > n {
+		numWorkers = n
+	}
+	return n >= 100 && numWorkers > 1
+}
+
 func (h *HNSWIndex) parallelGraphInsert(ctx context.Context, nodes []hnsw.Node[uint64]) error {
+	// For small batches, insert sequentially to avoid goroutine overhead.
+	if !canParallelInsert(len(nodes)) {
+		h.graph.Add(nodes...)
+		return nil
+	}
+
 	numWorkers := runtime.GOMAXPROCS(0)
 	if numWorkers > 8 {
 		numWorkers = 8
 	}
 	if numWorkers > len(nodes) {
 		numWorkers = len(nodes)
-	}
-
-	// For small batches, insert sequentially to avoid goroutine overhead.
-	if len(nodes) < 100 || numWorkers <= 1 {
-		h.graph.Add(nodes...)
-		return nil
 	}
 
 	ch := make(chan hnsw.Node[uint64], len(nodes))
@@ -705,6 +773,9 @@ func (h *HNSWIndex) computeDistancesCPU(query []float32, candidates [][]float32)
 //
 // Thread-safety: Writes are serialized
 func (h *HNSWIndex) Delete(ctx context.Context, id uint64) error {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -795,6 +866,13 @@ func (h *HNSWIndex) Stats() IndexStats {
 //
 // Thread-safety: Safe for concurrent reads (snapshot semantics)
 func (h *HNSWIndex) Export() ([]byte, error) {
+	// Export takes writeMu even though it only reads: during a BatchAdd's
+	// RLock graph-build phase, count/vectors/idToIdx already reflect nodes
+	// whose graph insertion is still in flight. writeMu makes Export wait for
+	// that mutator to fully finish instead of exporting a batch mid-insert.
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -898,6 +976,9 @@ func (h *HNSWIndex) Import(data []byte) error {
 		return fmt.Errorf("dimension mismatch: index is %d, import data is %d", h.dim, imp.Dim)
 	}
 
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -997,6 +1078,9 @@ func (h *HNSWIndex) Import(data []byte) error {
 //
 // Returns the number of vectors removed.
 func (h *HNSWIndex) Compact() (int, error) {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
