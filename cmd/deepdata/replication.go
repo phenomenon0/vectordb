@@ -135,15 +135,15 @@ func runReplicate(args []string, logger *logging.Logger) int {
 		return 2
 	}
 
-	modeConfig, err := LoadModeFromEnv()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "replicate: %v\n", err)
+	cfg, errs := loadServerConfig(nil, os.Getenv)
+	if len(errs) > 0 {
+		fmt.Fprintf(os.Stderr, "replicate: %s\n", strings.Join(errs, "; "))
 		return 2
 	}
 	// The same path the server would open, so a replica directory and the
 	// leader directory are configured identically and an operator can promote
 	// one by changing the subcommand, not the layout.
-	base := GetIndexPath(modeConfig.Mode) + ".collections"
+	base := cfg.IndexPath + ".collections"
 	if err := os.MkdirAll(filepath.Dir(base), 0o750); err != nil {
 		logger.Error("cannot create the replica state directory", "path", filepath.Dir(base), "error", err)
 		return 1

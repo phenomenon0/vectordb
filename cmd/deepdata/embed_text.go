@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
@@ -36,24 +34,29 @@ func (e *serverEmbedder) matches(cfg *vcollection.EmbeddingConfig) bool {
 	return e != nil && cfg.Provider == e.Provider && (cfg.Model == "" || cfg.Model == e.Model)
 }
 
-// newServerEmbedderFromEnv selects the process embedder. none is the default;
-// hash is never implicit. Provider-backed embedders are probed once so a
+// newServerEmbedder selects the process embedder. none is the default; hash
+// is never implicit. Provider-backed embedders are probed once so a
 // configured-but-unreachable embedder refuses startup instead of failing the
 // first request.
-func newServerEmbedderFromEnv() (*serverEmbedder, error) {
-	kind := strings.ToLower(strings.TrimSpace(os.Getenv("DEEPDATA_EMBEDDER")))
-	switch kind {
+func newServerEmbedder(cfg embedderConfig) (*serverEmbedder, error) {
+	switch cfg.Kind {
 	case "", "none":
 		return nil, nil
 	case "hash":
-		dim := envInt("DEEPDATA_EMBED_DIM", 384)
+		dim := cfg.Dim
 		if dim <= 0 || dim > vcollection.MaxVectorDimension {
 			return nil, fmt.Errorf("DEEPDATA_EMBED_DIM must be in 1..%d, got %d", vcollection.MaxVectorDimension, dim)
 		}
 		return &serverEmbedder{Embedder: NewHashEmbedder(dim), Provider: "hash", Model: strconv.Itoa(dim)}, nil
 	case "ollama":
-		baseURL := envString("OLLAMA_URL", "http://localhost:11434")
-		model := envString("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+		baseURL := cfg.OllamaURL
+		if baseURL == "" {
+			baseURL = "http://localhost:11434"
+		}
+		model := cfg.OllamaModel
+		if model == "" {
+			model = "nomic-embed-text"
+		}
 		emb := NewOllamaEmbedder(baseURL, model)
 		vec, err := emb.Embed("deepdata startup probe")
 		if err != nil {
@@ -62,19 +65,24 @@ func newServerEmbedderFromEnv() (*serverEmbedder, error) {
 		emb.dim = len(vec)
 		return &serverEmbedder{Embedder: emb, Provider: "ollama", Model: model}, nil
 	case "openai":
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
+		if cfg.OpenAIAPIKey == "" {
 			return nil, errors.New("DEEPDATA_EMBEDDER=openai requires OPENAI_API_KEY")
 		}
-		emb := NewOpenAIEmbedder(apiKey)
+		emb := NewOpenAIEmbedder(cfg.OpenAIAPIKey)
 		if _, err := emb.Embed("deepdata startup probe"); err != nil {
 			return nil, fmt.Errorf("openai model %s: %w", emb.model, err)
 		}
 		return &serverEmbedder{Embedder: emb, Provider: "openai", Model: emb.model}, nil
 	case "onnx":
-		modelPath := envString("ONNX_EMBED_MODEL", "vectordb/models/bge-small-en-v1.5/model.onnx")
-		tokPath := envString("ONNX_EMBED_TOKENIZER", "vectordb/models/bge-small-en-v1.5/tokenizer.json")
-		emb, err := NewOnnxEmbedder(modelPath, tokPath, envInt("DEEPDATA_EMBED_DIM", 384), envInt("ONNX_EMBED_MAX_LEN", 512))
+		modelPath := cfg.OnnxModel
+		if modelPath == "" {
+			modelPath = "vectordb/models/bge-small-en-v1.5/model.onnx"
+		}
+		tokPath := cfg.OnnxTokenizer
+		if tokPath == "" {
+			tokPath = "vectordb/models/bge-small-en-v1.5/tokenizer.json"
+		}
+		emb, err := NewOnnxEmbedder(modelPath, tokPath, cfg.Dim, cfg.OnnxMaxLen)
 		if err != nil {
 			return nil, fmt.Errorf("onnx model %s: %w", modelPath, err)
 		}
@@ -83,14 +91,7 @@ func newServerEmbedderFromEnv() (*serverEmbedder, error) {
 		}
 		return &serverEmbedder{Embedder: emb, Provider: "onnx", Model: filepath.Base(filepath.Dir(modelPath))}, nil
 	}
-	return nil, fmt.Errorf("unknown DEEPDATA_EMBEDDER %q (none|ollama|openai|onnx|hash)", kind)
-}
-
-func envString(key, def string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		return v
-	}
-	return def
+	return nil, fmt.Errorf("unknown DEEPDATA_EMBEDDER %q (none|ollama|openai|onnx|hash)", cfg.Kind)
 }
 
 // resolveSchemaEmbedding checks every dense embedding binding against the

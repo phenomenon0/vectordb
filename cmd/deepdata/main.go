@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,9 +15,9 @@ import (
 	"time"
 
 	"github.com/phenomenon0/vectordb/internal/apierror"
+	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/logging"
 	"github.com/phenomenon0/vectordb/internal/security"
-	"github.com/phenomenon0/vectordb/internal/storage"
 	"github.com/phenomenon0/vectordb/internal/telemetry"
 
 	"golang.org/x/net/http2"
@@ -55,45 +54,15 @@ func main() {
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}
-	fs := flag.NewFlagSet("vectordb", flag.ExitOnError)
-	flagPort := fs.String("port", "", "HTTP port (env: PORT)")
-	flagMode := fs.String("mode", "", "Engine mode: local or pro (env: VECTORDB_MODE)")
-	flagDataDir := fs.String("data-dir", "", "Data directory (env: VECTORDB_DATA_DIR)")
-	flagDim := fs.String("dimension", "", "Embedding dimension (env: EMBED_DIM)")
-	flagEmbedder := fs.String("embedder", "", "Embedder type: ollama, openai, hash (env: EMBEDDER_TYPE)")
-	flagEmbModel := fs.String("embedder-model", "", "Embedder model name (env: OLLAMA_EMBED_MODEL)")
-	flagEmbURL := fs.String("embedder-url", "", "Embedder URL (env: OLLAMA_URL)")
 
-	fs.Parse(args)
-	// Flags set env vars so downstream code works unchanged
-	if *flagPort != "" {
-		os.Setenv("PORT", *flagPort)
-	}
-	if *flagMode != "" {
-		os.Setenv("VECTORDB_MODE", *flagMode)
-	}
-	if *flagDataDir != "" {
-		os.Setenv("VECTORDB_DATA_DIR", *flagDataDir)
-	}
-	if *flagDim != "" {
-		os.Setenv("EMBED_DIM", *flagDim)
-	}
-	if *flagEmbedder != "" {
-		os.Setenv("EMBEDDER_TYPE", *flagEmbedder)
-	}
-	if *flagEmbModel != "" {
-		os.Setenv("OLLAMA_EMBED_MODEL", *flagEmbModel)
-	}
-	if *flagEmbURL != "" {
-		os.Setenv("OLLAMA_URL", *flagEmbURL)
-	}
+	cfg, configErrs := loadServerConfig(args, os.Getenv)
 
 	// Initialize structured logging (JSON by default, LOG_FORMAT=text for dev)
 	logConfig := logging.DefaultConfig()
-	if os.Getenv("LOG_FORMAT") == "text" {
+	if cfg.LogFormat == "text" {
 		logConfig.Format = "text"
 	}
-	switch os.Getenv("LOG_LEVEL") {
+	switch cfg.LogLevel {
 	case "debug":
 		logConfig.Level = logging.LevelDebug
 	case "warn":
@@ -109,7 +78,7 @@ func main() {
 	// ==========================================================================
 	// Startup Config Validation — fail fast on invalid env var values
 	// ==========================================================================
-	if configErrs := validateEnvConfig(logger); len(configErrs) > 0 {
+	if len(configErrs) > 0 {
 		for _, e := range configErrs {
 			logger.Error("invalid configuration", "detail", e)
 		}
@@ -121,40 +90,22 @@ func main() {
 	// collection engine. Historical handlers remain in source for offline
 	// migration tests, but no runtime environment switch may re-enable them in
 	// the RC binary.
-	if err := validateCanonicalAuthEnvironment(); err != nil {
+	if err := cfg.validateServe(); err != nil {
 		logger.Error("canonical authentication configuration rejected", "error", err)
 		os.Exit(1)
 	}
-	configuredMode := strings.ToLower(strings.TrimSpace(os.Getenv("VECTORDB_MODE")))
-	if configuredMode == "" {
-		if err := os.Setenv("VECTORDB_MODE", string(ModeLocal)); err != nil {
-			logger.Error("failed to select canonical local data path", "error", err)
-			os.Exit(1)
-		}
-	} else if configuredMode != string(ModeLocal) {
-		logger.Error("canonical RC accepts caller-supplied vectors and supports only the local persistence path", "VECTORDB_MODE", configuredMode)
-		os.Exit(1)
-	}
 
-	// ==========================================================================
-	// Mode System Initialization (LOCAL or PRO)
-	// ==========================================================================
-	modeConfig, err := LoadModeFromEnv()
-	if err != nil {
-		logger.Error("failed to load mode configuration", "error", err)
-		os.Exit(1)
-	}
+	// The server sets HNSW's default ef_search once, before any collection
+	// exists, instead of each Collection reading the environment itself.
+	vcollection.DefaultEfSearch = cfg.HNSWEfSearch
 
 	// Ensure data directory exists
-	dataDir, err := EnsureDataDirectory(modeConfig.Mode)
-	if err != nil {
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
 		logger.Error("failed to create data directory", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("data directory ready", "path", dataDir)
-
-	// Use mode-specific index path
-	indexPath := GetIndexPath(modeConfig.Mode)
+	logger.Info("data directory ready", "path", cfg.DataDir)
+	indexPath := cfg.IndexPath
 
 	initMetrics()
 
@@ -181,7 +132,7 @@ func main() {
 	// callers send vectors). A configured-but-unreachable embedder refuses to
 	// start, like unreadable persistence below.
 	var embedder *serverEmbedder
-	serverEmb, embErr := newServerEmbedderFromEnv()
+	serverEmb, embErr := newServerEmbedder(cfg.Embedder)
 	if embErr != nil {
 		logger.Error("refusing to start with an unusable text embedder", "error", embErr)
 		os.Exit(1)
@@ -230,10 +181,10 @@ func main() {
 		os.Exit(1)
 	}
 	addr, grpcAddr, err := canonicalListenerAddresses(
-		envInt("PORT", 8080),
-		envInt("GRPC_PORT", 50051),
-		os.Getenv("DEEPDATA_INSECURE_DEV_MODE") == "1",
-		os.Getenv("DEEPDATA_BIND_HOST"),
+		cfg.HTTPPort,
+		cfg.GRPCPort,
+		cfg.InsecureDevMode,
+		cfg.BindHost,
 	)
 	if err != nil {
 		logger.Error("refusing invalid API bind host", "error", err)
@@ -264,7 +215,7 @@ func main() {
 	// without TLS. HTTP/1.1 clients continue to work transparently.
 	// Set HTTP_H2C=0 to disable.
 	var finalHandler http.Handler = handler
-	if os.Getenv("HTTP_H2C") != "0" {
+	if cfg.H2C {
 		finalHandler = h2c.NewHandler(handler, &http2.Server{})
 	}
 	var httpRequests sync.WaitGroup
@@ -278,8 +229,8 @@ func main() {
 		Addr:              addr,
 		Handler:           trackedHandler,
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       time.Duration(envInt("HTTP_READ_TIMEOUT_SEC", 60)) * time.Second,
-		WriteTimeout:      time.Duration(envInt("HTTP_WRITE_TIMEOUT_SEC", 300)) * time.Second,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
@@ -462,158 +413,6 @@ func envInt(key string, def int) int {
 		return n
 	}
 	return def
-}
-
-// envInt64 is retained for config_validation_test.go coverage.
-func envInt64(key string, def int64) int64 {
-	if v := os.Getenv(key); v != "" {
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || n <= 0 {
-			logging.Default().Warn("invalid positive integer env var, using default", "key", key, "value", v, "default", def)
-			return def
-		}
-		return n
-	}
-	return def
-}
-
-// validateEnvConfig checks all known environment variables for valid values at
-// startup. If any env var is set to an unparseable or out-of-range value, this
-// returns a list of errors. The caller should log them and exit — fail-fast
-// prevents silent misconfiguration in production.
-func validateEnvConfig(logger *logging.Logger) []string {
-	var errs []string
-
-	// Helper: check that an env var, if set, parses as a positive integer
-	checkPosInt := func(key string) {
-		if v := os.Getenv(key); v != "" {
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s=%q is not a valid integer", key, v))
-			} else if n <= 0 {
-				errs = append(errs, fmt.Sprintf("%s=%d must be positive", key, n))
-			}
-		}
-	}
-
-	// Helper: check that an env var, if set, parses as a non-negative integer
-	checkNonNegInt := func(key string) {
-		if v := os.Getenv(key); v != "" {
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s=%q is not a valid integer", key, v))
-			} else if n < 0 {
-				errs = append(errs, fmt.Sprintf("%s=%d must be non-negative", key, n))
-			}
-		}
-	}
-
-	// Helper: check positive int64
-	checkPosInt64 := func(key string) {
-		if v := os.Getenv(key); v != "" {
-			n, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s=%q is not a valid integer", key, v))
-			} else if n <= 0 {
-				errs = append(errs, fmt.Sprintf("%s=%d must be positive", key, n))
-			}
-		}
-	}
-
-	// Helper: check positive float
-	checkPosFloat := func(key string) {
-		if v := os.Getenv(key); v != "" {
-			n, err := strconv.ParseFloat(v, 64)
-			if err != nil {
-				errs = append(errs, fmt.Sprintf("%s=%q is not a valid float", key, v))
-			} else if n <= 0 {
-				errs = append(errs, fmt.Sprintf("%s=%f must be positive", key, n))
-			}
-		}
-	}
-
-	// STORAGE_FORMAT: must be a registered format name
-	if v := os.Getenv("STORAGE_FORMAT"); v != "" {
-		if storage.Get(v) == nil {
-			errs = append(errs, fmt.Sprintf("STORAGE_FORMAT=%q is not a registered format (available: %v)", v, storage.List()))
-		}
-	}
-
-	// LOG_LEVEL: only "debug" or "" (info) are meaningful
-	if v := os.Getenv("LOG_LEVEL"); v != "" {
-		switch strings.ToLower(v) {
-		case "debug", "info", "warn", "error":
-			// valid
-		default:
-			errs = append(errs, fmt.Sprintf("LOG_LEVEL=%q is not valid (use: debug, info, warn, error)", v))
-		}
-	}
-
-	// Integer config vars
-	checkPosInt("PORT")
-	checkNonNegInt("GRPC_PORT")
-	checkNonNegInt("VECTOR_CAPACITY")
-	checkPosInt64("WAL_MAX_BYTES")
-	checkPosInt("WAL_MAX_OPS")
-	checkPosInt("HNSW_M")
-	checkPosFloat("HNSW_ML")
-	checkPosInt("HNSW_EFSEARCH")
-	checkPosInt("API_RPS")
-	checkPosInt("MAX_RATE_LIMIT_KEYS")
-	checkPosInt("AUTH_FAILURE_RPS")
-	checkPosInt("AUTH_FAILURE_BURST")
-	checkPosInt("TENANT_RPS")
-	checkPosInt("TENANT_BURST")
-	checkPosInt("MAX_TENANTS")
-	checkPosInt("MAX_COLLECTIONS")
-	checkPosInt("HTTP_READ_TIMEOUT_SEC")
-	checkPosInt("HTTP_WRITE_TIMEOUT_SEC")
-	checkPosInt("HTTP_REQUEST_TIMEOUT_SEC")
-
-	// EMBED_DIM: positive integer if set
-	checkPosInt("EMBED_DIM")
-
-	// ONNX_EMBED_MAX_LEN / ONNX_RERANK_MAX_LEN: positive integer if set
-	checkPosInt("ONNX_EMBED_MAX_LEN")
-	checkPosInt("ONNX_RERANK_MAX_LEN")
-
-	return errs
-}
-
-func validateCanonicalAuthEnvironment() error {
-	apiToken := os.Getenv("API_TOKEN")
-	jwtSecret := os.Getenv("JWT_SECRET")
-	hasStaticToken := apiToken != ""
-	hasJWTSecret := jwtSecret != ""
-	if hasStaticToken && hasJWTSecret {
-		return errors.New("configure exactly one of API_TOKEN or JWT_SECRET; combined credential modes are unsupported")
-	}
-	if hasStaticToken {
-		if err := validateCanonicalCredential("API_TOKEN", apiToken); err != nil {
-			return err
-		}
-	}
-	if hasJWTSecret {
-		if err := validateCanonicalCredential("JWT_SECRET", jwtSecret); err != nil {
-			return err
-		}
-	}
-	if !hasStaticToken && !hasJWTSecret && os.Getenv("DEEPDATA_INSECURE_DEV_MODE") != "1" {
-		return errors.New("API_TOKEN or JWT_SECRET is required; set DEEPDATA_INSECURE_DEV_MODE=1 only for isolated development")
-	}
-	return nil
-}
-
-const canonicalCredentialMinBytes = 32
-
-func validateCanonicalCredential(name, value string) error {
-	if strings.TrimSpace(value) != value {
-		return fmt.Errorf("%s must not contain leading or trailing whitespace", name)
-	}
-	if len([]byte(value)) < canonicalCredentialMinBytes {
-		return fmt.Errorf("%s must be at least %d bytes", name, canonicalCredentialMinBytes)
-	}
-	return nil
 }
 
 // grpcAuthInterceptor is retained for grpc_auth_test.go coverage.

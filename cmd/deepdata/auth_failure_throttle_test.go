@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -273,7 +274,7 @@ func TestAuthFailureEnvironmentFailsFast(t *testing.T) {
 	for _, key := range []string{"AUTH_FAILURE_RPS", "AUTH_FAILURE_BURST"} {
 		t.Run(key, func(t *testing.T) {
 			t.Setenv(key, "0")
-			errs := validateEnvConfig(testLogger())
+			_, errs := loadServerConfig(nil, os.Getenv)
 			found := false
 			for _, err := range errs {
 				if strings.HasPrefix(err, key+"=") {
@@ -282,7 +283,7 @@ func TestAuthFailureEnvironmentFailsFast(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Fatalf("validateEnvConfig did not reject %s=0: %v", key, errs)
+				t.Fatalf("loadServerConfig did not reject %s=0: %v", key, errs)
 			}
 		})
 	}

@@ -301,13 +301,10 @@ func TestResolveTextsAgainstChangedEmbedder(t *testing.T) {
 // DEEPDATA_EMBEDDER is the one switch; hash is never implicit and an unknown
 // or unusable choice is a startup error, not a silent fallback. The ollama and
 // openai probes are network calls and are not exercised here.
-func TestServerEmbedderFromEnv(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("DEEPDATA_EMBED_DIM", "")
-
+func TestServerEmbedder(t *testing.T) {
 	for _, value := range []string{"", "none", " NONE "} {
-		t.Setenv("DEEPDATA_EMBEDDER", value)
-		emb, err := newServerEmbedderFromEnv()
+		kind := strings.ToLower(strings.TrimSpace(value))
+		emb, err := newServerEmbedder(embedderConfig{Kind: kind})
 		if err != nil || emb != nil {
 			t.Fatalf("DEEPDATA_EMBEDDER=%q: got %v, %v; want no embedder", value, emb, err)
 		}
@@ -316,26 +313,21 @@ func TestServerEmbedderFromEnv(t *testing.T) {
 		}
 	}
 
-	t.Setenv("DEEPDATA_EMBEDDER", "hash")
-	t.Setenv("DEEPDATA_EMBED_DIM", "16")
-	emb, err := newServerEmbedderFromEnv()
+	emb, err := newServerEmbedder(embedderConfig{Kind: "hash", Dim: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if emb.Label() != "hash:16" || emb.Dim() != 16 {
 		t.Fatalf("hash embedder = %s dim %d", emb.Label(), emb.Dim())
 	}
-	t.Setenv("DEEPDATA_EMBED_DIM", "0")
-	if _, err := newServerEmbedderFromEnv(); err == nil {
+	if _, err := newServerEmbedder(embedderConfig{Kind: "hash", Dim: 0}); err == nil {
 		t.Fatal("dim 0 must be rejected")
 	}
 
-	t.Setenv("DEEPDATA_EMBEDDER", "openai")
-	if _, err := newServerEmbedderFromEnv(); err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+	if _, err := newServerEmbedder(embedderConfig{Kind: "openai"}); err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
 		t.Fatalf("openai without a key: %v", err)
 	}
-	t.Setenv("DEEPDATA_EMBEDDER", "bogus")
-	if _, err := newServerEmbedderFromEnv(); err == nil || !strings.Contains(err.Error(), "unknown DEEPDATA_EMBEDDER") {
+	if _, err := newServerEmbedder(embedderConfig{Kind: "bogus"}); err == nil || !strings.Contains(err.Error(), "unknown DEEPDATA_EMBEDDER") {
 		t.Fatalf("unknown embedder: %v", err)
 	}
 }

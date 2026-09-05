@@ -201,7 +201,11 @@ func TestValidateCanonicalAuthEnvironmentRejectsUnsafeCredentialModes(t *testing
 			t.Setenv("API_TOKEN", tc.apiToken)
 			t.Setenv("JWT_SECRET", tc.jwtSecret)
 			t.Setenv("DEEPDATA_INSECURE_DEV_MODE", tc.insecureOK)
-			err := validateCanonicalAuthEnvironment()
+			cfg, errs := loadServerConfig(nil, os.Getenv)
+			if len(errs) > 0 {
+				t.Fatalf("unexpected config errors: %v", errs)
+			}
+			err := cfg.validateServe()
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("validation error = %v, wantErr=%v", err, tc.wantErr)
 			}
