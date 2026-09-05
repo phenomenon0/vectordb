@@ -1338,6 +1338,19 @@ func (c *Collection) clearPendingCommitLocked(docs []Document) {
 	c.commitCond.Broadcast()
 }
 
+// waitPendingCommitLocked blocks until docID has no in-flight index insert,
+// so the caller's idx.Delete sees either a fully indexed ID or a genuinely
+// absent one. The caller must hold c.mu.Lock(); Wait releases and reacquires
+// it, so re-read any state derived from c.documents after this returns.
+func (c *Collection) waitPendingCommitLocked(docID uint64) {
+	for {
+		if _, pending := c.pendingCommit[docID]; !pending {
+			return
+		}
+		c.commitCond.Wait()
+	}
+}
+
 // addPreparedToIndexes inserts every prepared document's vectors and
 // metadata into the field indexes. It deliberately does NOT take c.mu: each
 // index owns its own locking (internal/index/hnsw.go's writeMu/mu split lets
@@ -1500,6 +1513,9 @@ func (c *Collection) upsertPreparedLocked(ctx context.Context, docs []Document, 
 	// addPreparedToIndexes reinsert and re-register metadata in one pass.
 	for i := range docs {
 		docID := docs[i].ID
+		// Same window as deleteDocumentDirect: a colliding explicit ID may be
+		// reserved by an in-flight BatchAdd whose index insert has not landed.
+		c.waitPendingCommitLocked(docID)
 		if _, exists := c.documents[docID]; !exists {
 			continue
 		}
@@ -1647,12 +1663,7 @@ func (c *Collection) deleteDocumentDirect(ctx context.Context, docID uint64) err
 	// hasn't received docID yet, get a spurious "not found", and abort
 	// leaving the document alive (see commitPrepared). Wait for the ID to
 	// clear pendingCommit so the indexes below are guaranteed to have it.
-	for {
-		if _, pending := c.pendingCommit[docID]; !pending {
-			break
-		}
-		c.commitCond.Wait()
-	}
+	c.waitPendingCommitLocked(docID)
 	if _, exists := c.documents[docID]; !exists {
 		return fmt.Errorf("%w: %d", ErrDocumentNotFound, docID)
 	}

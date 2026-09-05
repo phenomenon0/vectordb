@@ -179,7 +179,11 @@ func TestSearchProceedsDuringBatchAdd(t *testing.T) {
 // actually finishes before touching any index, so it must always either see
 // the doc before it was ever reserved (real not-found) or win outright once
 // the batch completes — never error out with the doc still alive.
-func TestDeleteDuringBatchAddDoesNotLoseDocument(t *testing.T) {
+// raceAgainstInFlightBatchAdd starts a 20k-doc BatchAdd, waits until
+// targetID is reserved (visible to GetDocument) while its index insert may
+// still be in flight, runs op against that ID, and returns op's error once
+// the batch has finished. This is the window the lost-delete race lived in.
+func raceAgainstInFlightBatchAdd(t *testing.T, op func(ctx context.Context, coll *Collection, id uint64) error) (*Collection, uint64, int, error) {
 	const dim = 32
 	schema := CollectionSchema{
 		Name: "delete_race_test",
@@ -237,19 +241,52 @@ func TestDeleteDuringBatchAddDoesNotLoseDocument(t *testing.T) {
 			t.Fatalf("target doc %d never became visible before the batch finished", targetID)
 		}
 	}
-	deleteErr := coll.Delete(ctx, targetID)
+	opErr := op(ctx, coll, targetID)
 	wg.Wait()
 
 	if batchErr != nil {
 		t.Fatalf("batch add failed: %v", batchErr)
 	}
-	if deleteErr != nil {
-		t.Fatalf("delete raced the in-flight batch add and spuriously failed: %v", deleteErr)
+	return coll, targetID, batchSize, opErr
+}
+
+func TestDeleteDuringBatchAddDoesNotLoseDocument(t *testing.T) {
+	coll, targetID, batchSize, err := raceAgainstInFlightBatchAdd(t, func(ctx context.Context, coll *Collection, id uint64) error {
+		return coll.Delete(ctx, id)
+	})
+	if err != nil {
+		t.Fatalf("delete raced the in-flight batch add and spuriously failed: %v", err)
 	}
 	if _, ok := coll.GetDocument(targetID); ok {
 		t.Fatalf("doc %d still present after a Delete that reported success", targetID)
 	}
 	if got, want := coll.Count(), batchSize-1; got != want {
 		t.Fatalf("collection count = %d, want %d (batch size minus the deleted doc)", got, want)
+	}
+}
+
+// TestUpsertDuringBatchAddDoesNotFail is the same window with the racing
+// writer being an Upsert on a colliding explicit ID. upsertPreparedLocked
+// evicts the old postings with idx.Delete before reinserting, so without the
+// pendingCommit wait it hit the same spurious "not found" and failed the
+// whole upsert, leaving the batch's vector in place.
+func TestUpsertDuringBatchAddDoesNotFail(t *testing.T) {
+	replacement := make([]float32, 32)
+	replacement[0] = 1
+	coll, targetID, batchSize, err := raceAgainstInFlightBatchAdd(t, func(ctx context.Context, coll *Collection, id uint64) error {
+		return coll.Upsert(ctx, &Document{ID: id, Vectors: map[string]Vector{"embedding": {Dense: replacement}}})
+	})
+	if err != nil {
+		t.Fatalf("upsert raced the in-flight batch add and spuriously failed: %v", err)
+	}
+	doc, ok := coll.GetDocument(targetID)
+	if !ok {
+		t.Fatalf("doc %d missing after an Upsert that reported success", targetID)
+	}
+	if doc.Vectors["embedding"].Dense[0] != 1 {
+		t.Fatalf("doc %d still carries the batch vector after a successful Upsert", targetID)
+	}
+	if got := coll.Count(); got != batchSize {
+		t.Fatalf("collection count = %d, want %d (upsert replaces, never adds)", got, batchSize)
 	}
 }
