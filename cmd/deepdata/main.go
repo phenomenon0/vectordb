@@ -156,7 +156,7 @@ func main() {
 
 	// The V3 surface keeps its authentication and limit state here; the legacy
 	// engine is never constructed.
-	rt := newServerRuntime()
+	rt := newServerRuntime(cfg)
 
 	// HTTP API with graceful shutdown
 	handler, collectionHTTP := newCanonicalHTTPHandler(rt, embedder, indexPath)
@@ -202,7 +202,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler, err = canonicalReplicationSurface(handler, collectionHTTP, indexPath, logger)
+	handler, err = canonicalReplicationSurface(handler, collectionHTTP, indexPath, cfg.ReplicationToken, logger)
 	if err != nil {
 		logger.Error("refusing to start with an unusable replication configuration", "error", err)
 		if closeErr := collectionHTTP.Abort(); closeErr != nil {
@@ -401,18 +401,6 @@ func canonicalListenerAddresses(httpPort, grpcPort int, insecureDevelopment bool
 		grpcAddr = net.JoinHostPort(host, strconv.Itoa(grpcPort))
 	}
 	return httpAddr, grpcAddr, nil
-}
-
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			logging.Default().Warn("invalid integer env var, using default", "key", key, "value", v, "default", def)
-			return def
-		}
-		return n
-	}
-	return def
 }
 
 // grpcAuthInterceptor is retained for grpc_auth_test.go coverage.

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -58,6 +59,21 @@ func truncateRequestID(id string, maxBytes int) string {
 // CONFIGURABLE REQUEST LIMITS
 // Override via environment variables. Defaults are safe for most deployments.
 // ===========================================================================================
+
+// envInt reads an integer environment variable, falling back to def when
+// unset or invalid. Used only by the package-level LIMIT_* configuration
+// below; every other setting is read once into serverConfig.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			logging.Default().Warn("invalid integer env var, using default", "key", key, "value", v, "default", def)
+			return def
+		}
+		return n
+	}
+	return def
+}
 
 var (
 	// HTTP body size limits (bytes)
@@ -126,7 +142,7 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 				readOnly = store.IsReplica()
 			}
 		}
-		payload, err := statusPayload(embedder, usageLoaded, readOnly, requestIDFromContext(r.Context()))
+		payload, err := statusPayload(embedder, rt.limits, usageLoaded, readOnly, requestIDFromContext(r.Context()))
 		if err != nil {
 			apierror.WriteHTTP(w, apierror.New(apierror.CodeInternal, "status unavailable"))
 			return
@@ -209,8 +225,8 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 	collectionHTTP.embedder, _ = embedder.(*serverEmbedder)
 	if collectionBasePath != "" {
 		err := collectionHTTP.LoadDurableWithLimits(collectionBasePath, vcollection.StoreLimits{
-			MaxTenants:     envInt("MAX_TENANTS", 100_000),
-			MaxCollections: envInt("MAX_COLLECTIONS", 10_000),
+			MaxTenants:     rt.limits.MaxTenants,
+			MaxCollections: rt.limits.MaxCollections,
 		})
 		if err != nil {
 			collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
@@ -229,14 +245,14 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 
 	// canonicalRCSurface wraps corsMiddleware so OPTIONS can't reach an unsupported route.
 	otelMiddleware := telemetry.HTTPMiddleware()
-	return requestIDMiddleware(recoveryMiddleware(requestTimeoutMiddleware(canonicalRCSurface(corsMiddleware(otelMiddleware(mux)))))), collectionHTTP
+	return requestIDMiddleware(recoveryMiddleware(requestTimeoutMiddleware(canonicalRCSurface(corsMiddleware(otelMiddleware(mux), rt.corsAllowedOrigins)), rt.requestTimeout))), collectionHTTP
 }
 
 // corsMiddleware allows browser requests from different origins. Default:
 // wildcard without credentials. To allow credentialed requests, set
 // CORS_ALLOWED_ORIGINS to a comma-separated allowlist.
-func corsMiddleware(next http.Handler) http.Handler {
-	corsAllowedOriginsRaw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS"))
+func corsMiddleware(next http.Handler, allowedOriginsRaw string) http.Handler {
+	corsAllowedOriginsRaw := strings.TrimSpace(allowedOriginsRaw)
 	corsAllowAllOrigins := corsAllowedOriginsRaw == ""
 	corsAllowedOrigins := make(map[string]struct{})
 	if !corsAllowAllOrigins {
@@ -308,8 +324,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 // This is separate from HTTP server WriteTimeout (which is a hard TCP-level
 // cutoff); it lets handlers cooperatively abort long operations. Streaming
 // endpoints (snapshot, export, import) and /metrics are exempt.
-func requestTimeoutMiddleware(next http.Handler) http.Handler {
-	requestTimeoutSec := envInt("HTTP_REQUEST_TIMEOUT_SEC", 120)
+func requestTimeoutMiddleware(next http.Handler, timeout time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		if strings.HasPrefix(p, "/snapshot") || strings.HasPrefix(p, "/export") ||
@@ -317,7 +332,7 @@ func requestTimeoutMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(requestTimeoutSec)*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

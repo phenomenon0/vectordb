@@ -28,7 +28,7 @@ func newTextTestHandler(t *testing.T, emb Embedder) http.Handler {
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "0")
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	indexPath := filepath.Join(t.TempDir(), "index.gob")
 	handler, collections := newCanonicalHTTPHandler(rt, emb, indexPath)
 	if err := collections.PersistenceError(); err != nil {

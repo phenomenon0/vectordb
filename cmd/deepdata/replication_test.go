@@ -17,7 +17,7 @@ func canonicalLeaderForTest(t *testing.T) (http.Handler, *CollectionHTTPServer, 
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("REQUIRE_AUTH", "1")
 	indexPath := filepath.Join(t.TempDir(), "index.gob")
-	handler, collections := newCanonicalHTTPHandler(newServerRuntime(), NewHashEmbedder(4), indexPath)
+	handler, collections := newCanonicalHTTPHandler(testServerRuntime(t), NewHashEmbedder(4), indexPath)
 	t.Cleanup(func() { _ = collections.Close() })
 	if !collections.IsDurable() {
 		t.Fatal("test leader has no durable store to replicate")
@@ -30,8 +30,7 @@ func canonicalLeaderForTest(t *testing.T) (http.Handler, *CollectionHTTPServer, 
 // tenant, and it must not appear because some other feature was enabled.
 func TestReplicationSurfaceIsAbsentWithoutTheNodeToken(t *testing.T) {
 	handler, collections, indexPath := canonicalLeaderForTest(t)
-	t.Setenv(replicationTokenEnv, "")
-	mounted, err := canonicalReplicationSurface(handler, collections, indexPath, logging.Default())
+	mounted, err := canonicalReplicationSurface(handler, collections, indexPath, "", logging.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +50,7 @@ func TestReplicationSurfaceIsAbsentWithoutTheNodeToken(t *testing.T) {
 // that credentialless dev mode grants -- must not reach it.
 func TestClientCredentialsCannotReachTheNodeSurface(t *testing.T) {
 	handler, collections, indexPath := canonicalLeaderForTest(t)
-	t.Setenv(replicationTokenEnv, "node-token-distinct-from-the-client-one")
-	mounted, err := canonicalReplicationSurface(handler, collections, indexPath, logging.Default())
+	mounted, err := canonicalReplicationSurface(handler, collections, indexPath, "node-token-distinct-from-the-client-one", logging.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,9 +87,8 @@ func TestClientCredentialsCannotReachTheNodeSurface(t *testing.T) {
 // surface would look healthy to a follower that will never receive a record,
 // so the configuration is refused at startup instead.
 func TestReplicationRefusesToStartWithoutADurableStore(t *testing.T) {
-	t.Setenv(replicationTokenEnv, "node-token-distinct-from-the-client-one")
 	collections := NewCollectionHTTPServer(filepath.Join(t.TempDir(), "index.gob.collections"))
-	if _, err := canonicalReplicationSurface(http.NotFoundHandler(), collections, "index.gob", logging.Default()); err == nil {
+	if _, err := canonicalReplicationSurface(http.NotFoundHandler(), collections, "index.gob", "node-token-distinct-from-the-client-one", logging.Default()); err == nil {
 		t.Fatal("replication mounted on a process with no durable store")
 	}
 }

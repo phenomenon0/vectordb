@@ -38,7 +38,7 @@ var canonicalFilterOperators = []string{
 // limits from the Max* consts and the rate-limit environment, the
 // embedding block from the process embedder — so nothing here can drift
 // from the server that answers.
-func statusPayload(embedder *serverEmbedder, usageLoaded, readOnly bool, requestID string) (map[string]any, error) {
+func statusPayload(embedder *serverEmbedder, limits limitConfig, usageLoaded, readOnly bool, requestID string) (map[string]any, error) {
 	ops, err := contract.Operations()
 	if err != nil {
 		return nil, err
@@ -96,12 +96,12 @@ func statusPayload(embedder *serverEmbedder, usageLoaded, readOnly bool, request
 			"max_search_ef":             vcollection.MaxSearchEf,
 			"max_search_response_bytes": vcollection.MaxSearchResponseBytes,
 			"max_batch_documents":       vcollection.MaxBatchDocuments,
-			"api_rps":                   envInt("API_RPS", 100),
-			"tenant_rps":                envInt("TENANT_RPS", 100),
-			"tenant_burst":              envInt("TENANT_BURST", 100),
-			"auth_failure_rps":          envInt("AUTH_FAILURE_RPS", 1),
-			"auth_failure_burst":        envInt("AUTH_FAILURE_BURST", 5),
-			"max_rate_limit_keys":       envInt("MAX_RATE_LIMIT_KEYS", 100_000),
+			"api_rps":                   limits.APIRPS,
+			"tenant_rps":                limits.TenantRPS,
+			"tenant_burst":              limits.TenantBurst,
+			"auth_failure_rps":          limits.AuthFailureRPS,
+			"auth_failure_burst":        limits.AuthFailureBurst,
+			"max_rate_limit_keys":       limits.MaxRateLimitKeys,
 		},
 		"capabilities": map[string]any{
 			"texts":       embedder != nil,

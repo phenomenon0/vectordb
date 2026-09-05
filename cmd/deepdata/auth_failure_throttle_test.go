@@ -56,7 +56,7 @@ func TestFailedAuthenticationThrottleIsSharedAcrossHTTPAndGRPC(t *testing.T) {
 			t.Setenv("MAX_TENANTS", "10")
 			t.Setenv("MAX_COLLECTIONS", "10")
 
-			rt := newServerRuntime()
+			rt := testServerRuntime(t)
 			rt.requireAuth = true
 			validToken := ""
 			switch authMode {

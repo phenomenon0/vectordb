@@ -75,7 +75,7 @@ func TestCanonicalHTTPRateLimitedErrorCarriesRetryAfter(t *testing.T) {
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "0")
 	t.Setenv("TRUST_PROXY", "0")
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	rt.requireAuth = true
 	rt.apiToken = "envelope-static-token"
 	rt.rl = newRateLimiter(100, 100, 100, time.Hour)

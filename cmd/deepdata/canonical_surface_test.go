@@ -30,7 +30,7 @@ func newCanonicalSurfaceTestHandlerAt(t *testing.T, indexPath string) http.Handl
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "0")
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	embedder := NewHashEmbedder(4)
 	handler, collections := newCanonicalHTTPHandler(rt, embedder, indexPath)
 	if err := collections.PersistenceError(); err != nil {
@@ -257,7 +257,7 @@ func TestCanonicalRCSurfaceDoesNotAcceptBearerTokenInURL(t *testing.T) {
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("API_TOKEN", "secret")
 	t.Setenv("REQUIRE_AUTH", "1")
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	embedder := NewHashEmbedder(4)
 	handler, collections := newCanonicalHTTPHandler(rt, embedder, filepath.Join(t.TempDir(), "index.gob"))
 	t.Cleanup(func() { _ = collections.Close() })
@@ -284,7 +284,7 @@ func TestCanonicalCreateRejectsUnauthorizedCallerBeforeReadingBody(t *testing.T)
 	t.Setenv("JWT_ISSUER", "canonical-test")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "1")
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),
@@ -330,7 +330,7 @@ func TestCanonicalHTTPJWTTenantAdminCannotEscapeTenantOrCollectionScope(t *testi
 	t.Setenv("JWT_ISSUER", "canonical-test")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "1")
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),
@@ -403,7 +403,7 @@ func TestCanonicalHTTPJWTRejectsMissingMalformedAndExpiredCredentials(t *testing
 	t.Setenv("JWT_ISSUER", "canonical-test")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "1")
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),
@@ -441,7 +441,7 @@ func TestCanonicalRCSurfaceRequiresDurablePersistence(t *testing.T) {
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "0")
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	handler, collections := newCanonicalHTTPHandler(rt, NewHashEmbedder(4), "")
 
 	request := httptest.NewRequest(http.MethodGet, "/v3/tenants/acme", nil)
@@ -467,7 +467,7 @@ func TestCanonicalHTTPAcknowledgementSurvivesRestart(t *testing.T) {
 	t.Setenv("REQUIRE_AUTH", "0")
 	indexPath := filepath.Join(t.TempDir(), "index.gob")
 	newHandler := func() (http.Handler, *CollectionHTTPServer) {
-		return newCanonicalHTTPHandler(newServerRuntime(), NewHashEmbedder(4), indexPath)
+		return newCanonicalHTTPHandler(testServerRuntime(t), NewHashEmbedder(4), indexPath)
 	}
 
 	handler, collections := newHandler()

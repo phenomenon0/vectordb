@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -27,60 +26,65 @@ type serverRuntime struct {
 	rl                *rateLimiter          // global limiter keyed by token or peer IP
 	canonicalTenantRL *rateLimiter          // shared V3 HTTP/gRPC limiter keyed by authenticated tenant
 	authFailureRL     *authFailureLimiter   // shared HTTP/gRPC failed-auth budget keyed by peer IP
+
+	limits             limitConfig   // rate-limit and tenancy ceilings
+	trustProxy         bool          // TRUST_PROXY
+	requestTimeout     time.Duration // HTTP_REQUEST_TIMEOUT_SEC
+	corsAllowedOrigins string        // CORS_ALLOWED_ORIGINS
 }
 
-// newServerRuntime reads exactly the environment the legacy engine constructor read for these
-// fields: JWT_SECRET and JWT_ISSUER for the token manager, API_TOKEN for the
-// static credential, and REQUIRE_AUTH to force authentication when neither is
-// configured.
-func newServerRuntime() *serverRuntime {
+// newServerRuntime builds the runtime state from cfg: JWT_SECRET and
+// JWT_ISSUER for the token manager, API_TOKEN for the static credential, and
+// REQUIRE_AUTH to force authentication when neither is configured.
+func newServerRuntime(cfg *serverConfig) *serverRuntime {
 	var jwtMgr *security.JWTManager
-	if secret := os.Getenv("JWT_SECRET"); secret != "" {
-		issuer := os.Getenv("JWT_ISSUER")
-		if issuer == "" {
-			issuer = "vectordb"
-		}
-		jwtMgr = security.NewJWTManager(secret, issuer)
+	if cfg.Auth.JWTSecret != "" {
+		jwtMgr = security.NewJWTManager(cfg.Auth.JWTSecret, cfg.Auth.JWTIssuer)
 	}
-	apiToken := os.Getenv("API_TOKEN")
+	apiToken := cfg.Auth.APIToken
 	return &serverRuntime{
-		apiToken:    apiToken,
-		jwtMgr:      jwtMgr,
-		requireAuth: os.Getenv("REQUIRE_AUTH") == "1" || jwtMgr != nil || apiToken != "",
-		acl:         security.NewACL(),
-		quotas:      security.NewTenantQuota(),
+		apiToken:           apiToken,
+		jwtMgr:             jwtMgr,
+		requireAuth:        cfg.Auth.RequireAuth || jwtMgr != nil || apiToken != "",
+		acl:                security.NewACL(),
+		quotas:             security.NewTenantQuota(),
+		limits:             cfg.Limits,
+		trustProxy:         cfg.Auth.TrustProxy,
+		requestTimeout:     cfg.RequestTimeout,
+		corsAllowedOrigins: cfg.CORSAllowedOrigins,
 	}
 }
 
 // ensureLimiters fills in any limiter the caller did not preset. Tests preset
-// them; the server leaves them nil and gets the env-configured defaults.
+// them; the server leaves them nil and gets the configured defaults from
+// rt.limits.
 func (rt *serverRuntime) ensureLimiters() {
 	if rt.rl == nil {
-		rps := envInt("API_RPS", 100)
-		rt.rl = newRateLimiter(rps, rps, envInt("MAX_RATE_LIMIT_KEYS", 100_000), time.Minute)
+		rps := rt.limits.APIRPS
+		rt.rl = newRateLimiter(rps, rps, rt.limits.MaxRateLimitKeys, time.Minute)
 	}
 	if rt.authFailureRL == nil {
 		rt.authFailureRL = newAuthFailureLimiter(
-			envInt("AUTH_FAILURE_RPS", 1),
-			envInt("AUTH_FAILURE_BURST", 5),
-			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
+			rt.limits.AuthFailureRPS,
+			rt.limits.AuthFailureBurst,
+			rt.limits.MaxRateLimitKeys,
 			time.Second,
 		)
 	}
 	if rt.canonicalTenantRL == nil {
 		rt.canonicalTenantRL = newRateLimiter(
-			envInt("TENANT_RPS", 100),
-			envInt("TENANT_BURST", 100),
-			envInt("MAX_RATE_LIMIT_KEYS", 100_000),
+			rt.limits.TenantRPS,
+			rt.limits.TenantBurst,
+			rt.limits.MaxRateLimitKeys,
 			time.Second,
 		)
 	}
 }
 
-// httpGuard is the HTTP authentication and rate-limit middleware. TRUST_PROXY
-// is read once, when the handler is built.
+// httpGuard is the HTTP authentication and rate-limit middleware. trustProxy
+// was read once, when the runtime was built.
 func (rt *serverRuntime) httpGuard() func(http.HandlerFunc) http.HandlerFunc {
-	trustProxy := os.Getenv("TRUST_PROXY") == "1"
+	trustProxy := rt.trustProxy
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			token := r.Header.Get("Authorization")

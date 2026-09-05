@@ -500,7 +500,7 @@ func TestDiscoveryAndStatusAreReadGated(t *testing.T) {
 	t.Setenv("JWT_ISSUER", "canonical-test")
 	t.Setenv("API_TOKEN", "")
 	t.Setenv("REQUIRE_AUTH", "1")
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),

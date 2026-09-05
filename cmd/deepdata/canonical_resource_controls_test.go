@@ -72,7 +72,7 @@ func TestCanonicalDurableLimitsAreSharedAcrossHTTPAndGRPC(t *testing.T) {
 	t.Setenv("TENANT_RPS", "100")
 	t.Setenv("TENANT_BURST", "100")
 
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),
@@ -118,7 +118,7 @@ func TestCanonicalTenantRateLimitIsSharedAcrossHTTPAndGRPCJWTs(t *testing.T) {
 	t.Setenv("MAX_TENANTS", "1")
 	t.Setenv("MAX_RATE_LIMIT_KEYS", "100")
 
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),
@@ -192,7 +192,7 @@ func TestCanonicalSearchResponseBudgetAcrossHTTPAndGRPC(t *testing.T) {
 	t.Setenv("MAX_TENANTS", "10")
 	t.Setenv("MAX_COLLECTIONS", "10")
 
-	rt := newServerRuntime()
+	rt := testServerRuntime(t)
 	handler, collections := newCanonicalHTTPHandler(
 		rt,
 		NewHashEmbedder(4),

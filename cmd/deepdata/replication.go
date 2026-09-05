@@ -33,8 +33,7 @@ const replicationTokenEnv = "DEEPDATA_REPLICATION_TOKEN"
 // authorized against a different credential and export the whole store, so they
 // stay outside that middleware rather than becoming an exception inside it.
 // They also stream, and the client chain's request timeout would cut a tail.
-func canonicalReplicationSurface(next http.Handler, collections *CollectionHTTPServer, statePath string, logger *logging.Logger) (http.Handler, error) {
-	token := os.Getenv(replicationTokenEnv)
+func canonicalReplicationSurface(next http.Handler, collections *CollectionHTTPServer, statePath, token string, logger *logging.Logger) (http.Handler, error) {
 	if token == "" {
 		return next, nil
 	}
@@ -129,15 +128,14 @@ func runReplicate(args []string, logger *logging.Logger) int {
 		fmt.Fprintln(os.Stderr, "replicate: --leader is required")
 		return 2
 	}
-	token := os.Getenv(replicationTokenEnv)
-	if token == "" {
-		fmt.Fprintf(os.Stderr, "replicate: %s must be set to the leader's node token\n", replicationTokenEnv)
-		return 2
-	}
-
 	cfg, errs := loadServerConfig(nil, os.Getenv)
 	if len(errs) > 0 {
 		fmt.Fprintf(os.Stderr, "replicate: %s\n", strings.Join(errs, "; "))
+		return 2
+	}
+	token := cfg.ReplicationToken
+	if token == "" {
+		fmt.Fprintf(os.Stderr, "replicate: %s must be set to the leader's node token\n", replicationTokenEnv)
 		return 2
 	}
 	// The same path the server would open, so a replica directory and the
