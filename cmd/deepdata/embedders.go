@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -23,12 +22,6 @@ type Embedder interface {
 	Embed(text string) ([]float32, error)      // encode as document (for indexing)
 	EmbedQuery(text string) ([]float32, error) // encode as query (for searching)
 	Dim() int
-}
-
-// SwappableEmbedder wraps an Embedder and allows hot-swapping at runtime.
-type SwappableEmbedder struct {
-	mu    sync.RWMutex
-	inner Embedder
 }
 
 type Reranker interface {
