@@ -56,8 +56,42 @@ func main() {
 	}
 
 	cfg, configErrs := loadServerConfig(args, os.Getenv)
+	logger := initLogging(cfg, configErrs)
 
-	// Initialize structured logging (JSON by default, LOG_FORMAT=text for dev)
+	// The production server exposes only the caller-supplied-vector V3/gRPC
+	// collection engine. Historical handlers remain in source for offline
+	// migration tests, but no runtime environment switch may re-enable them in
+	// the RC binary.
+	if err := cfg.validateServe(); err != nil {
+		logger.Error("canonical authentication configuration rejected", "error", err)
+		os.Exit(1)
+	}
+
+	rt, _, handler, collectionHTTP, indexPath, shutdownTelemetry, exitCode := openCanonicalStore(cfg, logger)
+	if exitCode != 0 {
+		os.Exit(exitCode)
+	}
+	defer shutdownTelemetry()
+
+	srv, grpcSrv, httpRequests, serverErrCh, exitCode := buildAPIServers(cfg, rt, handler, collectionHTTP, indexPath, logger)
+	if exitCode != 0 {
+		os.Exit(exitCode)
+	}
+
+	serveFailed := awaitShutdown(serverErrCh)
+	gracefulShutdown(srv, grpcSrv, httpRequests, collectionHTTP, logger)
+
+	logger.Info("shutdown complete")
+	if serveFailed {
+		logger.Error("exiting non-zero after API server failure")
+		os.Exit(1)
+	}
+}
+
+// initLogging brings up structured logging from cfg (JSON by default,
+// LOG_FORMAT=text for dev) and then fails fast, exit code 1, if
+// loadServerConfig collected any environment/flag validation errors.
+func initLogging(cfg *serverConfig, configErrs []string) *logging.Logger {
 	logConfig := logging.DefaultConfig()
 	if cfg.LogFormat == "text" {
 		logConfig.Format = "text"
@@ -85,15 +119,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "FATAL: %d configuration error(s) — fix the environment variables above and restart\n", len(configErrs))
 		os.Exit(1)
 	}
+	return logger
+}
 
-	// The production server exposes only the caller-supplied-vector V3/gRPC
-	// collection engine. Historical handlers remain in source for offline
-	// migration tests, but no runtime environment switch may re-enable them in
-	// the RC binary.
-	if err := cfg.validateServe(); err != nil {
-		logger.Error("canonical authentication configuration rejected", "error", err)
-		os.Exit(1)
-	}
+// openCanonicalStore ensures the data directory, starts metrics/telemetry,
+// builds the optional text embedder, and opens the durable collection store —
+// refusing startup (releasing the store first, where one was opened) on any
+// unreadable or legacy-shaped persistence state. A non-zero exitCode means
+// main must exit immediately; shutdownTelemetry is always safe to defer.
+func openCanonicalStore(cfg *serverConfig, logger *logging.Logger) (rt *serverRuntime, embedder *serverEmbedder, handler http.Handler, collectionHTTP *CollectionHTTPServer, indexPath string, shutdownTelemetry func(), exitCode int) {
+	shutdownTelemetry = func() {}
 
 	// The server sets HNSW's default ef_search once, before any collection
 	// exists, instead of each Collection reading the environment itself.
@@ -102,10 +137,11 @@ func main() {
 	// Ensure data directory exists
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
 		logger.Error("failed to create data directory", "error", err)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	logger.Info("data directory ready", "path", cfg.DataDir)
-	indexPath := cfg.IndexPath
+	indexPath = cfg.IndexPath
 
 	initMetrics()
 
@@ -119,23 +155,23 @@ func main() {
 		logger.Warn("telemetry setup failed", "error", err)
 	} else {
 		logger.Info("opentelemetry tracing initialized")
-		defer func() {
+		shutdownTelemetry = func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := telemetry.Shutdown(ctx); err != nil {
 				logger.Warn("telemetry shutdown failed", "error", err)
 			}
-		}()
+		}
 	}
 
 	// One text embedder per process, named by DEEPDATA_EMBEDDER (default none:
 	// callers send vectors). A configured-but-unreachable embedder refuses to
 	// start, like unreadable persistence below.
-	var embedder *serverEmbedder
 	serverEmb, embErr := newServerEmbedder(cfg.Embedder)
 	if embErr != nil {
 		logger.Error("refusing to start with an unusable text embedder", "error", embErr)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	if serverEmb != nil {
 		embedder = serverEmb
@@ -147,22 +183,25 @@ func main() {
 	legacyArtifacts, inspectErr := existingLegacyRootArtifacts(indexPath)
 	if inspectErr != nil {
 		logger.Error("failed to inspect unsupported legacy persistence", "error", inspectErr)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	if len(legacyArtifacts) > 0 {
 		logger.Error("legacy root persistence requires an explicit offline migration before canonical RC startup", "artifacts", legacyArtifacts)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 
 	// The V3 surface keeps its authentication and limit state here; the legacy
 	// engine is never constructed.
-	rt := newServerRuntime(cfg)
+	rt = newServerRuntime(cfg)
 
 	// HTTP API with graceful shutdown
-	handler, collectionHTTP := newCanonicalHTTPHandler(rt, embedder, indexPath)
+	handler, collectionHTTP = newCanonicalHTTPHandler(rt, embedder, indexPath)
 	if err := collectionHTTP.PersistenceError(); err != nil {
 		logger.Error("refusing to start with unreadable collection persistence state", "path", indexPath+".collections", "error", err)
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	legacyCollectionCount, inspectErr := collectionHTTP.LegacyCollectionCount()
 	if inspectErr != nil {
@@ -170,7 +209,8 @@ func main() {
 		if abortErr := collectionHTTP.Abort(); abortErr != nil {
 			logger.Error("failed to release collection store after inspection failure", "error", abortErr)
 		}
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	if legacyCollectionCount != 0 {
 		logger.Error("refusing canonical startup with legacy V2 collections; migrate them into tenant-aware V3 collections first",
@@ -178,8 +218,25 @@ func main() {
 		if abortErr := collectionHTTP.Abort(); abortErr != nil {
 			logger.Error("failed to release collection store after migration refusal", "error", abortErr)
 		}
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
+	return
+}
+
+// apiServeFailure reports which API surface (http or grpc) stopped serving
+// unexpectedly, so awaitShutdown can log it and drive a non-zero exit.
+type apiServeFailure struct {
+	surface string
+	err     error
+}
+
+// buildAPIServers resolves the configured listener addresses, binds both
+// protocols as a unit, layers the replication surface and h2c wrapping onto
+// the handler, and starts the HTTP and gRPC servers in background goroutines.
+// A non-zero exitCode means main must exit immediately; the collection store
+// has already been released on that path.
+func buildAPIServers(cfg *serverConfig, rt *serverRuntime, handler http.Handler, collectionHTTP *CollectionHTTPServer, indexPath string, logger *logging.Logger) (srv *http.Server, grpcSrv *grpc.Server, httpRequests *sync.WaitGroup, serverErrCh chan apiServeFailure, exitCode int) {
 	addr, grpcAddr, err := canonicalListenerAddresses(
 		cfg.HTTPPort,
 		cfg.GRPCPort,
@@ -191,7 +248,8 @@ func main() {
 		if closeErr := collectionHTTP.Abort(); closeErr != nil {
 			logger.Error("failed to release collection store after bind-host refusal", "error", closeErr)
 		}
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 	httpListener, grpcListener, err := bindAPIListeners(addr, grpcAddr)
 	if err != nil {
@@ -199,7 +257,8 @@ func main() {
 		if closeErr := collectionHTTP.Abort(); closeErr != nil {
 			logger.Error("failed to release collection store after listener failure", "error", closeErr)
 		}
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 
 	handler, err = canonicalReplicationSurface(handler, collectionHTTP, indexPath, cfg.ReplicationToken, logger)
@@ -208,7 +267,8 @@ func main() {
 		if closeErr := collectionHTTP.Abort(); closeErr != nil {
 			logger.Error("failed to release collection store after replication refusal", "error", closeErr)
 		}
-		os.Exit(1)
+		exitCode = 1
+		return
 	}
 
 	// Wrap handler with h2c (HTTP/2 cleartext) for connection multiplexing
@@ -218,14 +278,14 @@ func main() {
 	if cfg.H2C {
 		finalHandler = h2c.NewHandler(handler, &http2.Server{})
 	}
-	var httpRequests sync.WaitGroup
+	httpRequests = &sync.WaitGroup{}
 	trackedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		httpRequests.Add(1)
 		defer httpRequests.Done()
 		finalHandler.ServeHTTP(w, r)
 	})
 
-	srv := &http.Server{
+	srv = &http.Server{
 		Addr:              addr,
 		Handler:           trackedHandler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -236,7 +296,6 @@ func main() {
 	}
 
 	// gRPC server (GRPC_PORT=0 to disable, default 50051)
-	var grpcSrv *grpc.Server
 	if grpcListener != nil {
 		grpcSrv = grpc.NewServer(
 			grpc.MaxRecvMsgSize(canonicalGRPCMaxReceiveBytes),
@@ -255,11 +314,7 @@ func main() {
 		})
 	}
 
-	type apiServeFailure struct {
-		surface string
-		err     error
-	}
-	serverErrCh := make(chan apiServeFailure, 2)
+	serverErrCh = make(chan apiServeFailure, 2)
 	logger.Info("http api listening", "addr", httpListener.Addr())
 	go func() {
 		if err := srv.Serve(httpListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -274,7 +329,13 @@ func main() {
 			}
 		}()
 	}
+	return
+}
 
+// awaitShutdown blocks until a termination signal arrives or either API
+// surface fails unexpectedly, and reports whether main should exit non-zero
+// afterward.
+func awaitShutdown(serverErrCh chan apiServeFailure) bool {
 	// Setup graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -290,7 +351,13 @@ func main() {
 		logging.Default().Error("API server failed; initiating coordinated shutdown", "surface", failure.surface, "error", failure.err)
 	}
 	signal.Stop(sigCh)
+	return serveFailed
+}
 
+// gracefulShutdown drains gRPC then HTTP within their existing 30s/5s
+// timeouts and checkpoints the collection store only when every handler
+// drained cleanly.
+func gracefulShutdown(srv *http.Server, grpcSrv *grpc.Server, httpRequests *sync.WaitGroup, collectionHTTP *CollectionHTTPServer, logger *logging.Logger) {
 	// Graceful shutdown sequence. The final collection checkpoint runs only
 	// when every handler has drained.
 	allHandlersDrained := true
@@ -344,12 +411,6 @@ func main() {
 		}
 	} else {
 		logger.Error("skipping final persistence checkpoint because handlers are still active; WAL artifacts retained")
-	}
-
-	logger.Info("shutdown complete")
-	if serveFailed {
-		logger.Error("exiting non-zero after API server failure")
-		os.Exit(1)
 	}
 }
 
