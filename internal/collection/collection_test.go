@@ -893,6 +893,42 @@ func TestCollection_ValidationErrors(t *testing.T) {
 	}
 }
 
+func TestNormalizeDocumentVectorTypesSortsAndRejectsMalformedSparse(t *testing.T) {
+	schema := CollectionSchema{
+		Name: "test",
+		Fields: []VectorField{
+			{Name: "keywords", Type: VectorTypeSparse, Dim: 16, Index: IndexConfig{Type: IndexTypeInverted}},
+		},
+	}
+
+	// Journal/snapshot replay must still reject duplicate indices instead of
+	// silently keeping them (regression: normalizeDocumentVectorTypes used to
+	// skip sparse.NewSparseVector's validation after Vectors became typed).
+	dup := Document{Vectors: map[string]Vector{
+		"keywords": {Sparse: &sparse.SparseVector{Indices: []uint32{7, 2, 2}, Values: []float32{1, 2, 3}, Dim: 16}},
+	}}
+	if err := normalizeDocumentVectorTypes(&dup, &schema); err == nil {
+		t.Fatal("expected error for duplicate sparse index, got nil")
+	}
+	if err := validatePersistedDocument(&dup, &schema); err == nil {
+		t.Fatal("expected error for duplicate sparse index, got nil")
+	}
+
+	// Valid but unsorted indices must come out sorted (replay used to rely on
+	// this for correct BM25 postings).
+	unsorted := Document{Vectors: map[string]Vector{
+		"keywords": {Sparse: &sparse.SparseVector{Indices: []uint32{7, 2}, Values: []float32{0.75, -0.5}, Dim: 16}},
+	}}
+	if err := normalizeDocumentVectorTypes(&unsorted, &schema); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := unsorted.Vectors["keywords"].Sparse
+	if len(got.Indices) != 2 || got.Indices[0] != 2 || got.Indices[1] != 7 ||
+		got.Values[0] != -0.5 || got.Values[1] != 0.75 {
+		t.Fatalf("sparse vector lost sorted index/value alignment: %+v", got)
+	}
+}
+
 func BenchmarkCollection_AddDense(b *testing.B) {
 	schema := CollectionSchema{
 		Name: "test",

@@ -270,9 +270,15 @@ func normalizeDocumentVectorTypes(doc *Document, schema *CollectionSchema) error
 			if vector.Sparse == nil {
 				return fmt.Errorf("field %s: expected sparse vector", fieldName)
 			}
-			if vector.Sparse.Dim != field.Dim {
-				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, vector.Sparse.Dim, field.Dim)
+			normalized, err := sparse.NewSparseVector(vector.Sparse.Indices, vector.Sparse.Values, vector.Sparse.Dim)
+			if err != nil {
+				return fmt.Errorf("field %s: %w", fieldName, err)
 			}
+			if normalized.Dim != field.Dim {
+				return fmt.Errorf("field %s dimension mismatch: got %d, want %d", fieldName, normalized.Dim, field.Dim)
+			}
+			vector.Sparse = normalized
+			doc.Vectors[fieldName] = vector
 		default:
 			return fmt.Errorf("unsupported vector type %s for field %s", field.Type, fieldName)
 		}
