@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"os"
 	"reflect"
-	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +15,10 @@ import (
 	"github.com/phenomenon0/vectordb/internal/index/simd"
 	"github.com/phenomenon0/vectordb/internal/sparse"
 )
+
+// DefaultEfSearch is the ef_search a new Collection starts with. The server
+// sets it once at startup from its configuration, before any collection exists.
+var DefaultEfSearch = 200
 
 // Collection manages multiple vector indexes for a single collection.
 //
@@ -37,7 +39,7 @@ type Collection struct {
 	documents map[uint64]*Document // doc_id -> document
 	nextID    uint64
 
-	// Default ef_search for HNSW (from env HNSW_EFSEARCH or 64)
+	// Default ef_search for HNSW, taken from DefaultEfSearch at creation time.
 	defaultEfSearch int
 
 	// usage is an in-memory, non-durable frecency signal over documents
@@ -65,21 +67,13 @@ func NewCollection(schema CollectionSchema) (*Collection, error) {
 		return nil, fmt.Errorf("invalid schema: %w", err)
 	}
 
-	// Read default ef_search from environment (fallback: 200)
-	defaultEf := 200
-	if envEf := os.Getenv("HNSW_EFSEARCH"); envEf != "" {
-		if parsed, err := strconv.Atoi(envEf); err == nil && parsed > 0 {
-			defaultEf = parsed
-		}
-	}
-
 	c := &Collection{
 		schema:          schema,
 		indexes:         make(map[string]index.Index),
 		sparse:          make(map[string]*sparse.InvertedIndex),
 		documents:       make(map[uint64]*Document),
 		nextID:          1,
-		defaultEfSearch: defaultEf,
+		defaultEfSearch: DefaultEfSearch,
 		usage:           NewUsageTracker(),
 		pendingCommit:   make(map[uint64]struct{}),
 	}
