@@ -54,5 +54,4 @@ cd -- "$ROOT_DIR"
   --go_opt=paths=source_relative \
   --go-grpc_out=api/gen \
   --go-grpc_opt=paths=source_relative \
-  api/proto/deepdata/v1/deepdata.proto \
   api/proto/deepdata/v3/deepdata.proto

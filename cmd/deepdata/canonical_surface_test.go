@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	deepdatav1 "github.com/phenomenon0/vectordb/api/gen/deepdata/v1"
 	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 )
@@ -547,37 +546,5 @@ func TestCanonicalGRPCDescriptorExcludesAdvancedMethods(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("canonical gRPC methods missing from descriptor: %v", want)
-	}
-}
-
-func TestHistoricalV1GRPCDescriptorRemainsFrozen(t *testing.T) {
-	if got := deepdatav1.DeepData_ServiceDesc.ServiceName; got != "deepdata.v1.DeepData" {
-		t.Fatalf("historical gRPC service name = %q, want deepdata.v1.DeepData", got)
-	}
-	wantMethods := map[string]bool{
-		"CreateCollection": true,
-		"DeleteCollection": true,
-		"Insert":           true,
-		"BatchInsert":      true,
-		"Search":           true,
-		"DeleteDoc":        true,
-		"Recommend":        true,
-		"Discover":         true,
-	}
-	for _, method := range deepdatav1.DeepData_ServiceDesc.Methods {
-		if !wantMethods[method.MethodName] {
-			t.Fatalf("unexpected historical v1 method: %s", method.MethodName)
-		}
-		delete(wantMethods, method.MethodName)
-	}
-	if len(wantMethods) != 0 {
-		t.Fatalf("historical v1 methods missing: %v", wantMethods)
-	}
-
-	indexParams := (&deepdatav1.VectorFieldConfig{}).ProtoReflect().Descriptor().Fields().ByName("index_params")
-	metadata := (&deepdatav1.InsertRequest{}).ProtoReflect().Descriptor().Fields().ByName("metadata")
-	textField := (&deepdatav1.InsertRequest{}).ProtoReflect().Descriptor().Fields().ByNumber(4)
-	if indexParams == nil || !indexParams.IsMap() || metadata == nil || !metadata.IsMap() || textField == nil || textField.Name() != "text" {
-		t.Fatal("historical v1 map fields or text field changed wire shape")
 	}
 }

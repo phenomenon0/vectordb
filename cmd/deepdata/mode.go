@@ -20,7 +20,6 @@ type VectorDBMode string
 
 const (
 	ModeLocal VectorDBMode = "local" // ONNX BGE-small, 384d, FREE
-	ModePro   VectorDBMode = "pro"   // OpenAI, 1536d, paid
 )
 
 // ModeConfig contains all configuration for a specific mode
@@ -35,7 +34,6 @@ type ModeConfig struct {
 }
 
 // Predefined mode configurations
-// Default: PRO mode (1536d OpenAI). Falls back to LOCAL if OPENAI_API_KEY is not set.
 // LOCAL mode dimension is set dynamically based on available embedder:
 // - ONNX (bge-small): 384d
 // - Ollama (nomic-embed-text): 768d
@@ -50,44 +48,25 @@ var ModeConfigs = map[VectorDBMode]ModeConfig{
 		DataDirectory:  "local",
 		Description:    "Local embeddings (Ollama/ONNX) - FREE, offline",
 	},
-	ModePro: {
-		Mode:           ModePro,
-		Dimension:      1536,
-		EmbedderType:   "openai",
-		EmbedderModel:  "text-embedding-3-small",
-		CostPer1MToken: 0.02, // $0.02 per 1M tokens
-		DataDirectory:  "pro",
-		Description:    "OpenAI embeddings (text-embedding-3-small, 1536d) - Best quality",
-	},
 }
 
 // CurrentMode holds the active mode configuration
 var CurrentMode *ModeConfig
 
 // LoadModeFromEnv loads the mode configuration from environment variables
-// Defaults to PRO mode; falls back to LOCAL if OPENAI_API_KEY is not set
+// Defaults to LOCAL mode
 func LoadModeFromEnv() (*ModeConfig, error) {
 	modeStr := strings.ToLower(os.Getenv("VECTORDB_MODE"))
 
-	// Default to PRO mode (industry-standard 1536d OpenAI embeddings)
+	// Default to LOCAL mode (only supported mode)
 	if modeStr == "" {
-		modeStr = string(ModePro)
+		modeStr = string(ModeLocal)
 	}
 
 	mode := VectorDBMode(modeStr)
 	config, exists := ModeConfigs[mode]
 	if !exists {
-		return nil, fmt.Errorf("unknown mode: %s (valid: local, pro)", modeStr)
-	}
-
-	// PRO mode requires OpenAI API key — gracefully fall back to LOCAL
-	if mode == ModePro {
-		if os.Getenv("OPENAI_API_KEY") == "" {
-			fmt.Println("WARNING: PRO mode requires OPENAI_API_KEY — falling back to LOCAL mode")
-			fmt.Println("         Set OPENAI_API_KEY or use VECTORDB_MODE=local to silence this warning")
-			mode = ModeLocal
-			config = ModeConfigs[mode]
-		}
+		return nil, fmt.Errorf("unknown mode: %s (valid: local)", modeStr)
 	}
 
 	// Allow dimension override (advanced use)

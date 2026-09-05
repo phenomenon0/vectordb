@@ -67,3 +67,17 @@ func TestLoadModeDataDirectoryMatchesRuntimePath(t *testing.T) {
 		t.Fatalf("reported directory = %q, want %q", got, override)
 	}
 }
+
+func TestGetIndexPathDefaultsUnderHomeVectordbLocal(t *testing.T) {
+	t.Setenv("VECTORDB_BASE_DIR", "")
+	t.Setenv("VECTORDB_DATA_DIR", "")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".vectordb", "local", "index.gob")
+	if got := GetIndexPath(ModeLocal); got != want {
+		t.Fatalf("default index path = %q, want %q", got, want)
+	}
+}

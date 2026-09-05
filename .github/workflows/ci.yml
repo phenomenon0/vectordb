@@ -53,7 +53,6 @@ jobs:
         run: |
           go vet \
             ./api/contract \
-            ./api/gen/deepdata/v1 \
             ./api/gen/deepdata/v3 \
             ./cmd/deepdata \
             ./cmd/deepdata-mcp \
@@ -66,7 +65,6 @@ jobs:
         run: |
           go test -short -timeout 600s -count=1 \
             ./api/contract \
-            ./api/gen/deepdata/v1 \
             ./api/gen/deepdata/v3 \
             ./cmd/deepdata \
             ./cmd/deepdata-mcp \
