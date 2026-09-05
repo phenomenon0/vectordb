@@ -65,7 +65,7 @@ DeepData recall@10 = 1.000, recall@100 = 0.997.
 ## Historical context
 
 The pre-rework binary-import era recorded DeepData inserts at
-1,339 vec/s and concurrent search at 2,251 qps (`results.json`). The
+1,339 vec/s and concurrent search at 2,251 qps (`benchmarks/results/results-2026-04-12.json`). The
 canonical durable path today is 2.7x faster on inserts while adding
 durability the old path never had.
 
