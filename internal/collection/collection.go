@@ -233,12 +233,18 @@ func (c *Collection) Add(ctx context.Context, doc *Document) error {
 		return fmt.Errorf("document cannot be nil")
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	normalized, nextID, err := c.prepareDocumentsLockedVariant([]Document{*doc}, false)
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
-	if err := c.addPreparedDocumentsLocked(ctx, normalized, nextID); err != nil {
+	c.reserveDocumentsLocked(normalized, nextID)
+	c.mu.Unlock()
+
+	if err := c.addPreparedToIndexes(ctx, normalized); err != nil {
+		c.mu.Lock()
+		c.rollbackDocumentsLocked(ctx, normalized)
+		c.mu.Unlock()
 		return err
 	}
 	doc.ID = normalized[0].ID
@@ -1030,12 +1036,18 @@ func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
 		return ErrCanonicalMutationRequired
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	normalized, nextID, err := c.prepareDocumentsLockedVariant(docs, false)
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
-	if err := c.addPreparedDocumentsLocked(ctx, normalized, nextID); err != nil {
+	c.reserveDocumentsLocked(normalized, nextID)
+	c.mu.Unlock()
+
+	if err := c.addPreparedToIndexes(ctx, normalized); err != nil {
+		c.mu.Lock()
+		c.rollbackDocumentsLocked(ctx, normalized)
+		c.mu.Unlock()
 		return err
 	}
 	for i := range docs {
@@ -1276,12 +1288,26 @@ func cloneReflectValue(rv reflect.Value) reflect.Value {
 }
 
 func (c *Collection) addPreparedDocuments(ctx context.Context, docs []Document, nextID uint64) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.addPreparedDocumentsLocked(ctx, docs, nextID)
+	return c.commitPrepared(ctx, docs, nextID)
 }
 
-func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Document, nextID uint64) error {
+// reserveDocumentsLocked stores docs under their prepared IDs and advances
+// the ID cursor. The caller must hold c.mu.Lock().
+func (c *Collection) reserveDocumentsLocked(docs []Document, nextID uint64) {
+	for i := range docs {
+		c.documents[docs[i].ID] = &docs[i]
+	}
+	c.nextID = nextID
+}
+
+// addPreparedToIndexes inserts every prepared document's vectors and
+// metadata into the field indexes. It deliberately does NOT take c.mu: each
+// index owns its own locking (internal/index/hnsw.go's writeMu/mu split lets
+// its own Search proceed during this call), and c.indexes/c.sparse are
+// populated once at construction and never mutated afterward (grep -n
+// 'c.indexes\[' collection.go — the only write is in createDenseIndex,
+// called from NewCollection), so reading them here without c.mu is safe.
+func (c *Collection) addPreparedToIndexes(ctx context.Context, docs []Document) error {
 	// For each field, collect vectors and batch-insert if possible.
 	for _, field := range c.schema.Fields {
 		if field.Type == VectorTypeDense {
@@ -1304,7 +1330,7 @@ func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Docu
 					return fmt.Errorf("batch add to index %s: %w", field.Name, err)
 				}
 			} else {
-				// Fallback: per-vector add (still under the single collection lock)
+				// Fallback: per-vector add.
 				for i := range docs {
 					vec := docs[i].Vectors[field.Name]
 					if vec.Dense == nil {
@@ -1332,7 +1358,7 @@ func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Docu
 		}
 	}
 
-	// Phase 3: Set metadata and store documents.
+	// Phase 3: Set metadata.
 	for i := range docs {
 		if docs[i].Metadata != nil && len(docs[i].Metadata) > 0 {
 			for _, field := range c.schema.Fields {
@@ -1341,9 +1367,57 @@ func (c *Collection) addPreparedDocumentsLocked(ctx context.Context, docs []Docu
 				}
 			}
 		}
-		c.documents[docs[i].ID] = &docs[i]
 	}
-	c.nextID = nextID
+	return nil
+}
+
+// rollbackDocumentsLocked undoes a reservation whose index insert failed
+// partway through: it deletes the reserved documents and best-effort deletes
+// any postings addPreparedToIndexes may already have written for them
+// (ignoring errors — a given doc may not have reached every field's index
+// yet, and Delete on a not-found ID is harmless). The caller must hold
+// c.mu.Lock().
+//
+// Before this rollback existed (addPreparedDocumentsLocked, pre-split), a
+// partial index-insert failure left postings for the fields it did reach
+// with no document stored to match them (a leak) and left nextID unchanged.
+// This rollback is strictly better: no document is left half-indexed.
+func (c *Collection) rollbackDocumentsLocked(ctx context.Context, docs []Document) {
+	for i := range docs {
+		id := docs[i].ID
+		delete(c.documents, id)
+		for _, idx := range c.indexes {
+			_ = idx.Delete(ctx, id)
+		}
+		for _, sparseIdx := range c.sparse {
+			_ = sparseIdx.Delete(ctx, id)
+		}
+	}
+}
+
+// commitPrepared reserves docs under c.mu, then inserts them into the field
+// indexes WITHOUT c.mu, so a concurrent Search only waits for the brief
+// reservation, not the whole index build. This changes observable semantics
+// versus the old single-lock version, deliberately:
+//   - Count/GetDocument can observe a document whose index insert is still
+//     in flight (it is reserved in c.documents before addPreparedToIndexes
+//     runs).
+//   - Search cannot return it until the index actually has it; an index
+//     insert error rolls the reservation back out.
+//   - A Delete racing an in-flight batch on an ephemeral collection blocks
+//     on the index's own writeMu and, once it runs, wins either way (the
+//     doc and its postings end up gone).
+func (c *Collection) commitPrepared(ctx context.Context, docs []Document, nextID uint64) error {
+	c.mu.Lock()
+	c.reserveDocumentsLocked(docs, nextID)
+	c.mu.Unlock()
+
+	if err := c.addPreparedToIndexes(ctx, docs); err != nil {
+		c.mu.Lock()
+		c.rollbackDocumentsLocked(ctx, docs)
+		c.mu.Unlock()
+		return err
+	}
 	return nil
 }
 
@@ -1379,7 +1453,7 @@ func (c *Collection) Upsert(ctx context.Context, doc *Document) error {
 // collection's new cursor.
 func (c *Collection) upsertPreparedLocked(ctx context.Context, docs []Document, nextID uint64) error {
 	// Evict existing live postings for any ID being replaced, then let
-	// addPreparedDocumentsLocked reinsert and re-register metadata in one pass.
+	// addPreparedToIndexes reinsert and re-register metadata in one pass.
 	for i := range docs {
 		docID := docs[i].ID
 		if _, exists := c.documents[docID]; !exists {
@@ -1400,7 +1474,16 @@ func (c *Collection) upsertPreparedLocked(ctx context.Context, docs []Document, 
 	if nextID == 0 {
 		preparedNextID = c.nextID
 	}
-	return c.addPreparedDocumentsLocked(ctx, docs, preparedNextID)
+	// upsertPreparedLocked stays fully locked (the caller holds c.mu.Lock()
+	// for its whole span), so index-insert-then-reserve here preserves the
+	// pre-split addPreparedDocumentsLocked ordering and failure behavior
+	// exactly: on an index error nothing is (re-)stored and nextID does not
+	// advance. No rollback is needed for that reason.
+	if err := c.addPreparedToIndexes(ctx, docs); err != nil {
+		return err
+	}
+	c.reserveDocumentsLocked(docs, preparedNextID)
+	return nil
 }
 
 // BulkAddDense inserts raw dense documents into a single field without full Document overhead.
