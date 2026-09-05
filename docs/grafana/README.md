@@ -37,68 +37,41 @@ scrape_configs:
 
 `/metrics` serves a private registry (`cmd/deepdata/metrics.go:52`, handler
 `:212-214`); Go runtime metrics are not on it. Fifteen `vectordb_*` families
-are registered (`cmd/deepdata/metrics.go:190-206`), but only two have a
-write path outside test files:
-
-| Family | Type | Labels | Written by |
-|---|---|---|---|
-| `vectordb_http_requests_total` | counter | `method`, `endpoint`, `status` | `RecordHTTPRequest` (`cmd/deepdata/metrics.go:316-324`) |
-| `vectordb_http_request_duration_seconds` | histogram | `method`, `endpoint` | same |
-
-`RecordHTTPRequest` is reached only through `withMetrics`
-(`cmd/deepdata/metrics.go:338-350`), which wraps the historical root routes
-registered in `cmd/deepdata/server.go` (`/insert` at `:342`, `/query` at
-`:687`, `/delete` at `:1238`, ... `/api/index/create` at `:2709`). Two facts
-follow for the RC binary:
-
-- `canonicalRCSurface` answers 404 for those root routes before the mux sees
-  them, and the canonical handler (`cmd/deepdata/collection_http.go:344`) is
-  registered with `guard` alone, not `withMetrics`. V3 traffic therefore
-  produces no samples in either family today.
-- The `endpoint` label is the literal string passed to `withMetrics`
-  (`"query"`, `"insert"`, ...), not a URL path. `HTTPMiddleware`
-  (`cmd/deepdata/metrics.go:262-277`), which would label by normalized path,
-  has no caller outside `cmd/deepdata/metrics_test.go`.
+are registered (`cmd/deepdata/metrics.go:190-206`) and none has a writer:
+the two HTTP families were fed by `withMetrics`, which wrapped the legacy
+root routes deleted together with the v1 engine, and the canonical V3
+handler is registered with `guard` alone. A scrape therefore returns the
+registered families with no samples.
 
 Instrumenting the V3 handlers is future work and is not tracked by a gate.
 
 ## Dashboard
 
-`vectordb-dashboard.json` keeps only panels whose PromQL reads the two
-families above:
-
-| Row | Panel | Expression reads |
-|---|---|---|
-| Overview | Queries/sec (id 3) | `vectordb_http_requests_total{endpoint="query"}` |
-| Overview | Error Rate (id 6) | 5xx share of `vectordb_http_requests_total` |
-| Query Performance | Requests/sec by Endpoint (id 11) | `vectordb_http_requests_total` by `endpoint` |
-| Query Performance | HTTP Latency by Endpoint (id 13) | P95 of `vectordb_http_request_duration_seconds_bucket` |
-
-Until V3 is instrumented, all four panels read "No data" against an RC
-deployment (see the previous section). Import the JSON as a starting point;
-it is an experimental compatibility asset, not a supported UI or a release
-gate. Linter rule R9 (`scripts/check_docs_contract.py`, the command of gate
-DOC-01 in `tasks/gates.json`) reports a violation if a panel references a
-family that no reachable code writes; `.github/workflows/ci.yml` runs that script
-in the Linux RC Go contract job.
+No dashboard JSON ships in this directory. The one that used to live here
+kept only panels reading `vectordb_http_requests_total` and
+`vectordb_http_request_duration_seconds`; once nothing wrote those families
+every panel read "No data", and linter rule R9 (`scripts/check_docs_contract.py`,
+the command of gate DOC-01 in `tasks/gates.json`) rejects a panel whose family
+no reachable code writes. `.github/workflows/ci.yml` runs that script in the
+Linux RC Go contract job, so a dashboard has to wait for the V3 handlers to
+be instrumented.
 
 ## Declared but not emitted
 
-The remaining families in `cmd/deepdata/metrics.go` are registered and have
-no writer outside test files, so they never appear in the exposition and no
-panel reads them:
+Every family in `cmd/deepdata/metrics.go` is registered and has no writer,
+so none carries samples in the exposition:
 
+- `vectordb_http_requests_total`, `vectordb_http_request_duration_seconds`
+  (`:169-183`; the `RecordHTTPRequest`/`withMetrics` writers went with the
+  v1 root routes)
 - `vectordb_vectors_total`, `vectordb_vectors_deleted` (`:58-72`)
 - `vectordb_operations_total`, `vectordb_operation_duration_seconds`,
-  `vectordb_operation_errors_total` (`:74-97`; writer `RecordOperation`
-  `:217`, called only from tests)
+  `vectordb_operation_errors_total` (`:74-97`)
 - `vectordb_query_duration_seconds`, `vectordb_query_results`,
-  `vectordb_query_shards_fanout` (`:100-125`; writer `RecordQuery` `:229`,
-  called only from tests)
+  `vectordb_query_shards_fanout` (`:100-125`)
 - `vectordb_shard_health_status`, `vectordb_shard_replication_lag_operations`,
   `vectordb_shard_nodes`, `vectordb_failover_total`,
-  `vectordb_failover_duration_seconds` (`:128-168`; writer
-  `UpdateShardHealth` `:241`, called only from tests). Sharding,
+  `vectordb_failover_duration_seconds` (`:128-168`). Sharding,
   replication and failover are non-goals of the RC; these families are not
   served and must not be used to claim distributed health.
 
