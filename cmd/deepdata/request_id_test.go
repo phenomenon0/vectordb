@@ -14,9 +14,7 @@ import (
 // TestRequestIDMiddlewareGeneratesID verifies that every response carries
 // an X-Request-ID header even when the client doesn't provide one.
 func TestRequestIDMiddlewareGeneratesID(t *testing.T) {
-	store := NewVectorStore(100, 4)
-	emb := NewHashEmbedder(4)
-	handler, _ := newHTTPHandler(store, emb, nil, "")
+	handler := newCanonicalSurfaceTestHandler(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -34,9 +32,7 @@ func TestRequestIDMiddlewareGeneratesID(t *testing.T) {
 // TestRequestIDMiddlewareReusesClientID verifies that a client-provided
 // X-Request-ID is echoed back instead of generating a new one.
 func TestRequestIDMiddlewareReusesClientID(t *testing.T) {
-	store := NewVectorStore(100, 4)
-	emb := NewHashEmbedder(4)
-	handler, _ := newHTTPHandler(store, emb, nil, "")
+	handler := newCanonicalSurfaceTestHandler(t)
 
 	clientID := "my-custom-trace-id-12345"
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -53,9 +49,7 @@ func TestRequestIDMiddlewareReusesClientID(t *testing.T) {
 // TestRequestIDMiddlewareUniquePerRequest verifies that two requests
 // get different auto-generated IDs.
 func TestRequestIDMiddlewareUniquePerRequest(t *testing.T) {
-	store := NewVectorStore(100, 4)
-	emb := NewHashEmbedder(4)
-	handler, _ := newHTTPHandler(store, emb, nil, "")
+	handler := newCanonicalSurfaceTestHandler(t)
 
 	req1 := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec1 := httptest.NewRecorder()
@@ -75,16 +69,16 @@ func TestRequestIDMiddlewareUniquePerRequest(t *testing.T) {
 // TestRequestIDOnErrorResponse verifies that error responses also carry
 // the X-Request-ID header (important for client-side error correlation).
 func TestRequestIDOnErrorResponse(t *testing.T) {
-	store := NewVectorStore(100, 4)
-	emb := NewHashEmbedder(4)
-	handler, _ := newHTTPHandler(store, emb, nil, "")
+	handler := newCanonicalSurfaceTestHandler(t)
 
-	// POST to /insert with invalid body — should get an error response
-	req := httptest.NewRequest(http.MethodPost, "/insert", strings.NewReader("not-json"))
-	req.Header.Set("Content-Type", "application/json")
+	// A route the canonical surface doesn't serve — 404 from canonicalRCSurface.
+	req := httptest.NewRequest(http.MethodGet, "/definitely-not-a-route", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 from canonicalRCSurface, got %d", rec.Code)
+	}
 	id := rec.Header().Get("X-Request-ID")
 	if id == "" {
 		t.Fatal("expected X-Request-ID on error response, got empty")
@@ -112,9 +106,7 @@ func TestRequestIDFromContext(t *testing.T) {
 // sliced at an arbitrary byte boundary (which could corrupt the echoed header
 // and the structured log field).
 func TestRequestIDTruncationKeepsValidUTF8(t *testing.T) {
-	store := NewVectorStore(100, 4)
-	emb := NewHashEmbedder(4)
-	handler, _ := newHTTPHandler(store, emb, nil, "")
+	handler := newCanonicalSurfaceTestHandler(t)
 
 	// 127 ASCII bytes + a 2-byte rune + another 2-byte rune: a naive 128-byte
 	// slice would cut the first é mid-rune.
