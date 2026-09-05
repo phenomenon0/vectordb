@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -76,9 +75,11 @@ func TestServerConfigValidateServeRejectsNonLocalMode(t *testing.T) {
 // the configured embedder is one that reads it — same tolerance the
 // pre-refactor lazy envInt read inside newServerEmbedderFromEnv had.
 func TestLoadServerConfigEmbedDimIsKindGatedAndTolerant(t *testing.T) {
-	t.Setenv("DEEPDATA_EMBED_DIM", "not-a-number")
+	t.Parallel()
+	env := map[string]string{"DEEPDATA_EMBED_DIM": "not-a-number"}
+	getenv := mapGetenv(env)
 
-	cfg, errs := loadServerConfig(nil, os.Getenv)
+	cfg, errs := loadServerConfig(nil, getenv)
 	if len(errs) != 0 {
 		t.Fatalf("garbage DEEPDATA_EMBED_DIM must not produce a config error with no embedder configured, got: %v", errs)
 	}
@@ -86,12 +87,20 @@ func TestLoadServerConfigEmbedDimIsKindGatedAndTolerant(t *testing.T) {
 		t.Fatalf("Embedder.Dim = %d, want default 384", cfg.Embedder.Dim)
 	}
 
-	t.Setenv("DEEPDATA_EMBEDDER", "hash")
-	cfg, errs = loadServerConfig(nil, os.Getenv)
+	env["DEEPDATA_EMBEDDER"] = "hash"
+	cfg, errs = loadServerConfig(nil, getenv)
 	if len(errs) != 0 {
 		t.Fatalf("garbage DEEPDATA_EMBED_DIM must not produce a config error even for a kind that reads it, got: %v", errs)
 	}
 	if cfg.Embedder.Dim != 384 {
 		t.Fatalf("Embedder.Dim = %d, want default 384 on parse failure", cfg.Embedder.Dim)
+	}
+
+	// A valid value must arrive through the injected reader, not the process
+	// environment — that is the whole point of the boundary.
+	env["DEEPDATA_EMBED_DIM"] = "768"
+	cfg, _ = loadServerConfig(nil, getenv)
+	if cfg.Embedder.Dim != 768 {
+		t.Fatalf("Embedder.Dim = %d, want 768 from the injected getenv", cfg.Embedder.Dim)
 	}
 }

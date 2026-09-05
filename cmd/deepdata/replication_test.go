@@ -121,6 +121,7 @@ func TestReplicationRefusesToStartWithoutADurableStore(t *testing.T) {
 // garbage, whether or not that garbage would fail a `serve` startup.
 func TestRunReplicateValidatesOnlyWhatItReads(t *testing.T) {
 	t.Run("invalid VECTORDB_MODE blocks it", func(t *testing.T) {
+		t.Setenv(replicationTokenEnv, "node-token")
 		t.Setenv("VECTORDB_MODE", "bogus")
 		var rc int
 		stderr := captureStderr(t, func() {

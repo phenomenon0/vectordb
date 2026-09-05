@@ -64,8 +64,11 @@ func truncateRequestID(id string, maxBytes int) string {
 // unset or invalid. Used by the package-level LIMIT_* configuration below and
 // by config.go's kind-gated DEEPDATA_EMBED_DIM read; every other setting is
 // validated once into serverConfig via loadServerConfig's fatal posInt.
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
+func envInt(key string, def int) int { return envIntFrom(os.Getenv, key, def) }
+
+// envIntFrom is envInt over an injected reader, for loadServerConfig.
+func envIntFrom(getenv func(string) string, key string, def int) int {
+	if v := getenv(key); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
 			logging.Default().Warn("invalid integer env var, using default", "key", key, "value", v, "default", def)

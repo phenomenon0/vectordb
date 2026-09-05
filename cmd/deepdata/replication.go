@@ -133,13 +133,13 @@ func runReplicate(args []string, logger *logging.Logger) int {
 	// subcommand's concern; VECTORDB_MODE is, and it is the one thing the
 	// historical mode loader validated for replicate.
 	cfg, _ := loadServerConfig(nil, os.Getenv)
-	if cfg.mode != "" && cfg.mode != "local" {
-		fmt.Fprintf(os.Stderr, "replicate: unknown mode: %s (valid: local)\n", cfg.mode)
-		return 2
-	}
 	token := cfg.ReplicationToken
 	if token == "" {
 		fmt.Fprintf(os.Stderr, "replicate: %s must be set to the leader's node token\n", replicationTokenEnv)
+		return 2
+	}
+	if cfg.mode != "" && cfg.mode != "local" {
+		fmt.Fprintf(os.Stderr, "replicate: unknown mode: %s (valid: local)\n", cfg.mode)
 		return 2
 	}
 	// The same path the server would open, so a replica directory and the
