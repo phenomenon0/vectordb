@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -67,5 +68,30 @@ func TestServerConfigValidateServeRejectsNonLocalMode(t *testing.T) {
 	}
 	if err := cfg.validateServe(); err != nil {
 		t.Fatalf("validateServe() with --mode local = %v, want nil", err)
+	}
+}
+
+// DEEPDATA_EMBED_DIM only matters to the hash/onnx embedders (embed_text.go).
+// A garbage value must stay inert and never abort startup, whether or not
+// the configured embedder is one that reads it — same tolerance the
+// pre-refactor lazy envInt read inside newServerEmbedderFromEnv had.
+func TestLoadServerConfigEmbedDimIsKindGatedAndTolerant(t *testing.T) {
+	t.Setenv("DEEPDATA_EMBED_DIM", "not-a-number")
+
+	cfg, errs := loadServerConfig(nil, os.Getenv)
+	if len(errs) != 0 {
+		t.Fatalf("garbage DEEPDATA_EMBED_DIM must not produce a config error with no embedder configured, got: %v", errs)
+	}
+	if cfg.Embedder.Dim != 384 {
+		t.Fatalf("Embedder.Dim = %d, want default 384", cfg.Embedder.Dim)
+	}
+
+	t.Setenv("DEEPDATA_EMBEDDER", "hash")
+	cfg, errs = loadServerConfig(nil, os.Getenv)
+	if len(errs) != 0 {
+		t.Fatalf("garbage DEEPDATA_EMBED_DIM must not produce a config error even for a kind that reads it, got: %v", errs)
+	}
+	if cfg.Embedder.Dim != 384 {
+		t.Fatalf("Embedder.Dim = %d, want default 384 on parse failure", cfg.Embedder.Dim)
 	}
 }

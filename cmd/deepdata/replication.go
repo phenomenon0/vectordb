@@ -128,9 +128,13 @@ func runReplicate(args []string, logger *logging.Logger) int {
 		fmt.Fprintln(os.Stderr, "replicate: --leader is required")
 		return 2
 	}
-	cfg, errs := loadServerConfig(nil, os.Getenv)
-	if len(errs) > 0 {
-		fmt.Fprintf(os.Stderr, "replicate: %s\n", strings.Join(errs, "; "))
+	// loadServerConfig's errs cover the serve surface (PORT, rate limits,
+	// timeouts, ...) that replicate never reads, so they are not this
+	// subcommand's concern; VECTORDB_MODE is, and it is the one thing the
+	// historical mode loader validated for replicate.
+	cfg, _ := loadServerConfig(nil, os.Getenv)
+	if cfg.mode != "" && cfg.mode != "local" {
+		fmt.Fprintf(os.Stderr, "replicate: unknown mode: %s (valid: local)\n", cfg.mode)
 		return 2
 	}
 	token := cfg.ReplicationToken

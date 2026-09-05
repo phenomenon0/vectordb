@@ -154,6 +154,16 @@ func loadServerConfig(args []string, getenv func(string) string) (*serverConfig,
 		}
 	}
 
+	// DEEPDATA_EMBED_DIM only matters to the hash and onnx embedders (see
+	// embed_text.go); for every other DEEPDATA_EMBEDDER kind it is dead, so
+	// the read is kind-gated and tolerant (envInt warns and falls back to
+	// the default) rather than a fatal config error like the keys above.
+	embKind := strings.ToLower(strings.TrimSpace(env("DEEPDATA_EMBEDDER")))
+	embDim := 384
+	if embKind == "hash" || embKind == "onnx" {
+		embDim = envInt("DEEPDATA_EMBED_DIM", 384)
+	}
+
 	cfg := &serverConfig{
 		HTTPPort:        posInt("PORT", 8080),
 		GRPCPort:        nonNegInt("GRPC_PORT", 50051),
@@ -185,8 +195,8 @@ func loadServerConfig(args []string, getenv func(string) string) (*serverConfig,
 		},
 		CORSAllowedOrigins: env("CORS_ALLOWED_ORIGINS"),
 		Embedder: embedderConfig{
-			Kind:          strings.ToLower(strings.TrimSpace(env("DEEPDATA_EMBEDDER"))),
-			Dim:           posInt("DEEPDATA_EMBED_DIM", 384),
+			Kind:          embKind,
+			Dim:           embDim,
 			OllamaURL:     env("OLLAMA_URL"),
 			OllamaModel:   env("OLLAMA_EMBED_MODEL"),
 			OpenAIAPIKey:  env("OPENAI_API_KEY"),

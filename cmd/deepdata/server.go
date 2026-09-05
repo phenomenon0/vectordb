@@ -61,8 +61,9 @@ func truncateRequestID(id string, maxBytes int) string {
 // ===========================================================================================
 
 // envInt reads an integer environment variable, falling back to def when
-// unset or invalid. Used only by the package-level LIMIT_* configuration
-// below; every other setting is read once into serverConfig.
+// unset or invalid. Used by the package-level LIMIT_* configuration below and
+// by config.go's kind-gated DEEPDATA_EMBED_DIM read; every other setting is
+// validated once into serverConfig via loadServerConfig's fatal posInt.
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		n, err := strconv.Atoi(v)

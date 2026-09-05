@@ -1,14 +1,35 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phenomenon0/vectordb/internal/logging"
 	"github.com/phenomenon0/vectordb/internal/replication"
 )
+
+// captureStderr redirects the package-level os.Stderr for the duration of fn
+// and returns what was written. runReplicate reports its own config errors
+// with fmt.Fprintf(os.Stderr, ...) rather than through the logger.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	fn()
+	os.Stderr = orig
+	w.Close()
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
 
 // canonicalLeaderForTest builds the client handler over a real durable store.
 func canonicalLeaderForTest(t *testing.T) (http.Handler, *CollectionHTTPServer, string) {
@@ -91,4 +112,43 @@ func TestReplicationRefusesToStartWithoutADurableStore(t *testing.T) {
 	if _, err := canonicalReplicationSurface(http.NotFoundHandler(), collections, "index.gob", "node-token-distinct-from-the-client-one", logging.Default()); err == nil {
 		t.Fatal("replication mounted on a process with no durable store")
 	}
+}
+
+// runReplicate reads serverConfig for its token and data path, but it never
+// reads the serve-only knobs (rate limits, embedder dimension, ...) that
+// loadServerConfig also validates. It must reject the one env key it does
+// care about (VECTORDB_MODE) and stay silent about every other key's
+// garbage, whether or not that garbage would fail a `serve` startup.
+func TestRunReplicateValidatesOnlyWhatItReads(t *testing.T) {
+	t.Run("invalid VECTORDB_MODE blocks it", func(t *testing.T) {
+		t.Setenv("VECTORDB_MODE", "bogus")
+		var rc int
+		stderr := captureStderr(t, func() {
+			rc = runReplicate([]string{"--leader", "http://leader.example"}, logging.Default())
+		})
+		if rc != 2 {
+			t.Fatalf("rc = %d, want 2", rc)
+		}
+		if !strings.Contains(stderr, "unknown mode: bogus (valid: local)") {
+			t.Fatalf("stderr = %q, want the unknown-mode rejection", stderr)
+		}
+	})
+
+	t.Run("garbage in an unread serve key does not block it", func(t *testing.T) {
+		t.Setenv("TENANT_RPS", "0")
+		t.Setenv("DEEPDATA_EMBED_DIM", "not-a-number")
+		var rc int
+		stderr := captureStderr(t, func() {
+			rc = runReplicate([]string{"--leader", "http://leader.example"}, logging.Default())
+		})
+		if rc != 2 {
+			t.Fatalf("rc = %d, want 2 (missing replication token, not a config rejection)", rc)
+		}
+		if strings.Contains(stderr, "TENANT_RPS") || strings.Contains(stderr, "DEEPDATA_EMBED_DIM") {
+			t.Fatalf("stderr = %q, replicate must not fail on keys it never reads", stderr)
+		}
+		if !strings.Contains(stderr, replicationTokenEnv+" must be set") {
+			t.Fatalf("stderr = %q, want the missing-token message", stderr)
+		}
+	})
 }
