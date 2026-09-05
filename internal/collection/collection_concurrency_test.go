@@ -168,3 +168,88 @@ func TestSearchProceedsDuringBatchAdd(t *testing.T) {
 		t.Fatalf("search latency during batch add degraded too much: idle=%v during=%v ratio=%.1fx (want <=5x)", idleMedian, duringMedian, ratio)
 	}
 }
+
+// TestDeleteDuringBatchAddDoesNotLoseDocument is the regression instrument
+// for the review-flagged lost-delete race: BatchAdd reserves every doc in
+// c.documents (making it visible to Delete) before its index insert starts,
+// so a Delete landing in that window used to call idx.Delete on an index
+// that had not received the ID yet, get a spurious "not found", and return
+// an error while leaving the document (and its now half-deleted postings)
+// stuck. The fix makes Delete wait until the reservation's index insert
+// actually finishes before touching any index, so it must always either see
+// the doc before it was ever reserved (real not-found) or win outright once
+// the batch completes — never error out with the doc still alive.
+func TestDeleteDuringBatchAddDoesNotLoseDocument(t *testing.T) {
+	const dim = 32
+	schema := CollectionSchema{
+		Name: "delete_race_test",
+		Fields: []VectorField{
+			{
+				Name: "embedding",
+				Type: VectorTypeDense,
+				Dim:  dim,
+				Index: IndexConfig{
+					Type: IndexTypeHNSW,
+					Params: map[string]interface{}{
+						"m":               16,
+						"ef_construction": 200,
+					},
+				},
+			},
+		},
+	}
+	coll, err := NewCollection(schema)
+	if err != nil {
+		t.Fatalf("failed to create collection: %v", err)
+	}
+	ctx := context.Background()
+
+	rng := rand.New(rand.NewSource(99))
+	const batchSize = 20000
+	docs := make([]Document, batchSize)
+	for i := range docs {
+		vec := make([]float32, dim)
+		for j := range vec {
+			vec[j] = rng.Float32()
+		}
+		docs[i] = Document{Vectors: map[string]Vector{"embedding": {Dense: vec}}}
+	}
+	// nextID starts at 1 on a fresh collection, so IDs land sequentially.
+	targetID := uint64(batchSize / 2)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var batchErr error
+	go func() {
+		defer wg.Done()
+		batchErr = coll.BatchAdd(ctx, docs)
+	}()
+
+	// Busy-poll for the reservation to land, then fire the delete
+	// immediately — this is the window (doc visible, index insert not yet
+	// finished) the bug lived in.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := coll.GetDocument(targetID); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("target doc %d never became visible before the batch finished", targetID)
+		}
+	}
+	deleteErr := coll.Delete(ctx, targetID)
+	wg.Wait()
+
+	if batchErr != nil {
+		t.Fatalf("batch add failed: %v", batchErr)
+	}
+	if deleteErr != nil {
+		t.Fatalf("delete raced the in-flight batch add and spuriously failed: %v", deleteErr)
+	}
+	if _, ok := coll.GetDocument(targetID); ok {
+		t.Fatalf("doc %d still present after a Delete that reported success", targetID)
+	}
+	if got, want := coll.Count(), batchSize-1; got != want {
+		t.Fatalf("collection count = %d, want %d (batch size minus the deleted doc)", got, want)
+	}
+}

@@ -48,6 +48,15 @@ type Collection struct {
 	// durableReadOnly prevents a Collection pointer obtained from a durable V2
 	// manager or tenant read API from bypassing the canonical tenant WAL.
 	durableReadOnly bool
+
+	// pendingCommit holds IDs reserved by commitPrepared (already visible in
+	// documents) whose index insert has not finished yet. deleteDocumentDirect
+	// waits on commitCond until an ID clears pendingCommit before touching the
+	// indexes; otherwise it can hit an index whose insert for that ID hasn't
+	// started yet, get a spurious "not found" from idx.Delete, and abort with
+	// the document (and any postings the loop already reached) left stuck.
+	pendingCommit map[uint64]struct{}
+	commitCond    *sync.Cond
 }
 
 // NewCollection creates a new multi-vector collection.
@@ -72,7 +81,9 @@ func NewCollection(schema CollectionSchema) (*Collection, error) {
 		nextID:          1,
 		defaultEfSearch: defaultEf,
 		usage:           NewUsageTracker(),
+		pendingCommit:   make(map[uint64]struct{}),
 	}
+	c.commitCond = sync.NewCond(&c.mu)
 
 	// Initialize indexes for each field
 	for _, field := range schema.Fields {
@@ -239,14 +250,18 @@ func (c *Collection) Add(ctx context.Context, doc *Document) error {
 		return err
 	}
 	c.reserveDocumentsLocked(normalized, nextID)
+	c.markPendingCommitLocked(normalized)
 	c.mu.Unlock()
 
-	if err := c.addPreparedToIndexes(ctx, normalized); err != nil {
-		c.mu.Lock()
+	err = c.addPreparedToIndexes(ctx, normalized)
+	c.mu.Lock()
+	c.clearPendingCommitLocked(normalized)
+	if err != nil {
 		c.rollbackDocumentsLocked(ctx, normalized)
 		c.mu.Unlock()
 		return err
 	}
+	c.mu.Unlock()
 	doc.ID = normalized[0].ID
 	return nil
 }
@@ -1042,14 +1057,18 @@ func (c *Collection) BatchAdd(ctx context.Context, docs []Document) error {
 		return err
 	}
 	c.reserveDocumentsLocked(normalized, nextID)
+	c.markPendingCommitLocked(normalized)
 	c.mu.Unlock()
 
-	if err := c.addPreparedToIndexes(ctx, normalized); err != nil {
-		c.mu.Lock()
+	err = c.addPreparedToIndexes(ctx, normalized)
+	c.mu.Lock()
+	c.clearPendingCommitLocked(normalized)
+	if err != nil {
 		c.rollbackDocumentsLocked(ctx, normalized)
 		c.mu.Unlock()
 		return err
 	}
+	c.mu.Unlock()
 	for i := range docs {
 		docs[i].ID = normalized[i].ID
 	}
@@ -1300,6 +1319,25 @@ func (c *Collection) reserveDocumentsLocked(docs []Document, nextID uint64) {
 	c.nextID = nextID
 }
 
+// markPendingCommitLocked registers docs as reserved-but-not-yet-indexed so
+// deleteDocumentDirect waits for their index insert instead of racing it.
+// The caller must hold c.mu.Lock().
+func (c *Collection) markPendingCommitLocked(docs []Document) {
+	for i := range docs {
+		c.pendingCommit[docs[i].ID] = struct{}{}
+	}
+}
+
+// clearPendingCommitLocked un-registers docs (their index insert has
+// finished, successfully or not) and wakes any deleteDocumentDirect callers
+// waiting on one of these IDs. The caller must hold c.mu.Lock().
+func (c *Collection) clearPendingCommitLocked(docs []Document) {
+	for i := range docs {
+		delete(c.pendingCommit, docs[i].ID)
+	}
+	c.commitCond.Broadcast()
+}
+
 // addPreparedToIndexes inserts every prepared document's vectors and
 // metadata into the field indexes. It deliberately does NOT take c.mu: each
 // index owns its own locking (internal/index/hnsw.go's writeMu/mu split lets
@@ -1404,21 +1442,27 @@ func (c *Collection) rollbackDocumentsLocked(ctx context.Context, docs []Documen
 //     runs).
 //   - Search cannot return it until the index actually has it; an index
 //     insert error rolls the reservation back out.
-//   - A Delete racing an in-flight batch on an ephemeral collection blocks
-//     on the index's own writeMu and, once it runs, wins either way (the
-//     doc and its postings end up gone).
+//   - A Delete racing an in-flight batch on an ephemeral collection waits
+//     on commitCond until the ID clears pendingCommit (below), then wins
+//     either way (the doc and its postings end up gone). Without that wait,
+//     Delete could reach an index before this call's insert for that ID even
+//     started, get a spurious "not found", and abort with the document left
+//     alive.
 func (c *Collection) commitPrepared(ctx context.Context, docs []Document, nextID uint64) error {
 	c.mu.Lock()
 	c.reserveDocumentsLocked(docs, nextID)
+	c.markPendingCommitLocked(docs)
 	c.mu.Unlock()
 
-	if err := c.addPreparedToIndexes(ctx, docs); err != nil {
-		c.mu.Lock()
+	err := c.addPreparedToIndexes(ctx, docs)
+
+	c.mu.Lock()
+	c.clearPendingCommitLocked(docs)
+	if err != nil {
 		c.rollbackDocumentsLocked(ctx, docs)
-		c.mu.Unlock()
-		return err
 	}
-	return nil
+	c.mu.Unlock()
+	return err
 }
 
 // Upsert inserts or replaces a single caller-addressed document. The new
@@ -1597,6 +1641,17 @@ func (c *Collection) deleteDocumentDirect(ctx context.Context, docID uint64) err
 	defer c.mu.Unlock()
 	if docID == 0 {
 		return fmt.Errorf("document ID cannot be zero")
+	}
+	// A concurrent commitPrepared reserves the ID in c.documents before its
+	// index inserts finish. Deleting here first would race an index that
+	// hasn't received docID yet, get a spurious "not found", and abort
+	// leaving the document alive (see commitPrepared). Wait for the ID to
+	// clear pendingCommit so the indexes below are guaranteed to have it.
+	for {
+		if _, pending := c.pendingCommit[docID]; !pending {
+			break
+		}
+		c.commitCond.Wait()
 	}
 	if _, exists := c.documents[docID]; !exists {
 		return fmt.Errorf("%w: %d", ErrDocumentNotFound, docID)
