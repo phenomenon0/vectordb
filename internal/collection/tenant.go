@@ -507,6 +507,24 @@ func (tm *TenantManager) DeleteTenant(ctx context.Context, tenantID string) erro
 	return ErrUnsupportedDurableMutation
 }
 
+// GetTenantInfo returns one tenant's lifecycle status, effective quota and
+// current usage. Quota admission is a durability feature: this returns
+// ErrUnsupportedDurableMutation without a durable store attached.
+func (tm *TenantManager) GetTenantInfo(tenantID string) (TenantInfo, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.getTenantInfo(tenantID)
+	}
+	return TenantInfo{}, ErrUnsupportedDurableMutation
+}
+
+// ListTenantInfos returns every tenant's info, sorted by tenant ID.
+func (tm *TenantManager) ListTenantInfos() ([]TenantInfo, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.listTenantInfos()
+	}
+	return nil, ErrUnsupportedDurableMutation
+}
+
 // DropTenant removes all collections for a tenant.
 func (tm *TenantManager) DropTenant(ctx context.Context, tenantID string) error {
 	if tm.durableStore() != nil {

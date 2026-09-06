@@ -118,6 +118,14 @@ type DurableStore struct {
 	// imported at open. It is written once during open and then only read.
 	usageLoaded bool
 
+	// usage is the per-tenant document/byte quota accounting, keyed by tenant
+	// ID (Collections is read live from tenants instead). Not to be confused
+	// with the per-collection ranking UsageTracker (coll.usage) or its
+	// sidecar above — this map backs quota admission, not search relevance.
+	// nil during journal replay: chargeUsageLocked is a no-op until openDurableStore
+	// derives it once by walking every tenant's collections after replay finishes.
+	usage map[string]TenantUsage
+
 	// apply is a per-store test seam. Production always points at
 	// applyMutationDirect; an error after append permanently faults the store.
 	apply func(context.Context, canonicalMutation) error
@@ -222,6 +230,7 @@ func openDurableStore(basePath, storagePath string, limits StoreLimits) (*Durabl
 	// consume persistence on every subsequent checkpoint.
 	store.tenants.pruneEmptyManagers()
 	store.activeTenants, store.collectionCount = store.tenants.resourceCounts()
+	store.deriveTenantUsage()
 	// The usage sidecar is class B: it is restored after the canonical state
 	// it annotates, and a failure here can never reach the caller.
 	store.loadUsageSidecar()
@@ -430,6 +439,9 @@ func (s *DurableStore) createCollection(ctx context.Context, tenantID string, sc
 	if err != nil {
 		return err
 	}
+	if err := s.checkTenantQuotaLocked(tenantID, 0, 0, 1); err != nil {
+		return err
+	}
 	if err := s.appendApplyLocked(ctx, mutation); err != nil {
 		return err
 	}
@@ -463,6 +475,150 @@ func (s *DurableStore) checkMaxTenantsLocked() error {
 	return nil
 }
 
+// deriveTenantUsage populates s.usage by walking every tenant's collections
+// once, after journal replay has fully rebuilt the document set. It must run
+// exactly once at open; every later change goes through chargeUsageLocked.
+func (s *DurableStore) deriveTenantUsage() {
+	s.usage = make(map[string]TenantUsage)
+	for _, tenantID := range s.tenants.listTenantsDirect() {
+		var docs, bytes int64
+		for _, name := range s.tenants.listCollectionsDirect(tenantID) {
+			coll, err := s.tenants.getCollectionDirect(tenantID, name)
+			if err != nil {
+				continue
+			}
+			docs += int64(coll.Count())
+			bytes += coll.documentBytesTotal()
+		}
+		s.usage[tenantID] = TenantUsage{Documents: docs, Bytes: bytes}
+	}
+}
+
+// chargeUsageLocked applies a documents/bytes delta to one tenant's usage
+// counters. It is a no-op while s.usage is nil (mid journal-replay), because
+// deriveTenantUsage recomputes the totals by walking collections once replay
+// finishes, instead of accumulating them mutation by mutation.
+func (s *DurableStore) chargeUsageLocked(tenantID string, docs, bytes int64) {
+	if s.usage == nil {
+		return
+	}
+	u := s.usage[tenantID]
+	u.Documents += docs
+	u.Bytes += bytes
+	if u.Documents < 0 {
+		u.Documents = 0 // ponytail: clamp on an accounting slip rather than let usage go negative
+	}
+	if u.Bytes < 0 {
+		u.Bytes = 0
+	}
+	s.usage[tenantID] = u
+}
+
+// lookupDocumentBytesLocked reads one document's current estimated size, for
+// computing an upsert/delete's byte delta before the mutation is applied.
+func (s *DurableStore) lookupDocumentBytesLocked(tenantID, collectionName string, docID uint64) (int64, bool) {
+	coll, err := s.tenants.getCollectionDirect(tenantID, collectionName)
+	if err != nil {
+		return 0, false
+	}
+	return coll.documentBytesFor(docID)
+}
+
+// effectiveQuotaLocked resolves the quota actually in force for a tenant:
+// its own record override, field by field, falling back to the server-wide
+// StoreLimits default for any field the record leaves at zero.
+func (s *DurableStore) effectiveQuotaLocked(tenantID string) TenantQuota {
+	quota := TenantQuota{
+		MaxDocuments:   s.limits.MaxTenantDocuments,
+		MaxBytes:       s.limits.MaxTenantBytes,
+		MaxCollections: s.limits.MaxTenantCollections,
+	}
+	if rec, ok := s.tenants.getTenantRecord(tenantID); ok {
+		if rec.Quota.MaxDocuments > 0 {
+			quota.MaxDocuments = rec.Quota.MaxDocuments
+		}
+		if rec.Quota.MaxBytes > 0 {
+			quota.MaxBytes = rec.Quota.MaxBytes
+		}
+		if rec.Quota.MaxCollections > 0 {
+			quota.MaxCollections = rec.Quota.MaxCollections
+		}
+	}
+	return quota
+}
+
+// currentUsageLocked is a tenant's usage snapshot: Documents/Bytes from the
+// running counters, Collections read live from its CollectionManager.
+func (s *DurableStore) currentUsageLocked(tenantID string) TenantUsage {
+	var usage TenantUsage
+	if s.usage != nil {
+		usage = s.usage[tenantID]
+	}
+	if manager := s.tenants.getManager(tenantID); manager != nil {
+		usage.Collections = int64(manager.CollectionCount())
+	}
+	return usage
+}
+
+// checkTenantQuotaLocked rejects an admission only when a dimension has a
+// configured cap, the request grows that dimension, and the result would
+// exceed the cap. A shrink (negative delta) never rejects.
+func (s *DurableStore) checkTenantQuotaLocked(tenantID string, docs, bytes, collections int64) error {
+	quota := s.effectiveQuotaLocked(tenantID)
+	current := s.currentUsageLocked(tenantID)
+	if quota.MaxDocuments > 0 && docs > 0 && current.Documents+docs > quota.MaxDocuments {
+		return fmt.Errorf("%w: documents %d+%d > %d", ErrTenantQuotaExceeded, current.Documents, docs, quota.MaxDocuments)
+	}
+	if quota.MaxBytes > 0 && bytes > 0 && current.Bytes+bytes > quota.MaxBytes {
+		return fmt.Errorf("%w: bytes %d+%d > %d", ErrTenantQuotaExceeded, current.Bytes, bytes, quota.MaxBytes)
+	}
+	if quota.MaxCollections > 0 && collections > 0 && current.Collections+collections > quota.MaxCollections {
+		return fmt.Errorf("%w: collections %d+%d > %d", ErrTenantQuotaExceeded, current.Collections, collections, quota.MaxCollections)
+	}
+	return nil
+}
+
+// tenantInfoLocked builds the administrator-visible snapshot for one tenant.
+// Caller must have already confirmed the tenant is active.
+func (s *DurableStore) tenantInfoLocked(tenantID string) TenantInfo {
+	status := TenantStatusActive
+	if rec, ok := s.tenants.getTenantRecord(tenantID); ok {
+		status = rec.Status
+	}
+	return TenantInfo{
+		TenantID: tenantID,
+		Status:   status,
+		Quota:    s.effectiveQuotaLocked(tenantID),
+		Usage:    s.currentUsageLocked(tenantID),
+	}
+}
+
+func (s *DurableStore) getTenantInfo(tenantID string) (TenantInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return TenantInfo{}, err
+	}
+	if !s.tenants.tenantActive(tenantID) {
+		return TenantInfo{}, fmt.Errorf("%w: %s", ErrTenantNotFound, tenantID)
+	}
+	return s.tenantInfoLocked(tenantID), nil
+}
+
+func (s *DurableStore) listTenantInfos() ([]TenantInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return nil, err
+	}
+	ids := s.tenants.listTenantsDirect()
+	infos := make([]TenantInfo, len(ids))
+	for i, id := range ids {
+		infos[i] = s.tenantInfoLocked(id)
+	}
+	return infos, nil
+}
+
 func (s *DurableStore) addDocument(ctx context.Context, tenantID, collectionName string, doc *Document) error {
 	if doc == nil {
 		return errors.New("document cannot be nil")
@@ -474,6 +630,9 @@ func (s *DurableStore) addDocument(ctx context.Context, tenantID, collectionName
 	}
 	mutation, err := s.prepareDocumentsMutation(mutationInsertDocument, tenantID, collectionName, []Document{*doc})
 	if err != nil {
+		return err
+	}
+	if err := s.checkTenantQuotaLocked(tenantID, int64(len(mutation.documents)), documentsBytes(mutation.documents), 0); err != nil {
 		return err
 	}
 	if err := s.appendApplyLocked(ctx, mutation); err != nil {
@@ -491,6 +650,10 @@ func (s *DurableStore) batchAddDocuments(ctx context.Context, tenantID, collecti
 	}
 	mutation, err := s.prepareDocumentsMutation(mutationBatchInsert, tenantID, collectionName, docs)
 	if err != nil {
+		return err
+	}
+	// The whole batch is one admission decision: reject all or admit all.
+	if err := s.checkTenantQuotaLocked(tenantID, int64(len(mutation.documents)), documentsBytes(mutation.documents), 0); err != nil {
 		return err
 	}
 	if err := s.appendApplyLocked(ctx, mutation); err != nil {
@@ -514,8 +677,19 @@ func (s *DurableStore) upsertDocument(ctx context.Context, tenantID, collectionN
 	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return err
 	}
+	oldBytes, existed := s.lookupDocumentBytesLocked(tenantID, collectionName, doc.ID)
 	mutation, err := s.prepareUpsertMutation(tenantID, collectionName, *doc)
 	if err != nil {
+		return err
+	}
+	docsDelta := int64(0)
+	if !existed {
+		docsDelta = 1
+	}
+	newBytes := documentBytes(&mutation.documents[0])
+	// A shrink (newBytes < oldBytes) never rejects: checkTenantQuotaLocked
+	// only enforces a positive delta.
+	if err := s.checkTenantQuotaLocked(tenantID, docsDelta, newBytes-oldBytes, 0); err != nil {
 		return err
 	}
 	return s.appendApplyLocked(ctx, mutation)
@@ -1059,17 +1233,43 @@ func (s *DurableStore) applyMutationDirect(ctx context.Context, m canonicalMutat
 		_, err := s.tenants.createCollectionDirect(ctx, m.tenantID, m.schema)
 		return err
 	case mutationDeleteCollection:
+		var docs, bytes int64
+		if coll, err := s.tenants.getCollectionDirect(m.tenantID, m.collectionName); err == nil {
+			docs = int64(coll.Count())
+			bytes = coll.documentBytesTotal()
+		}
 		if err := s.tenants.deleteCollectionDirect(ctx, m.tenantID, m.collectionName); err != nil {
 			return err
 		}
 		s.tenants.pruneEmptyManager(m.tenantID)
+		s.chargeUsageLocked(m.tenantID, -docs, -bytes)
 		return nil
 	case mutationInsertDocument, mutationBatchInsert:
-		return s.tenants.addPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID)
+		if err := s.tenants.addPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID); err != nil {
+			return err
+		}
+		s.chargeUsageLocked(m.tenantID, int64(len(m.documents)), documentsBytes(m.documents))
+		return nil
 	case mutationUpsertDocument:
-		return s.tenants.upsertPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID)
+		oldBytes, existed := s.lookupDocumentBytesLocked(m.tenantID, m.collectionName, m.documents[0].ID)
+		if err := s.tenants.upsertPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID); err != nil {
+			return err
+		}
+		docsDelta := int64(0)
+		if !existed {
+			docsDelta = 1
+		}
+		s.chargeUsageLocked(m.tenantID, docsDelta, documentBytes(&m.documents[0])-oldBytes)
+		return nil
 	case mutationDeleteDocument:
-		return s.tenants.deleteDocumentDirect(ctx, m.tenantID, m.collectionName, m.documentID)
+		oldBytes, existed := s.lookupDocumentBytesLocked(m.tenantID, m.collectionName, m.documentID)
+		if err := s.tenants.deleteDocumentDirect(ctx, m.tenantID, m.collectionName, m.documentID); err != nil {
+			return err
+		}
+		if existed {
+			s.chargeUsageLocked(m.tenantID, -1, -oldBytes)
+		}
+		return nil
 	case mutationCreateTenant:
 		if _, exists := s.tenants.getTenantRecord(m.tenantID); exists {
 			return fmt.Errorf("%w: %s", ErrTenantExists, m.tenantID)
@@ -1083,7 +1283,11 @@ func (s *DurableStore) applyMutationDirect(ctx context.Context, m canonicalMutat
 		if !s.tenants.tenantActive(m.tenantID) {
 			return fmt.Errorf("%w: %s", ErrTenantNotFound, m.tenantID)
 		}
-		return s.tenants.deleteTenantDirect(ctx, m.tenantID)
+		if err := s.tenants.deleteTenantDirect(ctx, m.tenantID); err != nil {
+			return err
+		}
+		delete(s.usage, m.tenantID)
+		return nil
 	default:
 		return fmt.Errorf("unknown mutation type %q", m.typeName)
 	}

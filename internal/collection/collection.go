@@ -1708,6 +1708,33 @@ func (c *Collection) Count() int {
 	return len(c.documents)
 }
 
+// documentBytesFor estimates one document's size without cloning it, for
+// tenant usage bookkeeping paths that only need the number.
+func (c *Collection) documentBytesFor(id uint64) (int64, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	doc, ok := c.documents[id]
+	if !ok || doc == nil {
+		return 0, false
+	}
+	return documentBytes(doc), true
+}
+
+// documentBytesTotal sums documentBytes across every document in the
+// collection, for tenant usage bookkeeping.
+func (c *Collection) documentBytesTotal() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var total int64
+	for _, doc := range c.documents {
+		if doc == nil {
+			continue
+		}
+		total += documentBytes(doc)
+	}
+	return total
+}
+
 // Schema returns the collection schema.
 func (c *Collection) Schema() CollectionSchema {
 	c.mu.RLock()

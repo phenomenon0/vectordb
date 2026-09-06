@@ -52,6 +52,13 @@ var (
 type StoreLimits struct {
 	MaxTenants     int
 	MaxCollections int
+
+	// MaxTenantDocuments, MaxTenantBytes and MaxTenantCollections are the
+	// server-wide per-tenant quota defaults (0 = unlimited). A tenant
+	// record's own TenantQuota overrides these per field when it is positive.
+	MaxTenantDocuments   int64
+	MaxTenantBytes       int64
+	MaxTenantCollections int64
 }
 
 func (limits StoreLimits) validateRequired() error {
