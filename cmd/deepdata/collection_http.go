@@ -317,24 +317,23 @@ func (s *CollectionHTTPServer) TenantManager() *vcollection.TenantManager {
 // RegisterCanonicalHandlers exposes only the tenant-aware RC contract. Legacy
 // V2, bulk import, recommend, and discover handlers are deliberately absent.
 func (s *CollectionHTTPServer) RegisterCanonicalHandlers(mux *http.ServeMux, guard func(http.HandlerFunc) http.HandlerFunc) {
-	mux.HandleFunc("/v3/tenants/", guard(instrumentCanonicalHTTP(s.canonicalPersistenceGuarded(s.handleTenantRoutes))))
-	mux.HandleFunc("/v3/tenants", guard(instrumentCanonicalHTTP(s.canonicalPersistenceGuarded(s.handleTenantsRoot))))
+	mux.HandleFunc("/v3/tenants/", instrumentCanonicalHTTP(guard(s.canonicalPersistenceGuarded(s.handleTenantRoutes))))
+	mux.HandleFunc("/v3/tenants", instrumentCanonicalHTTP(guard(s.canonicalPersistenceGuarded(s.handleTenantsRoot))))
 }
 
-// instrumentCanonicalHTTP wraps a canonical V3 handler with per-tenant
-// request metrics (status, latency, tenant, normalized operation). It sits
-// inside guard, so the tenant context guard resolved is already on r.
+// instrumentCanonicalHTTP wraps a canonical V3 route, guard included, with
+// per-tenant request metrics (status, latency, tenant, normalized
+// operation). It sits outside guard, not inside, so an auth or rate-limit
+// rejection -- which returns before ever calling its wrapped handler --
+// still reports a sample: guard sets rw.tenant once it resolves the caller's
+// tenant, and the "unknown" it's created with otherwise stands for a
+// rejection that happened before that point.
 func instrumentCanonicalHTTP(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK, tenant: "unknown"}
 		start := time.Now()
 		next(rw, r)
-
-		tenant := "unknown"
-		if tenantCtx, ok := security.GetTenantContextFromContext(r.Context()); ok && tenantCtx != nil {
-			tenant = canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
-		}
-		globalMetrics.RecordTenantRequest("http", tenant, normalizeMetricsPath(r.URL.Path), strconv.Itoa(rw.statusCode), time.Since(start))
+		globalMetrics.RecordTenantRequest("http", rw.tenant, normalizeMetricsPath(r.URL.Path), strconv.Itoa(rw.statusCode), time.Since(start))
 	}
 }
 

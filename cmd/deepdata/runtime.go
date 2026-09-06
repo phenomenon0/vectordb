@@ -213,8 +213,18 @@ func (rt *serverRuntime) httpGuard() func(http.HandlerFunc) http.HandlerFunc {
 				}
 			}
 
+			tenantKey := canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
+			// instrumentCanonicalHTTP wraps the canonical V3 routes' w in a
+			// *responseWriter and reads rw.tenant once we return; setting it
+			// as soon as the tenant is resolved (a no-op for /metrics and
+			// /v3/status, whose w isn't one) is what makes a tenant-rate-limit
+			// rejection below still report its real tenant instead of the
+			// "unknown" the auth failures above leave in place.
+			if rw, ok := w.(*responseWriter); ok {
+				rw.tenant = tenantKey
+			}
+
 			if rt.canonicalTenantRL != nil {
-				tenantKey := canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
 				if !rt.canonicalTenantRL.allow(tenantKey) {
 					apierror.WriteHTTP(w, apierror.New(apierror.CodeRateLimited, "tenant rate limited"))
 					return

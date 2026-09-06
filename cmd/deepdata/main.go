@@ -487,6 +487,19 @@ func grpcAuthInterceptorWithRateLimiters(
 	authFailureLimiter *authFailureLimiter,
 ) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		tenant := "unknown"
+		var start time.Time
+		// Records the per-tenant metric even when handler panics: this defer
+		// is registered before the panic-recovery defer below, so per Go's
+		// LIFO defer order it runs after recover has finalized err, not
+		// before. start stays zero (metric unrecorded) for the auth/rate-limit
+		// rejections below that return before ever calling handler.
+		defer func() {
+			if !start.IsZero() {
+				globalMetrics.RecordTenantRequest("grpc", tenant, info.FullMethod, status.Code(err).String(), time.Since(start))
+			}
+		}()
+
 		// Panic recovery — same as before, prevents crashes from taking down the process
 		defer func() {
 			if r := recover(); r != nil {
@@ -588,13 +601,11 @@ func grpcAuthInterceptorWithRateLimiters(
 
 		ctx = context.WithValue(ctx, security.TenantContextKey, tenantCtx)
 
-		tenant := "unknown"
 		if request, ok := req.(interface{ GetTenantId() string }); ok {
 			tenant = canonicalRateLimitTenant(tenantCtx, request.GetTenantId())
 		}
-		start := time.Now()
+		start = time.Now()
 		resp, err = handler(ctx, req)
-		globalMetrics.RecordTenantRequest("grpc", tenant, info.FullMethod, status.Code(err).String(), time.Since(start))
 		return resp, err
 	}
 }

@@ -111,10 +111,15 @@ func (mc *MetricsCollector) RefreshTenantUsage(infos []vcollection.TenantInfo) {
 	}
 }
 
-// responseWriter wraps http.ResponseWriter to capture status code
+// responseWriter wraps http.ResponseWriter to capture the status code and,
+// for the canonical V3 surface, the tenant guard resolved (see
+// instrumentCanonicalHTTP): guard runs inside this wrapper, so it can set
+// rw.tenant even on an early auth/rate-limit rejection that never reaches
+// the wrapped handler.
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
+	tenant     string
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
