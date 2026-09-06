@@ -35,45 +35,46 @@ scrape_configs:
 
 ## What the binary emits
 
-`/metrics` serves a private registry (`cmd/deepdata/metrics.go:52`, handler
-`:212-214`); Go runtime metrics are not on it. Fifteen `vectordb_*` families
-are registered (`cmd/deepdata/metrics.go:190-206`) and none has a writer:
-the two HTTP families were fed by `withMetrics`, which wrapped the legacy
-root routes deleted together with the v1 engine, and the canonical V3
-handler is registered with `guard` alone. A scrape therefore returns the
-registered families with no samples.
+`/metrics` serves a private registry (`cmd/deepdata/metrics.go:33`, handler
+`:86-88`) with four `vectordb_tenant_*` families, every one labelled by
+tenant:
 
-Instrumenting the V3 handlers is future work and is not tracked by a gate.
+- `vectordb_tenant_requests_total{transport,tenant,operation,code}` — a
+  counter, incremented once per completed request.
+- `vectordb_tenant_request_duration_seconds{transport,tenant,operation}` —
+  a histogram (default buckets) observed on the same request.
+- `vectordb_tenant_documents{tenant}` and `vectordb_tenant_bytes{tenant}` —
+  gauges holding the tenant's current usage.
+
+The counter and histogram are written by `RecordTenantRequest`
+(`cmd/deepdata/metrics.go:92-98`), called from both transports:
+`instrumentCanonicalHTTP` wraps every canonical V3 HTTP handler
+(`cmd/deepdata/collection_http.go:327-339`), and the gRPC unary interceptor
+times and records every call (`cmd/deepdata/main.go:591-597`). `tenant` is
+`canonicalRateLimitTenant(tenantCtx, target)` — the caller's own tenant, or
+the addressed tenant only when the caller is a server admin — never the raw
+path/request segment, so one tenant's credentials can't attribute load to
+another tenant's label; it is `"unknown"` when no tenant context resolved.
+`operation` is `normalizeMetricsPath(path)` for HTTP or `info.FullMethod` for
+gRPC, which collapses the `{tenant}`, `{collection}` and `{doc_id}` path
+segments to `:id`, `:name` and `:doc_id` so cardinality tracks route shape,
+not tenant or document count.
+
+The two gauges are written by `RefreshTenantUsage`
+(`cmd/deepdata/metrics.go:102-112`), which resets both and re-sets them from
+`TenantManager.ListTenantInfos()` on every scrape
+(`cmd/deepdata/server.go:120-127`; `// ponytail: O(tenants) per scrape`).
+
+Go runtime metrics are not on this registry.
 
 ## Dashboard
 
-No dashboard JSON ships in this directory. The one that used to live here
-kept only panels reading `vectordb_http_requests_total` and
-`vectordb_http_request_duration_seconds`; once nothing wrote those families
-every panel read "No data", and linter rule R9 (`scripts/check_docs_contract.py`,
-the command of gate DOC-01 in `tasks/gates.json`) rejects a panel whose family
-no reachable code writes. `.github/workflows/ci.yml` runs that script in the
-Linux RC Go contract job, so a dashboard has to wait for the V3 handlers to
-be instrumented.
-
-## Declared but not emitted
-
-Every family in `cmd/deepdata/metrics.go` is registered and has no writer,
-so none carries samples in the exposition:
-
-- `vectordb_http_requests_total`, `vectordb_http_request_duration_seconds`
-  (`:169-183`; the `RecordHTTPRequest`/`withMetrics` writers went with the
-  v1 root routes)
-- `vectordb_vectors_total`, `vectordb_vectors_deleted` (`:58-72`)
-- `vectordb_operations_total`, `vectordb_operation_duration_seconds`,
-  `vectordb_operation_errors_total` (`:74-97`)
-- `vectordb_query_duration_seconds`, `vectordb_query_results`,
-  `vectordb_query_shards_fanout` (`:100-125`)
-- `vectordb_shard_health_status`, `vectordb_shard_replication_lag_operations`,
-  `vectordb_shard_nodes`, `vectordb_failover_total`,
-  `vectordb_failover_duration_seconds` (`:128-168`). Sharding,
-  replication and failover are non-goals of the RC; these families are not
-  served and must not be used to claim distributed health.
+No dashboard JSON ships in this directory. A dashboard added here must only
+read the four `vectordb_tenant_*` families above: linter rule R9
+(`scripts/check_docs_contract.py`, the command of gate DOC-01 in
+`tasks/gates.json`) rejects a panel whose family isn't declared and written
+from reachable code in `cmd/deepdata/metrics.go`. `.github/workflows/ci.yml`
+runs that script in the Linux RC Go contract job.
 
 The `deepdata_*` families in `internal/telemetry/metrics.go` are registered
 on the default Prometheus registry (`internal/telemetry/metrics.go:78`), which

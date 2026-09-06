@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
@@ -316,8 +317,25 @@ func (s *CollectionHTTPServer) TenantManager() *vcollection.TenantManager {
 // RegisterCanonicalHandlers exposes only the tenant-aware RC contract. Legacy
 // V2, bulk import, recommend, and discover handlers are deliberately absent.
 func (s *CollectionHTTPServer) RegisterCanonicalHandlers(mux *http.ServeMux, guard func(http.HandlerFunc) http.HandlerFunc) {
-	mux.HandleFunc("/v3/tenants/", guard(s.canonicalPersistenceGuarded(s.handleTenantRoutes)))
-	mux.HandleFunc("/v3/tenants", guard(s.canonicalPersistenceGuarded(s.handleTenantsRoot)))
+	mux.HandleFunc("/v3/tenants/", guard(instrumentCanonicalHTTP(s.canonicalPersistenceGuarded(s.handleTenantRoutes))))
+	mux.HandleFunc("/v3/tenants", guard(instrumentCanonicalHTTP(s.canonicalPersistenceGuarded(s.handleTenantsRoot))))
+}
+
+// instrumentCanonicalHTTP wraps a canonical V3 handler with per-tenant
+// request metrics (status, latency, tenant, normalized operation). It sits
+// inside guard, so the tenant context guard resolved is already on r.
+func instrumentCanonicalHTTP(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		start := time.Now()
+		next(rw, r)
+
+		tenant := "unknown"
+		if tenantCtx, ok := security.GetTenantContextFromContext(r.Context()); ok && tenantCtx != nil {
+			tenant = canonicalRateLimitTenant(tenantCtx, canonicalTenantIDFromPath(r.URL.Path))
+		}
+		globalMetrics.RecordTenantRequest("http", tenant, normalizeMetricsPath(r.URL.Path), strconv.Itoa(rw.statusCode), time.Since(start))
+	}
 }
 
 // canonicalPersistenceGuarded wraps a tenant handler with the durability and

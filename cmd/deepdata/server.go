@@ -117,7 +117,15 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 	// but unlike probes they can leak request-volume/operation detail, so they
 	// are gated behind the same guard used for API routes when REQUIRE_AUTH is
 	// on. In credentialless dev mode the guard authorizes anonymous access.
-	mux.Handle("/metrics", guard(globalMetrics.Handler().ServeHTTP))
+	mux.Handle("/metrics", guard(func(w http.ResponseWriter, r *http.Request) {
+		if collectionHTTP != nil {
+			// ponytail: O(tenants) per scrape
+			if infos, err := collectionHTTP.TenantManager().ListTenantInfos(); err == nil {
+				globalMetrics.RefreshTenantUsage(infos)
+			}
+		}
+		globalMetrics.Handler().ServeHTTP(w, r)
+	}))
 
 	// GET /v3/status — the server describing itself: version, the operation
 	// list, the embedder it will use, its limits and its capabilities. It

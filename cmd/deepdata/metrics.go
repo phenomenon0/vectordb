@@ -4,9 +4,12 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 )
 
 // ===========================================================================================
@@ -19,30 +22,11 @@ type MetricsCollector struct {
 	mu       sync.RWMutex
 	registry *prometheus.Registry
 
-	// Vector operations
-	vectorsTotal        *prometheus.GaugeVec
-	vectorsDeleted      *prometheus.GaugeVec
-	operationsTotal     *prometheus.CounterVec
-	operationDuration   *prometheus.HistogramVec
-	operationErrors     *prometheus.CounterVec
-
-	// Query performance
-	queryLatency        *prometheus.HistogramVec
-	queryResultsTotal   *prometheus.HistogramVec
-	queryShardsFanout   *prometheus.HistogramVec
-
-	// Shard health
-	shardHealthStatus   *prometheus.GaugeVec
-	shardReplicationLag *prometheus.GaugeVec
-	shardNodeCount      *prometheus.GaugeVec
-
-	// Failover
-	failoverTotal       *prometheus.CounterVec
-	failoverDuration    *prometheus.HistogramVec
-
-	// HTTP
-	httpRequestsTotal   *prometheus.CounterVec
-	httpRequestDuration *prometheus.HistogramVec
+	// Per-tenant request accounting (HTTP + gRPC)
+	tenantRequestsTotal   *prometheus.CounterVec
+	tenantRequestDuration *prometheus.HistogramVec
+	tenantDocuments       *prometheus.GaugeVec
+	tenantBytes           *prometheus.GaugeVec
 }
 
 // NewMetricsCollector creates a new metrics collector
@@ -52,155 +36,47 @@ func NewMetricsCollector() *MetricsCollector {
 	mc := &MetricsCollector{
 		registry: registry,
 
-		// Vector metrics
-		vectorsTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "vectordb_vectors_total",
-				Help: "Total number of vectors stored",
-			},
-			[]string{"shard_id", "collection", "node_id"},
-		),
-
-		vectorsDeleted: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "vectordb_vectors_deleted",
-				Help: "Number of deleted vectors (tombstones)",
-			},
-			[]string{"shard_id", "collection", "node_id"},
-		),
-
-		operationsTotal: prometheus.NewCounterVec(
+		// ponytail: label cardinality = tenants x operations x codes; add a tenant allow-list if scrapes get slow
+		tenantRequestsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "vectordb_operations_total",
-				Help: "Total number of operations",
+				Name: "vectordb_tenant_requests_total",
+				Help: "Total requests per tenant",
 			},
-			[]string{"operation", "shard_id", "status"},
+			[]string{"transport", "tenant", "operation", "code"},
 		),
 
-		operationDuration: prometheus.NewHistogramVec(
+		tenantRequestDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "vectordb_operation_duration_seconds",
-				Help:    "Duration of vectordb operations",
-				Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms to ~32s
-			},
-			[]string{"operation", "shard_id"},
-		),
-
-		operationErrors: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "vectordb_operation_errors_total",
-				Help: "Total number of operation errors",
-			},
-			[]string{"operation", "shard_id", "error_type"},
-		),
-
-		// Query metrics
-		queryLatency: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "vectordb_query_duration_seconds",
-				Help:    "Query latency in seconds",
-				Buckets: prometheus.ExponentialBuckets(0.01, 2, 12), // 10ms to ~40s
-			},
-			[]string{"mode", "collections"},
-		),
-
-		queryResultsTotal: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "vectordb_query_results",
-				Help:    "Number of results returned per query",
-				Buckets: []float64{1, 5, 10, 20, 50, 100, 500, 1000},
-			},
-			[]string{"mode"},
-		),
-
-		queryShardsFanout: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "vectordb_query_shards_fanout",
-				Help:    "Number of shards queried per request",
-				Buckets: []float64{1, 2, 3, 5, 10, 20, 50, 100},
-			},
-			[]string{"mode"},
-		),
-
-		// Shard health metrics
-		shardHealthStatus: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "vectordb_shard_health_status",
-				Help: "Shard node health status (1=healthy, 0=unhealthy)",
-			},
-			[]string{"shard_id", "node_id", "role"},
-		),
-
-		shardReplicationLag: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "vectordb_shard_replication_lag_operations",
-				Help: "Number of operations replica is behind primary",
-			},
-			[]string{"shard_id", "node_id"},
-		),
-
-		shardNodeCount: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "vectordb_shard_nodes",
-				Help: "Number of nodes per shard",
-			},
-			[]string{"shard_id", "role"},
-		),
-
-		// Failover metrics
-		failoverTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "vectordb_failover_total",
-				Help: "Total number of failovers",
-			},
-			[]string{"shard_id", "status"},
-		),
-
-		failoverDuration: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "vectordb_failover_duration_seconds",
-				Help:    "Duration of failover operations",
-				Buckets: []float64{1, 5, 10, 30, 60, 120, 300},
-			},
-			[]string{"shard_id"},
-		),
-
-		// HTTP metrics
-		httpRequestsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "vectordb_http_requests_total",
-				Help: "Total HTTP requests",
-			},
-			[]string{"method", "endpoint", "status"},
-		),
-
-		httpRequestDuration: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "vectordb_http_request_duration_seconds",
-				Help:    "HTTP request duration",
+				Name:    "vectordb_tenant_request_duration_seconds",
+				Help:    "Request duration per tenant",
 				Buckets: prometheus.DefBuckets,
 			},
-			[]string{"method", "endpoint"},
+			[]string{"transport", "tenant", "operation"},
+		),
+
+		tenantDocuments: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "vectordb_tenant_documents",
+				Help: "Document count per tenant",
+			},
+			[]string{"tenant"},
+		),
+
+		tenantBytes: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "vectordb_tenant_bytes",
+				Help: "Storage bytes per tenant",
+			},
+			[]string{"tenant"},
 		),
 	}
 
 	// Register all metrics
 	registry.MustRegister(
-		mc.vectorsTotal,
-		mc.vectorsDeleted,
-		mc.operationsTotal,
-		mc.operationDuration,
-		mc.operationErrors,
-		mc.queryLatency,
-		mc.queryResultsTotal,
-		mc.queryShardsFanout,
-		mc.shardHealthStatus,
-		mc.shardReplicationLag,
-		mc.shardNodeCount,
-		mc.failoverTotal,
-		mc.failoverDuration,
-		mc.httpRequestsTotal,
-		mc.httpRequestDuration,
+		mc.tenantRequestsTotal,
+		mc.tenantRequestDuration,
+		mc.tenantDocuments,
+		mc.tenantBytes,
 	)
 
 	return mc
@@ -211,10 +87,39 @@ func (mc *MetricsCollector) Handler() http.Handler {
 	return promhttp.HandlerFor(mc.registry, promhttp.HandlerOpts{})
 }
 
+// RecordTenantRequest records one completed request's outcome and latency
+// for a tenant. Safe to call on a nil receiver (metrics are best-effort).
+func (mc *MetricsCollector) RecordTenantRequest(transport, tenant, operation, code string, elapsed time.Duration) {
+	if mc == nil {
+		return
+	}
+	mc.tenantRequestsTotal.WithLabelValues(transport, tenant, operation, code).Inc()
+	mc.tenantRequestDuration.WithLabelValues(transport, tenant, operation).Observe(elapsed.Seconds())
+}
+
+// RefreshTenantUsage replaces the tenant usage gauges with the current
+// snapshot, so a tenant deleted since the last scrape doesn't linger.
+func (mc *MetricsCollector) RefreshTenantUsage(infos []vcollection.TenantInfo) {
+	if mc == nil {
+		return
+	}
+	mc.tenantDocuments.Reset()
+	mc.tenantBytes.Reset()
+	for _, info := range infos {
+		mc.tenantDocuments.WithLabelValues(info.TenantID).Set(float64(info.Usage.Documents))
+		mc.tenantBytes.WithLabelValues(info.TenantID).Set(float64(info.Usage.Bytes))
+	}
+}
+
 // responseWriter wraps http.ResponseWriter to capture status code
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
 // ===========================================================================================
@@ -228,7 +133,8 @@ func initMetrics() {
 	globalMetrics = NewMetricsCollector()
 }
 
-// normalizeMetricsPath is retained for contract_test.go coverage.
+// normalizeMetricsPath replaces dynamic path segments with placeholders to
+// prevent unbounded Prometheus label cardinality.
 func normalizeMetricsPath(path string) string {
 	// Fast path for v1 endpoints (no dynamic segments)
 	if !strings.Contains(path, "/v2/") && !strings.Contains(path, "/v3/") {
@@ -247,6 +153,11 @@ func normalizeMetricsPath(path string) string {
 		// /v3/tenants/{id}/... → /v3/tenants/:id/...
 		if i >= 3 && len(parts) > 2 && parts[i-1] == "tenants" {
 			parts[i] = ":id"
+		}
+		// /v3/tenants/{id}/collections/{name}/docs/{doc_id} → .../docs/:doc_id
+		// "batch" is a literal sub-route (fixed set of operations), not a document ID.
+		if i >= 3 && len(parts) > 2 && parts[i-1] == "docs" && part != "batch" {
+			parts[i] = ":doc_id"
 		}
 	}
 	return strings.Join(parts, "/")

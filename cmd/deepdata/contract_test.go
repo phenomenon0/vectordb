@@ -491,6 +491,12 @@ func TestStatusIsOnTheCanonicalSurfaceAndMetricsPath(t *testing.T) {
 	if got := normalizeMetricsPath("/v3/status"); got != "/v3/status" {
 		t.Errorf("normalizeMetricsPath(/v3/status) = %q", got)
 	}
+	if got, want := normalizeMetricsPath("/v3/tenants"), "/v3/tenants"; got != want {
+		t.Errorf("normalizeMetricsPath(/v3/tenants) = %q, want %q", got, want)
+	}
+	if got, want := normalizeMetricsPath("/v3/tenants/acme/collections/docs/docs/1"), "/v3/tenants/:id/collections/:name/docs/:doc_id"; got != want {
+		t.Errorf("normalizeMetricsPath(doc id path) = %q, want %q", got, want)
+	}
 	handler := newCanonicalSurfaceTestHandler(t)
 	req := httptest.NewRequest(http.MethodPost, "/v3/status", nil)
 	resp := httptest.NewRecorder()

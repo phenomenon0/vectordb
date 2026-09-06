@@ -26,6 +26,7 @@ import (
 	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"net"
 )
@@ -586,6 +587,14 @@ func grpcAuthInterceptorWithRateLimiters(
 		}
 
 		ctx = context.WithValue(ctx, security.TenantContextKey, tenantCtx)
-		return handler(ctx, req)
+
+		tenant := "unknown"
+		if request, ok := req.(interface{ GetTenantId() string }); ok {
+			tenant = canonicalRateLimitTenant(tenantCtx, request.GetTenantId())
+		}
+		start := time.Now()
+		resp, err = handler(ctx, req)
+		globalMetrics.RecordTenantRequest("grpc", tenant, info.FullMethod, status.Code(err).String(), time.Since(start))
+		return resp, err
 	}
 }
