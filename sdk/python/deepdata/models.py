@@ -476,7 +476,13 @@ class TenantCollectionStats(_TenantResponseModel):
 
 class TenantQuota(_TenantRequestModel):
     """Administrator-set resource ceilings for a tenant. A zero field means
-    server default / unlimited."""
+    server default / unlimited.
+
+    Also embedded in tenant response models (``TenantSummary``), so unknown
+    keys are ignored to survive additive server fields.
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True)
 
     max_documents: int = Field(default=0, ge=0)
     max_bytes: int = Field(default=0, ge=0)

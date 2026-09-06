@@ -1154,3 +1154,18 @@ class TestTenantV3Async:
             }
             assert _body(update) == {"status": "suspended"}
             assert listing.call_count == delete.call_count == info.call_count == 1
+
+    async def test_tenant_lifecycle_forbidden_maps_to_permission_error(self) -> None:
+        with respx.mock:
+            respx.post(f"{BASE}/v3/tenants").mock(
+                return_value=httpx.Response(
+                    403,
+                    json={
+                        "code": "permission_denied",
+                        "message": "server admin token required",
+                    },
+                )
+            )
+            async with AsyncDeepDataClient(BASE, retry=None) as client:
+                with pytest.raises(DeepDataPermissionError):
+                    await client.tenant(TENANT).create()
