@@ -24,8 +24,8 @@ configuration, per-verb arguments and the error shape: [docs/mcp.md](docs/mcp.md
 `deepdata.v3.DeepData` exposes 15 unary RPCs: `GetTenantInfo`, `CreateTenant`, `ListTenants`, `UpdateTenant`, `DeleteTenant`, `ListCollections`, `GetCollection`, `CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `Search`, `DeleteDoc`, `Upsert`, `GetDoc`.
 <!-- /generated -->
 
-Eight of them are mutations (`CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `DeleteDoc`, `Upsert`,
-`CreateTenant`, `DeleteTenant`) and all eight go through one durable journal. Proto: [api/proto/deepdata/v3/deepdata.proto](api/proto/deepdata/v3/deepdata.proto).
+Nine of them are mutations (`CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `DeleteDoc`, `Upsert`,
+`CreateTenant`, `UpdateTenant`, `DeleteTenant`) and all nine go through one durable journal. Proto: [api/proto/deepdata/v3/deepdata.proto](api/proto/deepdata/v3/deepdata.proto).
 HTTP routes, listed in [api/contract/v3/operations.json](api/contract/v3/operations.json) and dispatched in
 `cmd/deepdata/collection_http.go:389-514`. `go run ./cmd/deepdata routes` prints the same table, and
 `GET /v3/status` returns it alongside the server's version, embedder, limits and capabilities:
