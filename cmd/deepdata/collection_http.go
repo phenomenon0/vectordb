@@ -741,27 +741,21 @@ func (s *CollectionHTTPServer) handleTenantsRoot(w http.ResponseWriter, r *http.
 	}
 }
 
-// tenantRecordBody is the wire shape of a tenant lifecycle request body: the
-// fields TenantRecord validates, decoded the way handleTenantCreateCollection
-// decodes its schema body.
-type tenantRecordBody struct {
-	TenantID string                  `json:"tenant_id"`
-	Status   string                  `json:"status"`
-	Quota    vcollection.TenantQuota `json:"quota"`
-}
-
-func decodeTenantRecordBody(w http.ResponseWriter, r *http.Request) (tenantRecordBody, bool) {
+// decodeTenantRecordBody decodes a tenant lifecycle request body directly
+// into the domain type, the way handleTenantCreateCollection decodes its
+// schema body.
+func decodeTenantRecordBody(w http.ResponseWriter, r *http.Request) (vcollection.TenantRecord, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, limitInsertBody)
-	var body tenantRecordBody
+	var body vcollection.TenantRecord
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
-		return tenantRecordBody{}, false
+		return vcollection.TenantRecord{}, false
 	}
 	if err := ensureJSONEOF(dec); err != nil {
 		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
-		return tenantRecordBody{}, false
+		return vcollection.TenantRecord{}, false
 	}
 	return body, true
 }
@@ -770,18 +764,17 @@ func decodeTenantRecordBody(w http.ResponseWriter, r *http.Request) (tenantRecor
 // the body defaults to active — the common case is provisioning a tenant
 // ready for immediate use, not a pre-suspended one.
 func (s *CollectionHTTPServer) handleTenantCreate(w http.ResponseWriter, r *http.Request) {
-	body, ok := decodeTenantRecordBody(w, r)
+	rec, ok := decodeTenantRecordBody(w, r)
 	if !ok {
 		return
 	}
-	if !isValidTenantID(body.TenantID) {
+	if !isValidTenantID(rec.TenantID) {
 		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "invalid tenant ID: must be 1-64 alphanumeric/hyphen/underscore characters"))
 		return
 	}
-	if body.Status == "" {
-		body.Status = vcollection.TenantStatusActive
+	if rec.Status == "" {
+		rec.Status = vcollection.TenantStatusActive
 	}
-	rec := vcollection.TenantRecord{TenantID: body.TenantID, Status: body.Status, Quota: body.Quota}
 	if err := s.tenantManager.CreateTenant(r.Context(), rec); err != nil {
 		writeCanonicalOperationError(w, err, apierror.CodeInvalidArgument)
 		return
@@ -799,11 +792,11 @@ func (s *CollectionHTTPServer) handleTenantCreate(w http.ResponseWriter, r *http
 // creates it (TenantManager.UpdateTenant), so this is also how a caller
 // reactivates or suspends an existing tenant.
 func (s *CollectionHTTPServer) handleTenantUpdate(w http.ResponseWriter, r *http.Request, tenantID string) {
-	body, ok := decodeTenantRecordBody(w, r)
+	rec, ok := decodeTenantRecordBody(w, r)
 	if !ok {
 		return
 	}
-	rec := vcollection.TenantRecord{TenantID: tenantID, Status: body.Status, Quota: body.Quota}
+	rec.TenantID = tenantID
 	if err := s.tenantManager.UpdateTenant(r.Context(), rec); err != nil {
 		writeCanonicalOperationError(w, err, apierror.CodeInvalidArgument)
 		return
