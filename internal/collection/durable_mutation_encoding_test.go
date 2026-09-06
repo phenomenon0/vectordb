@@ -36,6 +36,10 @@ func legacyEncodeDurableMutationReference(t *testing.T, m canonicalMutation, ver
 		payload = durableUpsertDocument{TenantID: m.tenantID, CollectionName: m.collectionName, Document: m.documents[0]}
 	case mutationDeleteDocument:
 		payload = durableDeleteDocument{TenantID: m.tenantID, CollectionName: m.collectionName, DocumentID: m.documentID}
+	case mutationCreateTenant, mutationUpdateTenant:
+		payload = m.record
+	case mutationDeleteTenant:
+		payload = durableTenantTarget{TenantID: m.tenantID}
 	default:
 		t.Fatalf("reference encoder: unknown mutation type %q", m.typeName)
 	}
@@ -216,6 +220,46 @@ func TestDurableMutationEncodingSinglePassMatchesLegacyBytes(t *testing.T) {
 			verify: func(t *testing.T, decoded canonicalMutation) {
 				if decoded.version != durableCollectionMutationVersionV1 {
 					t.Fatalf("decoded version = %d, want v1 passthrough", decoded.version)
+				}
+			},
+		},
+		{
+			name:    "create tenant",
+			version: durableCollectionMutationVersion,
+			before: canonicalMutation{
+				typeName: mutationCreateTenant, tenantID: "tenant-a",
+				record: TenantRecord{TenantID: "tenant-a", Status: TenantStatusActive, Quota: TenantQuota{MaxDocuments: 100}},
+			},
+			verify: func(t *testing.T, decoded canonicalMutation) {
+				want := TenantRecord{TenantID: "tenant-a", Status: TenantStatusActive, Quota: TenantQuota{MaxDocuments: 100}}
+				if decoded.record != want {
+					t.Fatalf("decoded record = %+v, want %+v", decoded.record, want)
+				}
+			},
+		},
+		{
+			name:    "update tenant",
+			version: durableCollectionMutationVersion,
+			before: canonicalMutation{
+				typeName: mutationUpdateTenant, tenantID: "tenant-a",
+				record: TenantRecord{TenantID: "tenant-a", Status: TenantStatusSuspended},
+			},
+			verify: func(t *testing.T, decoded canonicalMutation) {
+				want := TenantRecord{TenantID: "tenant-a", Status: TenantStatusSuspended}
+				if decoded.record != want {
+					t.Fatalf("decoded record = %+v, want %+v", decoded.record, want)
+				}
+			},
+		},
+		{
+			name:    "delete tenant",
+			version: durableCollectionMutationVersion,
+			before: canonicalMutation{
+				typeName: mutationDeleteTenant, tenantID: "tenant-a",
+			},
+			verify: func(t *testing.T, decoded canonicalMutation) {
+				if decoded.tenantID != "tenant-a" {
+					t.Fatalf("decoded tenant id = %q, want tenant-a", decoded.tenantID)
 				}
 			},
 		},

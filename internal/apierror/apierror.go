@@ -110,9 +110,16 @@ func FromEngine(err error, fallback string) *Error {
 		e := New(CodePermissionDenied, err.Error())
 		e.Hint = "this node serves a read replica directory and never accepts writes; send them to the leader it follows"
 		return e
-	case errors.Is(err, vcollection.ErrCollectionNotFound), errors.Is(err, vcollection.ErrDocumentNotFound):
+	case errors.Is(err, vcollection.ErrTenantSuspended):
+		// The generic permission_denied hint tells the caller to mint a
+		// different token; no token fixes a suspended tenant, only an admin
+		// reactivating it does.
+		e := New(CodePermissionDenied, err.Error())
+		e.Hint = "the tenant is suspended; a server administrator reactivates it with PUT /v3/tenants/{tenant}"
+		return e
+	case errors.Is(err, vcollection.ErrCollectionNotFound), errors.Is(err, vcollection.ErrDocumentNotFound), errors.Is(err, vcollection.ErrTenantNotFound):
 		return New(CodeNotFound, err.Error())
-	case errors.Is(err, vcollection.ErrCollectionExists), errors.Is(err, vcollection.ErrDocumentExists):
+	case errors.Is(err, vcollection.ErrCollectionExists), errors.Is(err, vcollection.ErrDocumentExists), errors.Is(err, vcollection.ErrTenantExists):
 		return New(CodeAlreadyExists, err.Error())
 	case errors.Is(err, vcollection.ErrTenantLimitExceeded), errors.Is(err, vcollection.ErrCollectionLimitExceeded):
 		return New(CodeQuotaExceeded, err.Error())

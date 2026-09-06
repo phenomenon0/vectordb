@@ -73,6 +73,8 @@ func TestErrorFromEngineClassifiesWrappedSentinels(t *testing.T) {
 		{fmt.Errorf("%w: document 0 ID 7", vcollection.ErrDocumentExists), CodeAlreadyExists},
 		{fmt.Errorf("create: %w", vcollection.ErrTenantLimitExceeded), CodeQuotaExceeded},
 		{fmt.Errorf("create: %w", vcollection.ErrCollectionLimitExceeded), CodeQuotaExceeded},
+		{fmt.Errorf("%w: acme", vcollection.ErrTenantNotFound), CodeNotFound},
+		{fmt.Errorf("%w: acme", vcollection.ErrTenantExists), CodeAlreadyExists},
 		{fmt.Errorf("search: %w", vcollection.ErrSearchResponseBudgetExceeded), CodePayloadTooLarge},
 		{fmt.Errorf("insert: %w", vcollection.ErrReplicaReadOnly), CodePermissionDenied},
 		{vcollection.ErrDurableStoreClosed, CodeUnavailable},
@@ -102,6 +104,16 @@ func TestErrorFromEngineClassifiesWrappedSentinels(t *testing.T) {
 	}
 	if HTTPStatus(replica.Code) != http.StatusForbidden || GRPCCode(replica.Code) != codes.PermissionDenied {
 		t.Errorf("replica refusal maps to %d/%v, want 403/PermissionDenied", HTTPStatus(replica.Code), GRPCCode(replica.Code))
+	}
+
+	// A suspended tenant needs an administrator, not a better credential, so
+	// it must not share the replica refusal's hint either.
+	suspended := FromEngine(vcollection.ErrTenantSuspended, CodeInternal)
+	if suspended.Hint == New(CodePermissionDenied, "m").Hint || suspended.Hint == replica.Hint {
+		t.Error("a suspended tenant must carry its own reactivation hint, not a generic or replica one")
+	}
+	if HTTPStatus(suspended.Code) != http.StatusForbidden || GRPCCode(suspended.Code) != codes.PermissionDenied {
+		t.Errorf("suspended tenant maps to %d/%v, want 403/PermissionDenied", HTTPStatus(suspended.Code), GRPCCode(suspended.Code))
 	}
 }
 

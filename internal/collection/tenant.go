@@ -16,9 +16,16 @@ import (
 // This is a lightweight namespace layer on top of CollectionManager — it does NOT
 // handle auth/RBAC (that's the security package's job).
 type TenantManager struct {
-	// mu protects the tenants map. Individual CollectionManagers have their own locks.
+	// mu protects the tenants and records maps. Individual CollectionManagers
+	// have their own locks.
 	mu      sync.RWMutex
 	tenants map[string]*CollectionManager
+
+	// records holds the administrator-visible tenant record (status, quota) for
+	// tenants that have one. A tenant can own collections without a record
+	// (legacy/implicit tenants) or hold a record with zero collections
+	// (provisioned-but-empty).
+	records map[string]TenantRecord
 
 	// storagePath base for persistence (future: each tenant gets storagePath/tenantID/)
 	storagePath string
@@ -32,6 +39,7 @@ type TenantManager struct {
 func NewTenantManager(storagePath string) *TenantManager {
 	return &TenantManager{
 		tenants:     make(map[string]*CollectionManager),
+		records:     make(map[string]TenantRecord),
 		storagePath: storagePath,
 	}
 }
@@ -75,6 +83,56 @@ func (tm *TenantManager) getManager(tenantID string) *CollectionManager {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 	return tm.tenants[tenantID]
+}
+
+// getTenantRecord returns the administrator record for a tenant, if any.
+func (tm *TenantManager) getTenantRecord(tenantID string) (TenantRecord, bool) {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	rec, ok := tm.records[tenantID]
+	return rec, ok
+}
+
+// putTenantRecordDirect stores a tenant record, ensuring the tenant also owns
+// a (possibly empty) CollectionManager so a record-only tenant is visible to
+// every map keyed by tm.tenants (list, count, prune).
+func (tm *TenantManager) putTenantRecordDirect(rec TenantRecord) {
+	tm.getOrCreateManager(rec.TenantID)
+	tm.mu.Lock()
+	tm.records[rec.TenantID] = rec
+	tm.mu.Unlock()
+}
+
+// deleteTenantDirect removes every collection owned by a tenant, then its
+// record and manager. Used only behind DurableStore's global mutation lock.
+func (tm *TenantManager) deleteTenantDirect(ctx context.Context, tenantID string) error {
+	for _, name := range tm.listCollectionsDirect(tenantID) {
+		if err := tm.deleteCollectionDirect(ctx, tenantID, name); err != nil {
+			return err
+		}
+	}
+	tm.mu.Lock()
+	delete(tm.records, tenantID)
+	delete(tm.tenants, tenantID)
+	tm.mu.Unlock()
+	return nil
+}
+
+// tenantActive reports whether a tenant holds a MaxTenants admission slot: it
+// has a record, or its manager owns at least one collection.
+func (tm *TenantManager) tenantActive(tenantID string) bool {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	return tm.tenantActiveLocked(tenantID)
+}
+
+// tenantActiveLocked is tenantActive for callers already holding tm.mu.
+func (tm *TenantManager) tenantActiveLocked(tenantID string) bool {
+	if _, ok := tm.records[tenantID]; ok {
+		return true
+	}
+	manager := tm.tenants[tenantID]
+	return manager != nil && manager.CollectionCount() > 0
 }
 
 // CreateCollection creates a new collection for a tenant.
@@ -316,6 +374,24 @@ func (tm *TenantManager) GetDocument(tenantID, collectionName string, docID uint
 	return doc, true
 }
 
+// GetDocumentChecked is GetDocument's error-returning form; on a durable
+// store a suspended tenant surfaces ErrTenantSuspended instead of a bare
+// not-found. Use this over GetDocument when the caller needs to distinguish
+// the two.
+func (tm *TenantManager) GetDocumentChecked(tenantID, collectionName string, docID uint64) (*Document, error) {
+	if store := tm.durableStore(); store != nil {
+		return store.getDocumentChecked(tenantID, collectionName, docID)
+	}
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant ID cannot be empty")
+	}
+	mgr := tm.getManager(tenantID)
+	if mgr == nil {
+		return nil, fmt.Errorf("%w: %s for tenant %s", ErrCollectionNotFound, collectionName, tenantID)
+	}
+	return mgr.GetDocument(collectionName, docID)
+}
+
 // ListTenants is the compatibility no-error form. Callers must use
 // ListTenantsChecked so a fault cannot be mistaken for an empty tenant set.
 func (tm *TenantManager) ListTenants() []string {
@@ -372,10 +448,9 @@ func (tm *TenantManager) tenantCountDirect() int {
 func (tm *TenantManager) resourceCounts() (activeTenants, collections int) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
-	for _, manager := range tm.tenants {
-		count := manager.CollectionCount()
-		collections += count
-		if count > 0 {
+	for tenantID, manager := range tm.tenants {
+		collections += manager.CollectionCount()
+		if tm.tenantActiveLocked(tenantID) {
 			activeTenants++
 		}
 	}
@@ -384,23 +459,52 @@ func (tm *TenantManager) resourceCounts() (activeTenants, collections int) {
 
 // pruneEmptyManager is used only behind DurableStore's global mutation lock,
 // so no canonical create can retain the manager pointer while it is removed.
+// A tenant with a record stays even with zero collections: it still holds a
+// MaxTenants admission slot.
 func (tm *TenantManager) pruneEmptyManager(tenantID string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	manager := tm.tenants[tenantID]
-	if manager != nil && manager.CollectionCount() == 0 {
-		delete(tm.tenants, tenantID)
+	if tm.tenantActiveLocked(tenantID) {
+		return
 	}
+	delete(tm.tenants, tenantID)
 }
 
 func (tm *TenantManager) pruneEmptyManagers() {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	for tenantID, manager := range tm.tenants {
-		if manager.CollectionCount() == 0 {
+	for tenantID := range tm.tenants {
+		if !tm.tenantActiveLocked(tenantID) {
 			delete(tm.tenants, tenantID)
 		}
 	}
+}
+
+// CreateTenant provisions a new tenant record. Tenant records are a
+// durability feature: this returns ErrUnsupportedDurableMutation without a
+// durable store attached, same as DropTenant does in the other direction.
+func (tm *TenantManager) CreateTenant(ctx context.Context, rec TenantRecord) error {
+	if store := tm.durableStore(); store != nil {
+		return store.createTenant(ctx, rec)
+	}
+	return ErrUnsupportedDurableMutation
+}
+
+// UpdateTenant upserts a tenant record, including status transitions such as
+// suspend/reactivate.
+func (tm *TenantManager) UpdateTenant(ctx context.Context, rec TenantRecord) error {
+	if store := tm.durableStore(); store != nil {
+		return store.updateTenant(ctx, rec)
+	}
+	return ErrUnsupportedDurableMutation
+}
+
+// DeleteTenant removes a tenant's record and every collection it owns.
+func (tm *TenantManager) DeleteTenant(ctx context.Context, tenantID string) error {
+	if store := tm.durableStore(); store != nil {
+		return store.deleteTenant(ctx, tenantID)
+	}
+	return ErrUnsupportedDurableMutation
 }
 
 // DropTenant removes all collections for a tenant.
@@ -598,6 +702,7 @@ func decodeTenantManagerState(data []byte, storagePath string) (*TenantManager, 
 
 	return &TenantManager{
 		tenants:     loaded,
+		records:     make(map[string]TenantRecord),
 		storagePath: storagePath,
 	}, nil
 }

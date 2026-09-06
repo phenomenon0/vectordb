@@ -116,10 +116,11 @@ func (s *DurableStore) ApplyReplicated(ctx context.Context, record JournalRecord
 	}
 	// Collection and tenant counters are maintained by the local write entry
 	// points, not by the shared commit path. Recount instead of duplicating
-	// that bookkeeping; it is O(tenants) and only runs on the two collection
-	// lifecycle mutations, never per document.
+	// that bookkeeping; it is O(tenants) and only runs on the lifecycle
+	// mutations, never per document.
 	switch mutation.typeName {
-	case mutationCreateCollection, mutationDeleteCollection:
+	case mutationCreateCollection, mutationDeleteCollection,
+		mutationCreateTenant, mutationUpdateTenant, mutationDeleteTenant:
 		s.activeTenants, s.collectionCount = s.tenants.resourceCounts()
 	}
 	return nil

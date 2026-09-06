@@ -24,6 +24,9 @@ const (
 	mutationBatchInsert      = "batch_insert_documents"
 	mutationDeleteDocument   = "delete_document"
 	mutationUpsertDocument   = "upsert_document"
+	mutationCreateTenant     = "create_tenant"
+	mutationUpdateTenant     = "update_tenant"
+	mutationDeleteTenant     = "delete_tenant"
 )
 
 var (
@@ -74,6 +77,10 @@ type durableUpsertDocument struct {
 	Document       Document `json:"document"`
 }
 
+type durableTenantTarget struct {
+	TenantID string `json:"tenant_id"`
+}
+
 type canonicalMutation struct {
 	version        uint16
 	typeName       string
@@ -83,6 +90,7 @@ type canonicalMutation struct {
 	documents      []Document
 	documentID     uint64
 	nextID         uint64
+	record         TenantRecord
 }
 
 // DurableStore is the single Linux persistence boundary for the canonical,
@@ -275,6 +283,20 @@ func (s *DurableStore) stateErrorLocked() error {
 	return nil
 }
 
+// tenantStateErrorLocked is stateErrorLocked plus a suspended-tenant check.
+// Used only by data-plane methods (search/read/write); lifecycle, list, and
+// stats methods stay on stateErrorLocked so a suspended tenant remains
+// visible and administrable.
+func (s *DurableStore) tenantStateErrorLocked(tenantID string) error {
+	if err := s.stateErrorLocked(); err != nil {
+		return err
+	}
+	if rec, ok := s.tenants.getTenantRecord(tenantID); ok && rec.Status == TenantStatusSuspended {
+		return fmt.Errorf("%w: %s", ErrTenantSuspended, tenantID)
+	}
+	return nil
+}
+
 func (s *DurableStore) latchFaultLocked(err error) error {
 	if s.fault == nil {
 		s.fault = err
@@ -297,7 +319,7 @@ func (s *DurableStore) getCollection(_, _ string) (*Collection, error) {
 func (s *DurableStore) getCollectionInfo(tenantID, collectionName string) (*CollectionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return nil, err
 	}
 	return s.tenants.getCollectionInfoDirect(tenantID, collectionName)
@@ -306,7 +328,7 @@ func (s *DurableStore) getCollectionInfo(tenantID, collectionName string) (*Coll
 func (s *DurableStore) listCollectionInfos(tenantID string) ([]CollectionInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return nil, err
 	}
 	return s.tenants.listCollectionInfosDirect(tenantID), nil
@@ -315,7 +337,7 @@ func (s *DurableStore) listCollectionInfos(tenantID string) ([]CollectionInfo, e
 func (s *DurableStore) listCollections(tenantID string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return nil, err
 	}
 	return s.tenants.listCollectionsDirect(tenantID), nil
@@ -342,7 +364,7 @@ func (s *DurableStore) tenantCount() (int, error) {
 func (s *DurableStore) searchCollection(ctx context.Context, tenantID string, req SearchRequest) (*SearchResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return nil, err
 	}
 	return s.tenants.searchCollectionDirect(ctx, tenantID, req)
@@ -362,7 +384,7 @@ func (s *DurableStore) getTenantStats(tenantID string) (*TenantStats, error) {
 func (s *DurableStore) getDocument(tenantID, collectionName string, docID uint64) (*Document, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.stateErrorLocked() != nil {
+	if s.tenantStateErrorLocked(tenantID) != nil {
 		return nil, false
 	}
 	coll, err := s.tenants.getCollectionDirect(tenantID, collectionName)
@@ -372,10 +394,29 @@ func (s *DurableStore) getDocument(tenantID, collectionName string, docID uint64
 	return coll.GetDocument(docID)
 }
 
+// getDocumentChecked is getDocument's error-returning form so a suspended
+// tenant's rejection is distinguishable from an ordinary not-found.
+func (s *DurableStore) getDocumentChecked(tenantID, collectionName string, docID uint64) (*Document, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
+		return nil, err
+	}
+	coll, err := s.tenants.getCollectionDirect(tenantID, collectionName)
+	if err != nil {
+		return nil, err
+	}
+	doc, ok := coll.GetDocument(docID)
+	if !ok {
+		return nil, fmt.Errorf("%w: %d in collection %s", ErrDocumentNotFound, docID, collectionName)
+	}
+	return doc, nil
+}
+
 func (s *DurableStore) createCollection(ctx context.Context, tenantID string, schema CollectionSchema) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return err
 	}
 	mutation := canonicalMutation{typeName: mutationCreateCollection, tenantID: tenantID, collectionName: schema.Name, schema: schema}
@@ -403,13 +444,23 @@ func (s *DurableStore) checkCreateLimitsLocked(tenantID string) (bool, error) {
 	if s.limits.MaxCollections > 0 && s.collectionCount >= s.limits.MaxCollections {
 		return false, fmt.Errorf("%w: maximum is %d", ErrCollectionLimitExceeded, s.limits.MaxCollections)
 	}
-
-	manager := s.tenants.getManager(tenantID)
-	tenantActive := manager != nil && manager.CollectionCount() > 0
-	if !tenantActive && s.limits.MaxTenants > 0 && s.activeTenants >= s.limits.MaxTenants {
-		return false, fmt.Errorf("%w: maximum is %d", ErrTenantLimitExceeded, s.limits.MaxTenants)
+	newTenant := !s.tenants.tenantActive(tenantID)
+	if newTenant {
+		if err := s.checkMaxTenantsLocked(); err != nil {
+			return false, err
+		}
 	}
-	return !tenantActive, nil
+	return newTenant, nil
+}
+
+// checkMaxTenantsLocked enforces the tenant admission limit for a caller that
+// already determined the tenant is new. Shared by collection creation and
+// tenant record creation so the two admission paths never drift apart.
+func (s *DurableStore) checkMaxTenantsLocked() error {
+	if s.limits.MaxTenants > 0 && s.activeTenants >= s.limits.MaxTenants {
+		return fmt.Errorf("%w: maximum is %d", ErrTenantLimitExceeded, s.limits.MaxTenants)
+	}
+	return nil
 }
 
 func (s *DurableStore) addDocument(ctx context.Context, tenantID, collectionName string, doc *Document) error {
@@ -418,7 +469,7 @@ func (s *DurableStore) addDocument(ctx context.Context, tenantID, collectionName
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return err
 	}
 	mutation, err := s.prepareDocumentsMutation(mutationInsertDocument, tenantID, collectionName, []Document{*doc})
@@ -435,7 +486,7 @@ func (s *DurableStore) addDocument(ctx context.Context, tenantID, collectionName
 func (s *DurableStore) batchAddDocuments(ctx context.Context, tenantID, collectionName string, docs []Document) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return err
 	}
 	mutation, err := s.prepareDocumentsMutation(mutationBatchInsert, tenantID, collectionName, docs)
@@ -460,7 +511,7 @@ func (s *DurableStore) upsertDocument(ctx context.Context, tenantID, collectionN
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return err
 	}
 	mutation, err := s.prepareUpsertMutation(tenantID, collectionName, *doc)
@@ -488,29 +539,107 @@ func (s *DurableStore) prepareUpsertMutation(tenantID, collectionName string, do
 func (s *DurableStore) deleteCollection(ctx context.Context, tenantID, collectionName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return err
 	}
 	mutation := canonicalMutation{typeName: mutationDeleteCollection, tenantID: tenantID, collectionName: collectionName}
 	if err := s.prepareCollectionTarget(mutation); err != nil {
 		return err
 	}
-	manager := s.tenants.getManager(tenantID)
-	lastCollection := manager != nil && manager.CollectionCount() == 1
 	if err := s.appendApplyLocked(ctx, mutation); err != nil {
 		return err
 	}
 	s.collectionCount--
-	if lastCollection {
+	// A tenant record keeps the admission slot even after its last collection
+	// is gone, so only drop the count when nothing else holds the tenant active.
+	if !s.tenants.tenantActive(tenantID) {
 		s.activeTenants--
 	}
+	return nil
+}
+
+func (s *DurableStore) createTenant(ctx context.Context, rec TenantRecord) error {
+	if err := rec.validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return err
+	}
+	if _, exists := s.tenants.getTenantRecord(rec.TenantID); exists {
+		return fmt.Errorf("%w: %s", ErrTenantExists, rec.TenantID)
+	}
+	newTenant := !s.tenants.tenantActive(rec.TenantID)
+	if newTenant {
+		if err := s.checkMaxTenantsLocked(); err != nil {
+			return err
+		}
+	}
+	mutation := canonicalMutation{typeName: mutationCreateTenant, tenantID: rec.TenantID, record: rec}
+	if err := s.appendApplyLocked(ctx, mutation); err != nil {
+		return err
+	}
+	if newTenant {
+		s.activeTenants++
+	}
+	return nil
+}
+
+// updateTenant upserts a tenant record: PUT on an unknown tenant creates it,
+// so replay after a restart or from a replica needs only this one path.
+func (s *DurableStore) updateTenant(ctx context.Context, rec TenantRecord) error {
+	if err := rec.validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return err
+	}
+	newTenant := !s.tenants.tenantActive(rec.TenantID)
+	if newTenant {
+		if err := s.checkMaxTenantsLocked(); err != nil {
+			return err
+		}
+	}
+	mutation := canonicalMutation{typeName: mutationUpdateTenant, tenantID: rec.TenantID, record: rec}
+	if err := s.appendApplyLocked(ctx, mutation); err != nil {
+		return err
+	}
+	if newTenant {
+		s.activeTenants++
+	}
+	return nil
+}
+
+func (s *DurableStore) deleteTenant(ctx context.Context, tenantID string) error {
+	if tenantID == "" {
+		return errors.New("tenant ID cannot be empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return err
+	}
+	if !s.tenants.tenantActive(tenantID) {
+		return fmt.Errorf("%w: %s", ErrTenantNotFound, tenantID)
+	}
+	mutation := canonicalMutation{typeName: mutationDeleteTenant, tenantID: tenantID}
+	if err := s.appendApplyLocked(ctx, mutation); err != nil {
+		return err
+	}
+	// ponytail: recount instead of tracking how many collections the deleted
+	// tenant owned; DeleteTenant is a rare admin action, so O(tenants) here is
+	// cheaper than duplicating deleteCollectionDirect's per-collection math.
+	s.activeTenants, s.collectionCount = s.tenants.resourceCounts()
 	return nil
 }
 
 func (s *DurableStore) deleteDocument(ctx context.Context, tenantID, collectionName string, documentID uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.stateErrorLocked(); err != nil {
+	if err := s.tenantStateErrorLocked(tenantID); err != nil {
 		return err
 	}
 	mutation := canonicalMutation{typeName: mutationDeleteDocument, tenantID: tenantID, collectionName: collectionName, documentID: documentID}
@@ -915,6 +1044,10 @@ func (s *DurableStore) prepareReplayMutation(m *canonicalMutation) error {
 		prepared.version = m.version
 		*m = prepared
 		return nil
+	case mutationCreateTenant, mutationUpdateTenant, mutationDeleteTenant:
+		// decodeDurableMutation already fully decoded and validated the
+		// record (or, for delete, just needs the tenant id already set).
+		return nil
 	default:
 		return fmt.Errorf("unknown mutation type %q", m.typeName)
 	}
@@ -937,6 +1070,20 @@ func (s *DurableStore) applyMutationDirect(ctx context.Context, m canonicalMutat
 		return s.tenants.upsertPreparedDocumentsDirect(ctx, m.tenantID, m.collectionName, m.documents, m.nextID)
 	case mutationDeleteDocument:
 		return s.tenants.deleteDocumentDirect(ctx, m.tenantID, m.collectionName, m.documentID)
+	case mutationCreateTenant:
+		if _, exists := s.tenants.getTenantRecord(m.tenantID); exists {
+			return fmt.Errorf("%w: %s", ErrTenantExists, m.tenantID)
+		}
+		s.tenants.putTenantRecordDirect(m.record)
+		return nil
+	case mutationUpdateTenant:
+		s.tenants.putTenantRecordDirect(m.record)
+		return nil
+	case mutationDeleteTenant:
+		if !s.tenants.tenantActive(m.tenantID) {
+			return fmt.Errorf("%w: %s", ErrTenantNotFound, m.tenantID)
+		}
+		return s.tenants.deleteTenantDirect(ctx, m.tenantID)
 	default:
 		return fmt.Errorf("unknown mutation type %q", m.typeName)
 	}
@@ -1166,6 +1313,10 @@ func encodeDurableMutationVersion(m canonicalMutation, version uint16) ([]byte, 
 		payload = durableUpsertDocument{TenantID: m.tenantID, CollectionName: m.collectionName, Document: m.documents[0]}
 	case mutationDeleteDocument:
 		payload = durableDeleteDocument{TenantID: m.tenantID, CollectionName: m.collectionName, DocumentID: m.documentID}
+	case mutationCreateTenant, mutationUpdateTenant:
+		payload = m.record
+	case mutationDeleteTenant:
+		payload = durableTenantTarget{TenantID: m.tenantID}
 	default:
 		return nil, fmt.Errorf("unknown durable mutation type %q", m.typeName)
 	}
@@ -1242,11 +1393,33 @@ func decodeDurableMutation(data []byte) (canonicalMutation, error) {
 			return m, err
 		}
 		m.tenantID, m.collectionName, m.documentID = payload.TenantID, payload.CollectionName, payload.DocumentID
+	case mutationCreateTenant, mutationUpdateTenant:
+		var payload TenantRecord
+		if err := decodeCollectionJSON(envelope.Payload, &payload); err != nil {
+			return m, err
+		}
+		if err := payload.validate(); err != nil {
+			return m, err
+		}
+		m.tenantID, m.record = payload.TenantID, payload
+	case mutationDeleteTenant:
+		var payload durableTenantTarget
+		if err := decodeCollectionJSON(envelope.Payload, &payload); err != nil {
+			return m, err
+		}
+		m.tenantID = payload.TenantID
 	default:
 		return m, fmt.Errorf("unknown durable mutation type %q", envelope.Type)
 	}
-	if m.tenantID == "" || m.collectionName == "" {
-		return m, errors.New("durable mutation tenant and collection names cannot be empty")
+	switch m.typeName {
+	case mutationCreateTenant, mutationUpdateTenant, mutationDeleteTenant:
+		if m.tenantID == "" {
+			return m, errors.New("durable mutation tenant ID cannot be empty")
+		}
+	default:
+		if m.tenantID == "" || m.collectionName == "" {
+			return m, errors.New("durable mutation tenant and collection names cannot be empty")
+		}
 	}
 	if (m.typeName == mutationInsertDocument || m.typeName == mutationBatchInsert || m.typeName == mutationUpsertDocument) && len(m.documents) == 0 {
 		return m, errors.New("durable insert mutation has no documents")

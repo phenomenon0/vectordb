@@ -91,6 +91,11 @@ type collectionSnapshotV2Collection struct {
 type collectionSnapshotV2Tenant struct {
 	TenantID        string `json:"tenant_id"`
 	CollectionCount uint64 `json:"collection_count"`
+	// Record is set only when the tenant has an administrator record. Older
+	// binaries decode snapshots with DisallowUnknownFields, so a snapshot
+	// written with a record cannot be opened by a binary predating this
+	// field; there is no compatibility shim for that case.
+	Record *TenantRecord `json:"record,omitempty"`
 }
 
 type collectionSnapshotV2Document struct {
@@ -300,10 +305,14 @@ func writeUnifiedCollectionSnapshotV2(w io.Writer, manager *CollectionManager, t
 		}
 		tenantManager.mu.RLock()
 		err := func() error {
-			if err := writeCollectionSnapshotV2Frame(body, collectionSnapshotV2Tenant{
+			descriptor := collectionSnapshotV2Tenant{
 				TenantID:        tenantID,
 				CollectionCount: uint64(len(tenantManager.collections)),
-			}); err != nil {
+			}
+			if rec, ok := tenants.records[tenantID]; ok {
+				descriptor.Record = &rec
+			}
+			if err := writeCollectionSnapshotV2Frame(body, descriptor); err != nil {
 				return fmt.Errorf("write tenant descriptor: %w", err)
 			}
 			return writeCollectionSnapshotV2ManagerLocked(body, tenantManager)
@@ -994,6 +1003,12 @@ func readUnifiedCollectionSnapshotV2File(f *os.File, info os.FileInfo, storagePa
 		}
 		if build {
 			tenants.tenants[descriptor.TenantID] = tenantManager
+			if descriptor.Record != nil {
+				// The manager is already in tenants.tenants above, so
+				// putTenantRecordDirect's getOrCreateManager call finds it
+				// and does not create a second one.
+				tenants.putTenantRecordDirect(*descriptor.Record)
+			}
 		}
 	}
 
