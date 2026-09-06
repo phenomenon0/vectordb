@@ -135,6 +135,42 @@ func TestExtractTokenUsesAuthorizationHeaderOnly(t *testing.T) {
 	}
 }
 
+func TestServerAdminClaimRoundTrip(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef" // gitleaks:allow -- deterministic test-only credential
+	manager := NewJWTManager(secret, "deepdata-test")
+
+	adminToken, err := manager.SignTenantClaims(TenantClaims{TenantID: "acme", ServerAdmin: true}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminCtx, err := manager.ValidateTenantToken(adminToken)
+	if err != nil {
+		t.Fatalf("ValidateTenantToken rejected a server_admin token: %v", err)
+	}
+	if !adminCtx.IsServerAdmin {
+		t.Fatal("IsServerAdmin = false, want true for a server_admin claim")
+	}
+
+	plainToken, err := manager.GenerateTenantToken("acme", []string{"read"}, nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainCtx, err := manager.ValidateTenantToken(plainToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainCtx.IsServerAdmin {
+		t.Fatal("IsServerAdmin = true, want false without a server_admin claim")
+	}
+
+	if err := AuthorizeServerAdmin(plainCtx); !IsAuthorizationFailure(err, AuthorizationPermissionDenied) {
+		t.Fatalf("AuthorizeServerAdmin(plain tenant) = %v, want permission denied", err)
+	}
+	if err := AuthorizeServerAdmin(adminCtx); err != nil {
+		t.Fatalf("AuthorizeServerAdmin(server admin) = %v, want nil", err)
+	}
+}
+
 func TestJWTValidationAcceptsOnlyHS256(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef" // gitleaks:allow -- deterministic test-only credential
 	manager := NewJWTManager(secret, "deepdata-test")

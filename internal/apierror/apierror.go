@@ -67,7 +67,7 @@ var specs = map[string]spec{
 	CodeInvalidArgument:     {http.StatusBadRequest, codes.InvalidArgument, false, "fix the named value and resend; the limits are in the contract"},
 	CodeNotFound:            {http.StatusNotFound, codes.NotFound, false, "list the tenant's collections to see what exists; document ids are the ones you inserted"},
 	CodeAlreadyExists:       {http.StatusConflict, codes.AlreadyExists, false, "use the existing collection or choose another name; there is no create-or-get"},
-	CodeUnauthenticated:     {http.StatusUnauthorized, codes.Unauthenticated, false, "send Authorization: Bearer <token> (the API_TOKEN or a JWT from cmd/gentoken)"},
+	CodeUnauthenticated:     {http.StatusUnauthorized, codes.Unauthenticated, false, "send Authorization: Bearer <token> (the API_TOKEN or a JWT minted by deepdata token)"},
 	CodePermissionDenied:    {http.StatusForbidden, codes.PermissionDenied, false, "the token lacks the permission or collection scope for this call; mint one with the needed read/write/admin claim"},
 	CodeQuotaExceeded:       {http.StatusConflict, codes.FailedPrecondition, false, "a fixed deployment limit (max tenants or max collections) is reached; delete a collection or raise the limit; retrying does not help"},
 	CodePayloadTooLarge:     {http.StatusRequestEntityTooLarge, codes.ResourceExhausted, false, "send fewer or smaller documents, or lower top_k and drop include_vectors"},

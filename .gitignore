@@ -3,7 +3,6 @@ bin/
 /deepdata
 /vectordb
 vectordb-server
-cmd/gentoken/gentoken
 *.exe
 *.zip
 cli

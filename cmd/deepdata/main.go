@@ -51,6 +51,9 @@ func main() {
 	if len(args) > 0 && args[0] == "replicate" {
 		os.Exit(runReplicate(args[1:], logging.Default()))
 	}
+	if len(args) > 0 && args[0] == "token" {
+		os.Exit(runToken(args[1:], os.Stdout, os.Stderr, os.Getenv))
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}

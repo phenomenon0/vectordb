@@ -250,6 +250,10 @@ type TenantClaims struct {
 	TenantID    string   `json:"tenant_id"`
 	Permissions []string `json:"permissions"` // e.g., ["read", "write", "admin"]
 	Collections []string `json:"collections"` // allowed collections (empty = all)
+	// ServerAdmin marks a JWT as a global server-administrator credential,
+	// the same standing as a static API_TOKEN. Only cmd/deepdata token mints
+	// it, gated on possession of JWT_SECRET.
+	ServerAdmin bool `json:"server_admin,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -344,6 +348,19 @@ func AuthorizeTenantAccess(tenantCtx *TenantContext, tenantID, collection, permi
 	return nil
 }
 
+// AuthorizeServerAdmin requires the global server-administrator credential
+// (a static API_TOKEN or a JWT with the server_admin claim). No tenant or
+// collection scope applies.
+func AuthorizeServerAdmin(tenantCtx *TenantContext) error {
+	if tenantCtx == nil {
+		return authorizationError(AuthorizationUnauthenticated, "authenticated tenant context required")
+	}
+	if !tenantCtx.IsServerAdmin {
+		return authorizationError(AuthorizationPermissionDenied, "server administrator required")
+	}
+	return nil
+}
+
 // JWTManager manages JWT tokens
 type JWTManager struct {
 	secretKey []byte
@@ -373,21 +390,25 @@ func (jm *JWTManager) GenerateToken(userID string, permissions []string, expires
 	return token.SignedString(jm.secretKey)
 }
 
+// SignTenantClaims signs claims with this manager's issuer and an expiry
+// expiresIn from now, overwriting any RegisteredClaims the caller set.
+func (jm *JWTManager) SignTenantClaims(claims TenantClaims, expiresIn time.Duration) (string, error) {
+	claims.RegisteredClaims = jwt.RegisteredClaims{
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		Issuer:    jm.issuer,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, &claims)
+	return token.SignedString(jm.secretKey)
+}
+
 // GenerateTenantToken generates a JWT token with tenant claims
 func (jm *JWTManager) GenerateTenantToken(tenantID string, permissions []string, collections []string, expiresIn time.Duration) (string, error) {
-	claims := &TenantClaims{
+	return jm.SignTenantClaims(TenantClaims{
 		TenantID:    tenantID,
 		Permissions: permissions,
 		Collections: collections,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    jm.issuer,
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jm.secretKey)
+	}, expiresIn)
 }
 
 // ValidateToken validates a JWT token
@@ -425,9 +446,10 @@ func (jm *JWTManager) ValidateTenantToken(tokenString string) (*TenantContext, e
 
 	// Build tenant context
 	ctx := &TenantContext{
-		TenantID:    claims.TenantID,
-		Permissions: make(map[string]bool),
-		Collections: make(map[string]bool),
+		TenantID:      claims.TenantID,
+		Permissions:   make(map[string]bool),
+		Collections:   make(map[string]bool),
+		IsServerAdmin: claims.ServerAdmin,
 	}
 
 	for _, perm := range claims.Permissions {

@@ -47,7 +47,7 @@ HTTP routes, listed in [api/contract/v3/operations.json](api/contract/v3/operati
 
 Auth: `Authorization: Bearer <token>`, where the token is the static `API_TOKEN` (server-wide administrative
 access) or an HS256 JWT signed with `JWT_SECRET` that scopes a tenant, the permissions `read`/`write`/`admin`
-and optionally a collection allowlist; `cmd/gentoken` mints those JWTs (`cmd/gentoken/main.go:20-26`).
+and optionally a collection allowlist; `deepdata token` mints those JWTs (`cmd/deepdata/token.go`).
 
 Errors are a JSON envelope on every surface: `{"code","message","hint","field","request_id","retryable","retry_after_ms","docs"}`
 with the HTTP status from one code table (`internal/apierror/apierror.go:63-75`, written by `WriteHTTP`, `internal/apierror/apierror.go:129`);

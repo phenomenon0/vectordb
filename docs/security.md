@@ -52,24 +52,29 @@ export JWT_ISSUER='deepdata-production'
 ./deepdata serve
 ```
 
-Generate short-lived tokens offline with the same secret and issuer:
+Generate short-lived tokens offline with the same secret and issuer (`deepdata
+token` reads `JWT_SECRET` and `JWT_ISSUER` from the environment, same as
+`serve`):
 
 ```bash
-./deepdata gentoken \
+./deepdata token \
   -tenant=acme \
   -permissions=read,write \
   -collections=docs \
-  -expires=24h \
-  -issuer=deepdata-production
+  -ttl=24h
 ```
 
-JWTs are HMAC-signed and carry `tenant_id`, `permissions`, `collections`,
-issuer, issued-at, and expiry claims. An empty collection list means all
-collections within the token's permitted tenant. An `admin` JWT is
-administrative only inside its declared tenant; it never becomes the
-server-wide administrator represented by `API_TOKEN`. A non-empty collection
-claim continues to restrict an admin JWT, and tenant-wide list/info operations
-reject collection-scoped tokens.
+JWTs are HMAC-signed and carry `tenant_id`, `permissions`, `collections`, an
+optional `server_admin` flag, issuer, issued-at, and expiry claims. An empty
+collection list means all collections within the token's permitted tenant. An
+`admin` JWT is administrative only inside its declared tenant; it never
+becomes the server-wide administrator represented by `API_TOKEN`. A
+non-empty collection claim continues to restrict an admin JWT, and
+tenant-wide list/info operations reject collection-scoped tokens.
+
+`deepdata token -server-admin` mints a JWT with the `server_admin` claim set,
+the same global standing as `API_TOKEN`: it crosses every tenant and
+collection boundary. Mint it only for genuine operator credentials.
 
 There is no canonical HTTP token-issuance API. Generate and distribute tokens
 through a protected operator workflow. Replacing `JWT_SECRET` and restarting
