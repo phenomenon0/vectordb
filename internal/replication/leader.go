@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -57,24 +58,117 @@ func NewLeaderHandler(src Source, cfg LeaderConfig) (http.Handler, error) {
 	if src == nil {
 		return nil, errors.New("replication leader needs a store")
 	}
+	if err := validateLeaderConfig(cfg); err != nil {
+		return nil, err
+	}
+	l := &leader{src: src, cfg: cfg}
+	mux := http.NewServeMux()
+	mux.HandleFunc(PathPrefix+"status", authed(cfg, l.status))
+	mux.HandleFunc(PathPrefix+"snapshot", authed(cfg, l.snapshot))
+	mux.HandleFunc(PathPrefix+"journal", authed(cfg, l.journal))
+	return mux, nil
+}
+
+// NewTenantLeaderHandler builds the node surface over one store per tenant.
+// tenants lists the currently known tenant IDs; source resolves one of them
+// to its Source, or reports it unknown. Both are called per request, so a
+// caller backed by a live collection.StoreSet sees tenants as they are
+// created and deleted without rebuilding this handler.
+func NewTenantLeaderHandler(cfg LeaderConfig, tenants func() []string, source func(tenantID string) (Source, bool)) (http.Handler, error) {
+	if tenants == nil || source == nil {
+		return nil, errors.New("replication leader needs tenant sources")
+	}
+	if err := validateLeaderConfig(cfg); err != nil {
+		return nil, err
+	}
+	tl := &tenantLeader{cfg: cfg, tenants: tenants, source: source}
+	mux := http.NewServeMux()
+	mux.HandleFunc(PathPrefix+"tenants", authed(cfg, tl.listTenants))
+	mux.HandleFunc(PathPrefix+"tenants/{tenant}/status", authed(cfg, tl.route((*leader).status)))
+	mux.HandleFunc(PathPrefix+"tenants/{tenant}/snapshot", authed(cfg, tl.route((*leader).snapshot)))
+	mux.HandleFunc(PathPrefix+"tenants/{tenant}/journal", authed(cfg, tl.route((*leader).journal)))
+	perTenantOnly := authed(cfg, tl.perTenantOnly)
+	mux.HandleFunc(PathPrefix+"status", perTenantOnly)
+	mux.HandleFunc(PathPrefix+"snapshot", perTenantOnly)
+	mux.HandleFunc(PathPrefix+"journal", perTenantOnly)
+	return mux, nil
+}
+
+// validateLeaderConfig checks the fields both leader constructors need before
+// building a handler: a node token (never optional, since the snapshot route
+// exports whole-tenant state) and, if given, a real spool directory.
+func validateLeaderConfig(cfg LeaderConfig) error {
 	if cfg.Token == "" {
-		return nil, errors.New("replication leader needs a node token; the snapshot route exports every tenant")
+		return errors.New("replication leader needs a node token; the snapshot route exports every tenant")
 	}
 	if cfg.SpoolDir != "" {
 		info, err := os.Stat(cfg.SpoolDir)
 		if err != nil {
-			return nil, fmt.Errorf("replication spool directory: %w", err)
+			return fmt.Errorf("replication spool directory: %w", err)
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("replication spool directory %q is not a directory", cfg.SpoolDir)
+			return fmt.Errorf("replication spool directory %q is not a directory", cfg.SpoolDir)
 		}
 	}
-	l := &leader{src: src, cfg: cfg}
-	mux := http.NewServeMux()
-	mux.HandleFunc(PathPrefix+"status", l.authed(l.status))
-	mux.HandleFunc(PathPrefix+"snapshot", l.authed(l.snapshot))
-	mux.HandleFunc(PathPrefix+"journal", l.authed(l.journal))
-	return mux, nil
+	return nil
+}
+
+// tenantLeader is the per-tenant node surface. It resolves a Source per
+// request rather than owning one, and dispatches to the same status/
+// snapshot/journal bodies leader uses via a throwaway *leader built over the
+// resolved Source, so the wire format is byte-identical to the single-store
+// surface.
+type tenantLeader struct {
+	cfg     LeaderConfig
+	tenants func() []string
+	source  func(tenantID string) (Source, bool)
+}
+
+// route resolves {tenant} from the request path and dispatches to fn, or
+// answers 404 when the ID is unsafe or unknown to source().
+func (tl *tenantLeader) route(fn func(*leader, http.ResponseWriter, *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("tenant")
+		if !vcollection.ValidTenantID(id) {
+			writeReplicationError(w, http.StatusNotFound, "unknown tenant")
+			return
+		}
+		src, ok := tl.source(id)
+		if !ok {
+			writeReplicationError(w, http.StatusNotFound, "unknown tenant")
+			return
+		}
+		fn(&leader{src: src, cfg: tl.cfg}, w, r)
+	}
+}
+
+// listTenants answers every tenant ID this leader currently replicates. The
+// slice is copied before sorting: tenants() may hand back a reference to
+// live state (e.g. a StoreSet's internal map order), and this must not
+// mutate it.
+func (tl *tenantLeader) listTenants(w http.ResponseWriter, r *http.Request) {
+	ids := append([]string(nil), tl.tenants()...)
+	sort.Strings(ids)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"tenants": ids})
+}
+
+// perTenantOnly answers the bare, pre-multitenancy routes: this leader has no
+// single store to serve them from.
+func (tl *tenantLeader) perTenantOnly(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": "this leader replicates per tenant",
+		"hint":  "GET " + PathPrefix + "tenants, then " + PathPrefix + "tenants/{tenant}/status",
+	})
+}
+
+// writeReplicationError writes a {"error": message} JSON body with status.
+func writeReplicationError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
 type leader struct {
@@ -88,10 +182,12 @@ func (l *leader) logf(format string, args ...any) {
 	}
 }
 
-// authed gates every node route on the node token in constant time. It reports
-// nothing about why a request failed: an unauthenticated caller learns only
-// that the route exists, which it can already tell from the port.
-func (l *leader) authed(next http.HandlerFunc) http.HandlerFunc {
+// authed gates every node route on cfg's node token in constant time. It
+// reports nothing about why a request failed: an unauthenticated caller
+// learns only that the route exists, which it can already tell from the
+// port. Shared by both leader constructors so a per-tenant route and a
+// single-store route reject exactly the same way.
+func authed(cfg LeaderConfig, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -99,7 +195,7 @@ func (l *leader) authed(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(l.cfg.Token)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.Token)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

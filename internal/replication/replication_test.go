@@ -2,6 +2,7 @@ package replication
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -679,4 +680,189 @@ func mustLeaderHandler(t *testing.T, store *vcollection.DurableStore) http.Handl
 		t.Fatal(err)
 	}
 	return handler
+}
+
+// serveTenantLeader puts the per-tenant node surface over stores (tenant ID
+// -> its own store, each opened by openStore so it is a real DurableStore on
+// disk) on a real HTTP server.
+func serveTenantLeader(t *testing.T, stores map[string]*vcollection.DurableStore) *httptest.Server {
+	t.Helper()
+	tenants := func() []string {
+		ids := make([]string, 0, len(stores))
+		for id := range stores {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	source := func(id string) (Source, bool) {
+		store, ok := stores[id]
+		return store, ok
+	}
+	handler, err := NewTenantLeaderHandler(LeaderConfig{Token: testToken, SpoolDir: t.TempDir()}, tenants, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A per-tenant leader lists exactly the tenants it was given, sorted, so a
+// follower can discover what to replicate without an out-of-band directory.
+func TestTenantLeaderListsTenantsSorted(t *testing.T) {
+	dir := t.TempDir()
+	acme := openStore(t, dir, "acme")
+	t.Cleanup(func() { _ = acme.Close() })
+	globex := openStore(t, dir, "globex")
+	t.Cleanup(func() { _ = globex.Close() })
+	srv := serveTenantLeader(t, map[string]*vcollection.DurableStore{"globex": globex, "acme": acme})
+
+	follower := &Follower{LeaderURL: srv.URL, Token: testToken}
+	ids, err := follower.Tenants(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != "acme" || ids[1] != "globex" {
+		t.Fatalf("tenants = %v, want [acme globex]", ids)
+	}
+}
+
+// A follower scoped to one tenant bootstraps and tails only that tenant's
+// store. Each tenant behind a per-tenant leader is a completely separate
+// DurableStore, so this is really testing that the leader's {tenant} routing
+// and the follower's URL builder agree on which one "acme" means -- a
+// routing bug that resolved every ID to the same store would leak globex's
+// write into this replica.
+func TestTenantLeaderFollowerFollowsOnlyItsTenant(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	acme := openStore(t, dir, "acme")
+	t.Cleanup(func() { _ = acme.Close() })
+	globex := openStore(t, dir, "globex")
+	t.Cleanup(func() { _ = globex.Close() })
+	if _, err := acme.Tenants().CreateCollection(ctx, "acme", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := globex.Tenants().CreateCollection(ctx, "globex", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	srv := serveTenantLeader(t, map[string]*vcollection.DurableStore{"acme": acme, "globex": globex})
+
+	follower := &Follower{LeaderURL: srv.URL, Token: testToken, Tenant: "acme"}
+	base := storePath(t, dir, "replica")
+	replica, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatalf("open replica: %v", err)
+	}
+	t.Cleanup(func() { _ = replica.Close() })
+
+	followCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	failed := make(chan error, 1)
+	go func() { failed <- follower.Follow(followCtx, replica) }()
+
+	acmeDoc := testDocument(1)
+	if err := acme.Tenants().AddDocument(ctx, "acme", "docs", &acmeDoc); err != nil {
+		t.Fatal(err)
+	}
+	globexDoc := testDocument(2)
+	if err := globex.Tenants().AddDocument(ctx, "globex", "docs", &globexDoc); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, followCtx, failed, func() bool {
+		_, ok := replica.Tenants().GetDocument("acme", "docs", acmeDoc.ID)
+		return ok
+	}, "acme's document never reached its replica")
+
+	if _, ok := replica.Tenants().GetDocument("globex", "docs", globexDoc.ID); ok {
+		t.Fatal("globex's document reached a replica scoped to acme")
+	}
+	if _, err := replica.Tenants().GetCollectionInfo("globex", "docs"); err == nil {
+		t.Fatal("globex's collection reached a replica scoped to acme")
+	}
+}
+
+// A tenant ID unknown to source(), or one that fails ValidTenantID, gets a
+// 404 rather than falling through to some other tenant's store.
+func TestTenantLeaderUnknownTenantIs404(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	acme := openStore(t, dir, "acme")
+	t.Cleanup(func() { _ = acme.Close() })
+	srv := serveTenantLeader(t, map[string]*vcollection.DurableStore{"acme": acme})
+
+	for _, id := range []string{"globex", "bad.id"} {
+		follower := &Follower{LeaderURL: srv.URL, Token: testToken, Tenant: id}
+		if _, err := follower.Status(ctx); err == nil {
+			t.Errorf("tenant %q: Status succeeded, want 404", id)
+		}
+	}
+}
+
+// The bare pre-multitenancy routes stay registered on a per-tenant leader so
+// a misdirected caller gets an explanation instead of a generic 404, but they
+// must never serve any tenant's data.
+func TestTenantLeaderBareRouteHintsAtTenants(t *testing.T) {
+	dir := t.TempDir()
+	acme := openStore(t, dir, "acme")
+	t.Cleanup(func() { _ = acme.Close() })
+	srv := serveTenantLeader(t, map[string]*vcollection.DurableStore{"acme": acme})
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+PathPrefix+"status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("bare status route = %d, want 404", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != "this leader replicates per tenant" {
+		t.Errorf("error = %q", body["error"])
+	}
+	if body["hint"] == "" {
+		t.Error("hint is empty")
+	}
+}
+
+// The tenant list is gated the same way every other node route is: a caller
+// without the node token gets nothing, not an inventory of tenant IDs.
+func TestTenantLeaderListRequiresToken(t *testing.T) {
+	dir := t.TempDir()
+	acme := openStore(t, dir, "acme")
+	t.Cleanup(func() { _ = acme.Close() })
+	srv := serveTenantLeader(t, map[string]*vcollection.DurableStore{"acme": acme})
+
+	resp, err := http.Get(srv.URL + PathPrefix + "tenants")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("tenants list without token = %d, want 401", resp.StatusCode)
+	}
+}
+
+// A Follower with no Tenant set talks to the bare routes, which a per-tenant
+// leader answers with a hint rather than any tenant's data -- so pointing an
+// un-scoped follower at one is a hard error, not a silent no-op.
+func TestFollowerWithoutTenantErrorsAgainstAPerTenantLeader(t *testing.T) {
+	dir := t.TempDir()
+	acme := openStore(t, dir, "acme")
+	t.Cleanup(func() { _ = acme.Close() })
+	srv := serveTenantLeader(t, map[string]*vcollection.DurableStore{"acme": acme})
+
+	follower := &Follower{LeaderURL: srv.URL, Token: testToken}
+	if _, err := follower.Status(context.Background()); err == nil {
+		t.Fatal("Status succeeded with no Tenant set against a per-tenant leader")
+	}
 }

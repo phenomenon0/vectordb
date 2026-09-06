@@ -34,6 +34,11 @@ type Follower struct {
 	LeaderURL string
 	// Token is the node credential. It must match the leader's.
 	Token string
+	// Tenant selects one tenant on a per-tenant leader (NewTenantLeaderHandler):
+	// Status, Open and Follow route to PathPrefix+"tenants/"+Tenant+"/"+<call>
+	// instead of the bare route. Empty talks to a single-store leader
+	// (NewLeaderHandler) unchanged; Tenants does not need it.
+	Tenant string
 	// Client defaults to http.DefaultClient. A follow stream is open-ended, so
 	// a custom client must not set a whole-request Timeout.
 	Client *http.Client
@@ -64,7 +69,34 @@ func (f *Follower) client() *http.Client {
 	return http.DefaultClient
 }
 
+// get issues an authenticated GET for one of the three per-store calls
+// (status, snapshot, journal). With Tenant set it targets that tenant's
+// route on a per-tenant leader; empty targets the bare route a single-store
+// leader (NewLeaderHandler) still serves.
 func (f *Follower) get(ctx context.Context, path string, query url.Values) (*http.Response, error) {
+	if f.Tenant != "" {
+		path = "tenants/" + f.Tenant + "/" + path
+	}
+	return f.doGet(ctx, path, query)
+}
+
+// Tenants lists every tenant ID the leader currently replicates, sorted.
+func (f *Follower) Tenants(ctx context.Context) ([]string, error) {
+	resp, err := f.doGet(ctx, "tenants", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body struct {
+		Tenants []string `json:"tenants"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decode leader tenants: %w", err)
+	}
+	return body.Tenants, nil
+}
+
+func (f *Follower) doGet(ctx context.Context, path string, query url.Values) (*http.Response, error) {
 	base := strings.TrimSuffix(f.LeaderURL, "/")
 	target := base + PathPrefix + path
 	if len(query) > 0 {
