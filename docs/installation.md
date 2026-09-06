@@ -117,6 +117,9 @@ for the complete typed sync and async contract.
 | `ONNX_EMBED_MODEL` / `ONNX_EMBED_TOKENIZER` | `vectordb/models/bge-small-en-v1.5/model.onnx` and the tokenizer.json beside it | ONNX model and tokenizer paths (`scripts/fetch_bge_small.sh`) |
 | `ONNX_EMBED_MAX_LEN` | `512` | ONNX tokenizer truncation length |
 | `MAX_TENANTS` | `100000` | Tenant limit |
+| `MAX_TENANT_DOCUMENTS` | `0 (unlimited)` | Per-tenant document count quota, server-wide default; a tenant record's own quota overrides it when positive |
+| `MAX_TENANT_BYTES` | `0 (unlimited)` | Per-tenant estimated storage byte quota, server-wide default; a tenant record's own quota overrides it when positive |
+| `MAX_TENANT_COLLECTIONS` | `0 (unlimited)` | Per-tenant collection count quota, server-wide default; a tenant record's own quota overrides it when positive |
 | `TENANT_RPS` | `100` | Per-tenant requests per second |
 | `TENANT_BURST` | `100` | Per-tenant burst allowance |
 | `AUTH_FAILURE_RPS` | `1` | Failed-auth attempts replenished per peer IP per second |

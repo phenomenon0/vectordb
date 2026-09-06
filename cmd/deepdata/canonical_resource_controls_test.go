@@ -319,6 +319,95 @@ func TestCanonicalResourceControlEnvironmentFailsFast(t *testing.T) {
 	}
 }
 
+// TestCanonicalTenantQuotaEnvironment pins the MAX_TENANT_DOCUMENTS /
+// MAX_TENANT_BYTES / MAX_TENANT_COLLECTIONS operator surface: unset means
+// unlimited (0), a negative value fails config load naming the key, and a
+// configured document cap is enforced end to end over HTTP as 409
+// quota_exceeded, not the fallback internal error.
+func TestCanonicalTenantQuotaEnvironment(t *testing.T) {
+	t.Run("unset is unlimited", func(t *testing.T) {
+		cfg, errs := loadServerConfig(nil, os.Getenv)
+		if len(errs) > 0 {
+			t.Fatalf("loadServerConfig: %v", errs)
+		}
+		if cfg.Limits.MaxTenantDocuments != 0 || cfg.Limits.MaxTenantBytes != 0 || cfg.Limits.MaxTenantCollections != 0 {
+			t.Fatalf("unset tenant quota limits = %+v, want all 0 (unlimited)", cfg.Limits)
+		}
+	})
+
+	for _, key := range []string{"MAX_TENANT_DOCUMENTS", "MAX_TENANT_BYTES", "MAX_TENANT_COLLECTIONS"} {
+		t.Run(key+"=-1", func(t *testing.T) {
+			t.Setenv(key, "-1")
+			_, errs := loadServerConfig(nil, os.Getenv)
+			found := false
+			for _, err := range errs {
+				if strings.HasPrefix(err, key+"=") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("loadServerConfig did not reject %s=-1: %v", key, errs)
+			}
+		})
+	}
+
+	t.Run("MAX_TENANT_DOCUMENTS admits the cap and rejects the overflow", func(t *testing.T) {
+		t.Setenv("JWT_SECRET", "")
+		t.Setenv("API_TOKEN", "")
+		t.Setenv("REQUIRE_AUTH", "0")
+		t.Setenv("MAX_TENANT_DOCUMENTS", "10")
+
+		rt := testServerRuntime(t)
+		handler, collections := newCanonicalHTTPHandler(
+			rt,
+			NewHashEmbedder(4),
+			filepath.Join(t.TempDir(), "index.gob"),
+		)
+		t.Cleanup(func() { _ = collections.Close() })
+
+		response := canonicalHTTPCreateCollection(t, handler, "acme", "items", "")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create collection returned %d: %s", response.Code, response.Body.String())
+		}
+
+		insertDoc := func(id int) *httptest.ResponseRecorder {
+			body, err := json.Marshal(map[string]interface{}{
+				"id":      id,
+				"vectors": map[string]interface{}{"embedding": []float32{1, 2}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v3/tenants/acme/collections/items/docs", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			return recorder
+		}
+
+		for id := 1; id <= 10; id++ {
+			if response := insertDoc(id); response.Code != http.StatusOK {
+				t.Fatalf("insert %d returned %d, want 200: %s", id, response.Code, response.Body.String())
+			}
+		}
+
+		response = insertDoc(11)
+		if response.Code != http.StatusConflict {
+			t.Fatalf("11th insert returned %d, want 409 (quota_exceeded): %s", response.Code, response.Body.String())
+		}
+		var apiErr struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&apiErr); err != nil {
+			t.Fatal(err)
+		}
+		if apiErr.Code != apierror.CodeQuotaExceeded {
+			t.Fatalf("11th insert code = %q, want %q", apiErr.Code, apierror.CodeQuotaExceeded)
+		}
+	})
+}
+
 func TestCanonicalRateLimitTenantUsesAdminTargetWithoutJWTClaimEscape(t *testing.T) {
 	serverAdmin := &security.TenantContext{TenantID: "default", IsServerAdmin: true}
 	if got := canonicalRateLimitTenant(serverAdmin, "acme"); got != "acme" {

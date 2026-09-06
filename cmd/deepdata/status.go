@@ -102,6 +102,11 @@ func statusPayload(embedder *serverEmbedder, limits limitConfig, usageLoaded, re
 			"auth_failure_rps":          limits.AuthFailureRPS,
 			"auth_failure_burst":        limits.AuthFailureBurst,
 			"max_rate_limit_keys":       limits.MaxRateLimitKeys,
+			"max_tenants":               limits.MaxTenants,
+			"max_collections":           limits.MaxCollections,
+			"max_tenant_documents":      limits.MaxTenantDocuments,
+			"max_tenant_bytes":          limits.MaxTenantBytes,
+			"max_tenant_collections":    limits.MaxTenantCollections,
 		},
 		"capabilities": map[string]any{
 			"texts":       embedder != nil,

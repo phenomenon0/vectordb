@@ -30,6 +30,13 @@ type limitConfig struct {
 	TenantBurst      int // TENANT_BURST
 	MaxTenants       int // MAX_TENANTS
 	MaxCollections   int // MAX_COLLECTIONS
+
+	// MaxTenantDocuments, MaxTenantBytes and MaxTenantCollections are the
+	// server-wide per-tenant quota defaults (0 = unlimited); see
+	// vcollection.StoreLimits.
+	MaxTenantDocuments   int64 // MAX_TENANT_DOCUMENTS
+	MaxTenantBytes       int64 // MAX_TENANT_BYTES
+	MaxTenantCollections int64 // MAX_TENANT_COLLECTIONS
 }
 
 // embedderConfig selects and configures the one text embedder a process runs.
@@ -192,6 +199,10 @@ func loadServerConfig(args []string, getenv func(string) string) (*serverConfig,
 			TenantBurst:      posInt("TENANT_BURST", 100),
 			MaxTenants:       posInt("MAX_TENANTS", 100_000),
 			MaxCollections:   posInt("MAX_COLLECTIONS", 10_000),
+
+			MaxTenantDocuments:   int64(nonNegInt("MAX_TENANT_DOCUMENTS", 0)),
+			MaxTenantBytes:       int64(nonNegInt("MAX_TENANT_BYTES", 0)),
+			MaxTenantCollections: int64(nonNegInt("MAX_TENANT_COLLECTIONS", 0)),
 		},
 		CORSAllowedOrigins: env("CORS_ALLOWED_ORIGINS"),
 		Embedder: embedderConfig{

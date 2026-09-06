@@ -121,7 +121,7 @@ func FromEngine(err error, fallback string) *Error {
 		return New(CodeNotFound, err.Error())
 	case errors.Is(err, vcollection.ErrCollectionExists), errors.Is(err, vcollection.ErrDocumentExists), errors.Is(err, vcollection.ErrTenantExists):
 		return New(CodeAlreadyExists, err.Error())
-	case errors.Is(err, vcollection.ErrTenantLimitExceeded), errors.Is(err, vcollection.ErrCollectionLimitExceeded):
+	case errors.Is(err, vcollection.ErrTenantLimitExceeded), errors.Is(err, vcollection.ErrCollectionLimitExceeded), errors.Is(err, vcollection.ErrTenantQuotaExceeded):
 		return New(CodeQuotaExceeded, err.Error())
 	case errors.Is(err, vcollection.ErrSearchResponseBudgetExceeded):
 		return New(CodePayloadTooLarge, err.Error())

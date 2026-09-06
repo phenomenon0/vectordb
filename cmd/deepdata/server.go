@@ -229,8 +229,11 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 	collectionHTTP.embedder, _ = embedder.(*serverEmbedder)
 	if collectionBasePath != "" {
 		err := collectionHTTP.LoadDurableWithLimits(collectionBasePath, vcollection.StoreLimits{
-			MaxTenants:     rt.limits.MaxTenants,
-			MaxCollections: rt.limits.MaxCollections,
+			MaxTenants:           rt.limits.MaxTenants,
+			MaxCollections:       rt.limits.MaxCollections,
+			MaxTenantDocuments:   rt.limits.MaxTenantDocuments,
+			MaxTenantBytes:       rt.limits.MaxTenantBytes,
+			MaxTenantCollections: rt.limits.MaxTenantCollections,
 		})
 		if err != nil {
 			collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))

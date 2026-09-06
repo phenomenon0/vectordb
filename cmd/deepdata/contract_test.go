@@ -396,6 +396,14 @@ func TestStatusDescribesTheServerFromTheContract(t *testing.T) {
 	if got := body.Limits["max_search_top_k"]; got != float64(vcollection.MaxSearchTopK) {
 		t.Errorf("limits.max_search_top_k = %v, want %d", got, vcollection.MaxSearchTopK)
 	}
+	// The per-tenant quota defaults are unconfigured here, so the honest
+	// answer is 0 (unlimited); their presence is what an operator checks
+	// before assuming MAX_TENANT_DOCUMENTS et al. took effect.
+	for _, key := range []string{"max_tenant_documents", "max_tenant_bytes", "max_tenant_collections"} {
+		if got := body.Limits[key]; got != float64(0) {
+			t.Errorf("limits.%s = %v, want 0 (unlimited default)", key, got)
+		}
+	}
 	if len(body.Capabilities.Filters) != 15 {
 		t.Errorf("capabilities.filters = %v, want the 15 filter operators", body.Capabilities.Filters)
 	}
