@@ -14,9 +14,9 @@ can test end to end.
   the application).
 - Dense search with HNSW or exact Flat indexes.
 - Sparse Inverted/BM25 search and explicit two-field hybrid fusion.
-- Eight durable mutations: create/delete collection, insert, atomic batch
-  insert, delete document, upsert by caller-supplied ID, and create/delete
-  tenant.
+- Nine durable mutations: create/delete collection, insert, atomic batch
+  insert, delete document, upsert by caller-supplied ID, and create/update/
+  delete tenant.
 - Static bearer-token or tenant-scoped JWT authentication.
 - Readiness that fails closed when the checksummed snapshot, mutation journal,
   or lifetime lock is unhealthy.

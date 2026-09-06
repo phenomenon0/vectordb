@@ -141,8 +141,9 @@ The canonical allowlist includes:
 
 The health probes (`/healthz`, `/readyz`, `/livez`) are intentionally
 unauthenticated so orchestrators can probe them; they reveal availability, so
-restrict them with firewall, ingress, or service-mesh policy. `/metrics` is
-served behind the same auth guard as the API routes when `REQUIRE_AUTH=1`
+restrict them with firewall, ingress, or service-mesh policy. `/metrics` exposes
+every tenant's usage, so it requires the server-administrator credential when
+`REQUIRE_AUTH=1`, not just any authenticated caller
 (`cmd/deepdata/server.go:1503-1507`). A durable-store
 fault makes `/readyz` return `503`; liveness alone is not proof that persisted
 data is safe to serve.

@@ -60,8 +60,8 @@ gRPC returns the mapped status code with the same fields as an `ErrorInfo` detai
 beside its `isError` text. `rate_limited` (429, `Retry-After: 1`) and `unavailable` (503) are the retryable codes; tenant and
 collection limits are `quota_exceeded`, 409 / `FailedPrecondition`, never retryable. Codes and an example: [internal/collection/API.md#errors](internal/collection/API.md#errors).
 
-Probes GET /healthz, /livez and /readyz answer without credentials (`cmd/deepdata/server.go:1390-1394`); /metrics sits
-behind the same auth guard as the API (`cmd/deepdata/server.go:1324`). `const canonicalOnly = true` (`cmd/deepdata/main.go:3166`)
+Probes GET /healthz, /livez and /readyz answer without credentials (`cmd/deepdata/server.go:1390-1394`); /metrics exposes every
+tenant's usage, so it requires the server-administrator credential, not just any authenticated caller (`cmd/deepdata/server.go:1324`). `const canonicalOnly = true` (`cmd/deepdata/main.go:3166`)
 wraps the mux in an allowlist (`cmd/deepdata/server.go:2554-2565`): every other path is a 404 on the RC binary.
 
 ## What it does not do

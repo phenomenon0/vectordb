@@ -11,12 +11,15 @@ and answers 404 for every other registered route.
 
 `/metrics` is registered as `mux.Handle("/metrics", guard(...))`
 (`cmd/deepdata/server.go:1324`). `guard` is the same closure that fronts the
-API routes (`cmd/deepdata/server.go:160`): when authentication is required
-(`REQUIRE_AUTH=1`, or a JWT secret or API token is configured,
-`cmd/deepdata/runtime.go:35`) a scrape needs the same bearer token as an API
-call. The comment at `cmd/deepdata/server.go:1320-1323` records why:
-request-volume and operation detail leak through this endpoint, so it is
-gated exactly like the API. The gate landed in 043ad5d.
+API routes (`cmd/deepdata/server.go:160`), but the handler additionally
+requires the server-administrator credential (`authorizeServerAdminHTTP`):
+every tenant's usage and per-request counters are on this endpoint, so a
+tenant-scoped bearer token or JWT is not enough — only a credential carrying
+the server-admin claim can scrape it. The comment at
+`cmd/deepdata/server.go:1320-1323` records why: request-volume and operation
+detail leak through this endpoint, so it is gated more tightly than the
+tenant API. The gate landed in 043ad5d; the server-admin requirement in the
+review-round-1 fix.
 
 ## Scrape configuration
 
@@ -27,7 +30,7 @@ scrape_configs:
     metrics_path: /metrics
     authorization:
       type: Bearer
-      credentials: <the token the API accepts>
+      credentials: <a token or JWT carrying the server-admin claim>
     static_configs:
       - targets:
           - 127.0.0.1:8080

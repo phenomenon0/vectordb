@@ -641,6 +641,73 @@ func TestCanonicalTenantLifecycleHTTP(t *testing.T) {
 	}
 }
 
+// TestTenantUpdateHTTPPreservesOmittedFields pins the review-round-1 fix for
+// the exact sequence the Python SDK's own documented usage produces
+// (README.md: create with a quota, then .update(status=...) without a
+// quota): PUT /v3/tenants/{tenant} with only "status" must not zero out a
+// previously-set quota, and PUT with only "quota" must not reactivate a
+// suspended tenant.
+func TestTenantUpdateHTTPPreservesOmittedFields(t *testing.T) {
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv("API_TOKEN", "server-admin-token")
+	t.Setenv("REQUIRE_AUTH", "1")
+	rt := testServerRuntime(t)
+	handler, collections := newCanonicalHTTPHandler(rt, NewHashEmbedder(4), filepath.Join(t.TempDir(), "index.gob"))
+	t.Cleanup(func() { _ = collections.Close() })
+
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer server-admin-token")
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+	tenantInfo := func() vcollection.TenantInfo {
+		t.Helper()
+		response := request(http.MethodGet, "/v3/tenants/acme", "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("get tenant info returned %d: %s", response.Code, response.Body.String())
+		}
+		var info struct {
+			Tenant vcollection.TenantInfo `json:"tenant"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&info); err != nil {
+			t.Fatal(err)
+		}
+		return info.Tenant
+	}
+
+	if response := request(http.MethodPost, "/v3/tenants", `{"tenant_id":"acme","quota":{"max_documents":1000}}`); response.Code != http.StatusCreated {
+		t.Fatalf("create tenant returned %d: %s", response.Code, response.Body.String())
+	}
+
+	// SDK's client.tenant("acme").update(status="suspended") sends exactly
+	// this body: status only, no "quota" key at all.
+	if response := request(http.MethodPut, "/v3/tenants/acme", `{"status":"suspended"}`); response.Code != http.StatusOK {
+		t.Fatalf("status-only update returned %d: %s", response.Code, response.Body.String())
+	}
+	info := tenantInfo()
+	if info.Status != vcollection.TenantStatusSuspended {
+		t.Fatalf("status after status-only update = %q, want suspended", info.Status)
+	}
+	if info.Quota.MaxDocuments != 1000 {
+		t.Fatalf("quota after status-only update = %+v, want max_documents=1000 (unchanged)", info.Quota)
+	}
+
+	// Quota-only update must not reactivate the tenant it's scoped to.
+	if response := request(http.MethodPut, "/v3/tenants/acme", `{"quota":{"max_documents":500}}`); response.Code != http.StatusOK {
+		t.Fatalf("quota-only update returned %d: %s", response.Code, response.Body.String())
+	}
+	info = tenantInfo()
+	if info.Status != vcollection.TenantStatusSuspended {
+		t.Fatalf("status after quota-only update = %q, want suspended (unchanged)", info.Status)
+	}
+	if info.Quota.MaxDocuments != 500 {
+		t.Fatalf("quota after quota-only update = %+v, want max_documents=500", info.Quota)
+	}
+}
+
 // TestCanonicalTenantLifecycleRequiresServerAdmin checks that a tenant-scoped
 // admin JWT — the credential that manages one tenant's collections — cannot
 // touch tenant lifecycle routes; only the server_admin claim can.

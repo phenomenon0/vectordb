@@ -114,10 +114,14 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 	guard := rt.httpGuard()
 
 	// Prometheus metrics are an operational surface like the health probes,
-	// but unlike probes they can leak request-volume/operation detail, so they
-	// are gated behind the same guard used for API routes when REQUIRE_AUTH is
-	// on. In credentialless dev mode the guard authorizes anonymous access.
+	// but every tenant's usage and per-request counters are on it, so unlike
+	// probes it's gated on the server-administrator credential, not just any
+	// authenticated caller. In credentialless dev mode the guard's default
+	// context is already server-admin, so this is a no-op there.
 	mux.Handle("/metrics", guard(func(w http.ResponseWriter, r *http.Request) {
+		if !authorizeServerAdminHTTP(w, r, "") {
+			return
+		}
 		if collectionHTTP != nil {
 			// ponytail: O(tenants) per scrape
 			if infos, err := collectionHTTP.TenantManager().ListTenantInfos(); err == nil {

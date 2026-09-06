@@ -93,6 +93,14 @@ func (tm *TenantManager) getTenantRecord(tenantID string) (TenantRecord, bool) {
 	return rec, ok
 }
 
+// GetTenantRecord returns the raw stored record for a tenant (status and its
+// own quota override, not the effective-quota/usage view GetTenantInfo
+// returns), so an UpdateTenant caller can merge in only the fields it means
+// to change.
+func (tm *TenantManager) GetTenantRecord(tenantID string) (TenantRecord, bool) {
+	return tm.getTenantRecord(tenantID)
+}
+
 // putTenantRecordDirect stores a tenant record, ensuring the tenant also owns
 // a (possibly empty) CollectionManager so a record-only tenant is visible to
 // every map keyed by tm.tenants (list, count, prune).

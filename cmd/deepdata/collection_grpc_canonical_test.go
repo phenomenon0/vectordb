@@ -614,6 +614,73 @@ func TestCanonicalGRPCTenantLifecycle(t *testing.T) {
 	}
 }
 
+// TestCanonicalGRPCUpdateTenantPreservesOmittedFields pins the review-round-1
+// fix: an UpdateTenant call that omits status must not reactivate a
+// suspended tenant, and one that omits quota must not zero out a
+// previously-set quota. Both bugs shipped because tenantRecordFromProto's
+// "empty status defaults to active" and a bare struct-literal quota were
+// reused for UpdateTenant, which is a partial-field upsert, not a fresh
+// CreateTenant.
+func TestCanonicalGRPCUpdateTenantPreservesOmittedFields(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close durable store: %v", err)
+		}
+	})
+
+	server := &CollectionGRPCServer{tenants: store.Tenants(), persistenceHealth: store.Err}
+	admin := canonicalGRPCServerAdminContext()
+
+	if _, err := server.CreateTenant(admin, &deepdatav3.CreateTenantRequest{
+		TenantId: "acme",
+		Quota:    &deepdatav3.TenantQuota{MaxDocuments: 1000},
+	}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	// Quota-only update (no status): must not silently reactivate/change
+	// status, and must apply the new quota.
+	if _, err := server.UpdateTenant(admin, &deepdatav3.UpdateTenantRequest{
+		TenantId: "acme",
+		Quota:    &deepdatav3.TenantQuota{MaxDocuments: 500},
+	}); err != nil {
+		t.Fatalf("quota-only update: %v", err)
+	}
+	info, err := server.GetTenantInfo(admin, &deepdatav3.GetTenantInfoRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("get tenant info: %v", err)
+	}
+	if info.Tenant.Status != vcollection.TenantStatusActive {
+		t.Fatalf("status after quota-only update = %q, want active (unchanged)", info.Tenant.Status)
+	}
+	if info.Tenant.Quota.MaxDocuments != 500 {
+		t.Fatalf("quota after quota-only update = %+v, want max_documents=500", info.Tenant.Quota)
+	}
+
+	// Status-only update (no quota): must not zero out the quota just set.
+	if _, err := server.UpdateTenant(admin, &deepdatav3.UpdateTenantRequest{
+		TenantId: "acme",
+		Status:   vcollection.TenantStatusSuspended,
+	}); err != nil {
+		t.Fatalf("status-only update: %v", err)
+	}
+	info, err = server.GetTenantInfo(admin, &deepdatav3.GetTenantInfoRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("get tenant info: %v", err)
+	}
+	if info.Tenant.Status != vcollection.TenantStatusSuspended {
+		t.Fatalf("status after status-only update = %q, want suspended", info.Tenant.Status)
+	}
+	if info.Tenant.Quota.MaxDocuments != 500 {
+		t.Fatalf("quota after status-only update = %+v, want max_documents=500 (unchanged)", info.Tenant.Quota)
+	}
+}
+
 func TestCanonicalGRPCProtoUsesTypedVectorsStructsAndNoIgnoredText(t *testing.T) {
 	insert := (&deepdatav3.InsertRequest{}).ProtoReflect().Descriptor()
 	if insert.Fields().ByName("text") != nil {

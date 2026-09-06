@@ -11,10 +11,10 @@ release candidate. The production surface is deliberately small:
 - HNSW or Flat for dense fields and Inverted/BM25 for sparse fields;
 - one-field search or two-field hybrid search, plus single-document fetch by
   caller-supplied ID; and
-- eight mutations: create collection, delete collection, insert, atomic batch
-  insert, delete document, upsert, create tenant, and delete tenant
-  (`CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`,
-  `DeleteDoc`, `Upsert`, `CreateTenant`, `DeleteTenant`).
+- nine mutations: create collection, delete collection, insert, atomic batch
+  insert, delete document, upsert, create tenant, update tenant, and delete
+  tenant (`CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`,
+  `DeleteDoc`, `Upsert`, `CreateTenant`, `UpdateTenant`, `DeleteTenant`).
 
 Historical V2/root routes and advanced source packages are not part of this
 contract.
@@ -101,10 +101,10 @@ digits, hyphens, or underscores. JSON request bodies are strict; unknown fields
 are rejected.
 
 `GET /livez`, `GET /healthz`, and `GET /readyz` are unauthenticated probes.
-`GET /metrics` sits behind the same authentication guard as the API routes
-when authentication is required (cmd/deepdata/server.go:1320-1324,
-`TestMetricsEndpointRequiresAuthWhenEnabled`). Restrict all four at the
-network boundary.
+`GET /metrics` exposes every tenant's usage, so it requires the
+server-administrator credential, not just any authenticated caller
+(cmd/deepdata/server.go:1320-1324, `TestMetricsRequiresServerAdmin`). Restrict
+all four at the network boundary.
 
 ### Tenant lifecycle
 

@@ -49,8 +49,14 @@ func (s *CollectionGRPCServer) GetTenantInfo(ctx context.Context, req *deepdatav
 		return nil, err
 	}
 
+	// ListCollectionInfosChecked is a data-plane read: it fails closed on a
+	// suspended tenant (tenantStateErrorLocked), but GetTenantInfo is a
+	// lifecycle/admin call that must keep a suspended tenant visible (see
+	// tenantStateErrorLocked's doc comment in durable_store.go), so only a
+	// real store fault aborts the RPC here; suspension just means an empty
+	// collection list.
 	listed, err := s.tenants.ListCollectionInfosChecked(req.TenantId)
-	if err != nil {
+	if err != nil && !errors.Is(err, vcollection.ErrTenantSuspended) {
 		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
 	}
 	infos := append([]vcollection.CollectionInfo(nil), listed...)
@@ -116,8 +122,11 @@ func (s *CollectionGRPCServer) ListTenants(ctx context.Context, req *deepdatav3.
 }
 
 // UpdateTenant upserts a tenant record; PUT on an unknown tenant creates it,
-// so this also covers suspend/reactivate transitions. Server-administrator
-// only.
+// so this also covers suspend/reactivate transitions. An omitted status or
+// quota leaves that field as it is (see mergeTenantUpdate) rather than
+// resetting it — proto3's plain `string status` can't distinguish "empty" from
+// "not sent", and an empty status is never valid, so treating it as "unset" is
+// safe. Server-administrator only.
 func (s *CollectionGRPCServer) UpdateTenant(ctx context.Context, req *deepdatav3.UpdateTenantRequest) (*deepdatav3.UpdateTenantResponse, error) {
 	if err := s.requirePersistenceHealthy(ctx); err != nil {
 		return nil, err
@@ -128,7 +137,15 @@ func (s *CollectionGRPCServer) UpdateTenant(ctx context.Context, req *deepdatav3
 	if _, err := authorizeServerAdminGRPC(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.tenants.UpdateTenant(ctx, tenantRecordFromProto(req.TenantId, req.Status, req.Quota)); err != nil {
+	var quota *vcollection.TenantQuota
+	if req.Quota != nil {
+		quota = &vcollection.TenantQuota{
+			MaxDocuments:   req.Quota.MaxDocuments,
+			MaxBytes:       req.Quota.MaxBytes,
+			MaxCollections: req.Quota.MaxCollections,
+		}
+	}
+	if err := s.tenants.UpdateTenant(ctx, mergeTenantUpdate(s.tenants, req.TenantId, req.Status, quota)); err != nil {
 		return nil, canonicalGRPCError(ctx, err, apierror.CodeInvalidArgument)
 	}
 	return &deepdatav3.UpdateTenantResponse{TenantId: req.TenantId}, nil
@@ -790,9 +807,11 @@ func tenantInfoProto(info vcollection.TenantInfo) *deepdatav3.TenantInfo {
 	}
 }
 
-// tenantRecordFromProto decodes a tenant lifecycle request into the domain
-// type. An empty status defaults to active: the common case is provisioning
-// a tenant ready for immediate use, not a pre-suspended one.
+// tenantRecordFromProto decodes a CreateTenant request into the domain type.
+// An empty status defaults to active: the common case is provisioning a
+// tenant ready for immediate use, not a pre-suspended one. UpdateTenant uses
+// mergeTenantUpdate instead, since "empty means active" is wrong once a
+// tenant already has a status to preserve.
 func tenantRecordFromProto(tenantID, status string, quota *deepdatav3.TenantQuota) vcollection.TenantRecord {
 	if status == "" {
 		status = vcollection.TenantStatusActive
@@ -804,6 +823,39 @@ func tenantRecordFromProto(tenantID, status string, quota *deepdatav3.TenantQuot
 			MaxBytes:       quota.MaxBytes,
 			MaxCollections: quota.MaxCollections,
 		}
+	}
+	return rec
+}
+
+// mergeTenantUpdate resolves the full record to pass to TenantManager.
+// UpdateTenant (a full-record upsert) from a partial wire request: an empty
+// status or a nil quota means the caller didn't send that field, so it keeps
+// the tenant's current value instead of being reset to zero. A tenant that
+// doesn't exist yet is a create-via-PUT, so unset fields fall back to the
+// same defaults CreateTenant uses.
+//
+// ponytail: reads the current record, then the caller writes it back
+// separately (no lock held across the two) — a concurrent UpdateTenant on
+// the same tenant can lose one side's change. Tenant lifecycle calls are
+// server-admin-only and rare; upgrade path is a callback-based
+// TenantManager.UpdateTenant that merges under the store's own lock if that
+// ever changes.
+func mergeTenantUpdate(tenants *vcollection.TenantManager, tenantID, status string, quota *vcollection.TenantQuota) vcollection.TenantRecord {
+	existing, ok := tenants.GetTenantRecord(tenantID)
+	rec := vcollection.TenantRecord{TenantID: tenantID}
+	switch {
+	case status != "":
+		rec.Status = status
+	case ok:
+		rec.Status = existing.Status
+	default:
+		rec.Status = vcollection.TenantStatusActive
+	}
+	switch {
+	case quota != nil:
+		rec.Quota = *quota
+	case ok:
+		rec.Quota = existing.Quota
 	}
 	return rec
 }
