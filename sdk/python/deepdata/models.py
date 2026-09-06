@@ -125,8 +125,12 @@ class TenantVectorField(_TenantRequestModel):
             raise ValueError("dim is required unless the field binds an embedding")
         if self.embedding is not None:
             is_bm25 = self.embedding.provider == "bm25"
-            if self.type == "sparse" and (not is_bm25 or self.embedding.model is not None):
-                raise ValueError("sparse fields bind only embedding provider bm25 without a model")
+            if self.type == "sparse" and (
+                not is_bm25 or self.embedding.model is not None
+            ):
+                raise ValueError(
+                    "sparse fields bind only embedding provider bm25 without a model"
+                )
             if self.type == "dense" and is_bm25:
                 raise ValueError("embedding provider bm25 is for sparse fields")
         return self
@@ -402,9 +406,7 @@ class TenantSearchRequest(_TenantRequestModel):
             and self.hybrid_params is None
             and self.fallback is None
         ):
-            raise ValueError(
-                "multiple query fields require hybrid_params or fallback"
-            )
+            raise ValueError("multiple query fields require hybrid_params or fallback")
         if self.hybrid_params is not None and self.hybrid_params.weights is not None:
             unknown = self.hybrid_params.weights.keys() - query_fields
             if unknown:
@@ -414,9 +416,7 @@ class TenantSearchRequest(_TenantRequestModel):
                 )
         if self.fallback is not None:
             if self.hybrid_params is not None:
-                raise ValueError(
-                    "fallback and hybrid_params are mutually exclusive"
-                )
+                raise ValueError("fallback and hybrid_params are mutually exclusive")
             if len(query_fields) != 2:
                 raise ValueError("fallback requires exactly two query fields")
             missing = {self.fallback.primary, self.fallback.secondary} - query_fields
@@ -425,7 +425,10 @@ class TenantSearchRequest(_TenantRequestModel):
                     "fallback fields must be query fields: "
                     + ", ".join(sorted(missing))
                 )
-        for name, value in (("score_floor", self.score_floor), ("usage_boost", self.usage_boost)):
+        for name, value in (
+            ("score_floor", self.score_floor),
+            ("usage_boost", self.usage_boost),
+        ):
             if value is not None and not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
         return self
@@ -465,12 +468,38 @@ class TenantCollectionStats(_TenantResponseModel):
     """Per-collection counters embedded in tenant info."""
 
     name: str = Field(validation_alias=AliasChoices("name", "Name"))
-    doc_count: int = Field(
-        validation_alias=AliasChoices("doc_count", "DocCount"), ge=0
-    )
+    doc_count: int = Field(validation_alias=AliasChoices("doc_count", "DocCount"), ge=0)
     field_count: int = Field(
         validation_alias=AliasChoices("field_count", "FieldCount"), ge=0
     )
+
+
+class TenantQuota(_TenantRequestModel):
+    """Administrator-set resource ceilings for a tenant. A zero field means
+    server default / unlimited."""
+
+    max_documents: int = Field(default=0, ge=0)
+    max_bytes: int = Field(default=0, ge=0)
+    max_collections: int = Field(default=0, ge=0)
+
+
+class TenantUsage(_TenantResponseModel):
+    """A tenant's current resource consumption, comparable field by field
+    against its ``TenantQuota``."""
+
+    documents: int = Field(ge=0)
+    bytes: int = Field(ge=0)
+    collections: int = Field(ge=0)
+
+
+class TenantSummary(_TenantResponseModel):
+    """Administrator-visible snapshot of one tenant: lifecycle status, the
+    quota in effect, and current usage against it."""
+
+    tenant_id: str
+    status: str
+    quota: TenantQuota
+    usage: TenantUsage
 
 
 class TenantInfoResponse(_TenantResponseModel):
@@ -481,3 +510,20 @@ class TenantInfoResponse(_TenantResponseModel):
     collection_count: int = Field(ge=0)
     total_documents: int = Field(ge=0)
     collections: dict[str, TenantCollectionStats] | None = None
+    tenant: TenantSummary | None = None
+
+
+class TenantListResponse(_TenantResponseModel):
+    """Response from listing every tenant record. Server-administrator only."""
+
+    status: Literal["success"]
+    count: int = Field(ge=0)
+    tenants: list[TenantSummary]
+
+
+class TenantLifecycleResponse(_TenantResponseModel):
+    """Response from creating, updating, or deleting a tenant record."""
+
+    status: Literal["success"]
+    tenant_id: str
+    message: str

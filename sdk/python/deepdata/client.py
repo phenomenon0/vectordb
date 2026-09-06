@@ -23,6 +23,9 @@ from .models import (
     TenantHybridParams,
     TenantInfoResponse,
     TenantInsertResponse,
+    TenantLifecycleResponse,
+    TenantListResponse,
+    TenantQuota,
     TenantSearchRequest,
     TenantSearchResponse,
     TenantUpsertDocumentRequest,
@@ -146,7 +149,9 @@ class DeepDataClient:
 
             except DeepDataError as exc:
                 last_exc = exc
-                if isinstance(exc, APIError) and should_retry(exc, attempt, retry_config):
+                if isinstance(exc, APIError) and should_retry(
+                    exc, attempt, retry_config
+                ):
                     continue
                 raise
 
@@ -164,6 +169,11 @@ class DeepDataClient:
     def tenant(self, tenant_id: str) -> TenantClient:
         """Get a typed client for one tenant on the canonical V3 API."""
         return TenantClient(self, tenant_id)
+
+    def list_tenants(self) -> TenantListResponse:
+        """List every tenant record. Server-administrator only."""
+        data = self._request("GET", "/v3/tenants")
+        return response_model(TenantListResponse, _require_response_object(data))
 
 
 class TenantClient:
@@ -390,3 +400,28 @@ class TenantClient:
         """Get tenant info."""
         data = self._request("GET", "")
         return response_model(TenantInfoResponse, data)
+
+    def create(
+        self, *, status: str = "active", quota: TenantQuota | None = None
+    ) -> TenantLifecycleResponse:
+        """Provision this tenant. Server-administrator only."""
+        body: dict[str, Any] = {"tenant_id": self._tenant_id, "status": status}
+        if quota is not None:
+            body["quota"] = request_payload(quota)
+        data = self._client._request("POST", "/v3/tenants", json=body)
+        return response_model(TenantLifecycleResponse, _require_response_object(data))
+
+    def update(
+        self, *, status: str, quota: TenantQuota | None = None
+    ) -> TenantLifecycleResponse:
+        """Update this tenant's lifecycle status and/or quota. Server-administrator only."""
+        body: dict[str, Any] = {"status": status}
+        if quota is not None:
+            body["quota"] = request_payload(quota)
+        data = self._request("PUT", "", json=body)
+        return response_model(TenantLifecycleResponse, data)
+
+    def delete(self) -> TenantLifecycleResponse:
+        """Delete this tenant's record and every collection it owns. Server-administrator only."""
+        data = self._request("DELETE", "")
+        return response_model(TenantLifecycleResponse, data)

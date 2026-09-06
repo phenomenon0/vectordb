@@ -152,6 +152,19 @@ Search accepts one vector field, or exactly two fields for hybrid fusion.
 `include_vectors` defaults to the server default (currently omitted vectors).
 Pass `True` only when the returned vectors are needed.
 
+## Tenant lifecycle
+
+Provisioning, suspending, and removing tenants is server-administrator only.
+
+```python
+from deepdata import DeepDataClient, TenantQuota
+with DeepDataClient(url, api_token=token) as client:
+    client.tenant("acme").create(quota=TenantQuota(max_documents=1000))
+    client.tenant("acme").update(status="suspended")
+    client.tenant("acme").delete()
+    client.list_tenants()
+```
+
 ## Async client
 
 The async tenant surface has the same paths, payloads, validation, and response

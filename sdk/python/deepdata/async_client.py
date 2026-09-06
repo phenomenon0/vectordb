@@ -23,6 +23,9 @@ from .models import (
     TenantHybridParams,
     TenantInfoResponse,
     TenantInsertResponse,
+    TenantLifecycleResponse,
+    TenantListResponse,
+    TenantQuota,
     TenantSearchRequest,
     TenantSearchResponse,
     TenantUpsertDocumentRequest,
@@ -135,7 +138,9 @@ class AsyncDeepDataClient:
 
             except DeepDataError as exc:
                 last_exc = exc
-                if isinstance(exc, APIError) and should_retry(exc, attempt, retry_config):
+                if isinstance(exc, APIError) and should_retry(
+                    exc, attempt, retry_config
+                ):
                     continue
                 raise
 
@@ -153,6 +158,11 @@ class AsyncDeepDataClient:
     def tenant(self, tenant_id: str) -> AsyncTenantClient:
         """Get a typed client for one tenant on the canonical V3 API."""
         return AsyncTenantClient(self, tenant_id)
+
+    async def list_tenants(self) -> TenantListResponse:
+        """List every tenant record. Server-administrator only."""
+        data = await self._request("GET", "/v3/tenants")
+        return response_model(TenantListResponse, _require_response_object(data))
 
 
 class AsyncTenantClient:
@@ -200,9 +210,7 @@ class AsyncTenantClient:
             metadata=metadata,
             description=description,
         )
-        data = await self._request(
-            "POST", "/collections", json=request_payload(schema)
-        )
+        data = await self._request("POST", "/collections", json=request_payload(schema))
         return response_model(TenantCollectionMutationResponse, data)
 
     async def list_collections(self) -> TenantCollectionListResponse:
@@ -216,9 +224,7 @@ class AsyncTenantClient:
         data = await self._request("GET", f"/collections/{segment}")
         return response_model(TenantGetCollectionResponse, data)
 
-    async def delete_collection(
-        self, name: str
-    ) -> TenantCollectionMutationResponse:
+    async def delete_collection(self, name: str) -> TenantCollectionMutationResponse:
         """Delete a canonical collection within this tenant."""
         segment = collection_segment(name)
         data = await self._request("DELETE", f"/collections/{segment}")
@@ -378,3 +384,28 @@ class AsyncTenantClient:
         """Get canonical tenant counters and collection statistics."""
         data = await self._request("GET", "")
         return response_model(TenantInfoResponse, data)
+
+    async def create(
+        self, *, status: str = "active", quota: TenantQuota | None = None
+    ) -> TenantLifecycleResponse:
+        """Provision this tenant. Server-administrator only."""
+        body: dict[str, Any] = {"tenant_id": self._tenant_id, "status": status}
+        if quota is not None:
+            body["quota"] = request_payload(quota)
+        data = await self._client._request("POST", "/v3/tenants", json=body)
+        return response_model(TenantLifecycleResponse, _require_response_object(data))
+
+    async def update(
+        self, *, status: str, quota: TenantQuota | None = None
+    ) -> TenantLifecycleResponse:
+        """Update this tenant's lifecycle status and/or quota. Server-administrator only."""
+        body: dict[str, Any] = {"status": status}
+        if quota is not None:
+            body["quota"] = request_payload(quota)
+        data = await self._request("PUT", "", json=body)
+        return response_model(TenantLifecycleResponse, data)
+
+    async def delete(self) -> TenantLifecycleResponse:
+        """Delete this tenant's record and every collection it owns. Server-administrator only."""
+        data = await self._request("DELETE", "")
+        return response_model(TenantLifecycleResponse, data)

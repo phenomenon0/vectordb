@@ -24,6 +24,9 @@ from deepdata import (
     TenantGetCollectionResponse,
     TenantInfoResponse,
     TenantInsertResponse,
+    TenantLifecycleResponse,
+    TenantListResponse,
+    TenantQuota,
     TenantSearchRequest,
     TenantSearchResponse,
     TenantUpsertResponse,
@@ -61,9 +64,7 @@ def _body(route: respx.Route, call: int = 0) -> object:
     ("vector_type", "index_type"),
     [("dense", "hnsw"), ("dense", "flat"), ("sparse", "inverted")],
 )
-def test_supported_canonical_index_matrix(
-    vector_type: str, index_type: str
-) -> None:
+def test_supported_canonical_index_matrix(vector_type: str, index_type: str) -> None:
     field = TenantVectorField.model_validate(
         {
             "name": "vector",
@@ -438,9 +439,7 @@ class TestTenantV3Sync:
                             "vectors": {"embedding": [0.2, 0.3]},
                             "metadata": {"topic": "db"},
                         },
-                        TenantDocumentInput(
-                            id=43, vectors={"embedding": [0.3, 0.4]}
-                        ),
+                        TenantDocumentInput(id=43, vectors={"embedding": [0.3, 0.4]}),
                     ],
                 )
                 deleted = tenant.delete_document("papers", 41)
@@ -682,6 +681,127 @@ class TestTenantV3Sync:
                     )
             assert route.call_count == 1
 
+    def test_tenant_lifecycle_exact_contract(self) -> None:
+        with respx.mock:
+            create = respx.post(f"{BASE}/v3/tenants").mock(
+                return_value=httpx.Response(
+                    201,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "message": "tenant created",
+                    },
+                )
+            )
+            listing = respx.get(f"{BASE}/v3/tenants").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "count": 1,
+                        "tenants": [
+                            {
+                                "tenant_id": TENANT,
+                                "status": "active",
+                                "quota": {
+                                    "max_documents": 1000,
+                                    "max_bytes": 0,
+                                    "max_collections": 0,
+                                },
+                                "usage": {
+                                    "documents": 0,
+                                    "bytes": 0,
+                                    "collections": 0,
+                                },
+                            }
+                        ],
+                    },
+                )
+            )
+            update = respx.put(ROOT).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "message": "tenant updated",
+                    },
+                )
+            )
+            delete = respx.delete(ROOT).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "message": "tenant deleted",
+                    },
+                )
+            )
+            info = respx.get(ROOT).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "collection_count": 0,
+                        "total_documents": 0,
+                        "tenant": {
+                            "tenant_id": TENANT,
+                            "status": "active",
+                            "quota": {
+                                "max_documents": 1000,
+                                "max_bytes": 0,
+                                "max_collections": 0,
+                            },
+                            "usage": {"documents": 0, "bytes": 0, "collections": 0},
+                        },
+                    },
+                )
+            )
+
+            with DeepDataClient(BASE, retry=None) as client:
+                tenant = client.tenant(TENANT)
+                created = tenant.create(quota=TenantQuota(max_documents=1000))
+                tenants = client.list_tenants()
+                updated = tenant.update(status="suspended")
+                deleted = tenant.delete()
+                tenant_info = tenant.info()
+
+            assert isinstance(created, TenantLifecycleResponse)
+            assert isinstance(tenants, TenantListResponse)
+            assert isinstance(updated, TenantLifecycleResponse)
+            assert isinstance(deleted, TenantLifecycleResponse)
+            assert tenants.tenants[0].quota.max_documents == 1000
+            assert tenant_info.tenant is not None
+            assert tenant_info.tenant.status == "active"
+            assert _body(create) == {
+                "tenant_id": TENANT,
+                "status": "active",
+                "quota": {
+                    "max_documents": 1000,
+                    "max_bytes": 0,
+                    "max_collections": 0,
+                },
+            }
+            assert _body(update) == {"status": "suspended"}
+            assert listing.call_count == delete.call_count == info.call_count == 1
+
+    def test_tenant_lifecycle_forbidden_maps_to_permission_error(self) -> None:
+        with respx.mock:
+            respx.post(f"{BASE}/v3/tenants").mock(
+                return_value=httpx.Response(
+                    403,
+                    json={
+                        "code": "permission_denied",
+                        "message": "server admin token required",
+                    },
+                )
+            )
+            with DeepDataClient(BASE, retry=None) as client:
+                with pytest.raises(DeepDataPermissionError):
+                    client.tenant(TENANT).create()
+
 
 @pytest.mark.asyncio
 class TestTenantV3Async:
@@ -831,9 +951,7 @@ class TestTenantV3Async:
                 "vectors": {"embedding": [0.1, 0.2]},
             }
             assert _body(batch) == {
-                "documents": [
-                    {"id": 52, "vectors": {"embedding": [0.2, 0.3]}}
-                ]
+                "documents": [{"id": 52, "vectors": {"embedding": [0.2, 0.3]}}]
             }
             assert _body(delete) == {"doc_id": 51}
 
@@ -930,3 +1048,109 @@ class TestTenantV3Async:
                     )
             assert not batch.called
             assert not create.called
+
+    async def test_tenant_lifecycle_exact_contract(self) -> None:
+        with respx.mock:
+            create = respx.post(f"{BASE}/v3/tenants").mock(
+                return_value=httpx.Response(
+                    201,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "message": "tenant created",
+                    },
+                )
+            )
+            listing = respx.get(f"{BASE}/v3/tenants").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "count": 1,
+                        "tenants": [
+                            {
+                                "tenant_id": TENANT,
+                                "status": "active",
+                                "quota": {
+                                    "max_documents": 500,
+                                    "max_bytes": 0,
+                                    "max_collections": 0,
+                                },
+                                "usage": {
+                                    "documents": 1,
+                                    "bytes": 10,
+                                    "collections": 1,
+                                },
+                            }
+                        ],
+                    },
+                )
+            )
+            update = respx.put(ROOT).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "message": "tenant updated",
+                    },
+                )
+            )
+            delete = respx.delete(ROOT).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "message": "tenant deleted",
+                    },
+                )
+            )
+            info = respx.get(ROOT).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "status": "success",
+                        "tenant_id": TENANT,
+                        "collection_count": 0,
+                        "total_documents": 0,
+                        "tenant": {
+                            "tenant_id": TENANT,
+                            "status": "active",
+                            "quota": {
+                                "max_documents": 500,
+                                "max_bytes": 0,
+                                "max_collections": 0,
+                            },
+                            "usage": {"documents": 1, "bytes": 10, "collections": 1},
+                        },
+                    },
+                )
+            )
+
+            async with AsyncDeepDataClient(BASE, retry=None) as client:
+                tenant = client.tenant(TENANT)
+                created = await tenant.create(quota=TenantQuota(max_documents=500))
+                tenants = await client.list_tenants()
+                updated = await tenant.update(status="suspended")
+                deleted = await tenant.delete()
+                tenant_info = await tenant.info()
+
+            assert isinstance(created, TenantLifecycleResponse)
+            assert isinstance(tenants, TenantListResponse)
+            assert isinstance(updated, TenantLifecycleResponse)
+            assert isinstance(deleted, TenantLifecycleResponse)
+            assert tenants.tenants[0].usage.documents == 1
+            assert tenant_info.tenant is not None
+            assert tenant_info.tenant.quota.max_documents == 500
+            assert _body(create) == {
+                "tenant_id": TENANT,
+                "status": "active",
+                "quota": {
+                    "max_documents": 500,
+                    "max_bytes": 0,
+                    "max_collections": 0,
+                },
+            }
+            assert _body(update) == {"status": "suspended"}
+            assert listing.call_count == delete.call_count == info.call_count == 1
