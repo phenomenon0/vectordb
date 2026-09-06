@@ -30,6 +30,15 @@ func canonicalGRPCAdminContext(tenantID string) context.Context {
 	})
 }
 
+// canonicalGRPCServerAdminContext mimics the context a static server-admin
+// credential produces, the same way canonicalGRPCAdminContext mimics a
+// tenant-scoped one.
+func canonicalGRPCServerAdminContext() context.Context {
+	return context.WithValue(context.Background(), security.TenantContextKey, &security.TenantContext{
+		IsServerAdmin: true,
+	})
+}
+
 func canonicalGRPCScopedContext(tenantID string, permissions map[string]bool, collections ...string) context.Context {
 	allowed := make(map[string]bool, len(collections))
 	for _, collection := range collections {
@@ -515,6 +524,93 @@ func TestCanonicalGRPCPreservesTenantPermissionAndCollectionScope(t *testing.T) 
 	}
 	if _, err := server.ListCollections(tenantAdmin, &deepdatav3.ListCollectionsRequest{TenantId: "acme"}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("collection-scoped tenant admin list code = %s, want PermissionDenied", status.Code(err))
+	}
+}
+
+func TestCanonicalGRPCTenantLifecycle(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "collections")
+	store, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close durable store: %v", err)
+		}
+	})
+
+	server := &CollectionGRPCServer{tenants: store.Tenants(), persistenceHealth: store.Err}
+	admin := canonicalGRPCServerAdminContext()
+
+	if _, err := server.CreateTenant(admin, &deepdatav3.CreateTenantRequest{TenantId: "acme"}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if _, err := server.CreateCollection(admin, canonicalGRPCCreateCollectionRequest("acme", "docs")); err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	listed, err := server.ListTenants(admin, &deepdatav3.ListTenantsRequest{})
+	if err != nil {
+		t.Fatalf("list tenants: %v", err)
+	}
+	var found *deepdatav3.TenantInfo
+	for _, tenant := range listed.Tenants {
+		if tenant.TenantId == "acme" {
+			found = tenant
+		}
+	}
+	if found == nil || found.Status != vcollection.TenantStatusActive {
+		t.Fatalf("listed tenant acme = %+v, want status active", found)
+	}
+
+	if _, err := server.UpdateTenant(admin, &deepdatav3.UpdateTenantRequest{TenantId: "acme", Status: vcollection.TenantStatusSuspended}); err != nil {
+		t.Fatalf("suspend tenant: %v", err)
+	}
+
+	insertReq := &deepdatav3.InsertRequest{
+		TenantId:   "acme",
+		Collection: "docs",
+		Vectors:    map[string]*deepdatav3.VectorData{"embedding": denseProtoVector(1, 2)},
+	}
+	if _, err := server.Insert(admin, insertReq); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("insert on suspended tenant code = %s, want PermissionDenied (err=%v)", status.Code(err), err)
+	}
+
+	if _, err := server.UpdateTenant(admin, &deepdatav3.UpdateTenantRequest{TenantId: "acme", Status: vcollection.TenantStatusActive}); err != nil {
+		t.Fatalf("reactivate tenant: %v", err)
+	}
+	if _, err := server.Insert(admin, insertReq); err != nil {
+		t.Fatalf("insert on reactivated tenant: %v", err)
+	}
+
+	info, err := server.GetTenantInfo(admin, &deepdatav3.GetTenantInfoRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("get tenant info: %v", err)
+	}
+	if info.Tenant == nil || info.Tenant.Usage == nil || info.Tenant.Usage.Documents != 1 {
+		t.Fatalf("tenant info usage = %+v, want 1 document", info.Tenant)
+	}
+
+	if _, err := server.DeleteTenant(admin, &deepdatav3.DeleteTenantRequest{TenantId: "acme"}); err != nil {
+		t.Fatalf("delete tenant: %v", err)
+	}
+	if _, err := server.DeleteTenant(admin, &deepdatav3.DeleteTenantRequest{TenantId: "acme"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("delete missing tenant code = %s, want NotFound (err=%v)", status.Code(err), err)
+	}
+
+	if _, err := server.CreateTenant(admin, &deepdatav3.CreateTenantRequest{TenantId: "acme"}); err != nil {
+		t.Fatalf("recreate tenant: %v", err)
+	}
+	if _, err := server.CreateTenant(admin, &deepdatav3.CreateTenantRequest{TenantId: "acme"}); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("duplicate create tenant code = %s, want AlreadyExists (err=%v)", status.Code(err), err)
+	}
+
+	tenantAdminNoServerAdmin := canonicalGRPCAdminContext("acme")
+	if _, err := server.CreateTenant(tenantAdminNoServerAdmin, &deepdatav3.CreateTenantRequest{TenantId: "other"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("tenant admin create tenant code = %s, want PermissionDenied (err=%v)", status.Code(err), err)
+	}
+	if _, err := server.ListTenants(tenantAdminNoServerAdmin, &deepdatav3.ListTenantsRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("tenant admin list tenants code = %s, want PermissionDenied (err=%v)", status.Code(err), err)
 	}
 }
 

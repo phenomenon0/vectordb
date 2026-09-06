@@ -66,12 +66,90 @@ func (s *CollectionGRPCServer) GetTenantInfo(ctx context.Context, req *deepdatav
 			FieldCount:    int32(len(info.Fields)),
 		}
 	}
-	return &deepdatav3.GetTenantInfoResponse{
+	resp := &deepdatav3.GetTenantInfoResponse{
 		TenantId:        req.TenantId,
 		CollectionCount: uint64(len(infos)),
 		TotalDocuments:  totalDocuments,
 		Collections:     stats,
-	}, nil
+	}
+	if info, err := s.tenants.GetTenantInfo(req.TenantId); err == nil {
+		resp.Tenant = tenantInfoProto(info)
+	}
+	return resp, nil
+}
+
+// CreateTenant provisions a new tenant record. Tenant lifecycle crosses
+// tenant boundaries by nature, so it is server-administrator only.
+func (s *CollectionGRPCServer) CreateTenant(ctx context.Context, req *deepdatav3.CreateTenantRequest) (*deepdatav3.CreateTenantResponse, error) {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil || !isValidTenantID(req.TenantId) {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "valid tenant_id required").GRPC(ctx)
+	}
+	if _, err := authorizeServerAdminGRPC(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.tenants.CreateTenant(ctx, tenantRecordFromProto(req.TenantId, req.Status, req.Quota)); err != nil {
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInvalidArgument)
+	}
+	return &deepdatav3.CreateTenantResponse{TenantId: req.TenantId}, nil
+}
+
+// ListTenants returns every tenant record. Server-administrator only.
+func (s *CollectionGRPCServer) ListTenants(ctx context.Context, req *deepdatav3.ListTenantsRequest) (*deepdatav3.ListTenantsResponse, error) {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
+		return nil, err
+	}
+	if _, err := authorizeServerAdminGRPC(ctx); err != nil {
+		return nil, err
+	}
+	infos, err := s.tenants.ListTenantInfos()
+	if err != nil {
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
+	}
+	tenants := make([]*deepdatav3.TenantInfo, len(infos))
+	for i := range infos {
+		tenants[i] = tenantInfoProto(infos[i])
+	}
+	return &deepdatav3.ListTenantsResponse{Tenants: tenants}, nil
+}
+
+// UpdateTenant upserts a tenant record; PUT on an unknown tenant creates it,
+// so this also covers suspend/reactivate transitions. Server-administrator
+// only.
+func (s *CollectionGRPCServer) UpdateTenant(ctx context.Context, req *deepdatav3.UpdateTenantRequest) (*deepdatav3.UpdateTenantResponse, error) {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil || !isValidTenantID(req.TenantId) {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "valid tenant_id required").GRPC(ctx)
+	}
+	if _, err := authorizeServerAdminGRPC(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.tenants.UpdateTenant(ctx, tenantRecordFromProto(req.TenantId, req.Status, req.Quota)); err != nil {
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInvalidArgument)
+	}
+	return &deepdatav3.UpdateTenantResponse{TenantId: req.TenantId}, nil
+}
+
+// DeleteTenant removes a tenant's record and every collection it owns.
+// Server-administrator only.
+func (s *CollectionGRPCServer) DeleteTenant(ctx context.Context, req *deepdatav3.DeleteTenantRequest) (*deepdatav3.DeleteTenantResponse, error) {
+	if err := s.requirePersistenceHealthy(ctx); err != nil {
+		return nil, err
+	}
+	if req == nil || !isValidTenantID(req.TenantId) {
+		return nil, apierror.New(apierror.CodeInvalidArgument, "valid tenant_id required").GRPC(ctx)
+	}
+	if _, err := authorizeServerAdminGRPC(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.tenants.DeleteTenant(ctx, req.TenantId); err != nil {
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeInternal)
+	}
+	return &deepdatav3.DeleteTenantResponse{TenantId: req.TenantId}, nil
 }
 
 func (s *CollectionGRPCServer) ListCollections(ctx context.Context, req *deepdatav3.ListCollectionsRequest) (*deepdatav3.ListCollectionsResponse, error) {
@@ -429,9 +507,9 @@ func (s *CollectionGRPCServer) GetDoc(ctx context.Context, req *deepdatav3.GetDo
 	if err := authorizeCanonicalGRPC(ctx, req.TenantId, req.Collection, "read"); err != nil {
 		return nil, err
 	}
-	doc, ok := s.tenants.GetDocument(req.TenantId, req.Collection, req.DocId)
-	if !ok {
-		return nil, apierror.New(apierror.CodeNotFound, fmt.Sprintf("document %d not found in collection %s", req.DocId, req.Collection)).GRPC(ctx)
+	doc, err := s.tenants.GetDocumentChecked(req.TenantId, req.Collection, req.DocId)
+	if err != nil {
+		return nil, canonicalGRPCError(ctx, err, apierror.CodeNotFound)
 	}
 	vectors, err := interfaceVectorsToProto(doc.Vectors)
 	if err != nil {
@@ -667,12 +745,65 @@ func authorizeCanonicalGRPC(ctx context.Context, tenantID, collection, permissio
 		return apierror.New(apierror.CodeInvalidArgument, "valid tenant_id required").GRPC(ctx)
 	}
 	tenantCtx, _ := security.GetTenantContextFromContext(ctx)
-	err := security.AuthorizeTenantAccess(tenantCtx, tenantID, collection, permission)
-	if err == nil {
-		return nil
+	if err := security.AuthorizeTenantAccess(tenantCtx, tenantID, collection, permission); err != nil {
+		return canonicalGRPCAuthError(ctx, err)
 	}
+	return nil
+}
+
+// authorizeServerAdminGRPC requires the global server-administrator
+// credential; tenant lifecycle RPCs cross tenant boundaries by nature, so no
+// tenant or collection scope applies.
+func authorizeServerAdminGRPC(ctx context.Context) (*security.TenantContext, error) {
+	tenantCtx, _ := security.GetTenantContextFromContext(ctx)
+	if err := security.AuthorizeServerAdmin(tenantCtx); err != nil {
+		return nil, canonicalGRPCAuthError(ctx, err)
+	}
+	return tenantCtx, nil
+}
+
+// canonicalGRPCAuthError projects a security.AuthorizationError onto the
+// wire: unauthenticated stays unauthenticated, everything else is a
+// permission denial.
+func canonicalGRPCAuthError(ctx context.Context, err error) error {
 	if security.IsAuthorizationFailure(err, security.AuthorizationUnauthenticated) {
 		return apierror.New(apierror.CodeUnauthenticated, err.Error()).GRPC(ctx)
 	}
 	return apierror.New(apierror.CodePermissionDenied, err.Error()).GRPC(ctx)
+}
+
+// tenantInfoProto converts a tenant's lifecycle snapshot to the wire type.
+func tenantInfoProto(info vcollection.TenantInfo) *deepdatav3.TenantInfo {
+	return &deepdatav3.TenantInfo{
+		TenantId: info.TenantID,
+		Status:   info.Status,
+		Quota: &deepdatav3.TenantQuota{
+			MaxDocuments:   info.Quota.MaxDocuments,
+			MaxBytes:       info.Quota.MaxBytes,
+			MaxCollections: info.Quota.MaxCollections,
+		},
+		Usage: &deepdatav3.TenantUsage{
+			Documents:   info.Usage.Documents,
+			Bytes:       info.Usage.Bytes,
+			Collections: info.Usage.Collections,
+		},
+	}
+}
+
+// tenantRecordFromProto decodes a tenant lifecycle request into the domain
+// type. An empty status defaults to active: the common case is provisioning
+// a tenant ready for immediate use, not a pre-suspended one.
+func tenantRecordFromProto(tenantID, status string, quota *deepdatav3.TenantQuota) vcollection.TenantRecord {
+	if status == "" {
+		status = vcollection.TenantStatusActive
+	}
+	rec := vcollection.TenantRecord{TenantID: tenantID, Status: status}
+	if quota != nil {
+		rec.Quota = vcollection.TenantQuota{
+			MaxDocuments:   quota.MaxDocuments,
+			MaxBytes:       quota.MaxBytes,
+			MaxCollections: quota.MaxCollections,
+		}
+	}
+	return rec
 }
