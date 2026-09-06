@@ -49,6 +49,25 @@ message CollectionStats {
   int32 field_count = 3;
 }
 
+message TenantQuota {
+  int64 max_documents = 1;
+  int64 max_bytes = 2;
+  int64 max_collections = 3;
+}
+
+message TenantUsage {
+  int64 documents = 1;
+  int64 bytes = 2;
+  int64 collections = 3;
+}
+
+message TenantInfo {
+  string tenant_id = 1;
+  string status = 2;
+  TenantQuota quota = 3;
+  TenantUsage usage = 4;
+}
+
 message GetTenantInfoRequest {
   string tenant_id = 1;
 }
@@ -58,6 +77,41 @@ message GetTenantInfoResponse {
   uint64 collection_count = 2;
   uint64 total_documents = 3;
   repeated CollectionStats collections = 4;
+  TenantInfo tenant = 5;
+}
+
+message CreateTenantRequest {
+  string tenant_id = 1;
+  string status = 2;
+  TenantQuota quota = 3;
+}
+
+message CreateTenantResponse {
+  string tenant_id = 1;
+}
+
+message ListTenantsRequest {}
+
+message ListTenantsResponse {
+  repeated TenantInfo tenants = 1;
+}
+
+message UpdateTenantRequest {
+  string tenant_id = 1;
+  string status = 2;
+  TenantQuota quota = 3;
+}
+
+message UpdateTenantResponse {
+  string tenant_id = 1;
+}
+
+message DeleteTenantRequest {
+  string tenant_id = 1;
+}
+
+message DeleteTenantResponse {
+  string tenant_id = 1;
 }
 
 message ListCollectionsRequest {
@@ -274,6 +328,10 @@ message GetDocResponse {
 
 service DeepData {
   rpc GetTenantInfo   (GetTenantInfoRequest)   returns (GetTenantInfoResponse);
+  rpc CreateTenant     (CreateTenantRequest)     returns (CreateTenantResponse);
+  rpc ListTenants      (ListTenantsRequest)      returns (ListTenantsResponse);
+  rpc UpdateTenant     (UpdateTenantRequest)     returns (UpdateTenantResponse);
+  rpc DeleteTenant     (DeleteTenantRequest)     returns (DeleteTenantResponse);
   rpc ListCollections (ListCollectionsRequest) returns (ListCollectionsResponse);
   rpc GetCollection   (GetCollectionRequest)   returns (GetCollectionResponse);
   rpc CreateCollection (CreateCollectionRequest) returns (CreateCollectionResponse);

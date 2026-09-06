@@ -140,6 +140,8 @@ func TestCanonicalDispatcherServesEveryListedOperation(t *testing.T) {
 	// name → the request this operation is exercised with, in an order that
 	// keeps the fixture alive (deletes last).
 	bodies := map[string]string{
+		"create_tenant":     `{"tenant_id":"acme"}`,
+		"update_tenant":     `{"status":"active"}`,
 		"create_collection": `{"name":"other","fields":[{"name":"dense","type":"dense","dim":2,"index":{"type":"flat"}}]}`,
 		"insert_doc":        `{"vectors":{"dense":[0,1]}}`,
 		"batch_insert_docs": `{"documents":[{"vectors":{"dense":[1,1]}}]}`,
@@ -147,7 +149,7 @@ func TestCanonicalDispatcherServesEveryListedOperation(t *testing.T) {
 		"delete_doc":        `{"doc_id":1}`,
 		"search":            `{"queries":{"dense":[1,0]},"top_k":1}`,
 	}
-	order := map[string]int{"delete_doc": 1, "delete_collection": 2}
+	order := map[string]int{"delete_doc": 1, "delete_collection": 2, "delete_tenant": 3}
 	ops := testOperations(t)
 	sort.SliceStable(ops, func(i, j int) bool { return order[ops[i].Name] < order[ops[j].Name] })
 

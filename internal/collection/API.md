@@ -11,9 +11,10 @@ release candidate. The production surface is deliberately small:
 - HNSW or Flat for dense fields and Inverted/BM25 for sparse fields;
 - one-field search or two-field hybrid search, plus single-document fetch by
   caller-supplied ID; and
-- six mutations: create collection, delete collection, insert, atomic batch
-  insert, delete document, and upsert (`CreateCollection`, `DeleteCollection`,
-  `Insert`, `BatchInsert`, `DeleteDoc`, `Upsert`).
+- eight mutations: create collection, delete collection, insert, atomic batch
+  insert, delete document, upsert, create tenant, and delete tenant
+  (`CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`,
+  `DeleteDoc`, `Upsert`, `CreateTenant`, `DeleteTenant`).
 
 Historical V2/root routes and advanced source packages are not part of this
 contract.
@@ -70,7 +71,11 @@ checked against the dispatcher and the proto service by
 <!-- generated:http-routes -->
 | method | path | permission | grpc_rpc |
 |---|---|---|---|
+| POST | /v3/tenants | admin | CreateTenant |
+| GET | /v3/tenants | admin | ListTenants |
 | GET | /v3/tenants/{tenant} | admin | GetTenantInfo |
+| PUT | /v3/tenants/{tenant} | admin | UpdateTenant |
+| DELETE | /v3/tenants/{tenant} | admin | DeleteTenant |
 | GET | /v3/tenants/{tenant}/collections | read | ListCollections |
 | POST | /v3/tenants/{tenant}/collections | admin | CreateCollection |
 | GET | /v3/tenants/{tenant}/collections/{collection} | read | GetCollection |
@@ -100,6 +105,25 @@ are rejected.
 when authentication is required (cmd/deepdata/server.go:1320-1324,
 `TestMetricsEndpointRequiresAuthWhenEnabled`). Restrict all four at the
 network boundary.
+
+### Tenant lifecycle
+
+`POST /v3/tenants`, `GET /v3/tenants`, `PUT /v3/tenants/{tenant}`, and
+`DELETE /v3/tenants/{tenant}` provision, list, update and remove tenant
+records. All four require the `server_admin` claim (or the static server
+token, which is always server-admin); a tenant-scoped `admin` JWT gets
+`403 permission_denied` even for its own tenant, since tenant lifecycle
+crosses tenant boundaries by nature.
+
+`PUT` upserts: updating a tenant that does not exist creates it, so replay
+after a restart needs only this one path. `status` is `active` or
+`suspended`; a suspended tenant's data-plane routes (collections, documents,
+search) return `403 permission_denied` with a hint pointing back at
+`PUT /v3/tenants/{tenant}` to reactivate. Quota fields (`max_documents`,
+`max_bytes`, `max_collections`) are administrator-set ceilings — a zero field
+means server default, the `MAX_TENANT_*` environment values. `DELETE` removes
+the tenant record and every collection it owns; deleting an unknown tenant is
+`404 not_found`.
 
 ### Create a collection
 
@@ -330,10 +354,10 @@ metadata, else one the server mints; both transports echo it back
 | code | HTTP | gRPC | retryable | when |
 |---|---|---|---|---|
 | `invalid_argument` | 400 | `InvalidArgument` | no | malformed body or identifier; `top_k`, `ef_search`, `score_floor`, `usage_boost`, `hybrid_params`/`fallback` shape out of range |
-| `not_found` | 404 | `NotFound` | no | unknown route, collection or document |
-| `already_exists` | 409 | `AlreadyExists` | no | create of an existing collection; insert of an existing document id (`PUT` upserts instead) |
+| `not_found` | 404 | `NotFound` | no | unknown route, tenant, collection or document |
+| `already_exists` | 409 | `AlreadyExists` | no | create of an existing tenant or collection; insert of an existing document id (`PUT` upserts instead) |
 | `unauthenticated` | 401 | `Unauthenticated` | no | missing or invalid credential |
-| `permission_denied` | 403 | `PermissionDenied` | no | the token lacks the permission or collection scope |
+| `permission_denied` | 403 | `PermissionDenied` | no | the token lacks the permission, collection scope, or `server_admin` claim a tenant lifecycle route requires; also a suspended tenant's data-plane writes, with a hint to reactivate via `PUT /v3/tenants/{tenant}` |
 | `quota_exceeded` | 409 | `FailedPrecondition` | no | tenant or collection limit; fixed for the process lifetime, so retrying cannot help |
 | `embedding_mismatch` | 409 | `FailedPrecondition` | no | the field binds an embedding provider or model other than the one this server runs (`embedder` in `/readyz`); send a vector or recreate the collection with the server's `provider:model` |
 | `payload_too_large` | 413 | `ResourceExhausted` | no | request or response above the size limits |
@@ -354,7 +378,7 @@ The canonical protobuf is
 [`api/proto/deepdata/v3/deepdata.proto`](../../api/proto/deepdata/v3/deepdata.proto).
 
 <!-- generated:grpc-rpcs -->
-`deepdata.v3.DeepData` exposes 11 unary RPCs: `GetTenantInfo`, `ListCollections`, `GetCollection`, `CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `Search`, `DeleteDoc`, `Upsert`, `GetDoc`.
+`deepdata.v3.DeepData` exposes 15 unary RPCs: `GetTenantInfo`, `CreateTenant`, `ListTenants`, `UpdateTenant`, `DeleteTenant`, `ListCollections`, `GetCollection`, `CreateCollection`, `DeleteCollection`, `Insert`, `BatchInsert`, `Search`, `DeleteDoc`, `Upsert`, `GetDoc`.
 <!-- /generated -->
 
 Pass the same bearer credential in gRPC `authorization` metadata. The gRPC
@@ -379,6 +403,10 @@ the store unhealthy: canonical HTTP mutations and reads fail closed and
 
 Graceful shutdown checkpoints the store after handlers drain. Crash recovery
 does not depend on graceful shutdown.
+
+Tenant records (status and quota) are journaled and snapshotted the same way
+collection and document mutations are, so a tenant's lifecycle state survives
+a restart and a journal replay exactly like a collection does.
 
 ## Explicitly outside the RC
 

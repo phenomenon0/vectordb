@@ -14,7 +14,9 @@ import (
 	"time"
 
 	deepdatav3 "github.com/phenomenon0/vectordb/api/gen/deepdata/v3"
+	"github.com/phenomenon0/vectordb/internal/apierror"
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
+	"github.com/phenomenon0/vectordb/internal/security"
 )
 
 func newCanonicalSurfaceTestHandler(t *testing.T) http.Handler {
@@ -521,12 +523,195 @@ func TestCanonicalHTTPAcknowledgementSurvivesRestart(t *testing.T) {
 	}
 }
 
+// TestCanonicalTenantLifecycleHTTP drives the full tenant lifecycle with a
+// static server-admin credential: create, list, suspend (data-plane writes
+// blocked with a hint pointing back at reactivation), reactivate, usage
+// tracking, then delete and re-delete.
+func TestCanonicalTenantLifecycleHTTP(t *testing.T) {
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv("API_TOKEN", "server-admin-token")
+	t.Setenv("REQUIRE_AUTH", "1")
+	rt := testServerRuntime(t)
+	handler, collections := newCanonicalHTTPHandler(rt, NewHashEmbedder(4), filepath.Join(t.TempDir(), "index.gob"))
+	t.Cleanup(func() { _ = collections.Close() })
+
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer server-admin-token")
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+
+	if response := request(http.MethodPost, "/v3/tenants", `{"tenant_id":"acme"}`); response.Code != http.StatusCreated {
+		t.Fatalf("create tenant returned %d: %s", response.Code, response.Body.String())
+	}
+
+	schema := `{"name":"docs","fields":[{"name":"dense","type":"dense","dim":2,"index":{"type":"flat"}}]}`
+	if response := request(http.MethodPost, "/v3/tenants/acme/collections", schema); response.Code != http.StatusCreated {
+		t.Fatalf("create collection returned %d: %s", response.Code, response.Body.String())
+	}
+
+	response := request(http.MethodGet, "/v3/tenants", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("list tenants returned %d: %s", response.Code, response.Body.String())
+	}
+	var list struct {
+		Tenants []vcollection.TenantInfo `json:"tenants"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, info := range list.Tenants {
+		if info.TenantID == "acme" {
+			found = true
+			if info.Status != vcollection.TenantStatusActive {
+				t.Fatalf("acme status = %q, want active", info.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("acme missing from tenant list: %+v", list.Tenants)
+	}
+
+	if response := request(http.MethodPut, "/v3/tenants/acme", `{"status":"suspended"}`); response.Code != http.StatusOK {
+		t.Fatalf("suspend tenant returned %d: %s", response.Code, response.Body.String())
+	}
+
+	doc := `{"vectors":{"dense":[0,1]}}`
+	response = request(http.MethodPost, "/v3/tenants/acme/collections/docs/docs", doc)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("insert on suspended tenant returned %d: %s", response.Code, response.Body.String())
+	}
+	var apiErr apierror.Error
+	if err := json.NewDecoder(response.Body).Decode(&apiErr); err != nil {
+		t.Fatal(err)
+	}
+	if apiErr.Code != apierror.CodePermissionDenied {
+		t.Fatalf("suspended insert code = %q, want permission_denied", apiErr.Code)
+	}
+	if !strings.Contains(apiErr.Hint, "PUT /v3/tenants/{tenant}") {
+		t.Fatalf("suspended insert hint = %q, want it to mention PUT /v3/tenants/{tenant}", apiErr.Hint)
+	}
+
+	if response := request(http.MethodPut, "/v3/tenants/acme", `{"status":"active"}`); response.Code != http.StatusOK {
+		t.Fatalf("reactivate tenant returned %d: %s", response.Code, response.Body.String())
+	}
+
+	if response := request(http.MethodPost, "/v3/tenants/acme/collections/docs/docs", doc); response.Code != http.StatusOK {
+		t.Fatalf("insert after reactivation returned %d: %s", response.Code, response.Body.String())
+	}
+
+	response = request(http.MethodGet, "/v3/tenants/acme", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("tenant info returned %d: %s", response.Code, response.Body.String())
+	}
+	var info struct {
+		Tenant vcollection.TenantInfo `json:"tenant"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Tenant.Usage.Documents != 1 {
+		t.Fatalf("tenant usage.documents = %d, want 1", info.Tenant.Usage.Documents)
+	}
+
+	if response := request(http.MethodDelete, "/v3/tenants/acme", ""); response.Code != http.StatusOK {
+		t.Fatalf("delete tenant returned %d: %s", response.Code, response.Body.String())
+	}
+
+	response = request(http.MethodGet, "/v3/tenants", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("list tenants after delete returned %d: %s", response.Code, response.Body.String())
+	}
+	var afterDelete struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&afterDelete); err != nil {
+		t.Fatal(err)
+	}
+	if afterDelete.Count != 0 {
+		t.Fatalf("tenant count after delete = %d, want 0", afterDelete.Count)
+	}
+
+	if response := request(http.MethodDelete, "/v3/tenants/acme", ""); response.Code != http.StatusNotFound {
+		t.Fatalf("delete of already-deleted tenant returned %d, want 404: %s", response.Code, response.Body.String())
+	}
+}
+
+// TestCanonicalTenantLifecycleRequiresServerAdmin checks that a tenant-scoped
+// admin JWT — the credential that manages one tenant's collections — cannot
+// touch tenant lifecycle routes; only the server_admin claim can.
+func TestCanonicalTenantLifecycleRequiresServerAdmin(t *testing.T) {
+	t.Setenv("JWT_SECRET", "canonical-http-jwt-test-secret")
+	t.Setenv("JWT_ISSUER", "canonical-test")
+	t.Setenv("API_TOKEN", "")
+	t.Setenv("REQUIRE_AUTH", "1")
+	rt := testServerRuntime(t)
+	handler, collections := newCanonicalHTTPHandler(rt, NewHashEmbedder(4), filepath.Join(t.TempDir(), "index.gob"))
+	t.Cleanup(func() { _ = collections.Close() })
+
+	tenantAdmin, err := rt.jwtMgr.SignTenantClaims(security.TenantClaims{
+		TenantID:    "acme",
+		Permissions: []string{"admin"},
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverAdmin, err := rt.jwtMgr.SignTenantClaims(security.TenantClaims{
+		TenantID:    "acme",
+		Permissions: []string{"admin"},
+		ServerAdmin: true,
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := func(method, path, token, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "create", method: http.MethodPost, path: "/v3/tenants", body: `{"tenant_id":"acme"}`},
+		{name: "list", method: http.MethodGet, path: "/v3/tenants"},
+		{name: "update", method: http.MethodPut, path: "/v3/tenants/acme", body: `{"status":"active"}`},
+		{name: "delete", method: http.MethodDelete, path: "/v3/tenants/acme"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := request(tc.method, tc.path, tenantAdmin, tc.body)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("tenant admin without server_admin returned %d, want 403: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+
+	if response := request(http.MethodPost, "/v3/tenants", serverAdmin, `{"tenant_id":"acme"}`); response.Code != http.StatusCreated {
+		t.Fatalf("server_admin create tenant returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestCanonicalGRPCDescriptorExcludesAdvancedMethods(t *testing.T) {
 	if got := deepdatav3.DeepData_ServiceDesc.ServiceName; got != "deepdata.v3.DeepData" {
 		t.Fatalf("canonical gRPC service name = %q, want deepdata.v3.DeepData", got)
 	}
 	want := map[string]bool{
 		"GetTenantInfo":    true,
+		"CreateTenant":     true,
+		"ListTenants":      true,
+		"UpdateTenant":     true,
+		"DeleteTenant":     true,
 		"ListCollections":  true,
 		"GetCollection":    true,
 		"CreateCollection": true,

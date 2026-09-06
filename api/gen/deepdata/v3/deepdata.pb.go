@@ -317,6 +317,194 @@ func (x *CollectionStats) GetFieldCount() int32 {
 	return 0
 }
 
+type TenantQuota struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	MaxDocuments   int64                  `protobuf:"varint,1,opt,name=max_documents,json=maxDocuments,proto3" json:"max_documents,omitempty"`
+	MaxBytes       int64                  `protobuf:"varint,2,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	MaxCollections int64                  `protobuf:"varint,3,opt,name=max_collections,json=maxCollections,proto3" json:"max_collections,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *TenantQuota) Reset() {
+	*x = TenantQuota{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TenantQuota) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TenantQuota) ProtoMessage() {}
+
+func (x *TenantQuota) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TenantQuota.ProtoReflect.Descriptor instead.
+func (*TenantQuota) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *TenantQuota) GetMaxDocuments() int64 {
+	if x != nil {
+		return x.MaxDocuments
+	}
+	return 0
+}
+
+func (x *TenantQuota) GetMaxBytes() int64 {
+	if x != nil {
+		return x.MaxBytes
+	}
+	return 0
+}
+
+func (x *TenantQuota) GetMaxCollections() int64 {
+	if x != nil {
+		return x.MaxCollections
+	}
+	return 0
+}
+
+type TenantUsage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Documents     int64                  `protobuf:"varint,1,opt,name=documents,proto3" json:"documents,omitempty"`
+	Bytes         int64                  `protobuf:"varint,2,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	Collections   int64                  `protobuf:"varint,3,opt,name=collections,proto3" json:"collections,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TenantUsage) Reset() {
+	*x = TenantUsage{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TenantUsage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TenantUsage) ProtoMessage() {}
+
+func (x *TenantUsage) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TenantUsage.ProtoReflect.Descriptor instead.
+func (*TenantUsage) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *TenantUsage) GetDocuments() int64 {
+	if x != nil {
+		return x.Documents
+	}
+	return 0
+}
+
+func (x *TenantUsage) GetBytes() int64 {
+	if x != nil {
+		return x.Bytes
+	}
+	return 0
+}
+
+func (x *TenantUsage) GetCollections() int64 {
+	if x != nil {
+		return x.Collections
+	}
+	return 0
+}
+
+type TenantInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Quota         *TenantQuota           `protobuf:"bytes,3,opt,name=quota,proto3" json:"quota,omitempty"`
+	Usage         *TenantUsage           `protobuf:"bytes,4,opt,name=usage,proto3" json:"usage,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TenantInfo) Reset() {
+	*x = TenantInfo{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TenantInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TenantInfo) ProtoMessage() {}
+
+func (x *TenantInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TenantInfo.ProtoReflect.Descriptor instead.
+func (*TenantInfo) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *TenantInfo) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *TenantInfo) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *TenantInfo) GetQuota() *TenantQuota {
+	if x != nil {
+		return x.Quota
+	}
+	return nil
+}
+
+func (x *TenantInfo) GetUsage() *TenantUsage {
+	if x != nil {
+		return x.Usage
+	}
+	return nil
+}
+
 type GetTenantInfoRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -326,7 +514,7 @@ type GetTenantInfoRequest struct {
 
 func (x *GetTenantInfoRequest) Reset() {
 	*x = GetTenantInfoRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[4]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -338,7 +526,7 @@ func (x *GetTenantInfoRequest) String() string {
 func (*GetTenantInfoRequest) ProtoMessage() {}
 
 func (x *GetTenantInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[4]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -351,7 +539,7 @@ func (x *GetTenantInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTenantInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetTenantInfoRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{4}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetTenantInfoRequest) GetTenantId() string {
@@ -367,13 +555,14 @@ type GetTenantInfoResponse struct {
 	CollectionCount uint64                 `protobuf:"varint,2,opt,name=collection_count,json=collectionCount,proto3" json:"collection_count,omitempty"`
 	TotalDocuments  uint64                 `protobuf:"varint,3,opt,name=total_documents,json=totalDocuments,proto3" json:"total_documents,omitempty"`
 	Collections     []*CollectionStats     `protobuf:"bytes,4,rep,name=collections,proto3" json:"collections,omitempty"`
+	Tenant          *TenantInfo            `protobuf:"bytes,5,opt,name=tenant,proto3" json:"tenant,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GetTenantInfoResponse) Reset() {
 	*x = GetTenantInfoResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[5]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -385,7 +574,7 @@ func (x *GetTenantInfoResponse) String() string {
 func (*GetTenantInfoResponse) ProtoMessage() {}
 
 func (x *GetTenantInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[5]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -398,7 +587,7 @@ func (x *GetTenantInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTenantInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetTenantInfoResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{5}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetTenantInfoResponse) GetTenantId() string {
@@ -429,6 +618,389 @@ func (x *GetTenantInfoResponse) GetCollections() []*CollectionStats {
 	return nil
 }
 
+func (x *GetTenantInfoResponse) GetTenant() *TenantInfo {
+	if x != nil {
+		return x.Tenant
+	}
+	return nil
+}
+
+type CreateTenantRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Quota         *TenantQuota           `protobuf:"bytes,3,opt,name=quota,proto3" json:"quota,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateTenantRequest) Reset() {
+	*x = CreateTenantRequest{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTenantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTenantRequest) ProtoMessage() {}
+
+func (x *CreateTenantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTenantRequest.ProtoReflect.Descriptor instead.
+func (*CreateTenantRequest) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *CreateTenantRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *CreateTenantRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *CreateTenantRequest) GetQuota() *TenantQuota {
+	if x != nil {
+		return x.Quota
+	}
+	return nil
+}
+
+type CreateTenantResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateTenantResponse) Reset() {
+	*x = CreateTenantResponse{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTenantResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTenantResponse) ProtoMessage() {}
+
+func (x *CreateTenantResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTenantResponse.ProtoReflect.Descriptor instead.
+func (*CreateTenantResponse) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *CreateTenantResponse) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+type ListTenantsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTenantsRequest) Reset() {
+	*x = ListTenantsRequest{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTenantsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTenantsRequest) ProtoMessage() {}
+
+func (x *ListTenantsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTenantsRequest.ProtoReflect.Descriptor instead.
+func (*ListTenantsRequest) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{11}
+}
+
+type ListTenantsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tenants       []*TenantInfo          `protobuf:"bytes,1,rep,name=tenants,proto3" json:"tenants,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListTenantsResponse) Reset() {
+	*x = ListTenantsResponse{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListTenantsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListTenantsResponse) ProtoMessage() {}
+
+func (x *ListTenantsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListTenantsResponse.ProtoReflect.Descriptor instead.
+func (*ListTenantsResponse) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ListTenantsResponse) GetTenants() []*TenantInfo {
+	if x != nil {
+		return x.Tenants
+	}
+	return nil
+}
+
+type UpdateTenantRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Quota         *TenantQuota           `protobuf:"bytes,3,opt,name=quota,proto3" json:"quota,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateTenantRequest) Reset() {
+	*x = UpdateTenantRequest{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateTenantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateTenantRequest) ProtoMessage() {}
+
+func (x *UpdateTenantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateTenantRequest.ProtoReflect.Descriptor instead.
+func (*UpdateTenantRequest) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *UpdateTenantRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *UpdateTenantRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *UpdateTenantRequest) GetQuota() *TenantQuota {
+	if x != nil {
+		return x.Quota
+	}
+	return nil
+}
+
+type UpdateTenantResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateTenantResponse) Reset() {
+	*x = UpdateTenantResponse{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateTenantResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateTenantResponse) ProtoMessage() {}
+
+func (x *UpdateTenantResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateTenantResponse.ProtoReflect.Descriptor instead.
+func (*UpdateTenantResponse) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *UpdateTenantResponse) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+type DeleteTenantRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteTenantRequest) Reset() {
+	*x = DeleteTenantRequest{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteTenantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteTenantRequest) ProtoMessage() {}
+
+func (x *DeleteTenantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteTenantRequest.ProtoReflect.Descriptor instead.
+func (*DeleteTenantRequest) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *DeleteTenantRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+type DeleteTenantResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteTenantResponse) Reset() {
+	*x = DeleteTenantResponse{}
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteTenantResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteTenantResponse) ProtoMessage() {}
+
+func (x *DeleteTenantResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteTenantResponse.ProtoReflect.Descriptor instead.
+func (*DeleteTenantResponse) Descriptor() ([]byte, []int) {
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *DeleteTenantResponse) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 type ListCollectionsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -438,7 +1010,7 @@ type ListCollectionsRequest struct {
 
 func (x *ListCollectionsRequest) Reset() {
 	*x = ListCollectionsRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[6]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -450,7 +1022,7 @@ func (x *ListCollectionsRequest) String() string {
 func (*ListCollectionsRequest) ProtoMessage() {}
 
 func (x *ListCollectionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[6]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -463,7 +1035,7 @@ func (x *ListCollectionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCollectionsRequest.ProtoReflect.Descriptor instead.
 func (*ListCollectionsRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{6}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ListCollectionsRequest) GetTenantId() string {
@@ -482,7 +1054,7 @@ type ListCollectionsResponse struct {
 
 func (x *ListCollectionsResponse) Reset() {
 	*x = ListCollectionsResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[7]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -494,7 +1066,7 @@ func (x *ListCollectionsResponse) String() string {
 func (*ListCollectionsResponse) ProtoMessage() {}
 
 func (x *ListCollectionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[7]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -507,7 +1079,7 @@ func (x *ListCollectionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCollectionsResponse.ProtoReflect.Descriptor instead.
 func (*ListCollectionsResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{7}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListCollectionsResponse) GetCollections() []*CollectionInfo {
@@ -527,7 +1099,7 @@ type GetCollectionRequest struct {
 
 func (x *GetCollectionRequest) Reset() {
 	*x = GetCollectionRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[8]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -539,7 +1111,7 @@ func (x *GetCollectionRequest) String() string {
 func (*GetCollectionRequest) ProtoMessage() {}
 
 func (x *GetCollectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[8]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -552,7 +1124,7 @@ func (x *GetCollectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCollectionRequest.ProtoReflect.Descriptor instead.
 func (*GetCollectionRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{8}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GetCollectionRequest) GetTenantId() string {
@@ -578,7 +1150,7 @@ type GetCollectionResponse struct {
 
 func (x *GetCollectionResponse) Reset() {
 	*x = GetCollectionResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[9]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -590,7 +1162,7 @@ func (x *GetCollectionResponse) String() string {
 func (*GetCollectionResponse) ProtoMessage() {}
 
 func (x *GetCollectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[9]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -603,7 +1175,7 @@ func (x *GetCollectionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCollectionResponse.ProtoReflect.Descriptor instead.
 func (*GetCollectionResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{9}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetCollectionResponse) GetCollection() *CollectionInfo {
@@ -629,7 +1201,7 @@ type CreateCollectionRequest struct {
 
 func (x *CreateCollectionRequest) Reset() {
 	*x = CreateCollectionRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[10]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -641,7 +1213,7 @@ func (x *CreateCollectionRequest) String() string {
 func (*CreateCollectionRequest) ProtoMessage() {}
 
 func (x *CreateCollectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[10]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -654,7 +1226,7 @@ func (x *CreateCollectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCollectionRequest.ProtoReflect.Descriptor instead.
 func (*CreateCollectionRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{10}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CreateCollectionRequest) GetName() string {
@@ -708,7 +1280,7 @@ type CreateCollectionResponse struct {
 
 func (x *CreateCollectionResponse) Reset() {
 	*x = CreateCollectionResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[11]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -720,7 +1292,7 @@ func (x *CreateCollectionResponse) String() string {
 func (*CreateCollectionResponse) ProtoMessage() {}
 
 func (x *CreateCollectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[11]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -733,7 +1305,7 @@ func (x *CreateCollectionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCollectionResponse.ProtoReflect.Descriptor instead.
 func (*CreateCollectionResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{11}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CreateCollectionResponse) GetName() string {
@@ -753,7 +1325,7 @@ type DeleteCollectionRequest struct {
 
 func (x *DeleteCollectionRequest) Reset() {
 	*x = DeleteCollectionRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[12]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -765,7 +1337,7 @@ func (x *DeleteCollectionRequest) String() string {
 func (*DeleteCollectionRequest) ProtoMessage() {}
 
 func (x *DeleteCollectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[12]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -778,7 +1350,7 @@ func (x *DeleteCollectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCollectionRequest.ProtoReflect.Descriptor instead.
 func (*DeleteCollectionRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{12}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DeleteCollectionRequest) GetName() string {
@@ -803,7 +1375,7 @@ type DeleteCollectionResponse struct {
 
 func (x *DeleteCollectionResponse) Reset() {
 	*x = DeleteCollectionResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[13]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -815,7 +1387,7 @@ func (x *DeleteCollectionResponse) String() string {
 func (*DeleteCollectionResponse) ProtoMessage() {}
 
 func (x *DeleteCollectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[13]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -828,7 +1400,7 @@ func (x *DeleteCollectionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteCollectionResponse.ProtoReflect.Descriptor instead.
 func (*DeleteCollectionResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{13}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{24}
 }
 
 type DenseVector struct {
@@ -840,7 +1412,7 @@ type DenseVector struct {
 
 func (x *DenseVector) Reset() {
 	*x = DenseVector{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[14]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -852,7 +1424,7 @@ func (x *DenseVector) String() string {
 func (*DenseVector) ProtoMessage() {}
 
 func (x *DenseVector) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[14]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -865,7 +1437,7 @@ func (x *DenseVector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DenseVector.ProtoReflect.Descriptor instead.
 func (*DenseVector) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{14}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DenseVector) GetValues() []float32 {
@@ -886,7 +1458,7 @@ type SparseVector struct {
 
 func (x *SparseVector) Reset() {
 	*x = SparseVector{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[15]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -898,7 +1470,7 @@ func (x *SparseVector) String() string {
 func (*SparseVector) ProtoMessage() {}
 
 func (x *SparseVector) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[15]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -911,7 +1483,7 @@ func (x *SparseVector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SparseVector.ProtoReflect.Descriptor instead.
 func (*SparseVector) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{15}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *SparseVector) GetIndices() []uint32 {
@@ -948,7 +1520,7 @@ type VectorData struct {
 
 func (x *VectorData) Reset() {
 	*x = VectorData{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[16]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -960,7 +1532,7 @@ func (x *VectorData) String() string {
 func (*VectorData) ProtoMessage() {}
 
 func (x *VectorData) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[16]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -973,7 +1545,7 @@ func (x *VectorData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorData.ProtoReflect.Descriptor instead.
 func (*VectorData) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{16}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *VectorData) GetData() isVectorData_Data {
@@ -1033,7 +1605,7 @@ type InsertRequest struct {
 
 func (x *InsertRequest) Reset() {
 	*x = InsertRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[17]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1045,7 +1617,7 @@ func (x *InsertRequest) String() string {
 func (*InsertRequest) ProtoMessage() {}
 
 func (x *InsertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[17]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1058,7 +1630,7 @@ func (x *InsertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InsertRequest.ProtoReflect.Descriptor instead.
 func (*InsertRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{17}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *InsertRequest) GetCollection() string {
@@ -1112,7 +1684,7 @@ type InsertResponse struct {
 
 func (x *InsertResponse) Reset() {
 	*x = InsertResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[18]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1124,7 +1696,7 @@ func (x *InsertResponse) String() string {
 func (*InsertResponse) ProtoMessage() {}
 
 func (x *InsertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[18]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1137,7 +1709,7 @@ func (x *InsertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InsertResponse.ProtoReflect.Descriptor instead.
 func (*InsertResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{18}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *InsertResponse) GetId() uint64 {
@@ -1159,7 +1731,7 @@ type BatchDoc struct {
 
 func (x *BatchDoc) Reset() {
 	*x = BatchDoc{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[19]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1171,7 +1743,7 @@ func (x *BatchDoc) String() string {
 func (*BatchDoc) ProtoMessage() {}
 
 func (x *BatchDoc) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[19]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1184,7 +1756,7 @@ func (x *BatchDoc) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchDoc.ProtoReflect.Descriptor instead.
 func (*BatchDoc) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{19}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *BatchDoc) GetVectors() map[string]*VectorData {
@@ -1226,7 +1798,7 @@ type BatchInsertRequest struct {
 
 func (x *BatchInsertRequest) Reset() {
 	*x = BatchInsertRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[20]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1238,7 +1810,7 @@ func (x *BatchInsertRequest) String() string {
 func (*BatchInsertRequest) ProtoMessage() {}
 
 func (x *BatchInsertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[20]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1251,7 +1823,7 @@ func (x *BatchInsertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchInsertRequest.ProtoReflect.Descriptor instead.
 func (*BatchInsertRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{20}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *BatchInsertRequest) GetCollection() string {
@@ -1285,7 +1857,7 @@ type BatchInsertResponse struct {
 
 func (x *BatchInsertResponse) Reset() {
 	*x = BatchInsertResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[21]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1297,7 +1869,7 @@ func (x *BatchInsertResponse) String() string {
 func (*BatchInsertResponse) ProtoMessage() {}
 
 func (x *BatchInsertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[21]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1310,7 +1882,7 @@ func (x *BatchInsertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchInsertResponse.ProtoReflect.Descriptor instead.
 func (*BatchInsertResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{21}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *BatchInsertResponse) GetIds() []uint64 {
@@ -1338,7 +1910,7 @@ type HybridSearchParams struct {
 
 func (x *HybridSearchParams) Reset() {
 	*x = HybridSearchParams{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[22]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1350,7 +1922,7 @@ func (x *HybridSearchParams) String() string {
 func (*HybridSearchParams) ProtoMessage() {}
 
 func (x *HybridSearchParams) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[22]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1363,7 +1935,7 @@ func (x *HybridSearchParams) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HybridSearchParams.ProtoReflect.Descriptor instead.
 func (*HybridSearchParams) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{22}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *HybridSearchParams) GetStrategy() string {
@@ -1402,7 +1974,7 @@ type FallbackParams struct {
 
 func (x *FallbackParams) Reset() {
 	*x = FallbackParams{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[23]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1414,7 +1986,7 @@ func (x *FallbackParams) String() string {
 func (*FallbackParams) ProtoMessage() {}
 
 func (x *FallbackParams) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[23]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1427,7 +1999,7 @@ func (x *FallbackParams) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FallbackParams.ProtoReflect.Descriptor instead.
 func (*FallbackParams) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{23}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *FallbackParams) GetPrimary() string {
@@ -1479,7 +2051,7 @@ type SearchRequest struct {
 
 func (x *SearchRequest) Reset() {
 	*x = SearchRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[24]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1491,7 +2063,7 @@ func (x *SearchRequest) String() string {
 func (*SearchRequest) ProtoMessage() {}
 
 func (x *SearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[24]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1504,7 +2076,7 @@ func (x *SearchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchRequest.ProtoReflect.Descriptor instead.
 func (*SearchRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{24}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *SearchRequest) GetCollection() string {
@@ -1603,7 +2175,7 @@ type SearchHit struct {
 
 func (x *SearchHit) Reset() {
 	*x = SearchHit{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[25]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1615,7 +2187,7 @@ func (x *SearchHit) String() string {
 func (*SearchHit) ProtoMessage() {}
 
 func (x *SearchHit) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[25]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1628,7 +2200,7 @@ func (x *SearchHit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchHit.ProtoReflect.Descriptor instead.
 func (*SearchHit) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{25}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SearchHit) GetId() uint64 {
@@ -1684,7 +2256,7 @@ type SearchResponse struct {
 
 func (x *SearchResponse) Reset() {
 	*x = SearchResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[26]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1696,7 +2268,7 @@ func (x *SearchResponse) String() string {
 func (*SearchResponse) ProtoMessage() {}
 
 func (x *SearchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[26]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1709,7 +2281,7 @@ func (x *SearchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchResponse.ProtoReflect.Descriptor instead.
 func (*SearchResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{26}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *SearchResponse) GetResults() []*SearchHit {
@@ -1786,7 +2358,7 @@ type DeleteDocRequest struct {
 
 func (x *DeleteDocRequest) Reset() {
 	*x = DeleteDocRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[27]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1798,7 +2370,7 @@ func (x *DeleteDocRequest) String() string {
 func (*DeleteDocRequest) ProtoMessage() {}
 
 func (x *DeleteDocRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[27]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1811,7 +2383,7 @@ func (x *DeleteDocRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDocRequest.ProtoReflect.Descriptor instead.
 func (*DeleteDocRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{27}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *DeleteDocRequest) GetCollection() string {
@@ -1843,7 +2415,7 @@ type DeleteDocResponse struct {
 
 func (x *DeleteDocResponse) Reset() {
 	*x = DeleteDocResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[28]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1855,7 +2427,7 @@ func (x *DeleteDocResponse) String() string {
 func (*DeleteDocResponse) ProtoMessage() {}
 
 func (x *DeleteDocResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[28]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1868,7 +2440,7 @@ func (x *DeleteDocResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDocResponse.ProtoReflect.Descriptor instead.
 func (*DeleteDocResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{28}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{39}
 }
 
 type UpsertRequest struct {
@@ -1887,7 +2459,7 @@ type UpsertRequest struct {
 
 func (x *UpsertRequest) Reset() {
 	*x = UpsertRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[29]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1899,7 +2471,7 @@ func (x *UpsertRequest) String() string {
 func (*UpsertRequest) ProtoMessage() {}
 
 func (x *UpsertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[29]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1912,7 +2484,7 @@ func (x *UpsertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertRequest.ProtoReflect.Descriptor instead.
 func (*UpsertRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{29}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *UpsertRequest) GetCollection() string {
@@ -1966,7 +2538,7 @@ type UpsertResponse struct {
 
 func (x *UpsertResponse) Reset() {
 	*x = UpsertResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[30]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1978,7 +2550,7 @@ func (x *UpsertResponse) String() string {
 func (*UpsertResponse) ProtoMessage() {}
 
 func (x *UpsertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[30]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1991,7 +2563,7 @@ func (x *UpsertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertResponse.ProtoReflect.Descriptor instead.
 func (*UpsertResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{30}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *UpsertResponse) GetId() uint64 {
@@ -2012,7 +2584,7 @@ type GetDocRequest struct {
 
 func (x *GetDocRequest) Reset() {
 	*x = GetDocRequest{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[31]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2024,7 +2596,7 @@ func (x *GetDocRequest) String() string {
 func (*GetDocRequest) ProtoMessage() {}
 
 func (x *GetDocRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[31]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2037,7 +2609,7 @@ func (x *GetDocRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDocRequest.ProtoReflect.Descriptor instead.
 func (*GetDocRequest) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{31}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *GetDocRequest) GetTenantId() string {
@@ -2072,7 +2644,7 @@ type GetDocResponse struct {
 
 func (x *GetDocResponse) Reset() {
 	*x = GetDocResponse{}
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[32]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2084,7 +2656,7 @@ func (x *GetDocResponse) String() string {
 func (*GetDocResponse) ProtoMessage() {}
 
 func (x *GetDocResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_deepdata_v3_deepdata_proto_msgTypes[32]
+	mi := &file_deepdata_v3_deepdata_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2097,7 +2669,7 @@ func (x *GetDocResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDocResponse.ProtoReflect.Descriptor instead.
 func (*GetDocResponse) Descriptor() ([]byte, []int) {
-	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{32}
+	return file_deepdata_v3_deepdata_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *GetDocResponse) GetId() uint64 {
@@ -2151,14 +2723,48 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12%\n" +
 	"\x0edocument_count\x18\x02 \x01(\x04R\rdocumentCount\x12\x1f\n" +
 	"\vfield_count\x18\x03 \x01(\x05R\n" +
-	"fieldCount\"3\n" +
+	"fieldCount\"x\n" +
+	"\vTenantQuota\x12#\n" +
+	"\rmax_documents\x18\x01 \x01(\x03R\fmaxDocuments\x12\x1b\n" +
+	"\tmax_bytes\x18\x02 \x01(\x03R\bmaxBytes\x12'\n" +
+	"\x0fmax_collections\x18\x03 \x01(\x03R\x0emaxCollections\"c\n" +
+	"\vTenantUsage\x12\x1c\n" +
+	"\tdocuments\x18\x01 \x01(\x03R\tdocuments\x12\x14\n" +
+	"\x05bytes\x18\x02 \x01(\x03R\x05bytes\x12 \n" +
+	"\vcollections\x18\x03 \x01(\x03R\vcollections\"\xa1\x01\n" +
+	"\n" +
+	"TenantInfo\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12.\n" +
+	"\x05quota\x18\x03 \x01(\v2\x18.deepdata.v3.TenantQuotaR\x05quota\x12.\n" +
+	"\x05usage\x18\x04 \x01(\v2\x18.deepdata.v3.TenantUsageR\x05usage\"3\n" +
 	"\x14GetTenantInfoRequest\x12\x1b\n" +
-	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"\xc8\x01\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"\xf9\x01\n" +
 	"\x15GetTenantInfoResponse\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12)\n" +
 	"\x10collection_count\x18\x02 \x01(\x04R\x0fcollectionCount\x12'\n" +
 	"\x0ftotal_documents\x18\x03 \x01(\x04R\x0etotalDocuments\x12>\n" +
-	"\vcollections\x18\x04 \x03(\v2\x1c.deepdata.v3.CollectionStatsR\vcollections\"5\n" +
+	"\vcollections\x18\x04 \x03(\v2\x1c.deepdata.v3.CollectionStatsR\vcollections\x12/\n" +
+	"\x06tenant\x18\x05 \x01(\v2\x17.deepdata.v3.TenantInfoR\x06tenant\"z\n" +
+	"\x13CreateTenantRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12.\n" +
+	"\x05quota\x18\x03 \x01(\v2\x18.deepdata.v3.TenantQuotaR\x05quota\"3\n" +
+	"\x14CreateTenantResponse\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"\x14\n" +
+	"\x12ListTenantsRequest\"H\n" +
+	"\x13ListTenantsResponse\x121\n" +
+	"\atenants\x18\x01 \x03(\v2\x17.deepdata.v3.TenantInfoR\atenants\"z\n" +
+	"\x13UpdateTenantRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12.\n" +
+	"\x05quota\x18\x03 \x01(\v2\x18.deepdata.v3.TenantQuotaR\x05quota\"3\n" +
+	"\x14UpdateTenantResponse\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"2\n" +
+	"\x13DeleteTenantRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"3\n" +
+	"\x14DeleteTenantResponse\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"5\n" +
 	"\x16ListCollectionsRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"X\n" +
 	"\x17ListCollectionsResponse\x12=\n" +
@@ -2334,9 +2940,13 @@ const file_deepdata_v3_deepdata_proto_rawDesc = "" +
 	"\bmetadata\x18\x03 \x01(\v2\x17.google.protobuf.StructR\bmetadata\x1aS\n" +
 	"\fVectorsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
-	"\x05value\x18\x02 \x01(\v2\x17.deepdata.v3.VectorDataR\x05value:\x028\x012\x84\a\n" +
+	"\x05value\x18\x02 \x01(\v2\x17.deepdata.v3.VectorDataR\x05value:\x028\x012\xd5\t\n" +
 	"\bDeepData\x12V\n" +
-	"\rGetTenantInfo\x12!.deepdata.v3.GetTenantInfoRequest\x1a\".deepdata.v3.GetTenantInfoResponse\x12\\\n" +
+	"\rGetTenantInfo\x12!.deepdata.v3.GetTenantInfoRequest\x1a\".deepdata.v3.GetTenantInfoResponse\x12S\n" +
+	"\fCreateTenant\x12 .deepdata.v3.CreateTenantRequest\x1a!.deepdata.v3.CreateTenantResponse\x12P\n" +
+	"\vListTenants\x12\x1f.deepdata.v3.ListTenantsRequest\x1a .deepdata.v3.ListTenantsResponse\x12S\n" +
+	"\fUpdateTenant\x12 .deepdata.v3.UpdateTenantRequest\x1a!.deepdata.v3.UpdateTenantResponse\x12S\n" +
+	"\fDeleteTenant\x12 .deepdata.v3.DeleteTenantRequest\x1a!.deepdata.v3.DeleteTenantResponse\x12\\\n" +
 	"\x0fListCollections\x12#.deepdata.v3.ListCollectionsRequest\x1a$.deepdata.v3.ListCollectionsResponse\x12V\n" +
 	"\rGetCollection\x12!.deepdata.v3.GetCollectionRequest\x1a\".deepdata.v3.GetCollectionResponse\x12_\n" +
 	"\x10CreateCollection\x12$.deepdata.v3.CreateCollectionRequest\x1a%.deepdata.v3.CreateCollectionResponse\x12_\n" +
@@ -2360,122 +2970,147 @@ func file_deepdata_v3_deepdata_proto_rawDescGZIP() []byte {
 	return file_deepdata_v3_deepdata_proto_rawDescData
 }
 
-var file_deepdata_v3_deepdata_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_deepdata_v3_deepdata_proto_msgTypes = make([]protoimpl.MessageInfo, 56)
 var file_deepdata_v3_deepdata_proto_goTypes = []any{
 	(*EmbeddingConfig)(nil),          // 0: deepdata.v3.EmbeddingConfig
 	(*VectorFieldConfig)(nil),        // 1: deepdata.v3.VectorFieldConfig
 	(*CollectionInfo)(nil),           // 2: deepdata.v3.CollectionInfo
 	(*CollectionStats)(nil),          // 3: deepdata.v3.CollectionStats
-	(*GetTenantInfoRequest)(nil),     // 4: deepdata.v3.GetTenantInfoRequest
-	(*GetTenantInfoResponse)(nil),    // 5: deepdata.v3.GetTenantInfoResponse
-	(*ListCollectionsRequest)(nil),   // 6: deepdata.v3.ListCollectionsRequest
-	(*ListCollectionsResponse)(nil),  // 7: deepdata.v3.ListCollectionsResponse
-	(*GetCollectionRequest)(nil),     // 8: deepdata.v3.GetCollectionRequest
-	(*GetCollectionResponse)(nil),    // 9: deepdata.v3.GetCollectionResponse
-	(*CreateCollectionRequest)(nil),  // 10: deepdata.v3.CreateCollectionRequest
-	(*CreateCollectionResponse)(nil), // 11: deepdata.v3.CreateCollectionResponse
-	(*DeleteCollectionRequest)(nil),  // 12: deepdata.v3.DeleteCollectionRequest
-	(*DeleteCollectionResponse)(nil), // 13: deepdata.v3.DeleteCollectionResponse
-	(*DenseVector)(nil),              // 14: deepdata.v3.DenseVector
-	(*SparseVector)(nil),             // 15: deepdata.v3.SparseVector
-	(*VectorData)(nil),               // 16: deepdata.v3.VectorData
-	(*InsertRequest)(nil),            // 17: deepdata.v3.InsertRequest
-	(*InsertResponse)(nil),           // 18: deepdata.v3.InsertResponse
-	(*BatchDoc)(nil),                 // 19: deepdata.v3.BatchDoc
-	(*BatchInsertRequest)(nil),       // 20: deepdata.v3.BatchInsertRequest
-	(*BatchInsertResponse)(nil),      // 21: deepdata.v3.BatchInsertResponse
-	(*HybridSearchParams)(nil),       // 22: deepdata.v3.HybridSearchParams
-	(*FallbackParams)(nil),           // 23: deepdata.v3.FallbackParams
-	(*SearchRequest)(nil),            // 24: deepdata.v3.SearchRequest
-	(*SearchHit)(nil),                // 25: deepdata.v3.SearchHit
-	(*SearchResponse)(nil),           // 26: deepdata.v3.SearchResponse
-	(*DeleteDocRequest)(nil),         // 27: deepdata.v3.DeleteDocRequest
-	(*DeleteDocResponse)(nil),        // 28: deepdata.v3.DeleteDocResponse
-	(*UpsertRequest)(nil),            // 29: deepdata.v3.UpsertRequest
-	(*UpsertResponse)(nil),           // 30: deepdata.v3.UpsertResponse
-	(*GetDocRequest)(nil),            // 31: deepdata.v3.GetDocRequest
-	(*GetDocResponse)(nil),           // 32: deepdata.v3.GetDocResponse
-	nil,                              // 33: deepdata.v3.InsertRequest.VectorsEntry
-	nil,                              // 34: deepdata.v3.InsertRequest.TextsEntry
-	nil,                              // 35: deepdata.v3.BatchDoc.VectorsEntry
-	nil,                              // 36: deepdata.v3.BatchDoc.TextsEntry
-	nil,                              // 37: deepdata.v3.HybridSearchParams.WeightsEntry
-	nil,                              // 38: deepdata.v3.SearchRequest.QueriesEntry
-	nil,                              // 39: deepdata.v3.SearchRequest.TextsEntry
-	nil,                              // 40: deepdata.v3.SearchHit.VectorsEntry
-	nil,                              // 41: deepdata.v3.SearchResponse.EmbeddedByEntry
-	nil,                              // 42: deepdata.v3.UpsertRequest.VectorsEntry
-	nil,                              // 43: deepdata.v3.UpsertRequest.TextsEntry
-	nil,                              // 44: deepdata.v3.GetDocResponse.VectorsEntry
-	(*structpb.Struct)(nil),          // 45: google.protobuf.Struct
+	(*TenantQuota)(nil),              // 4: deepdata.v3.TenantQuota
+	(*TenantUsage)(nil),              // 5: deepdata.v3.TenantUsage
+	(*TenantInfo)(nil),               // 6: deepdata.v3.TenantInfo
+	(*GetTenantInfoRequest)(nil),     // 7: deepdata.v3.GetTenantInfoRequest
+	(*GetTenantInfoResponse)(nil),    // 8: deepdata.v3.GetTenantInfoResponse
+	(*CreateTenantRequest)(nil),      // 9: deepdata.v3.CreateTenantRequest
+	(*CreateTenantResponse)(nil),     // 10: deepdata.v3.CreateTenantResponse
+	(*ListTenantsRequest)(nil),       // 11: deepdata.v3.ListTenantsRequest
+	(*ListTenantsResponse)(nil),      // 12: deepdata.v3.ListTenantsResponse
+	(*UpdateTenantRequest)(nil),      // 13: deepdata.v3.UpdateTenantRequest
+	(*UpdateTenantResponse)(nil),     // 14: deepdata.v3.UpdateTenantResponse
+	(*DeleteTenantRequest)(nil),      // 15: deepdata.v3.DeleteTenantRequest
+	(*DeleteTenantResponse)(nil),     // 16: deepdata.v3.DeleteTenantResponse
+	(*ListCollectionsRequest)(nil),   // 17: deepdata.v3.ListCollectionsRequest
+	(*ListCollectionsResponse)(nil),  // 18: deepdata.v3.ListCollectionsResponse
+	(*GetCollectionRequest)(nil),     // 19: deepdata.v3.GetCollectionRequest
+	(*GetCollectionResponse)(nil),    // 20: deepdata.v3.GetCollectionResponse
+	(*CreateCollectionRequest)(nil),  // 21: deepdata.v3.CreateCollectionRequest
+	(*CreateCollectionResponse)(nil), // 22: deepdata.v3.CreateCollectionResponse
+	(*DeleteCollectionRequest)(nil),  // 23: deepdata.v3.DeleteCollectionRequest
+	(*DeleteCollectionResponse)(nil), // 24: deepdata.v3.DeleteCollectionResponse
+	(*DenseVector)(nil),              // 25: deepdata.v3.DenseVector
+	(*SparseVector)(nil),             // 26: deepdata.v3.SparseVector
+	(*VectorData)(nil),               // 27: deepdata.v3.VectorData
+	(*InsertRequest)(nil),            // 28: deepdata.v3.InsertRequest
+	(*InsertResponse)(nil),           // 29: deepdata.v3.InsertResponse
+	(*BatchDoc)(nil),                 // 30: deepdata.v3.BatchDoc
+	(*BatchInsertRequest)(nil),       // 31: deepdata.v3.BatchInsertRequest
+	(*BatchInsertResponse)(nil),      // 32: deepdata.v3.BatchInsertResponse
+	(*HybridSearchParams)(nil),       // 33: deepdata.v3.HybridSearchParams
+	(*FallbackParams)(nil),           // 34: deepdata.v3.FallbackParams
+	(*SearchRequest)(nil),            // 35: deepdata.v3.SearchRequest
+	(*SearchHit)(nil),                // 36: deepdata.v3.SearchHit
+	(*SearchResponse)(nil),           // 37: deepdata.v3.SearchResponse
+	(*DeleteDocRequest)(nil),         // 38: deepdata.v3.DeleteDocRequest
+	(*DeleteDocResponse)(nil),        // 39: deepdata.v3.DeleteDocResponse
+	(*UpsertRequest)(nil),            // 40: deepdata.v3.UpsertRequest
+	(*UpsertResponse)(nil),           // 41: deepdata.v3.UpsertResponse
+	(*GetDocRequest)(nil),            // 42: deepdata.v3.GetDocRequest
+	(*GetDocResponse)(nil),           // 43: deepdata.v3.GetDocResponse
+	nil,                              // 44: deepdata.v3.InsertRequest.VectorsEntry
+	nil,                              // 45: deepdata.v3.InsertRequest.TextsEntry
+	nil,                              // 46: deepdata.v3.BatchDoc.VectorsEntry
+	nil,                              // 47: deepdata.v3.BatchDoc.TextsEntry
+	nil,                              // 48: deepdata.v3.HybridSearchParams.WeightsEntry
+	nil,                              // 49: deepdata.v3.SearchRequest.QueriesEntry
+	nil,                              // 50: deepdata.v3.SearchRequest.TextsEntry
+	nil,                              // 51: deepdata.v3.SearchHit.VectorsEntry
+	nil,                              // 52: deepdata.v3.SearchResponse.EmbeddedByEntry
+	nil,                              // 53: deepdata.v3.UpsertRequest.VectorsEntry
+	nil,                              // 54: deepdata.v3.UpsertRequest.TextsEntry
+	nil,                              // 55: deepdata.v3.GetDocResponse.VectorsEntry
+	(*structpb.Struct)(nil),          // 56: google.protobuf.Struct
 }
 var file_deepdata_v3_deepdata_proto_depIdxs = []int32{
-	45, // 0: deepdata.v3.VectorFieldConfig.index_params:type_name -> google.protobuf.Struct
+	56, // 0: deepdata.v3.VectorFieldConfig.index_params:type_name -> google.protobuf.Struct
 	0,  // 1: deepdata.v3.VectorFieldConfig.embedding:type_name -> deepdata.v3.EmbeddingConfig
 	1,  // 2: deepdata.v3.CollectionInfo.fields:type_name -> deepdata.v3.VectorFieldConfig
-	45, // 3: deepdata.v3.CollectionInfo.metadata:type_name -> google.protobuf.Struct
-	3,  // 4: deepdata.v3.GetTenantInfoResponse.collections:type_name -> deepdata.v3.CollectionStats
-	2,  // 5: deepdata.v3.ListCollectionsResponse.collections:type_name -> deepdata.v3.CollectionInfo
-	2,  // 6: deepdata.v3.GetCollectionResponse.collection:type_name -> deepdata.v3.CollectionInfo
-	1,  // 7: deepdata.v3.CreateCollectionRequest.fields:type_name -> deepdata.v3.VectorFieldConfig
-	45, // 8: deepdata.v3.CreateCollectionRequest.metadata:type_name -> google.protobuf.Struct
-	14, // 9: deepdata.v3.VectorData.dense:type_name -> deepdata.v3.DenseVector
-	15, // 10: deepdata.v3.VectorData.sparse:type_name -> deepdata.v3.SparseVector
-	33, // 11: deepdata.v3.InsertRequest.vectors:type_name -> deepdata.v3.InsertRequest.VectorsEntry
-	45, // 12: deepdata.v3.InsertRequest.metadata:type_name -> google.protobuf.Struct
-	34, // 13: deepdata.v3.InsertRequest.texts:type_name -> deepdata.v3.InsertRequest.TextsEntry
-	35, // 14: deepdata.v3.BatchDoc.vectors:type_name -> deepdata.v3.BatchDoc.VectorsEntry
-	45, // 15: deepdata.v3.BatchDoc.metadata:type_name -> google.protobuf.Struct
-	36, // 16: deepdata.v3.BatchDoc.texts:type_name -> deepdata.v3.BatchDoc.TextsEntry
-	19, // 17: deepdata.v3.BatchInsertRequest.docs:type_name -> deepdata.v3.BatchDoc
-	37, // 18: deepdata.v3.HybridSearchParams.weights:type_name -> deepdata.v3.HybridSearchParams.WeightsEntry
-	38, // 19: deepdata.v3.SearchRequest.queries:type_name -> deepdata.v3.SearchRequest.QueriesEntry
-	45, // 20: deepdata.v3.SearchRequest.filters:type_name -> google.protobuf.Struct
-	22, // 21: deepdata.v3.SearchRequest.hybrid_params:type_name -> deepdata.v3.HybridSearchParams
-	23, // 22: deepdata.v3.SearchRequest.fallback:type_name -> deepdata.v3.FallbackParams
-	39, // 23: deepdata.v3.SearchRequest.texts:type_name -> deepdata.v3.SearchRequest.TextsEntry
-	45, // 24: deepdata.v3.SearchHit.metadata:type_name -> google.protobuf.Struct
-	40, // 25: deepdata.v3.SearchHit.vectors:type_name -> deepdata.v3.SearchHit.VectorsEntry
-	25, // 26: deepdata.v3.SearchResponse.results:type_name -> deepdata.v3.SearchHit
-	41, // 27: deepdata.v3.SearchResponse.embedded_by:type_name -> deepdata.v3.SearchResponse.EmbeddedByEntry
-	42, // 28: deepdata.v3.UpsertRequest.vectors:type_name -> deepdata.v3.UpsertRequest.VectorsEntry
-	45, // 29: deepdata.v3.UpsertRequest.metadata:type_name -> google.protobuf.Struct
-	43, // 30: deepdata.v3.UpsertRequest.texts:type_name -> deepdata.v3.UpsertRequest.TextsEntry
-	44, // 31: deepdata.v3.GetDocResponse.vectors:type_name -> deepdata.v3.GetDocResponse.VectorsEntry
-	45, // 32: deepdata.v3.GetDocResponse.metadata:type_name -> google.protobuf.Struct
-	16, // 33: deepdata.v3.InsertRequest.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	16, // 34: deepdata.v3.BatchDoc.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	16, // 35: deepdata.v3.SearchRequest.QueriesEntry.value:type_name -> deepdata.v3.VectorData
-	16, // 36: deepdata.v3.SearchHit.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	16, // 37: deepdata.v3.UpsertRequest.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	16, // 38: deepdata.v3.GetDocResponse.VectorsEntry.value:type_name -> deepdata.v3.VectorData
-	4,  // 39: deepdata.v3.DeepData.GetTenantInfo:input_type -> deepdata.v3.GetTenantInfoRequest
-	6,  // 40: deepdata.v3.DeepData.ListCollections:input_type -> deepdata.v3.ListCollectionsRequest
-	8,  // 41: deepdata.v3.DeepData.GetCollection:input_type -> deepdata.v3.GetCollectionRequest
-	10, // 42: deepdata.v3.DeepData.CreateCollection:input_type -> deepdata.v3.CreateCollectionRequest
-	12, // 43: deepdata.v3.DeepData.DeleteCollection:input_type -> deepdata.v3.DeleteCollectionRequest
-	17, // 44: deepdata.v3.DeepData.Insert:input_type -> deepdata.v3.InsertRequest
-	20, // 45: deepdata.v3.DeepData.BatchInsert:input_type -> deepdata.v3.BatchInsertRequest
-	24, // 46: deepdata.v3.DeepData.Search:input_type -> deepdata.v3.SearchRequest
-	27, // 47: deepdata.v3.DeepData.DeleteDoc:input_type -> deepdata.v3.DeleteDocRequest
-	29, // 48: deepdata.v3.DeepData.Upsert:input_type -> deepdata.v3.UpsertRequest
-	31, // 49: deepdata.v3.DeepData.GetDoc:input_type -> deepdata.v3.GetDocRequest
-	5,  // 50: deepdata.v3.DeepData.GetTenantInfo:output_type -> deepdata.v3.GetTenantInfoResponse
-	7,  // 51: deepdata.v3.DeepData.ListCollections:output_type -> deepdata.v3.ListCollectionsResponse
-	9,  // 52: deepdata.v3.DeepData.GetCollection:output_type -> deepdata.v3.GetCollectionResponse
-	11, // 53: deepdata.v3.DeepData.CreateCollection:output_type -> deepdata.v3.CreateCollectionResponse
-	13, // 54: deepdata.v3.DeepData.DeleteCollection:output_type -> deepdata.v3.DeleteCollectionResponse
-	18, // 55: deepdata.v3.DeepData.Insert:output_type -> deepdata.v3.InsertResponse
-	21, // 56: deepdata.v3.DeepData.BatchInsert:output_type -> deepdata.v3.BatchInsertResponse
-	26, // 57: deepdata.v3.DeepData.Search:output_type -> deepdata.v3.SearchResponse
-	28, // 58: deepdata.v3.DeepData.DeleteDoc:output_type -> deepdata.v3.DeleteDocResponse
-	30, // 59: deepdata.v3.DeepData.Upsert:output_type -> deepdata.v3.UpsertResponse
-	32, // 60: deepdata.v3.DeepData.GetDoc:output_type -> deepdata.v3.GetDocResponse
-	50, // [50:61] is the sub-list for method output_type
-	39, // [39:50] is the sub-list for method input_type
-	39, // [39:39] is the sub-list for extension type_name
-	39, // [39:39] is the sub-list for extension extendee
-	0,  // [0:39] is the sub-list for field type_name
+	56, // 3: deepdata.v3.CollectionInfo.metadata:type_name -> google.protobuf.Struct
+	4,  // 4: deepdata.v3.TenantInfo.quota:type_name -> deepdata.v3.TenantQuota
+	5,  // 5: deepdata.v3.TenantInfo.usage:type_name -> deepdata.v3.TenantUsage
+	3,  // 6: deepdata.v3.GetTenantInfoResponse.collections:type_name -> deepdata.v3.CollectionStats
+	6,  // 7: deepdata.v3.GetTenantInfoResponse.tenant:type_name -> deepdata.v3.TenantInfo
+	4,  // 8: deepdata.v3.CreateTenantRequest.quota:type_name -> deepdata.v3.TenantQuota
+	6,  // 9: deepdata.v3.ListTenantsResponse.tenants:type_name -> deepdata.v3.TenantInfo
+	4,  // 10: deepdata.v3.UpdateTenantRequest.quota:type_name -> deepdata.v3.TenantQuota
+	2,  // 11: deepdata.v3.ListCollectionsResponse.collections:type_name -> deepdata.v3.CollectionInfo
+	2,  // 12: deepdata.v3.GetCollectionResponse.collection:type_name -> deepdata.v3.CollectionInfo
+	1,  // 13: deepdata.v3.CreateCollectionRequest.fields:type_name -> deepdata.v3.VectorFieldConfig
+	56, // 14: deepdata.v3.CreateCollectionRequest.metadata:type_name -> google.protobuf.Struct
+	25, // 15: deepdata.v3.VectorData.dense:type_name -> deepdata.v3.DenseVector
+	26, // 16: deepdata.v3.VectorData.sparse:type_name -> deepdata.v3.SparseVector
+	44, // 17: deepdata.v3.InsertRequest.vectors:type_name -> deepdata.v3.InsertRequest.VectorsEntry
+	56, // 18: deepdata.v3.InsertRequest.metadata:type_name -> google.protobuf.Struct
+	45, // 19: deepdata.v3.InsertRequest.texts:type_name -> deepdata.v3.InsertRequest.TextsEntry
+	46, // 20: deepdata.v3.BatchDoc.vectors:type_name -> deepdata.v3.BatchDoc.VectorsEntry
+	56, // 21: deepdata.v3.BatchDoc.metadata:type_name -> google.protobuf.Struct
+	47, // 22: deepdata.v3.BatchDoc.texts:type_name -> deepdata.v3.BatchDoc.TextsEntry
+	30, // 23: deepdata.v3.BatchInsertRequest.docs:type_name -> deepdata.v3.BatchDoc
+	48, // 24: deepdata.v3.HybridSearchParams.weights:type_name -> deepdata.v3.HybridSearchParams.WeightsEntry
+	49, // 25: deepdata.v3.SearchRequest.queries:type_name -> deepdata.v3.SearchRequest.QueriesEntry
+	56, // 26: deepdata.v3.SearchRequest.filters:type_name -> google.protobuf.Struct
+	33, // 27: deepdata.v3.SearchRequest.hybrid_params:type_name -> deepdata.v3.HybridSearchParams
+	34, // 28: deepdata.v3.SearchRequest.fallback:type_name -> deepdata.v3.FallbackParams
+	50, // 29: deepdata.v3.SearchRequest.texts:type_name -> deepdata.v3.SearchRequest.TextsEntry
+	56, // 30: deepdata.v3.SearchHit.metadata:type_name -> google.protobuf.Struct
+	51, // 31: deepdata.v3.SearchHit.vectors:type_name -> deepdata.v3.SearchHit.VectorsEntry
+	36, // 32: deepdata.v3.SearchResponse.results:type_name -> deepdata.v3.SearchHit
+	52, // 33: deepdata.v3.SearchResponse.embedded_by:type_name -> deepdata.v3.SearchResponse.EmbeddedByEntry
+	53, // 34: deepdata.v3.UpsertRequest.vectors:type_name -> deepdata.v3.UpsertRequest.VectorsEntry
+	56, // 35: deepdata.v3.UpsertRequest.metadata:type_name -> google.protobuf.Struct
+	54, // 36: deepdata.v3.UpsertRequest.texts:type_name -> deepdata.v3.UpsertRequest.TextsEntry
+	55, // 37: deepdata.v3.GetDocResponse.vectors:type_name -> deepdata.v3.GetDocResponse.VectorsEntry
+	56, // 38: deepdata.v3.GetDocResponse.metadata:type_name -> google.protobuf.Struct
+	27, // 39: deepdata.v3.InsertRequest.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	27, // 40: deepdata.v3.BatchDoc.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	27, // 41: deepdata.v3.SearchRequest.QueriesEntry.value:type_name -> deepdata.v3.VectorData
+	27, // 42: deepdata.v3.SearchHit.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	27, // 43: deepdata.v3.UpsertRequest.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	27, // 44: deepdata.v3.GetDocResponse.VectorsEntry.value:type_name -> deepdata.v3.VectorData
+	7,  // 45: deepdata.v3.DeepData.GetTenantInfo:input_type -> deepdata.v3.GetTenantInfoRequest
+	9,  // 46: deepdata.v3.DeepData.CreateTenant:input_type -> deepdata.v3.CreateTenantRequest
+	11, // 47: deepdata.v3.DeepData.ListTenants:input_type -> deepdata.v3.ListTenantsRequest
+	13, // 48: deepdata.v3.DeepData.UpdateTenant:input_type -> deepdata.v3.UpdateTenantRequest
+	15, // 49: deepdata.v3.DeepData.DeleteTenant:input_type -> deepdata.v3.DeleteTenantRequest
+	17, // 50: deepdata.v3.DeepData.ListCollections:input_type -> deepdata.v3.ListCollectionsRequest
+	19, // 51: deepdata.v3.DeepData.GetCollection:input_type -> deepdata.v3.GetCollectionRequest
+	21, // 52: deepdata.v3.DeepData.CreateCollection:input_type -> deepdata.v3.CreateCollectionRequest
+	23, // 53: deepdata.v3.DeepData.DeleteCollection:input_type -> deepdata.v3.DeleteCollectionRequest
+	28, // 54: deepdata.v3.DeepData.Insert:input_type -> deepdata.v3.InsertRequest
+	31, // 55: deepdata.v3.DeepData.BatchInsert:input_type -> deepdata.v3.BatchInsertRequest
+	35, // 56: deepdata.v3.DeepData.Search:input_type -> deepdata.v3.SearchRequest
+	38, // 57: deepdata.v3.DeepData.DeleteDoc:input_type -> deepdata.v3.DeleteDocRequest
+	40, // 58: deepdata.v3.DeepData.Upsert:input_type -> deepdata.v3.UpsertRequest
+	42, // 59: deepdata.v3.DeepData.GetDoc:input_type -> deepdata.v3.GetDocRequest
+	8,  // 60: deepdata.v3.DeepData.GetTenantInfo:output_type -> deepdata.v3.GetTenantInfoResponse
+	10, // 61: deepdata.v3.DeepData.CreateTenant:output_type -> deepdata.v3.CreateTenantResponse
+	12, // 62: deepdata.v3.DeepData.ListTenants:output_type -> deepdata.v3.ListTenantsResponse
+	14, // 63: deepdata.v3.DeepData.UpdateTenant:output_type -> deepdata.v3.UpdateTenantResponse
+	16, // 64: deepdata.v3.DeepData.DeleteTenant:output_type -> deepdata.v3.DeleteTenantResponse
+	18, // 65: deepdata.v3.DeepData.ListCollections:output_type -> deepdata.v3.ListCollectionsResponse
+	20, // 66: deepdata.v3.DeepData.GetCollection:output_type -> deepdata.v3.GetCollectionResponse
+	22, // 67: deepdata.v3.DeepData.CreateCollection:output_type -> deepdata.v3.CreateCollectionResponse
+	24, // 68: deepdata.v3.DeepData.DeleteCollection:output_type -> deepdata.v3.DeleteCollectionResponse
+	29, // 69: deepdata.v3.DeepData.Insert:output_type -> deepdata.v3.InsertResponse
+	32, // 70: deepdata.v3.DeepData.BatchInsert:output_type -> deepdata.v3.BatchInsertResponse
+	37, // 71: deepdata.v3.DeepData.Search:output_type -> deepdata.v3.SearchResponse
+	39, // 72: deepdata.v3.DeepData.DeleteDoc:output_type -> deepdata.v3.DeleteDocResponse
+	41, // 73: deepdata.v3.DeepData.Upsert:output_type -> deepdata.v3.UpsertResponse
+	43, // 74: deepdata.v3.DeepData.GetDoc:output_type -> deepdata.v3.GetDocResponse
+	60, // [60:75] is the sub-list for method output_type
+	45, // [45:60] is the sub-list for method input_type
+	45, // [45:45] is the sub-list for extension type_name
+	45, // [45:45] is the sub-list for extension extendee
+	0,  // [0:45] is the sub-list for field type_name
 }
 
 func init() { file_deepdata_v3_deepdata_proto_init() }
@@ -2483,7 +3118,7 @@ func file_deepdata_v3_deepdata_proto_init() {
 	if File_deepdata_v3_deepdata_proto != nil {
 		return
 	}
-	file_deepdata_v3_deepdata_proto_msgTypes[16].OneofWrappers = []any{
+	file_deepdata_v3_deepdata_proto_msgTypes[27].OneofWrappers = []any{
 		(*VectorData_Dense)(nil),
 		(*VectorData_Sparse)(nil),
 	}
@@ -2493,7 +3128,7 @@ func file_deepdata_v3_deepdata_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_deepdata_v3_deepdata_proto_rawDesc), len(file_deepdata_v3_deepdata_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   45,
+			NumMessages:   56,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -1,10 +1,42 @@
 [
   {
+    "name": "create_tenant",
+    "method": "POST",
+    "path": "/v3/tenants",
+    "permission": "admin",
+    "grpc_rpc": "CreateTenant",
+    "mcp_tool": null
+  },
+  {
+    "name": "list_tenants",
+    "method": "GET",
+    "path": "/v3/tenants",
+    "permission": "admin",
+    "grpc_rpc": "ListTenants",
+    "mcp_tool": null
+  },
+  {
     "name": "get_tenant_info",
     "method": "GET",
     "path": "/v3/tenants/{tenant}",
     "permission": "admin",
     "grpc_rpc": "GetTenantInfo",
+    "mcp_tool": null
+  },
+  {
+    "name": "update_tenant",
+    "method": "PUT",
+    "path": "/v3/tenants/{tenant}",
+    "permission": "admin",
+    "grpc_rpc": "UpdateTenant",
+    "mcp_tool": null
+  },
+  {
+    "name": "delete_tenant",
+    "method": "DELETE",
+    "path": "/v3/tenants/{tenant}",
+    "permission": "admin",
+    "grpc_rpc": "DeleteTenant",
     "mcp_tool": null
   },
   {

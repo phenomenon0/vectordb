@@ -316,7 +316,15 @@ func (s *CollectionHTTPServer) TenantManager() *vcollection.TenantManager {
 // RegisterCanonicalHandlers exposes only the tenant-aware RC contract. Legacy
 // V2, bulk import, recommend, and discover handlers are deliberately absent.
 func (s *CollectionHTTPServer) RegisterCanonicalHandlers(mux *http.ServeMux, guard func(http.HandlerFunc) http.HandlerFunc) {
-	mux.HandleFunc("/v3/tenants/", guard(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v3/tenants/", guard(s.canonicalPersistenceGuarded(s.handleTenantRoutes)))
+	mux.HandleFunc("/v3/tenants", guard(s.canonicalPersistenceGuarded(s.handleTenantsRoot)))
+}
+
+// canonicalPersistenceGuarded wraps a tenant handler with the durability and
+// persistence-health checks every canonical route requires before it touches
+// the tenant manager.
+func (s *CollectionHTTPServer) canonicalPersistenceGuarded(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.IsDurable() {
 			apierror.WriteHTTP(w, apierror.New(apierror.CodeUnavailable, "durable collection persistence required"))
 			return
@@ -325,8 +333,8 @@ func (s *CollectionHTTPServer) RegisterCanonicalHandlers(mux *http.ServeMux, gua
 			apierror.WriteHTTP(w, apierror.New(apierror.CodeUnavailable, "collection persistence unavailable"))
 			return
 		}
-		s.handleTenantRoutes(w, r)
-	}))
+		next(w, r)
+	}
 }
 
 // tenantSearchJSONResponse is a typed struct for tenant search JSON encoding.
@@ -383,12 +391,27 @@ func (s *CollectionHTTPServer) handleTenantRoutes(w http.ResponseWriter, r *http
 		return
 	}
 
-	// /v3/tenants/{tenant_id} — tenant info
+	// /v3/tenants/{tenant_id} — tenant info, update, delete
 	if len(parts) == 1 {
-		if !authorizeCanonicalHTTP(w, r, tenantID, "", "admin") {
-			return
+		switch r.Method {
+		case http.MethodGet:
+			if !authorizeCanonicalHTTP(w, r, tenantID, "", "admin") {
+				return
+			}
+			s.handleTenantInfo(w, r, tenantID)
+		case http.MethodPut:
+			if !authorizeServerAdminHTTP(w, r, tenantID) {
+				return
+			}
+			s.handleTenantUpdate(w, r, tenantID)
+		case http.MethodDelete:
+			if !authorizeServerAdminHTTP(w, r, tenantID) {
+				return
+			}
+			s.handleTenantDelete(w, r, tenantID)
+		default:
+			apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
 		}
-		s.handleTenantInfo(w, r, tenantID)
 		return
 	}
 
@@ -508,6 +531,15 @@ func authorizeCanonicalHTTPPermission(w http.ResponseWriter, r *http.Request, te
 		w,
 		security.AuthorizeTenantPermission(tenantCtx, tenantID, permission),
 	)
+}
+
+// authorizeServerAdminHTTP requires the global server-administrator
+// credential; tenant lifecycle routes cross tenant boundaries by nature, so
+// no tenant or collection scope applies. tenantID is accepted for symmetry
+// with the other canonical authorizers.
+func authorizeServerAdminHTTP(w http.ResponseWriter, r *http.Request, tenantID string) bool {
+	tenantCtx, _ := security.GetTenantContextFromContext(r.Context())
+	return writeCanonicalHTTPAuthorizationResult(w, security.AuthorizeServerAdmin(tenantCtx))
 }
 
 func writeCanonicalHTTPAuthorizationResult(w http.ResponseWriter, err error) bool {
@@ -665,13 +697,136 @@ func (s *CollectionHTTPServer) handleTenantInfo(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	resp := map[string]interface{}{
 		"status":           "success",
 		"tenant_id":        tenantID,
 		"collection_count": stats.CollectionCount,
 		"total_documents":  stats.TotalDocuments,
 		"collections":      stats.Collections,
+	}
+	if info, err := s.tenantManager.GetTenantInfo(tenantID); err == nil {
+		resp["tenant"] = info
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleTenantsRoot serves the exact path /v3/tenants: listing every tenant
+// record and provisioning a new one. Both are server-administrator only —
+// unlike the per-tenant routes, there is no tenant scope to fall back to.
+func (s *CollectionHTTPServer) handleTenantsRoot(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if !authorizeServerAdminHTTP(w, r, "") {
+			return
+		}
+		infos, err := s.tenantManager.ListTenantInfos()
+		if err != nil {
+			writeCanonicalOperationError(w, err, apierror.CodeInternal)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "success",
+			"count":   len(infos),
+			"tenants": infos,
+		})
+	case http.MethodPost:
+		if !authorizeServerAdminHTTP(w, r, "") {
+			return
+		}
+		s.handleTenantCreate(w, r)
+	default:
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeMethodNotAllowed, "method not allowed"))
+	}
+}
+
+// tenantRecordBody is the wire shape of a tenant lifecycle request body: the
+// fields TenantRecord validates, decoded the way handleTenantCreateCollection
+// decodes its schema body.
+type tenantRecordBody struct {
+	TenantID string                  `json:"tenant_id"`
+	Status   string                  `json:"status"`
+	Quota    vcollection.TenantQuota `json:"quota"`
+}
+
+func decodeTenantRecordBody(w http.ResponseWriter, r *http.Request) (tenantRecordBody, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, limitInsertBody)
+	var body tenantRecordBody
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
+		return tenantRecordBody{}, false
+	}
+	if err := ensureJSONEOF(dec); err != nil {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, fmt.Sprintf("invalid request: %v", err)))
+		return tenantRecordBody{}, false
+	}
+	return body, true
+}
+
+// handleTenantCreate provisions a new tenant record. A status omitted from
+// the body defaults to active — the common case is provisioning a tenant
+// ready for immediate use, not a pre-suspended one.
+func (s *CollectionHTTPServer) handleTenantCreate(w http.ResponseWriter, r *http.Request) {
+	body, ok := decodeTenantRecordBody(w, r)
+	if !ok {
+		return
+	}
+	if !isValidTenantID(body.TenantID) {
+		apierror.WriteHTTP(w, apierror.New(apierror.CodeInvalidArgument, "invalid tenant ID: must be 1-64 alphanumeric/hyphen/underscore characters"))
+		return
+	}
+	if body.Status == "" {
+		body.Status = vcollection.TenantStatusActive
+	}
+	rec := vcollection.TenantRecord{TenantID: body.TenantID, Status: body.Status, Quota: body.Quota}
+	if err := s.tenantManager.CreateTenant(r.Context(), rec); err != nil {
+		writeCanonicalOperationError(w, err, apierror.CodeInvalidArgument)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"tenant_id": rec.TenantID,
+		"message":   "tenant created",
+	})
+}
+
+// handleTenantUpdate upserts a tenant record: PUT on an unknown tenant
+// creates it (TenantManager.UpdateTenant), so this is also how a caller
+// reactivates or suspends an existing tenant.
+func (s *CollectionHTTPServer) handleTenantUpdate(w http.ResponseWriter, r *http.Request, tenantID string) {
+	body, ok := decodeTenantRecordBody(w, r)
+	if !ok {
+		return
+	}
+	rec := vcollection.TenantRecord{TenantID: tenantID, Status: body.Status, Quota: body.Quota}
+	if err := s.tenantManager.UpdateTenant(r.Context(), rec); err != nil {
+		writeCanonicalOperationError(w, err, apierror.CodeInvalidArgument)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"tenant_id": tenantID,
+		"message":   "tenant updated",
+	})
+}
+
+// handleTenantDelete removes a tenant's record and every collection it owns.
+func (s *CollectionHTTPServer) handleTenantDelete(w http.ResponseWriter, r *http.Request, tenantID string) {
+	if err := s.tenantManager.DeleteTenant(r.Context(), tenantID); err != nil {
+		writeCanonicalOperationError(w, err, apierror.CodeInternal)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "success",
+		"tenant_id": tenantID,
+		"message":   "tenant deleted",
 	})
 }
 

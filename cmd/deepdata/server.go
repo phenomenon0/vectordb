@@ -395,12 +395,12 @@ func canonicalRateLimitTenant(tenantCtx *security.TenantContext, targetTenant st
 func canonicalRCSurface(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		if strings.HasPrefix(path, "/v3/tenants/") || path == "/v3/status" || path == "/healthz" || path == "/readyz" || path == "/livez" || path == "/metrics" {
+		if path == "/v3/tenants" || strings.HasPrefix(path, "/v3/tenants/") || path == "/v3/status" || path == "/healthz" || path == "/readyz" || path == "/livez" || path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
 		e := apierror.New(apierror.CodeNotFound, "no such route on the RC surface: "+path)
-		e.Hint = "the RC serves /v3/tenants/{tenant}/collections..., /v3/status, /healthz, /readyz, /livez and /metrics; the route table is in the contract"
+		e.Hint = "the RC serves /v3/tenants, /v3/tenants/{tenant}/collections..., /v3/status, /healthz, /readyz, /livez and /metrics; the route table is in the contract"
 		apierror.WriteHTTP(w, e)
 	})
 }

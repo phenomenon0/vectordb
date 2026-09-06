@@ -8,14 +8,15 @@ can test end to end.
 
 - A single-node persistent service on Linux or macOS, with one process holding
   the data-directory lock. Linux amd64 is the released artifact.
-- A tenant-aware V3 HTTP API and eleven equivalent unary gRPC methods.
+- A tenant-aware V3 HTTP API and 15 equivalent unary gRPC methods.
 - Caller-supplied vectors, or texts for fields that bind an embedding when the
   server runs one (`DEEPDATA_EMBEDDER`; the default `none` leaves embedding to
   the application).
 - Dense search with HNSW or exact Flat indexes.
 - Sparse Inverted/BM25 search and explicit two-field hybrid fusion.
-- Six durable mutations: create/delete collection, insert, atomic batch
-  insert, delete document, and upsert by caller-supplied ID.
+- Eight durable mutations: create/delete collection, insert, atomic batch
+  insert, delete document, upsert by caller-supplied ID, and create/delete
+  tenant.
 - Static bearer-token or tenant-scoped JWT authentication.
 - Readiness that fails closed when the checksummed snapshot, mutation journal,
   or lifetime lock is unhealthy.

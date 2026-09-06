@@ -84,6 +84,7 @@ invalidates tokens signed with the old secret.
 
 | Canonical operation | Permission |
 |---|---|
+| Tenant lifecycle (create / list / update / delete tenant) | `server_admin` |
 | Tenant info | `admin` |
 | List collections | `read` |
 | Create collection | `admin` |

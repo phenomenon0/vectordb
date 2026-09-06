@@ -176,13 +176,17 @@ For hybrid search, send exactly two query fields and an explicit fusion policy:
 
 ## gRPC contract
 
-The gRPC service mirrors the tenant and operation model. It exposes eleven
+The gRPC service mirrors the tenant and operation model. It exposes 15
 unary methods; there are no streaming RPCs and server reflection is not part of
 the RC contract.
 
 | Method | Operation |
 |---|---|
 | `GetTenantInfo` | Tenant and collection counts |
+| `CreateTenant` | Provision a tenant |
+| `ListTenants` | List every tenant |
+| `UpdateTenant` | Upsert a tenant's status/quota |
+| `DeleteTenant` | Remove a tenant and its collections |
 | `ListCollections` | List tenant collections |
 | `GetCollection` | Read one collection schema |
 | `CreateCollection` | Create collection |

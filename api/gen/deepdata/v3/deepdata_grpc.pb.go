@@ -20,6 +20,10 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	DeepData_GetTenantInfo_FullMethodName    = "/deepdata.v3.DeepData/GetTenantInfo"
+	DeepData_CreateTenant_FullMethodName     = "/deepdata.v3.DeepData/CreateTenant"
+	DeepData_ListTenants_FullMethodName      = "/deepdata.v3.DeepData/ListTenants"
+	DeepData_UpdateTenant_FullMethodName     = "/deepdata.v3.DeepData/UpdateTenant"
+	DeepData_DeleteTenant_FullMethodName     = "/deepdata.v3.DeepData/DeleteTenant"
 	DeepData_ListCollections_FullMethodName  = "/deepdata.v3.DeepData/ListCollections"
 	DeepData_GetCollection_FullMethodName    = "/deepdata.v3.DeepData/GetCollection"
 	DeepData_CreateCollection_FullMethodName = "/deepdata.v3.DeepData/CreateCollection"
@@ -37,6 +41,10 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type DeepDataClient interface {
 	GetTenantInfo(ctx context.Context, in *GetTenantInfoRequest, opts ...grpc.CallOption) (*GetTenantInfoResponse, error)
+	CreateTenant(ctx context.Context, in *CreateTenantRequest, opts ...grpc.CallOption) (*CreateTenantResponse, error)
+	ListTenants(ctx context.Context, in *ListTenantsRequest, opts ...grpc.CallOption) (*ListTenantsResponse, error)
+	UpdateTenant(ctx context.Context, in *UpdateTenantRequest, opts ...grpc.CallOption) (*UpdateTenantResponse, error)
+	DeleteTenant(ctx context.Context, in *DeleteTenantRequest, opts ...grpc.CallOption) (*DeleteTenantResponse, error)
 	ListCollections(ctx context.Context, in *ListCollectionsRequest, opts ...grpc.CallOption) (*ListCollectionsResponse, error)
 	GetCollection(ctx context.Context, in *GetCollectionRequest, opts ...grpc.CallOption) (*GetCollectionResponse, error)
 	CreateCollection(ctx context.Context, in *CreateCollectionRequest, opts ...grpc.CallOption) (*CreateCollectionResponse, error)
@@ -61,6 +69,46 @@ func (c *deepDataClient) GetTenantInfo(ctx context.Context, in *GetTenantInfoReq
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetTenantInfoResponse)
 	err := c.cc.Invoke(ctx, DeepData_GetTenantInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepDataClient) CreateTenant(ctx context.Context, in *CreateTenantRequest, opts ...grpc.CallOption) (*CreateTenantResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateTenantResponse)
+	err := c.cc.Invoke(ctx, DeepData_CreateTenant_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepDataClient) ListTenants(ctx context.Context, in *ListTenantsRequest, opts ...grpc.CallOption) (*ListTenantsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTenantsResponse)
+	err := c.cc.Invoke(ctx, DeepData_ListTenants_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepDataClient) UpdateTenant(ctx context.Context, in *UpdateTenantRequest, opts ...grpc.CallOption) (*UpdateTenantResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateTenantResponse)
+	err := c.cc.Invoke(ctx, DeepData_UpdateTenant_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deepDataClient) DeleteTenant(ctx context.Context, in *DeleteTenantRequest, opts ...grpc.CallOption) (*DeleteTenantResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteTenantResponse)
+	err := c.cc.Invoke(ctx, DeepData_DeleteTenant_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -172,6 +220,10 @@ func (c *deepDataClient) GetDoc(ctx context.Context, in *GetDocRequest, opts ...
 // for forward compatibility.
 type DeepDataServer interface {
 	GetTenantInfo(context.Context, *GetTenantInfoRequest) (*GetTenantInfoResponse, error)
+	CreateTenant(context.Context, *CreateTenantRequest) (*CreateTenantResponse, error)
+	ListTenants(context.Context, *ListTenantsRequest) (*ListTenantsResponse, error)
+	UpdateTenant(context.Context, *UpdateTenantRequest) (*UpdateTenantResponse, error)
+	DeleteTenant(context.Context, *DeleteTenantRequest) (*DeleteTenantResponse, error)
 	ListCollections(context.Context, *ListCollectionsRequest) (*ListCollectionsResponse, error)
 	GetCollection(context.Context, *GetCollectionRequest) (*GetCollectionResponse, error)
 	CreateCollection(context.Context, *CreateCollectionRequest) (*CreateCollectionResponse, error)
@@ -194,6 +246,18 @@ type UnimplementedDeepDataServer struct{}
 
 func (UnimplementedDeepDataServer) GetTenantInfo(context.Context, *GetTenantInfoRequest) (*GetTenantInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTenantInfo not implemented")
+}
+func (UnimplementedDeepDataServer) CreateTenant(context.Context, *CreateTenantRequest) (*CreateTenantResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateTenant not implemented")
+}
+func (UnimplementedDeepDataServer) ListTenants(context.Context, *ListTenantsRequest) (*ListTenantsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListTenants not implemented")
+}
+func (UnimplementedDeepDataServer) UpdateTenant(context.Context, *UpdateTenantRequest) (*UpdateTenantResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateTenant not implemented")
+}
+func (UnimplementedDeepDataServer) DeleteTenant(context.Context, *DeleteTenantRequest) (*DeleteTenantResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteTenant not implemented")
 }
 func (UnimplementedDeepDataServer) ListCollections(context.Context, *ListCollectionsRequest) (*ListCollectionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListCollections not implemented")
@@ -260,6 +324,78 @@ func _DeepData_GetTenantInfo_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DeepDataServer).GetTenantInfo(ctx, req.(*GetTenantInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepData_CreateTenant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateTenantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepDataServer).CreateTenant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepData_CreateTenant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepDataServer).CreateTenant(ctx, req.(*CreateTenantRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepData_ListTenants_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTenantsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepDataServer).ListTenants(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepData_ListTenants_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepDataServer).ListTenants(ctx, req.(*ListTenantsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepData_UpdateTenant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateTenantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepDataServer).UpdateTenant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepData_UpdateTenant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepDataServer).UpdateTenant(ctx, req.(*UpdateTenantRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeepData_DeleteTenant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteTenantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeepDataServer).DeleteTenant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeepData_DeleteTenant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeepDataServer).DeleteTenant(ctx, req.(*DeleteTenantRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -454,6 +590,22 @@ var DeepData_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTenantInfo",
 			Handler:    _DeepData_GetTenantInfo_Handler,
+		},
+		{
+			MethodName: "CreateTenant",
+			Handler:    _DeepData_CreateTenant_Handler,
+		},
+		{
+			MethodName: "ListTenants",
+			Handler:    _DeepData_ListTenants_Handler,
+		},
+		{
+			MethodName: "UpdateTenant",
+			Handler:    _DeepData_UpdateTenant_Handler,
+		},
+		{
+			MethodName: "DeleteTenant",
+			Handler:    _DeepData_DeleteTenant_Handler,
 		},
 		{
 			MethodName: "ListCollections",
