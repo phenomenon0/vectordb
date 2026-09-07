@@ -65,6 +65,28 @@ func (s *DurableStore) IsReplica() bool {
 	return s.replica
 }
 
+// Promote flips this store from a read replica into a leader of its own
+// history: local writes stop being refused and it stops treating leaderID as
+// authoritative.
+//
+// It is only the in-memory half of promotion. The replica marker and the
+// epoch sidecar beside this store on disk are the caller's job (cmd's online
+// promotion handler and the offline `deepdata promote` command both do this
+// themselves) -- this package has no notion of either.
+func (s *DurableStore) Promote() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.stateErrorLocked(); err != nil {
+		return err
+	}
+	if !s.replica {
+		return ErrReplicaNotConfigured
+	}
+	s.replica = false
+	s.leaderID = [16]byte{}
+	return nil
+}
+
 // ReplicaCursor is the position to resume the leader's stream from. It is
 // derived from AppliedLSN, which is durable, so a restarted replica resumes
 // exactly where it stopped without re-applying anything.

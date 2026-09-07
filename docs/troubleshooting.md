@@ -216,6 +216,24 @@ it never wrote past the LSN promotion happened at, or its tenant reports a
 resync-required error in `following` -- stop it, remove that tenant's files
 under the tenants directory, and let it re-seed from the new leader.
 
+### Promote a standby without stopping it
+
+`POST /replication/v1/promote`, sent to the standby itself with the node
+credential, is the online counterpart to `deepdata promote` above: no need to
+stop the process first. It refuses a caller holding a client token or none
+with the same status the rest of the node surface gives one, and answers
+`409` `{"error": "this node is not following a leader"}` on a process that
+was never a standby, or one this same call already promoted. On success it
+halts every tenant's follow loop, fences each one the same way the offline
+command does, and answers `200` with the tenants it promoted and their new
+epoch numbers; the process keeps serving, now writable, with no `following`
+block left in `/readyz`. A tenant that fails partway answers `500` naming it
+and what went wrong, and lists what already promoted under `"promoted"` --
+those stay promoted, there is no rollback, same as the offline command past
+its own point of no return. Either way, promotion never contacts the old
+leader: stop it by hand first, same as above, and the same restart-as-standby
+outcome applies if it comes back up later.
+
 ## Docker and Compose
 
 ### Container exits immediately

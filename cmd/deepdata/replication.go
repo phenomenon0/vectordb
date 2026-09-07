@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -60,13 +61,60 @@ func canonicalReplicationSurface(next http.Handler, collections *CollectionHTTPS
 	}
 	logger.Warn("node replication surface enabled; it exports every tenant's state to any caller holding the node token",
 		"prefix", replication.PathPrefix, "spool_dir", spool)
+	promotePath := replication.PathPrefix + "promote"
+	promoteAuth := replication.LeaderConfig{Token: token}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == promotePath {
+			handlePromote(w, r, collections, promoteAuth, logger)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, replication.PathPrefix) {
 			node.ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
 	}), nil
+}
+
+// handlePromote serves POST /replication/v1/promote: the online counterpart
+// to the offline `deepdata promote` command (see promote.go), for a process
+// currently following a leader via DEEPDATA_LEADER_URL. It authenticates
+// with the same node token as every other route on this surface, and only
+// ever acts on tenants this process itself follows -- promoting a standby
+// elsewhere still means running `deepdata promote` there, or POSTing here
+// against that process.
+func handlePromote(w http.ResponseWriter, r *http.Request, collections *CollectionHTTPServer, cfg replication.LeaderConfig, logger *logging.Logger) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !replication.Authorized(cfg, r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	st := collections.Standby()
+	if st == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "this node is not following a leader"})
+		return
+	}
+	promoted, epoch, err := st.promote(collections.Stores())
+	if err != nil {
+		logger.Error("online promotion failed", "error", err, "promoted", promoted)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "promoted": promoted})
+		return
+	}
+	// The standby is spent: its follow loops are halted for good and its
+	// tenants are no longer replicas, so nothing on it stays accurate.
+	// Clearing it here is what makes /readyz's "following" block disappear.
+	collections.SetStandby(nil)
+	logger.Info("online promotion complete", "promoted", promoted, "epoch", epoch)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"promoted": promoted, "epoch": epoch})
 }
 
 // replicationLogWriter routes the node surface's transport faults into the

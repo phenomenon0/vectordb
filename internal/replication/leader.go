@@ -192,13 +192,21 @@ func authed(cfg LeaderConfig, next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.Token)) != 1 {
+		if !Authorized(cfg, r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next(w, r)
 	}
+}
+
+// Authorized reports whether r carries the node token cfg was built with.
+// Exported so cmd/deepdata's online promote route -- which acts on the
+// standby side, not this leader, so it is not one of the routes above --
+// authenticates a caller the same way every route above does.
+func Authorized(cfg LeaderConfig, r *http.Request) bool {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return subtle.ConstantTimeCompare([]byte(token), []byte(cfg.Token)) == 1
 }
 
 // status lets a follower decide between bootstrap and resume without

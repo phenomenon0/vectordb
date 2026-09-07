@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -34,6 +36,12 @@ type standby struct {
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// promoteMu serializes promote against a second call. It is not mu: the
+	// halt step below waits on the follow goroutines, which themselves take
+	// mu (setState, setLeaderLSN), so holding mu across that wait would
+	// deadlock against them.
+	promoteMu sync.Mutex
 }
 
 // standbyTenant is one tenant's last known following state, reported on
@@ -139,4 +147,53 @@ func (st *standby) snapshot() map[string]standbyTenant {
 func (st *standby) stop() {
 	st.cancel()
 	st.wg.Wait()
+}
+
+// promote is the online counterpart to the offline `deepdata promote`
+// command (see promote.go): it halts this standby's follow loops, then
+// fences every tenant currently bound as a replica in set into a leader of
+// its own history -- same three artifacts promote.go writes (bumped epoch
+// sidecar, dropped replica marker), just against stores this process already
+// has open instead of ones it opens for the occasion.
+//
+// It stops at the first tenant that fails and returns what it got through:
+// promoted lists, in order, every tenant that completed all of it, and those
+// stay promoted -- there is no rollback, same as the offline command past
+// its own point of no return. Call it at most once per standby: the caller
+// (handlePromote) discards a standby once this returns without error.
+func (st *standby) promote(set *vcollection.StoreSet) (promoted []string, epoch map[string]uint64, err error) {
+	st.promoteMu.Lock()
+	defer st.promoteMu.Unlock()
+	st.stop()
+
+	epoch = map[string]uint64{}
+	for _, id := range set.ReplicaTenants() {
+		base := set.Base(id)
+		store, ok := set.Store(id)
+		if !ok {
+			return promoted, epoch, fmt.Errorf("tenant %q vanished during promotion", id)
+		}
+		if err := store.Promote(); err != nil {
+			return promoted, epoch, fmt.Errorf("tenant %q: %w", id, err)
+		}
+		pos, err := store.JournalStatus()
+		if err != nil {
+			return promoted, epoch, fmt.Errorf("tenant %q: %w", id, err)
+		}
+		local, err := replication.ReadEpoch(base)
+		if err != nil {
+			return promoted, epoch, fmt.Errorf("tenant %q: %w", id, err)
+		}
+		next := replication.Epoch{Number: local.Number + 1, StartLSN: pos.LatestLSN}
+		if err := replication.WriteEpoch(base, next); err != nil {
+			return promoted, epoch, fmt.Errorf("tenant %q: %w", id, err)
+		}
+		if err := os.Remove(base + promoteMarkerSuffix); err != nil {
+			return promoted, epoch, fmt.Errorf("tenant %q: remove replica marker: %w", id, err)
+		}
+		promoted = append(promoted, id)
+		epoch[id] = next.Number
+	}
+	set.SetReadOnly(false)
+	return promoted, epoch, nil
 }

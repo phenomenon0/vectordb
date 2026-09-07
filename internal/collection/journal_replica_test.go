@@ -197,6 +197,37 @@ func TestReplicaRefusesEveryLocalWrite(t *testing.T) {
 	}
 }
 
+// Promote is the in-process half of online promotion (cmd's POST
+// /replication/v1/promote): flipping it must turn the exact refusal
+// TestReplicaRefusesEveryLocalWrite pins into a success, and a store that
+// was never a replica has nothing to flip.
+func TestDurableStorePromote(t *testing.T) {
+	ctx := context.Background()
+	leader, replica := openReplicaTestPair(t)
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	pumpReplica(t, leader, replica)
+
+	if err := leader.Promote(); !errors.Is(err, ErrReplicaNotConfigured) {
+		t.Fatalf("Promote on a non-replica: error = %v, want ErrReplicaNotConfigured", err)
+	}
+
+	if err := replica.Promote(); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	if replica.IsReplica() {
+		t.Fatal("Promote left the store marked a replica")
+	}
+	doc := durableTestDocument(5)
+	if err := replica.Tenants().AddDocument(ctx, "tenant-a", "docs", &doc); err != nil {
+		t.Fatalf("local write after Promote: %v", err)
+	}
+	if _, ok := durableTestStoredDocument(t, replica, "tenant-a", "docs", doc.ID); !ok {
+		t.Fatal("write after Promote did not persist")
+	}
+}
+
 // The replica's cursor is its own durable AppliedLSN, so a restart must resume
 // exactly where it stopped: not one record early (double apply) and not one
 // late (silent hole). A leader replaying its stream after a reconnect is the

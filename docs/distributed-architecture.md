@@ -98,6 +98,21 @@ node protocol version 2: every member, leader and standby alike, must run
 the same build, since an older build has no field to hold an epoch in and its
 version check refuses the mismatch outright.
 
+A standby also promotes without being stopped first: `POST /replication/v1/promote`
+against its own address, authenticated with the same node credential as every
+other route here, on a `deepdata serve` process currently following a leader.
+It halts that process's follow loops, then does to every tenant it was
+following what `deepdata promote` does offline -- flips it out of replica
+mode, bumps its epoch sidecar past the leader it followed, and drops its
+replica marker -- before answering. A `200` lists the tenants promoted and
+their new epoch numbers; a tenant failing partway leaves everything before it
+promoted (they stay promoted, there is no rollback) and the request answers
+`500` naming which one and why; calling it again once a `200` has already
+answered is `409`, since the process is not following anyone by then. The old
+leader is not contacted either way -- online or offline, promotion is a local
+operator command, not an election, and stopping the old leader first is still
+the operator's job: the epoch is what fences it out once it is restarted.
+
 ### The node credential is not the API token
 
 `DEEPDATA_REPLICATION_TOKEN` authenticates a peer server, not a tenant. One

@@ -2,13 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/phenomenon0/vectordb/internal/replication"
 )
 
 // standbyProcessNodeToken is the node credential shared by every real process
@@ -212,4 +216,166 @@ func TestStandbyProcessServesReadsWhileFollowing(t *testing.T) {
 		t.Fatalf("plain serve on the former standby dir readyz = %d read_only=%v, want 200 true: %+v", status, body["read_only"], body)
 	}
 	plain.terminate(t)
+}
+
+// followingTenantError digs following.tenants.<tenant>.error out of a
+// /readyz body, the companion to followingTenantState.
+func followingTenantError(body map[string]any, tenant string) string {
+	following, _ := body["following"].(map[string]any)
+	tenants, _ := following["tenants"].(map[string]any)
+	entry, _ := tenants[tenant].(map[string]any)
+	errText, _ := entry["error"].(string)
+	return errText
+}
+
+// nodeTokenRequest POSTs to url carrying token as the bearer credential.
+// canonicalJSONRequest always sends the client API token, which is the wrong
+// credential for /replication/v1/promote.
+func nodeTokenRequest(t *testing.T, url, token string) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp, body
+}
+
+// TestStandbyPromotesOnline exercises POST /replication/v1/promote against a
+// real standby process: the online counterpart to `deepdata promote` (see
+// promote_process_test.go), fencing a following node into a leader of its
+// own history without stopping it first.
+func TestStandbyPromotesOnline(t *testing.T) {
+	leaderDir := filepath.Join(t.TempDir(), "leader")
+	leaderHTTP := unusedLoopbackAddress(t)
+	leaderGRPC := unusedLoopbackAddress(t)
+	leader := startCanonicalTestProcess(t, leaderDir, leaderHTTP, leaderGRPC, map[string]string{
+		"DEEPDATA_REPLICATION_TOKEN": standbyProcessNodeToken,
+	})
+	defer leader.stopIfRunning()
+	leader.waitReady(t, leaderHTTP)
+
+	acmeCollectionsURL := "http://" + leaderHTTP + "/v3/tenants/acme/collections"
+	if resp, body := canonicalJSONRequest(t, http.MethodPost, acmeCollectionsURL, standbyProcessDocsSchema); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create acme/docs on leader = %d: %s", resp.StatusCode, body)
+	}
+	for id := 1; id <= 3; id++ {
+		if resp, body := canonicalJSONRequest(t, http.MethodPost, standbyProcessDocsURL(leaderHTTP, "acme", "docs"), standbyProcessDoc(id, 1, 0)); resp.StatusCode != http.StatusOK {
+			t.Fatalf("insert doc %d on leader = %d: %s", id, resp.StatusCode, body)
+		}
+	}
+
+	standbyDir := filepath.Join(t.TempDir(), "standby")
+	standbyHTTP := unusedLoopbackAddress(t)
+	standbyGRPC := unusedLoopbackAddress(t)
+	sb := startCanonicalTestProcess(t, standbyDir, standbyHTTP, standbyGRPC, map[string]string{
+		"DEEPDATA_LEADER_URL":        "http://" + leaderHTTP,
+		"DEEPDATA_REPLICATION_TOKEN": standbyProcessNodeToken,
+	})
+	defer sb.stopIfRunning()
+	sb.waitReady(t, standbyHTTP)
+	waitForFollowingState(t, standbyHTTP, "acme", "streaming", 30*time.Second)
+	for id := 1; id <= 3; id++ {
+		waitForDocReadable(t, standbyProcessDocsURL(standbyHTTP, "acme", "docs")+"/"+strconv.Itoa(id), 5*time.Second)
+	}
+
+	promoteURL := "http://" + standbyHTTP + "/replication/v1/promote"
+
+	// A client's API token is not the node token: refused with the same
+	// status the node surface gives every other route on a bad credential.
+	if resp, body := nodeTokenRequest(t, promoteURL, canonicalProcessAPIToken); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("promote with the API token = %d, want %d: %s", resp.StatusCode, http.StatusUnauthorized, body)
+	}
+
+	resp, body := nodeTokenRequest(t, promoteURL, standbyProcessNodeToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("promote with the node token = %d: %s", resp.StatusCode, body)
+	}
+	var result struct {
+		Promoted []string          `json:"promoted"`
+		Epoch    map[string]uint64 `json:"epoch"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode promote response: %v: %s", err, body)
+	}
+	if len(result.Promoted) != 1 || result.Promoted[0] != "acme" {
+		t.Fatalf("promoted = %v, want [acme]", result.Promoted)
+	}
+	if result.Epoch["acme"] != 1 {
+		t.Fatalf("epoch[acme] = %d, want 1", result.Epoch["acme"])
+	}
+
+	status, readyBody := readyzJSON(t, standbyHTTP)
+	if status != http.StatusOK || readyBody["read_only"] != false {
+		t.Fatalf("readyz after promote = %d read_only=%v, want 200 false: %+v", status, readyBody["read_only"], readyBody)
+	}
+	if _, ok := readyBody["following"]; ok {
+		t.Fatalf("readyz still reports following after promote: %+v", readyBody)
+	}
+
+	if resp, body := canonicalJSONRequest(t, http.MethodPost, standbyProcessDocsURL(standbyHTTP, "acme", "docs"), standbyProcessDoc(4, 0, 1)); resp.StatusCode != http.StatusOK {
+		t.Fatalf("write to promoted node = %d: %s", resp.StatusCode, body)
+	}
+	waitForDocReadable(t, standbyProcessDocsURL(standbyHTTP, "acme", "docs")+"/4", 5*time.Second)
+
+	if resp, body := nodeTokenRequest(t, promoteURL, standbyProcessNodeToken); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("second promote = %d, want 409: %s", resp.StatusCode, body)
+	}
+
+	sb.terminate(t)
+
+	tenantBase := tenantStoreBase(standbyDir, "acme")
+	epoch, err := replication.ReadEpoch(tenantBase)
+	if err != nil {
+		t.Fatalf("read acme epoch sidecar after promote: %v", err)
+	}
+	if epoch.Number != 1 {
+		t.Fatalf("acme epoch after promote = %+v, want Number 1", epoch)
+	}
+
+	plainHTTP := unusedLoopbackAddress(t)
+	plainGRPC := unusedLoopbackAddress(t)
+	plain := startCanonicalTestProcess(t, standbyDir, plainHTTP, plainGRPC)
+	defer plain.stopIfRunning()
+	plain.waitReady(t, plainHTTP)
+	if resp, body := canonicalJSONRequest(t, http.MethodPost, standbyProcessDocsURL(plainHTTP, "acme", "docs"), standbyProcessDoc(6, 1, 1)); resp.StatusCode != http.StatusOK {
+		t.Fatalf("write to plain serve on the promoted dir = %d: %s", resp.StatusCode, body)
+	}
+	plain.terminate(t)
+
+	// Restarting the promoted node against the OLD leader (still running,
+	// still at epoch 0) must not fork it back into that leader's history.
+	// Bind() re-marks it a replica of that leader (StoreID still matches --
+	// promotion never changes it) and re-aligns the epoch sidecar to the old
+	// leader's epoch 0 before Follow ever compares epochs, so what actually
+	// catches this is the plain LSN check every reconnect goes through
+	// first: the local write this node took after promotion put its cursor
+	// past anything the old leader ever had, which is ErrResyncRequired
+	// (the same terminal, discard-and-rebootstrap error an ordinary replica
+	// gets from a leader that pruned records it still needed) rather than
+	// ErrStaleLeader. Either way the outcome the epoch exists for holds: the
+	// node stops instead of silently resyncing, and its local write survives.
+	stale := startCanonicalTestProcess(t, standbyDir, standbyHTTP, standbyGRPC, map[string]string{
+		"DEEPDATA_LEADER_URL":        "http://" + leaderHTTP,
+		"DEEPDATA_REPLICATION_TOKEN": standbyProcessNodeToken,
+	})
+	defer stale.stopIfRunning()
+	stale.waitReady(t, standbyHTTP)
+	staleBody := waitForFollowingState(t, standbyHTTP, "acme", "stopped", 15*time.Second)
+	if errText := followingTenantError(staleBody, "acme"); !strings.Contains(errText, "must be re-bootstrapped") {
+		t.Fatalf("acme stopped error = %q, want the resync-required explanation", errText)
+	}
+	if resp, body := canonicalJSONRequest(t, http.MethodGet, standbyProcessDocsURL(standbyHTTP, "acme", "docs")+"/4", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("get doc 4 on restarted node = %d: %s", resp.StatusCode, body)
+	}
+	stale.terminate(t)
 }
