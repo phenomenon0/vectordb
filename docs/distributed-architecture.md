@@ -119,6 +119,20 @@ failover. Operators who require zero-downtime HA or online replica recovery
 should defer adoption or place DeepData behind an application architecture
 that does not claim DeepData instances are one consistent cluster.
 
+### Move a tenant between servers
+
+Several leaders can run side by side, each its own single process and its own
+data directory, with tenants placed on them by hand -- there is no shared
+placement decision and no view across them. Moving a tenant from one to
+another is an offline copy, not a live handoff: on the server that currently
+holds it, stop serving or following that tenant (the export takes its
+exclusive lock, the same rule `deepdata replicate` and `deepdata serve` already
+have) and run `deepdata export-tenant <data-dir> <tenant> <file>`; copy
+`<file>` to the destination server and run `deepdata import-tenant <data-dir>
+<tenant> <file>` there. The import mints the tenant a fresh StoreID, so once
+it is being served from the new location, point that member's `DEEPDATA_URL`
+at the new server.
+
 ## Requirements before distributed support can be claimed
 
 Future distributed work needs an explicit consistency model, authenticated

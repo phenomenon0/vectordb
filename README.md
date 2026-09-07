@@ -145,7 +145,7 @@ Limits that matter when several members share one server:
   read-only while it follows; it is not promoted automatically and there is no election: if the leader is lost, keep
   serving the standby directory and restore the leader by hand.
 - No search across tenants. Shared knowledge is a shared tenant that members hold read tokens for.
-- No sharding. A tenant lives whole on its leader.
+- No sharding. A tenant lives whole on its leader; it moves to another one with `export-tenant`/`import-tenant`.
 - Cleartext HTTP/h2c and gRPC. Terminate TLS at a proxy, and keep the node transport on a private network.
 
 ## Run from source
