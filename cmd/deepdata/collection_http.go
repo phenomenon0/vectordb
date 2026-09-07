@@ -1103,9 +1103,11 @@ func (s *CollectionHTTPServer) handleTenantUpsertDoc(w http.ResponseWriter, r *h
 
 // handleTenantGetDoc serves a single document by caller-supplied ID.
 func (s *CollectionHTTPServer) handleTenantGetDoc(w http.ResponseWriter, r *http.Request, tenantID, collectionName string, docID uint64) {
-	doc, ok := s.tenantManager.GetDocument(tenantID, collectionName, docID)
-	if !ok {
-		apierror.WriteHTTP(w, apierror.New(apierror.CodeNotFound, fmt.Sprintf("document %d not found", docID)))
+	// Checked, like gRPC: a faulted tenant is 503 and a suspended one 403,
+	// not a 404 that reads as "the document is gone".
+	doc, err := s.tenantManager.GetDocumentChecked(tenantID, collectionName, docID)
+	if err != nil {
+		writeCanonicalOperationError(w, err, apierror.CodeNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

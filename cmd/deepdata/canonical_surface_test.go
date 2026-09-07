@@ -595,6 +595,12 @@ func TestCanonicalTenantLifecycleHTTP(t *testing.T) {
 	if !strings.Contains(apiErr.Hint, "PUT /v3/tenants/{tenant}") {
 		t.Fatalf("suspended insert hint = %q, want it to mention PUT /v3/tenants/{tenant}", apiErr.Hint)
 	}
+	// A read surfaces the suspension too: get-doc must not turn a
+	// suspended (or faulted) tenant into a 404 that reads as "document gone".
+	response = request(http.MethodGet, "/v3/tenants/acme/collections/docs/docs/1", "")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("get-doc on suspended tenant returned %d: %s", response.Code, response.Body.String())
+	}
 
 	if response := request(http.MethodPut, "/v3/tenants/acme", `{"status":"active"}`); response.Code != http.StatusOK {
 		t.Fatalf("reactivate tenant returned %d: %s", response.Code, response.Body.String())
