@@ -563,9 +563,13 @@ func (s *StoreSet) IsReplica() bool {
 // single bool can't carry on a mixed StoreSet.
 func (s *StoreSet) ReplicaTenants() []string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	ids := make([]string, 0)
+	stores := make(map[string]*DurableStore, len(s.stores))
 	for id, store := range s.stores {
+		stores[id] = store
+	}
+	s.mu.Unlock()
+	ids := make([]string, 0)
+	for id, store := range stores {
 		if store.IsReplica() {
 			ids = append(ids, id)
 		}

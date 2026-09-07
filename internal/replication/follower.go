@@ -41,8 +41,8 @@ type Follower struct {
 	Token string
 	// Tenant selects one tenant on a per-tenant leader (NewTenantLeaderHandler):
 	// Status, Open and Follow route to PathPrefix+"tenants/"+Tenant+"/"+<call>
-	// instead of the bare route. Empty talks to a single-store leader
-	// (NewLeaderHandler) unchanged; Tenants does not need it.
+	// instead of the bare route, which a per-tenant leader answers with 404;
+	// Tenants does not need it.
 	Tenant string
 	// Client defaults to http.DefaultClient. A follow stream is open-ended, so
 	// a custom client must not set a whole-request Timeout.
