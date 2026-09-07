@@ -258,13 +258,13 @@ func (f *Follower) Bind(ctx context.Context, store *vcollection.DurableStore, ba
 	return MarkReplica(basePath, leaderID)
 }
 
-// markOrAbort persists the replica binding, or gives the directory up.
-//
-// Both of Open's paths end here, because both produce the same thing: a
-// directory that is a replica and whose next reader may be a `deepdata serve`
-// in another process. Returning a store whose marker did not land would leave
-// exactly the directory this marker exists to prevent -- one that looks
-// ordinary and takes writes.
+// markOrAbort persists the replica binding, or gives the directory up. It is
+// Seed's tail after a fresh bootstrap: a directory that is a replica and
+// whose next reader may be a `deepdata serve` in another process. Returning
+// success whose marker did not land would leave exactly the directory this
+// marker exists to prevent -- one that looks ordinary and takes writes.
+// (Bind inlines the same marker call itself, since it must not Abort a
+// caller-owned store on failure.)
 //
 // Abort rather than Close on failure: Close would checkpoint state we are
 // refusing to vouch for. The store artifacts stay behind, so the next run

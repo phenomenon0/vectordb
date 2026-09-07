@@ -177,10 +177,10 @@ func (s *StoreSet) openOrCreate(id string) (*DurableStore, error) {
 // AdoptTenant returns the store for a tenant whose artifacts appeared on disk
 // after boot -- a standby's follower seeding it mid-run. If id is already
 // open, it is returned unchanged and bind is not called. Otherwise the store
-// is opened exactly like openOrCreate's create path, bind runs on it while
-// s.mu is still held and BEFORE the store is registered, and a bind failure
-// aborts the store and registers nothing: no request can reach it, bound or
-// not, until bind has said yes.
+// is opened exactly like openOrCreate's create path, bind runs on it with
+// s.mu released (it may be a network round trip to the leader) and BEFORE the
+// store is registered, and a bind failure aborts the store and registers
+// nothing: no request can reach it, bound or not, until bind has said yes.
 //
 // bind is a caller-supplied hook, not a call into internal/replication,
 // because this package must not import that one (it would be a cycle: that
@@ -201,30 +201,45 @@ func (s *StoreSet) openOrAdopt(id string, bind func(*DurableStore) error) (*Dura
 		return nil, fmt.Errorf("%w: %q", ErrInvalidTenantID, id)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if store, ok := s.stores[id]; ok {
+		s.mu.Unlock()
 		return store, nil
 	}
 	if cause, ok := s.broken[id]; ok {
+		s.mu.Unlock()
 		return nil, s.faultedErr(id, cause)
 	}
 	if bind == nil && s.readOnly {
+		s.mu.Unlock()
 		return nil, ErrReplicaReadOnly
 	}
 	if s.limits.MaxTenants > 0 && len(s.stores)+len(s.broken) >= s.limits.MaxTenants {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("%w: maximum is %d", ErrTenantLimitExceeded, s.limits.MaxTenants)
 	}
 	base := filepath.Join(s.dir, id)
 	store, err := OpenDurableStoreWithLimits(base, base, perTenantLimits(s.limits))
 	if err != nil {
+		s.mu.Unlock()
 		return nil, err
 	}
-	if bind != nil {
-		if err := bind(store); err != nil {
-			return nil, errors.Join(err, store.Abort())
-		}
+	if bind == nil {
+		s.stores[id] = store
+		s.mu.Unlock()
+		return store, nil
 	}
+	// bind is typically a network round trip to the leader (Follower.Bind ->
+	// Status()): release s.mu before calling it, or one tenant mid-seed
+	// against a slow/unreachable leader stalls every other tenant on this
+	// node -- lookup()'s "never call into a store while holding mu" rule
+	// applies to this hook too.
+	s.mu.Unlock()
+	if err := bind(store); err != nil {
+		return nil, errors.Join(err, store.Abort())
+	}
+	s.mu.Lock()
 	s.stores[id] = store
+	s.mu.Unlock()
 	return store, nil
 }
 
