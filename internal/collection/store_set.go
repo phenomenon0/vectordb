@@ -116,6 +116,16 @@ func OpenStoreSet(dir string, limits StoreLimits) (*StoreSet, error) {
 		// lazy open + LRU close when 2x tenants nears ulimit -n.
 		store, err := OpenDurableStoreWithLimits(base, base, perTenantLimits(limits))
 		if err != nil {
+			if errors.Is(err, ErrCollectionStoreLocked) {
+				// Another process holds this tenant (a serve or replicate on
+				// the same dir): a deployment conflict, not a data fault, so
+				// refuse the whole dir the way the single store did instead
+				// of booting with every tenant faulted.
+				for _, opened := range set.stores {
+					_ = opened.Abort()
+				}
+				return nil, fmt.Errorf("tenant %q: %w", id, err)
+			}
 			set.broken[id] = err
 			continue
 		}

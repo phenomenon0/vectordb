@@ -30,8 +30,11 @@ const (
 )
 
 var (
-	ErrDurableStoreClosed         = errors.New("durable collection store is closed")
-	ErrDurableStoreFaulted        = errors.New("durable collection store is faulted")
+	ErrDurableStoreClosed  = errors.New("durable collection store is closed")
+	ErrDurableStoreFaulted = errors.New("durable collection store is faulted")
+	// ErrCollectionStoreLocked: another process holds the store's exclusive
+	// lifetime lock. A deployment conflict, never a data fault.
+	ErrCollectionStoreLocked      = errors.New("collection store is already open")
 	ErrDurableCollectionHandle    = errors.New("raw collection handles are unavailable for durable stores")
 	ErrCanonicalMutationRequired  = errors.New("persistent collections must be mutated through TenantManager")
 	ErrUnsupportedDurableMutation = errors.New("mutation is outside the release-candidate durable contract")

@@ -279,6 +279,9 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 			if err != nil {
 				collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
 			} else {
+				for id, faultErr := range collectionHTTP.Stores().FaultedTenants() {
+					logging.Default().Warn("tenant store faulted; its requests answer 503 until it is repaired", "tenant", id, "error", faultErr)
+				}
 				// Before a single route is registered: a replica tenant that
 				// came up unbound would take one local write and fork its
 				// history from the leader's at the same LSN.

@@ -48,7 +48,7 @@ func acquireCollectionStoreLock(path string) (*collectionStoreLock, error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			return closeWith(fmt.Errorf("collection store is already open: %w", err))
+			return closeWith(fmt.Errorf("%w: %w", ErrCollectionStoreLocked, err))
 		}
 		return closeWith(fmt.Errorf("lock collection store: %w", err))
 	}

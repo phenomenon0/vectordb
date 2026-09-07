@@ -55,7 +55,6 @@ func TestStoreSetOneStorePerTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
 
 	if got := reopened.Tenants(); !reflect.DeepEqual(got, []string{"acme", "globex"}) {
 		t.Fatalf("Tenants() = %v, want [acme globex]", got)
@@ -73,6 +72,10 @@ func TestStoreSetOneStorePerTenant(t *testing.T) {
 	}
 	if !reflect.DeepEqual(globexInfosBefore, globexInfosAfter) {
 		t.Fatalf("globex collection infos changed across reopen: %+v vs %+v", globexInfosBefore, globexInfosAfter)
+	}
+
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	// A dir that already holds two tenants refuses to admit a third once
@@ -336,4 +339,52 @@ func TestExportTenantSnapshotIsOpenable(t *testing.T) {
 	if !ok || rec.Quota.MaxDocuments != 100 {
 		t.Fatalf("GetTenantRecord(acme) = %+v, %v, want the exported quota", rec, ok)
 	}
+}
+
+// TestStoreSetRefusesTenantHeldByAnotherOpen pins the documented rule that
+// whichever process opens a tenant second is refused with "collection store
+// is already open": a held lock is a deployment conflict, so the whole
+// directory refuses to open (and releases what it had opened) rather than
+// booting with that tenant silently faulted.
+func TestStoreSetRefusesTenantHeldByAnotherOpen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	limits := StoreLimits{MaxTenants: 8, MaxCollections: 8}
+
+	set, err := OpenStoreSet(dir, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := set.CreateCollection(ctx, "acme", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := set.CreateCollection(ctx, "globex", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.Abort(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold only globex, so the set opens acme first and must release it again.
+	globexBase := filepath.Join(dir, "globex")
+	holder, err := OpenDurableStore(globexBase, globexBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer abandonDurableStoreForTest(t, holder)
+
+	second, err := OpenStoreSet(dir, limits)
+	if err == nil {
+		_ = second.Abort()
+		t.Fatal("OpenStoreSet succeeded while another open holds globex")
+	}
+	if !errors.Is(err, ErrCollectionStoreLocked) || !strings.Contains(err.Error(), `"globex"`) {
+		t.Fatalf("OpenStoreSet err = %v, want ErrCollectionStoreLocked naming globex", err)
+	}
+	acmeBase := filepath.Join(dir, "acme")
+	acme, err := OpenDurableStore(acmeBase, acmeBase)
+	if err != nil {
+		t.Fatalf("acme still locked after the refused open: %v", err)
+	}
+	abandonDurableStoreForTest(t, acme)
 }
