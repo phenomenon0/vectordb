@@ -269,6 +269,14 @@ func (f *Follower) Bind(ctx context.Context, store *vcollection.DurableStore, ba
 	if err := store.MakeReplica(leaderID); err != nil {
 		return fmt.Errorf("bind replica to leader %x: %w", leaderID, err)
 	}
+	// Keeps the sidecar aligned on every Bind, not just a fresh Seed -- a
+	// directory that got store artifacts without ever writing an epoch
+	// sidecar (crash between bootstrap and WriteEpoch) would otherwise stay
+	// permanently unfenced, since MarkReplica already self-heals here but
+	// nothing else ever revisits the sidecar.
+	if err := WriteEpoch(basePath, Epoch{Number: status.Epoch, StartLSN: status.EpochStartLSN}); err != nil {
+		return err
+	}
 	return MarkReplica(basePath, leaderID)
 }
 

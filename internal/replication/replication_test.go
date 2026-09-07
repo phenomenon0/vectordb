@@ -537,6 +537,47 @@ func TestBindMarksAnOpenStoreAndRefusesAForeignOne(t *testing.T) {
 	}
 }
 
+// A directory can end up with store artifacts but no epoch sidecar -- e.g. a
+// crash between Seed's bootstrap and its WriteEpoch call. Bind is the guard
+// every occupied Open resumes through, so it has to re-align the sidecar
+// itself instead of leaving the directory permanently unfenced; MarkReplica
+// already self-heals the same way on every Bind.
+func TestBindWritesTheEpochSidecarEvenWhenMissing(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	want := Epoch{Number: 2, StartLSN: 7}
+	follower := serveLeaderWithEpoch(t, leader, func() (Epoch, error) { return want, nil })
+	base := storePath(t, dir, "replica")
+	if _, err := follower.Seed(ctx, base, base); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the crash: artifacts exist, sidecar does not.
+	if err := os.Remove(epochPath(base)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadEpoch(base); err != nil || got != (Epoch{}) {
+		t.Fatalf("ReadEpoch after removing the sidecar = %+v, %v; want zero value, nil error", got, err)
+	}
+
+	store, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := follower.Bind(ctx, store, base); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if got, err := ReadEpoch(base); err != nil || got != want {
+		t.Fatalf("ReadEpoch after Bind = %+v, %v; want %+v, nil", got, err, want)
+	}
+}
+
 // OnPreamble is how a standby learns the leader's LatestLSN for a lag report
 // without a second round trip: Follow already reads the preamble to check the
 // StoreID, so this only has to hand the caller what it already parsed.
