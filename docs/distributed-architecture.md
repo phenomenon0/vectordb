@@ -45,15 +45,38 @@ normally, every write is refused with `403` `permission_denied` before it
 reaches the journal, and `GET /readyz` and `GET /v3/status` both report
 `read_only` so a load balancer stops sending it writes.
 
-Stop that sync is not a turn of phrase. The collection store takes an exclusive
-lock, per tenant, for the lifetime of the process holding it, so `deepdata
-replicate` and `deepdata serve` cannot both hold the tenant a sync is following:
-whichever opens that tenant's store second is refused with `collection store is
-already open`. A replica is therefore a tenant directory kept current for a
-later read, not a live member of a read fleet, and moving it
-between the two roles means stopping one process and starting the other. Serving
-reads while the sync continues would need a shared-reader open that this release
-does not have.
+`deepdata replicate`'s exclusive lock is not a turn of phrase: the collection
+store takes it per tenant for the lifetime of the process holding it, so
+`deepdata replicate` and `deepdata serve` cannot both hold the tenant it is
+syncing -- whichever opens that tenant's store second is refused with
+`collection store is already open`. Moving a tenant directory between the two
+roles means stopping one process and starting the other.
+
+Serving reads while the sync continues does not need a second process: setting
+`DEEPDATA_LEADER_URL` (with the same node credential) turns `deepdata serve`
+itself into a standby. It follows every tenant the leader lists, in-process,
+into its own tenant store tree -- the same seed-then-tail sync `deepdata
+replicate` performs, sharing its re-list and retry loop -- and answers reads
+for what it has synced the whole time it follows, not only once it stops.
+
+`GET /readyz` reports this as a `following` block:
+`{"leader": "...", "tenants": {"<id>": {"state", "applied_lsn", "leader_lsn",
+"lag"}}}`. `state` is `bootstrapping` while a tenant seeds from a snapshot,
+`streaming` while it tails the leader's journal, `reconnecting` while a
+dropped stream retries on its own, or `stopped` on a terminal fault (see
+[docs/troubleshooting.md](troubleshooting.md)). `applied_lsn` is this tenant's
+own durable cursor; `leader_lsn` is the leader's position as of the preamble
+the stream opened with; `lag` is the difference between the two measured
+against that same snapshot, so a caught-up stream reports `lag: 0` -- it is
+not a live delta against whatever the leader does next.
+
+Following is per tenant: a tenant already on the standby's disk that the
+leader does not list is untouched, exactly as ordinary and writable as
+before. The marker a sync writes beside a tenant's store is still the
+evidence once the standby stops: a plain `deepdata serve` against that
+directory afterward, without `DEEPDATA_LEADER_URL`, still opens that tenant
+read-only. `deepdata replicate` is unchanged and remains the sync-only mode:
+it never serves.
 
 What it does not do: it never elects, promotes, fences, or fails over; it has no
 membership list; it does not resync itself when it falls too far behind, because

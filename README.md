@@ -29,7 +29,7 @@ deepdata-mcp          stdio MCP server, one tenant per process, six memory verbs
 | Storage | Journal plus snapshot per tenant, fsync per acknowledged mutation, restart replays and reclaims. Dense fields index with `hnsw` or `flat`, sparse fields with `inverted` (BM25); cosine or euclidean distance. |
 | Search | Several query fields per request, hybrid fusion of two fields (weighted or RRF), a primary-then-secondary fallback ladder, metadata filters with `$and`/`$or`/`$not` plus `$geo_radius` and `$geo_bbox`, `score_floor` with `weak_match` reporting, and `usage_boost` that favours documents recalled before. |
 | Embedding | `DEEPDATA_EMBEDDER` is `none`, `ollama`, `openai`, `onnx` (build tag) or `hash` (deterministic, for tests). Text arrives as `texts`, is embedded on the fields bound to that embedder, and the MCP `memory` preset reads the embedder from `/readyz`, so an agent never names a model. |
-| Standby | `deepdata replicate --leader URL` follows every tenant the leader lists, or `--tenant` one, over HTTP with the node credential; it bootstraps tenants that appear later and reconnects after a dropped stream. The standby directory serves read-only once the follower is stopped (`read_only: true`; a write is 403 with a hint naming the leader). It does not serve while it follows. Experimental: switched on only by `DEEPDATA_REPLICATION_TOKEN`, not covered by an RC gate. |
+| Standby | `deepdata serve` with `DEEPDATA_LEADER_URL` set follows every tenant the leader lists, in-process, over HTTP with the node credential, and serves reads the whole time it follows: `read_only: true`, a write is 403 with a hint naming the leader, and `/readyz` carries a `following` block per tenant (`state`, `applied_lsn`, `leader_lsn`, `lag`). It bootstraps tenants that appear later and reconnects after a dropped stream. `deepdata replicate --leader URL` remains the sync-only mode -- it never serves. Experimental: switched on only by `DEEPDATA_REPLICATION_TOKEN`, not covered by an RC gate. |
 | Ops | Per-tenant metrics (`vectordb_tenant_requests_total`, `vectordb_tenant_request_duration_seconds`, `vectordb_tenant_documents`, `vectordb_tenant_bytes`), per-tenant rate limits (`TENANT_RPS`, `TENANT_BURST`), body, batch and dimension limits, a Dockerfile, Compose file and Helm chart under `deploy/helm`, and a Python SDK with sync and async clients, typed models and retries. |
 
 ## Shape for a fleet of agents
@@ -42,7 +42,7 @@ flowchart LR
         C["pipeline · batch insert · tenant=c"] --> L
     end
     L[("DeepData leader<br/>one tenant per member")]
-    L -->|deepdata replicate| S[("standby on a second machine<br/>read-only, served after the follower stops")]
+    L -->|deepdata replicate| S[("standby on a second machine<br/>read-only, serves reads while it follows")]
     O["operator · --server-admin token"] -->|create tenant · quota · suspend| L
 ```
 
@@ -141,9 +141,9 @@ the RC binary answers it 404; follower restore and snapshot streaming were delet
 
 Limits that matter when several members share one server:
 
-- One writer. Every tenant's journal is appended by exactly one process, the leader. A standby is not promoted
-  automatically and there is no election: if the leader is lost, serve the standby directory read-only and restore
-  the leader by hand.
+- One writer. Every tenant's journal is appended by exactly one process, the leader. A standby already serves reads
+  read-only while it follows; it is not promoted automatically and there is no election: if the leader is lost, keep
+  serving the standby directory and restore the leader by hand.
 - No search across tenants. Shared knowledge is a shared tenant that members hold read tokens for.
 - No sharding. A tenant lives whole on its leader.
 - Cleartext HTTP/h2c and gRPC. Terminate TLS at a proxy, and keep the node transport on a private network.

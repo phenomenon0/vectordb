@@ -190,6 +190,19 @@ Treat this as loss of canonical persistence health. Stop routing traffic,
 preserve the complete state root, and inspect server logs. Restart only after
 the cause is understood; repeated restarts are not a repair procedure.
 
+### Standby tenant is reconnecting or stopped
+
+`GET /readyz`'s `following` block reports one state per tenant a
+`DEEPDATA_LEADER_URL` standby follows. `bootstrapping` and `streaming` are
+healthy. `reconnecting` means the stream to the leader dropped and the
+standby is retrying on its own; it clears itself once the leader answers
+again, no operator action needed. `stopped` is terminal and is an operator
+decision: check the tenant's `error` field. A resync-required or
+store-mismatch error means this tenant's local copy can never catch up as
+it stands -- stop the standby, remove that tenant's files under the tenants
+directory, and start the standby again to re-seed it from the leader. Every
+other tenant keeps following normally while one is stopped.
+
 ## Docker and Compose
 
 ### Container exits immediately
