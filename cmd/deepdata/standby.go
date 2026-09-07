@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -98,6 +99,16 @@ func (st *standby) followTenant(ctx context.Context, f *replication.Follower, se
 		// tenant of the same name, not this leader's) lands here: bind never
 		// touches the store on a mismatch, so it keeps serving as ordinary
 		// local state, not as this leader's replica.
+		// A tenant that IS this leader's lineage but failed the epoch
+		// fence -- a demoted leader restarted as a standby, or a standby
+		// past the new epoch's start -- is a fork: keep answering reads,
+		// but refuse writes nobody will ever replicate. The operator
+		// re-bootstraps it or serves without DEEPDATA_LEADER_URL.
+		if errors.Is(err, replication.ErrResyncRequired) || errors.Is(err, replication.ErrStaleLeader) {
+			if rerr := store.MakeReplica(store.Metadata().StoreID); rerr != nil {
+				logger.Error("cannot fence the forked standby tenant read-only", "tenant", id, "error", rerr)
+			}
+		}
 		logger.Error("cannot bind standby tenant to its leader", "tenant", id, "leader", f.LeaderURL, "error", err)
 		st.setState(id, "stopped", err.Error())
 		return 1

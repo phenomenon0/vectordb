@@ -201,6 +201,65 @@ func TestServeFollowKeepsAForeignTenantLocal(t *testing.T) {
 	}
 }
 
+// A tenant that is this leader's own lineage but fails the epoch fence --
+// here a standby promoted online (epoch 1) and then restarted against the
+// old leader, still at epoch 0 -- is a fork. It keeps answering reads, but
+// it must refuse writes: nothing would ever replicate them, and the old
+// leader's clients would keep landing on a node that looks writable.
+func TestServeFollowFencesAForkedTenantReadOnly(t *testing.T) {
+	_, leaderURL, _ := multiTenantLeaderForTest(t)
+
+	handler, collections := standbyHandlerForTest(t)
+	set := collections.Stores()
+	ctx := context.Background()
+
+	first := startStandby(ctx, leaderURL, "node-token", 30*time.Millisecond, set, logging.Default())
+	waitForStandbyState(t, first, "acme", "streaming")
+	waitForStandbyState(t, first, "globex", "streaming")
+	if _, _, err := first.promote(set); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	first.stop()
+
+	// The promoted node takes writes of its own, as it should.
+	forkDoc := vcollection.Document{
+		Vectors:  map[string]vcollection.Vector{"dense": vcollection.Vector{Dense: []float32{0, 1}}},
+		Metadata: map[string]interface{}{"origin": "fork"},
+	}
+	if err := set.AddDocument(ctx, "acme", "docs", &forkDoc); err != nil {
+		t.Fatalf("insert on the promoted acme: %v", err)
+	}
+
+	// Restarted against the old leader, which never learned of the promotion.
+	second := startStandby(ctx, leaderURL, "node-token", 30*time.Millisecond, set, logging.Default())
+	collections.SetStandby(second)
+	waitForStandbyState(t, second, "acme", "stopped")
+	if errText := second.snapshot()["acme"].err; !strings.Contains(errText, "demoted") {
+		t.Errorf("acme stopped error = %q, want the stale-leader explanation", errText)
+	}
+
+	// Reads of what it holds still answer...
+	path := "/v3/tenants/acme/collections/docs/docs/" + strconv.FormatUint(forkDoc.ID, 10)
+	if resp := canonicalCall(t, handler, http.MethodGet, path, ""); resp.Code != http.StatusOK {
+		t.Errorf("get forked acme document = %d: %s", resp.Code, resp.Body.String())
+	}
+	// ...but writes are refused the way every replica refuses them.
+	resp := canonicalCall(t, handler, http.MethodPost, "/v3/tenants/acme/collections/docs/docs",
+		`{"vectors":{"dense":[1,1]},"metadata":{"origin":"lost"}}`)
+	if resp.Code != http.StatusForbidden {
+		t.Errorf("write to the fenced acme tenant = %d, want %d: %s", resp.Code, http.StatusForbidden, resp.Body.String())
+	}
+	// And the node says so.
+	if replicas, _ := json.Marshal(readyzBody(t, handler)["replica_tenants"]); !strings.Contains(string(replicas), `"acme"`) {
+		t.Errorf("readyz replica_tenants = %s, want acme listed", replicas)
+	}
+
+	second.stop()
+	if err := set.Close(); err != nil {
+		t.Errorf("close standby store set: %v", err)
+	}
+}
+
 // DEEPDATA_LEADER_URL without DEEPDATA_REPLICATION_TOKEN is a config error,
 // not a silent no-op: without the node token a standby cannot authenticate
 // to the leader it was just told to follow.

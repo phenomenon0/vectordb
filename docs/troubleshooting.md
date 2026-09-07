@@ -205,8 +205,10 @@ stale-leader error means this directory's epoch is already ahead of the
 leader it was pointed at: that leader was demoted, or this directory was
 promoted and is being run as a standby by mistake. Do not remove anything;
 point `DEEPDATA_LEADER_URL` at the current leader, or serve the directory
-without it if it is the leader. Every other tenant keeps following normally
-while one is stopped.
+without it if it is the leader. A tenant stopped by either error keeps
+answering reads but refuses writes with a 403 until you act: a write on a
+fenced copy would never reach any other node. Every other tenant keeps
+following normally while one is stopped.
 
 ### Promote a standby by hand
 
