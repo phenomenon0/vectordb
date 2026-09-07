@@ -54,6 +54,11 @@ type StoreSet struct {
 	stores map[string]*DurableStore
 	broken map[string]error
 
+	// readOnly refuses to mint a tenant that has never been seen on this set.
+	// A following node must not mint local tenants the leader may ship later
+	// -- see SetReadOnly.
+	readOnly bool
+
 	// reservedCollections is in-flight CreateCollection admission against the
 	// dir-wide MaxCollections cap: held while one create is running, so two
 	// concurrent creates across different tenants can't both slip in at the
@@ -164,8 +169,34 @@ func (s *StoreSet) lookup(id string) (*DurableStore, error) {
 
 // openOrCreate returns the open store for id, opening a fresh one-tenant
 // DurableStore the first time id is seen. This and CreateTenant are the only
-// two places a tenant store is created.
+// two places a tenant store is minted for a brand new tenant.
 func (s *StoreSet) openOrCreate(id string) (*DurableStore, error) {
+	return s.openOrAdopt(id, nil)
+}
+
+// AdoptTenant returns the store for a tenant whose artifacts appeared on disk
+// after boot -- a standby's follower seeding it mid-run. If id is already
+// open, it is returned unchanged and bind is not called. Otherwise the store
+// is opened exactly like openOrCreate's create path, bind runs on it while
+// s.mu is still held and BEFORE the store is registered, and a bind failure
+// aborts the store and registers nothing: no request can reach it, bound or
+// not, until bind has said yes.
+//
+// bind is a caller-supplied hook, not a call into internal/replication,
+// because this package must not import that one (it would be a cycle: that
+// package already imports vcollection for DurableStore).
+func (s *StoreSet) AdoptTenant(id string, bind func(*DurableStore) error) (*DurableStore, error) {
+	return s.openOrAdopt(id, bind)
+}
+
+// openOrAdopt is the shared body behind openOrCreate and AdoptTenant: look up
+// an already-open or already-broken store, enforce the dir-wide MaxTenants
+// cap, and open a fresh one-tenant DurableStore. bind, when non-nil, runs on
+// the freshly opened store before it is registered -- AdoptTenant's use for
+// honoring a replica marker before any request can reach the store -- and a
+// readOnly set refuses to mint a tenant nobody has bound yet (bind == nil is
+// exactly the "mint a local tenant" case AdoptTenant is not).
+func (s *StoreSet) openOrAdopt(id string, bind func(*DurableStore) error) (*DurableStore, error) {
 	if !ValidTenantID(id) {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidTenantID, id)
 	}
@@ -177,6 +208,9 @@ func (s *StoreSet) openOrCreate(id string) (*DurableStore, error) {
 	if cause, ok := s.broken[id]; ok {
 		return nil, s.faultedErr(id, cause)
 	}
+	if bind == nil && s.readOnly {
+		return nil, ErrReplicaReadOnly
+	}
 	if s.limits.MaxTenants > 0 && len(s.stores)+len(s.broken) >= s.limits.MaxTenants {
 		return nil, fmt.Errorf("%w: maximum is %d", ErrTenantLimitExceeded, s.limits.MaxTenants)
 	}
@@ -185,8 +219,23 @@ func (s *StoreSet) openOrCreate(id string) (*DurableStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	if bind != nil {
+		if err := bind(store); err != nil {
+			return nil, errors.Join(err, store.Abort())
+		}
+	}
 	s.stores[id] = store
 	return store, nil
+}
+
+// SetReadOnly toggles whether openOrCreate may mint a brand new tenant store
+// dir-wide. A following node must not mint local tenants the leader may ship
+// later -- it only ever adopts tenants a bind vouches for. Existing tenants
+// keep their own per-store replica flags; this does not touch them.
+func (s *StoreSet) SetReadOnly(on bool) {
+	s.mu.Lock()
+	s.readOnly = on
+	s.mu.Unlock()
 }
 
 // reserveCollection admits one more collection against the dir-wide

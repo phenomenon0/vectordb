@@ -388,3 +388,125 @@ func TestStoreSetRefusesTenantHeldByAnotherOpen(t *testing.T) {
 	}
 	abandonDurableStoreForTest(t, acme)
 }
+
+// TestStoreSetAdoptTenantRunsBindBeforeServing pins the reason AdoptTenant
+// exists: a tenant's files can appear on disk after the set has already
+// booted (a follower seeding it mid-run), and bind must run while s.mu is
+// still held so no request can reach the store before a replica marker is
+// honored.
+func TestStoreSetAdoptTenantRunsBindBeforeServing(t *testing.T) {
+	ctx := context.Background()
+	limits := StoreLimits{MaxTenants: 8, MaxCollections: 8}
+
+	srcBase := filepath.Join(t.TempDir(), "unified")
+	src, err := OpenDurableStoreWithLimits(srcBase, srcBase, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tenantID := range []string{"acme", "globex"} {
+		if _, err := src.Tenants().CreateCollection(ctx, tenantID, durableTestSchema("docs")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	set, err := OpenStoreSet(dir, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+	if got := set.Tenants(); len(got) != 0 {
+		t.Fatalf("Tenants() before any export = %v, want none", got)
+	}
+
+	// The tenant's artifacts appear on disk after boot, exactly as a
+	// follower's Seed would leave them.
+	if err := ExportTenantSnapshot(src, "acme", filepath.Join(dir, "acme")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExportTenantSnapshot(src, "globex", filepath.Join(dir, "globex")); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	leaderID := [16]byte{1, 2, 3}
+	store, err := set.AdoptTenant("acme", func(s *DurableStore) error {
+		return s.MakeReplica(leaderID)
+	})
+	if err != nil {
+		t.Fatalf("AdoptTenant(acme): %v", err)
+	}
+	if !store.IsReplica() {
+		t.Fatal("AdoptTenant did not run bind before returning the store")
+	}
+	doc := durableTestDocument(1)
+	if err := set.AddDocument(ctx, "acme", "docs", &doc); !errors.Is(err, ErrReplicaReadOnly) {
+		t.Fatalf("AddDocument on an adopted replica = %v, want ErrReplicaReadOnly", err)
+	}
+	// Re-adopting an already-open tenant returns it unchanged; bind must not
+	// run again.
+	again, err := set.AdoptTenant("acme", func(*DurableStore) error {
+		t.Fatal("bind called again for an already-open tenant")
+		return nil
+	})
+	if err != nil || again != store {
+		t.Fatalf("AdoptTenant(acme) again = %v, %v, want the same store back", again, err)
+	}
+
+	// A bind that fails must leave the tenant absent and its lock released.
+	_, err = set.AdoptTenant("globex", func(*DurableStore) error {
+		return errors.New("bind refused")
+	})
+	if err == nil || !strings.Contains(err.Error(), "bind refused") {
+		t.Fatalf("AdoptTenant(globex) = %v, want the bind error", err)
+	}
+	for _, id := range set.Tenants() {
+		if id == "globex" {
+			t.Fatal("globex is registered despite its bind failing")
+		}
+	}
+	globexBase := filepath.Join(dir, "globex")
+	reopened, err := OpenDurableStore(globexBase, globexBase)
+	if err != nil {
+		t.Fatalf("globex still locked after a refused bind: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStoreSetReadOnlyRefusesNewTenants pins the reason SetReadOnly exists: a
+// following node must not mint a local tenant the leader may still ship, but
+// it must not stop serving tenants it already has.
+func TestStoreSetReadOnlyRefusesNewTenants(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	limits := StoreLimits{MaxTenants: 8, MaxCollections: 8}
+	set, err := OpenStoreSet(dir, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+	if _, err := set.CreateCollection(ctx, "acme", durableTestSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	set.SetReadOnly(true)
+	if _, err := set.CreateCollection(ctx, "globex", durableTestSchema("docs")); !errors.Is(err, ErrReplicaReadOnly) {
+		t.Fatalf("CreateCollection(globex) while read-only = %v, want ErrReplicaReadOnly", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "globex.initialized")); !os.IsNotExist(err) {
+		t.Fatalf("globex must not have been minted on disk: %v", err)
+	}
+	// An existing tenant is unaffected: it keeps taking writes.
+	if _, err := set.CreateCollection(ctx, "acme", durableTestSchema("more")); err != nil {
+		t.Fatalf("existing tenant refused a write while the set is read-only: %v", err)
+	}
+
+	set.SetReadOnly(false)
+	if _, err := set.CreateCollection(ctx, "globex", durableTestSchema("docs")); err != nil {
+		t.Fatalf("CreateCollection(globex) after SetReadOnly(false): %v", err)
+	}
+}

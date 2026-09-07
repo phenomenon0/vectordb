@@ -415,6 +415,160 @@ func TestTheReplicaMarkerIsNotMistakenForStoreState(t *testing.T) {
 	}
 }
 
+// Seed is the half of Open a StoreSet-owned store needs before it is ever
+// opened for real: bootstrap from the leader, mark the directory, then let go
+// of the lock so a plain open can follow -- exactly what a serve process does
+// next.
+func TestSeedBootstrapsAnEmptyDirAndLeavesItUnlocked(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	follower := serveLeader(t, leader)
+	base := storePath(t, dir, "replica")
+
+	bootstrapped, err := follower.Seed(ctx, base, base)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if !bootstrapped {
+		t.Fatal("Seed on an empty directory reported no bootstrap")
+	}
+	leaderID := leader.Metadata().StoreID
+	if id, isReplica, err := ReplicaLeaderID(base); err != nil || !isReplica || id != leaderID {
+		t.Fatalf("marker after Seed: id=%x isReplica=%v err=%v, want %x", id, isReplica, err, leaderID)
+	}
+
+	// A directory Seed already occupied does nothing the second time.
+	bootstrapped, err = follower.Seed(ctx, base, base)
+	if err != nil {
+		t.Fatalf("second seed: %v", err)
+	}
+	if bootstrapped {
+		t.Fatal("Seed on an occupied directory reported a bootstrap")
+	}
+
+	// The lock must be free: Seed released it via Abort rather than holding it.
+	store, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatalf("open seeded store: %v", err)
+	}
+	if got := store.Metadata().StoreID; got != leaderID {
+		t.Fatalf("seeded StoreID = %x, want %x", got, leaderID)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Bind is the guard an occupied Open resumes through, exposed so a
+// StoreSet-owned store can be bound the same way. It must mark a genuine
+// replica of the leader, and refuse -- without touching -- a store that
+// belongs to someone else.
+func TestBindMarksAnOpenStoreAndRefusesAForeignOne(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	follower := serveLeader(t, leader)
+	base := storePath(t, dir, "replica")
+	if _, err := follower.Seed(ctx, base, base); err != nil {
+		t.Fatal(err)
+	}
+	store, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := follower.Bind(ctx, store, base); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if !store.IsReplica() {
+		t.Fatal("Bind did not mark the store a replica")
+	}
+	if _, isReplica, err := ReplicaLeaderID(base); err != nil || !isReplica {
+		t.Fatalf("Bind did not leave the on-disk marker: isReplica=%v err=%v", isReplica, err)
+	}
+
+	// A store minted under a different StoreID must be refused, and left
+	// exactly as handed in: Bind does not own the store, so it must not abort
+	// it on failure.
+	otherBase := storePath(t, dir, "occupied")
+	other, err := vcollection.OpenDurableStore(otherBase, otherBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	if err := follower.Bind(ctx, other, otherBase); !errors.Is(err, vcollection.ErrJournalStoreMismatch) {
+		t.Fatalf("Bind on a foreign store = %v, want ErrJournalStoreMismatch", err)
+	}
+	if _, err := other.Tenants().CreateCollection(ctx, "tenant-x", testSchema("still-usable")); err != nil {
+		t.Fatalf("store refused by Bind must still take a local write: %v", err)
+	}
+}
+
+// OnPreamble is how a standby learns the leader's LatestLSN for a lag report
+// without a second round trip: Follow already reads the preamble to check the
+// StoreID, so this only has to hand the caller what it already parsed.
+func TestFollowReportsThePreamble(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	doc := testDocument(1)
+	if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &doc); err != nil {
+		t.Fatal(err)
+	}
+	wantLSN := leader.Metadata().AppliedLSN
+	wantStoreID := leader.Metadata().StoreID
+
+	follower := serveLeader(t, leader)
+	base := storePath(t, dir, "replica")
+	replica, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = replica.Close() })
+
+	var mu sync.Mutex
+	var got Preamble
+	follower.OnPreamble = func(p Preamble) {
+		mu.Lock()
+		got = p
+		mu.Unlock()
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	failed := make(chan error, 1)
+	go func() { failed <- follower.Follow(runCtx, replica) }()
+	waitFor(t, runCtx, failed, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return got.StoreID != ([16]byte{})
+	}, "OnPreamble never fired")
+	cancel()
+	<-failed
+
+	if got.StoreID != wantStoreID {
+		t.Fatalf("OnPreamble StoreID = %x, want %x", got.StoreID, wantStoreID)
+	}
+	if got.LatestLSN != wantLSN {
+		t.Fatalf("OnPreamble LatestLSN = %d, want %d", got.LatestLSN, wantLSN)
+	}
+}
+
 // A leader restart must not stall the stream.
 //
 // The recorded two-node failure was a leader whose record order lived in

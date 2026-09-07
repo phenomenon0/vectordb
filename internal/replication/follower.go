@@ -47,6 +47,10 @@ type Follower struct {
 	// Client defaults to http.DefaultClient. A follow stream is open-ended, so
 	// a custom client must not set a whole-request Timeout.
 	Client *http.Client
+	// OnPreamble, if set, is called with the leader's stream preamble right
+	// after ReadPreamble succeeds and the StoreID matched. A standby uses it
+	// to learn the leader's LatestLSN for its lag report; nil is ignored.
+	OnPreamble func(Preamble)
 }
 
 // LeaderStatus is what the leader reports about itself.
@@ -159,35 +163,81 @@ func (f *Follower) Status(ctx context.Context) (LeaderStatus, error) {
 // snapshot when the path holds no store yet and resuming an existing one
 // otherwise.
 //
-// The emptiness test is the same prefix scan BootstrapReplica uses, so the two
-// paths cannot disagree about what an empty target is and accidentally
-// bootstrap over a live replica.
+// It is Seed + vcollection.OpenDurableStore + Bind: Seed does the bootstrap
+// (or nothing, if the path is already occupied), the plain open resumes
+// whatever is on disk, and Bind applies the same StoreID guard and marker a
+// bootstrap already carries. A caller that owns a StoreSet-opened store
+// instead of a bare path uses Seed and Bind directly (see StoreSet.AdoptTenant).
 func (f *Follower) Open(ctx context.Context, basePath, storagePath string) (*vcollection.DurableStore, error) {
-	status, err := f.Status(ctx)
-	if err != nil {
+	if _, err := f.Seed(ctx, basePath, storagePath); err != nil {
 		return nil, err
-	}
-	leaderID, err := status.ID()
-	if err != nil {
-		return nil, err
-	}
-	occupied, err := storeArtifactsExist(basePath)
-	if err != nil {
-		return nil, err
-	}
-	if !occupied {
-		store, err := f.bootstrap(ctx, basePath, storagePath, leaderID)
-		if err != nil {
-			return nil, err
-		}
-		if err := markOrAbort(store, basePath, leaderID); err != nil {
-			return nil, err
-		}
-		return store, nil
 	}
 	store, err := vcollection.OpenDurableStore(basePath, storagePath)
 	if err != nil {
 		return nil, fmt.Errorf("open existing replica: %w", err)
+	}
+	if err := f.Bind(ctx, store, basePath); err != nil {
+		// Abort, not Close: Close would checkpoint a store we are rejecting.
+		return nil, errors.Join(err, store.Abort())
+	}
+	return store, nil
+}
+
+// Seed bootstraps a replica store at basePath from the leader's snapshot when
+// the path holds no store yet, and does nothing when it is already occupied
+// -- the emptiness test is the same prefix scan BootstrapReplica uses, so the
+// two cannot disagree about what an empty target is and accidentally
+// bootstrap over a live replica.
+//
+// The store is marked a replica and released (Abort, not Close: a checkpoint
+// here would be pointless work on a store nobody has opened for real yet)
+// before Seed returns, so the directory is safe for a later plain open. The
+// marker has to land before that release: an unmarked seeded directory is
+// exactly the directory marker.go's package comment exists to prevent -- one
+// that looks ordinary on disk and would accept local writes if something
+// opened it first.
+func (f *Follower) Seed(ctx context.Context, basePath, storagePath string) (bootstrapped bool, err error) {
+	occupied, err := storeArtifactsExist(basePath)
+	if err != nil {
+		return false, err
+	}
+	if occupied {
+		return false, nil
+	}
+	status, err := f.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	leaderID, err := status.ID()
+	if err != nil {
+		return false, err
+	}
+	store, err := f.bootstrap(ctx, basePath, storagePath, leaderID)
+	if err != nil {
+		return false, err
+	}
+	if err := markOrAbort(store, basePath, leaderID); err != nil {
+		return false, err
+	}
+	return true, store.Abort()
+}
+
+// Bind asserts that store already holds the leader's StoreID and marks it a
+// replica on disk. It is the guard an occupied Open resumes through, split
+// out so a StoreSet-owned store -- one this package never opened and must not
+// abort on failure -- can be bound the same way before it starts serving.
+//
+// The caller owns store: unlike Open and Seed, Bind never calls Abort. A
+// mismatch or a failed MakeReplica leaves the store exactly as it was handed
+// in, for the caller to close or abort as it sees fit.
+func (f *Follower) Bind(ctx context.Context, store *vcollection.DurableStore, basePath string) error {
+	status, err := f.Status(ctx)
+	if err != nil {
+		return err
+	}
+	leaderID, err := status.ID()
+	if err != nil {
+		return err
 	}
 	// The same trust boundary BootstrapReplica applies after its own open. A
 	// replica adopts the leader's StoreID out of the snapshot header, so a
@@ -197,22 +247,15 @@ func (f *Follower) Open(ctx context.Context, basePath, storagePath string) (*vco
 	// catches the first: it would promote that store and start appending this
 	// leader's records on top of a history they were never part of.
 	if id := store.Metadata().StoreID; id != leaderID {
-		// Abort, not Close: Close would checkpoint a store we are rejecting.
-		return nil, errors.Join(
-			fmt.Errorf("%w: %q holds store %x, leader is %x", vcollection.ErrJournalStoreMismatch, basePath, id, leaderID),
-			store.Abort(),
-		)
+		return fmt.Errorf("%w: %q holds store %x, leader is %x", vcollection.ErrJournalStoreMismatch, basePath, id, leaderID)
 	}
 	// MakeReplica before anything else can write: an unmarked store would
 	// accept a local write, consume the LSN the leader's next record needs, and
 	// wedge this replica permanently.
 	if err := store.MakeReplica(leaderID); err != nil {
-		return nil, errors.Join(fmt.Errorf("bind replica to leader %x: %w", leaderID, err), store.Abort())
+		return fmt.Errorf("bind replica to leader %x: %w", leaderID, err)
 	}
-	if err := markOrAbort(store, basePath, leaderID); err != nil {
-		return nil, err
-	}
-	return store, nil
+	return MarkReplica(basePath, leaderID)
 }
 
 // markOrAbort persists the replica binding, or gives the directory up.
@@ -292,6 +335,9 @@ func (f *Follower) Follow(ctx context.Context, store *vcollection.DurableStore) 
 	}
 	if pre.StoreID != cursor.StoreID {
 		return fmt.Errorf("%w: stream is from store %x, replica follows %x", vcollection.ErrJournalStoreMismatch, pre.StoreID, cursor.StoreID)
+	}
+	if f.OnPreamble != nil {
+		f.OnPreamble(pre)
 	}
 
 	var buf []byte
