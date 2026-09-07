@@ -28,6 +28,11 @@ import (
 // executing silently at 3am.
 var ErrResyncRequired = errors.New("replica is behind the leader's retained journal and must be re-bootstrapped")
 
+// ErrUnknownTenant means a tenant-scoped request got a 404 from the leader:
+// the leader no longer serves this tenant, most likely because it was
+// deleted. Terminal like ErrResyncRequired -- reconnecting will not help.
+var ErrUnknownTenant = errors.New("leader does not know this tenant")
+
 // Follower pulls a leader's journal into a local read replica.
 type Follower struct {
 	// LeaderURL is the leader's base URL, e.g. https://leader.internal:8080.
@@ -121,6 +126,12 @@ func (f *Follower) doGet(ctx context.Context, path string, query url.Values) (*h
 		// transport failures a caller should retry through.
 		if resp.StatusCode == http.StatusConflict {
 			return nil, fmt.Errorf("%w: %s", vcollection.ErrJournalStoreMismatch, detail)
+		}
+		// A tenant-scoped route only ever answers 404 for "unknown tenant"
+		// (route() in leader.go) -- distinguish it from a transport failure a
+		// caller should retry through.
+		if resp.StatusCode == http.StatusNotFound && f.Tenant != "" {
+			return nil, fmt.Errorf("%w: %s", ErrUnknownTenant, detail)
 		}
 		return nil, detail
 	}

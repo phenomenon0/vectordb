@@ -223,6 +223,13 @@ func replicateAll(ctx context.Context, template replication.Follower, dir string
 				continue
 			}
 			started[tenant] = true
+			if !vcollection.ValidTenantID(tenant) {
+				// The leader's /tenants response is not a trust boundary: an ID
+				// from it must pass the same check a --tenant flag would before
+				// it becomes a path component (filepath.Join(dir, tenant)).
+				logger.Error("leader listed an invalid tenant ID; refusing to use it as a path", "leader", template.LeaderURL, "tenant", tenant)
+				continue
+			}
 			follower := template
 			follower.Tenant = tenant
 			base := filepath.Join(dir, tenant)
@@ -285,6 +292,9 @@ func followTenant(ctx context.Context, follower *replication.Follower, base stri
 			return 1
 		case errors.Is(err, vcollection.ErrJournalStoreMismatch):
 			logger.Error("this replica does not belong to that leader", "path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "error", err)
+			return 1
+		case errors.Is(err, replication.ErrUnknownTenant):
+			logger.Error("leader no longer knows this tenant; not reconnecting", "path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "error", err)
 			return 1
 		}
 		logger.Warn("replication stream dropped; reconnecting", "tenant", follower.Tenant, "applied_lsn", store.ReplicaCursor().LSN, "retry_in", retry, "error", err)
