@@ -236,7 +236,7 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 			w.WriteHeader(http.StatusOK)
 			// embedder names the process text embedder ("none" when
 			// callers must send vectors); no live embedding call here.
-			_ = json.NewEncoder(w).Encode(map[string]any{
+			body := map[string]any{
 				"ready":  true,
 				"checks": []string{"collection_snapshot", "mutation_journal", "lifetime_lock"},
 				// A read replica is ready -- it answers reads correctly --
@@ -251,7 +251,35 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 				"faulted_tenants": state.faulted,
 				"embedder":        collectionHTTP.embedder.Label(),
 				"version":         releaseinfo.Version(),
-			})
+			}
+			// "following" is present only on a standby: existing readiness
+			// consumers see the same body they always have.
+			if st := collectionHTTP.Standby(); st != nil {
+				set := collectionHTTP.Stores()
+				tenants := map[string]any{}
+				for id, t := range st.snapshot() {
+					applied := uint64(0)
+					if store, ok := set.Store(id); ok {
+						applied = store.ReplicaCursor().LSN
+					}
+					lag := int64(t.leaderLSN) - int64(applied)
+					if lag < 0 {
+						lag = 0
+					}
+					entry := map[string]any{
+						"state":       t.state,
+						"applied_lsn": applied,
+						"leader_lsn":  t.leaderLSN,
+						"lag":         uint64(lag),
+					}
+					if t.err != "" {
+						entry["error"] = t.err
+					}
+					tenants[id] = entry
+				}
+				body["following"] = map[string]any{"leader": st.leader, "tenants": tenants}
+			}
+			_ = json.NewEncoder(w).Encode(body)
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]any{"ready": false, "issues": issues})

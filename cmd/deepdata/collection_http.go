@@ -146,6 +146,7 @@ type CollectionHTTPServer struct {
 	persistenceMu       sync.Mutex
 	persistenceErr      error
 	collectionStorePath string
+	standby             *standby // non-nil once this node is following a leader (F2)
 }
 
 // NewCollectionHTTPServer creates a new HTTP server wrapper for CollectionManager
@@ -227,6 +228,22 @@ func (s *CollectionHTTPServer) Stores() *vcollection.StoreSet {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
 	return s.stores
+}
+
+// SetStandby records the standby following DEEPDATA_LEADER_URL, once it has
+// started. Called at most once per server, before any listener is serving.
+func (s *CollectionHTTPServer) SetStandby(st *standby) {
+	s.persistenceMu.Lock()
+	s.standby = st
+	s.persistenceMu.Unlock()
+}
+
+// Standby returns the standby set by SetStandby, or nil when this node is
+// not following a leader.
+func (s *CollectionHTTPServer) Standby() *standby {
+	s.persistenceMu.Lock()
+	defer s.persistenceMu.Unlock()
+	return s.standby
 }
 
 // IsDurable reports whether the canonical journal and lifetime lock opened.

@@ -228,6 +228,15 @@ func openCanonicalStore(cfg *serverConfig, logger *logging.Logger) (rt *serverRu
 		exitCode = 1
 		return
 	}
+	// A following node must be read-only before its standby loop can touch a
+	// single tenant, so SetReadOnly runs first: openOrCreate would otherwise
+	// race the standby to mint a local tenant the leader is about to ship.
+	if cfg.LeaderURL != "" {
+		if set := collectionHTTP.Stores(); set != nil {
+			set.SetReadOnly(true)
+			collectionHTTP.SetStandby(startStandby(context.Background(), cfg.LeaderURL, cfg.ReplicationToken, standbyRetry, set, logger))
+		}
+	}
 	return
 }
 
@@ -408,6 +417,13 @@ func gracefulShutdown(srv *http.Server, grpcSrv *grpc.Server, httpRequests *sync
 	case <-time.After(5 * time.Second):
 		allHandlersDrained = false
 		logging.Default().Error("HTTP handlers did not drain after shutdown")
+	}
+
+	// Stop following before the store closes: a Follow still applying a
+	// record into a store mid-Close would race the checkpoint below.
+	if st := collectionHTTP.Standby(); st != nil {
+		logging.Default().Info("stopping standby")
+		st.stop()
 	}
 
 	if allHandlersDrained {

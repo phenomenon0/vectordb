@@ -254,7 +254,11 @@ func TestReplicateAllFollowsEveryTenantTheLeaderLists(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	rcCh := make(chan int, 1)
-	go func() { rcCh <- replicateAll(ctx, template, tenantsDir, 50*time.Millisecond, logging.Default()) }()
+	go func() {
+		rcCh <- replicateAll(ctx, template, tenantsDir, logging.Default(), func(ctx context.Context, f *replication.Follower, base string) int {
+			return followTenant(ctx, f, base, 50*time.Millisecond, logging.Default())
+		})
+	}()
 
 	waitForReplicaMarker(t, filepath.Join(tenantsDir, "acme"))
 	waitForReplicaMarker(t, filepath.Join(tenantsDir, "globex"))

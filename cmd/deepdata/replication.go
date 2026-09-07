@@ -96,23 +96,35 @@ func bindReplicaReadOnly(collections *CollectionHTTPServer) error {
 		return nil
 	}
 	for _, id := range set.Tenants() {
-		base := set.Base(id)
+		store, ok := set.Store(id)
+		if !ok {
+			return fmt.Errorf("tenant %q vanished while binding its replica marker", id)
+		}
+		if err := bindReplicaMarker(set.Base(id))(store); err != nil {
+			return fmt.Errorf("tenant %q: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// bindReplicaMarker reads the replica marker at base, if any, and applies it
+// to store -- the AdoptTenant bind hook a standby uses for a tenant Seed just
+// bootstrapped (whose marker Seed already wrote), and the body
+// bindReplicaReadOnly re-applies to every tenant already on disk at boot.
+func bindReplicaMarker(base string) func(*vcollection.DurableStore) error {
+	return func(store *vcollection.DurableStore) error {
 		leaderID, isReplica, err := replication.ReplicaLeaderID(base)
 		if err != nil {
 			return err
 		}
 		if !isReplica {
-			continue
-		}
-		store, ok := set.Store(id)
-		if !ok {
-			return fmt.Errorf("tenant %q vanished while binding its replica marker", id)
+			return nil
 		}
 		if err := store.MakeReplica(leaderID); err != nil {
-			return fmt.Errorf("serve tenant %q read-only as a replica of leader %x: %w", id, leaderID, err)
+			return fmt.Errorf("serve read-only as a replica of leader %x: %w", leaderID, err)
 		}
+		return nil
 	}
-	return nil
 }
 
 // runReplicate is the `deepdata replicate` subcommand: keep a local tenant
@@ -179,7 +191,9 @@ func runReplicate(args []string, logger *logging.Logger) int {
 	defer stop()
 
 	if *tenant == "" {
-		return replicateAll(ctx, follower, tenantsDir, *retry, logger)
+		return replicateAll(ctx, follower, tenantsDir, logger, func(ctx context.Context, f *replication.Follower, base string) int {
+			return followTenant(ctx, f, base, *retry, logger)
+		})
 	}
 	follower.Tenant = *tenant
 	return followTenant(ctx, &follower, filepath.Join(tenantsDir, *tenant), *retry, logger)
@@ -191,18 +205,23 @@ func runReplicate(args []string, logger *logging.Logger) int {
 // ponytail: fixed re-list interval, no shared backoff, no worker pool.
 var relistInterval = 30 * time.Second
 
-// replicateAll follows every tenant template.Tenants lists into its own
-// subdirectory of dir, re-listing every relistInterval to pick up tenants
-// created after it started. A tenant is started once and never restarted: if
-// its followTenant loop ends (ctx canceled, or one of the terminal errors
-// followTenant already refuses to retry -- resync required, store mismatch,
-// or the leader has since deleted the tenant), that is an operator decision
-// exactly as it is for a single-tenant `deepdata replicate`, not something
-// this loop second-guesses by starting it again next re-list.
+// replicateAll follows every tenant template.Tenants lists, re-listing every
+// relistInterval to pick up tenants created after it started. A tenant is
+// started once and never restarted: if run ends (ctx canceled, or one of the
+// terminal errors followStream already refuses to retry -- resync required,
+// store mismatch, or the leader has since deleted the tenant), that is an
+// operator decision, not something this loop second-guesses by starting it
+// again next re-list.
+//
+// run is the per-tenant action: the replicate subcommand passes a followTenant
+// closure that opens its own store under dir and closes it on exit; a standby
+// passes one that adopts a store its StoreSet already owns instead (see
+// standby.go). base is filepath.Join(dir, tenant); a caller with its own
+// notion of a tenant's path (a standby has StoreSet.Base) may ignore it.
 //
 // Returns 0 if ctx was canceled and every tenant loop it started exited 0,
 // else 1.
-func replicateAll(ctx context.Context, template replication.Follower, dir string, retry time.Duration, logger *logging.Logger) int {
+func replicateAll(ctx context.Context, template replication.Follower, dir string, logger *logging.Logger, run func(ctx context.Context, f *replication.Follower, base string) int) int {
 	var (
 		mu      sync.Mutex
 		started = make(map[string]bool)
@@ -236,7 +255,7 @@ func replicateAll(ctx context.Context, template replication.Follower, dir string
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if rc := followTenant(ctx, &follower, base, retry, logger); rc != 0 {
+				if rc := run(ctx, &follower, base); rc != 0 {
 					failed.Store(true)
 				}
 			}()
@@ -262,8 +281,7 @@ func replicateAll(ctx context.Context, template replication.Follower, dir string
 
 // followTenant opens base as a replica of follower's tenant and streams
 // records into it until ctx is canceled or the leader tells it to stop for
-// good, retrying transient drops every retry. Factored out so a future
-// all-tenants replicate mode can run it once per tenant.
+// good, retrying transient drops every retry.
 func followTenant(ctx context.Context, follower *replication.Follower, base string, retry time.Duration, logger *logging.Logger) int {
 	store, err := follower.Open(ctx, base, base)
 	if err != nil {
@@ -276,12 +294,27 @@ func followTenant(ctx context.Context, follower *replication.Follower, base stri
 		}
 	}()
 	logger.Info("replica open", "path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "applied_lsn", store.ReplicaCursor().LSN)
+	return followStream(ctx, follower, store, base, retry, logger, nil)
+}
 
+// followStream applies follower's leader journal to store until ctx is
+// canceled or the leader tells it to stop for good, retrying transient drops
+// every retry. observe, when non-nil, is called on every state change
+// ("streaming", "reconnecting", "stopped") -- a standby's window into a
+// tenant it never closes itself (see standby.go).
+func followStream(ctx context.Context, follower *replication.Follower, store *vcollection.DurableStore, base string, retry time.Duration, logger *logging.Logger, observe func(state, errText string)) int {
+	notify := func(state, errText string) {
+		if observe != nil {
+			observe(state, errText)
+		}
+	}
 	for {
+		notify("streaming", "")
 		err := follower.Follow(ctx, store)
 		switch {
 		case ctx.Err() != nil:
 			logger.Info("replication stopped", "tenant", follower.Tenant, "applied_lsn", store.ReplicaCursor().LSN)
+			notify("stopped", "")
 			return 0
 		case errors.Is(err, replication.ErrResyncRequired):
 			// Deliberately terminal. Recovering means discarding this
@@ -289,17 +322,22 @@ func followTenant(ctx context.Context, follower *replication.Follower, base stri
 			// one a read fleet is serving from.
 			logger.Error("this replica is behind the leader's retained journal; discard the replica directory and start again to re-bootstrap",
 				"path", base, "tenant", follower.Tenant, "applied_lsn", store.ReplicaCursor().LSN, "error", err)
+			notify("stopped", err.Error())
 			return 1
 		case errors.Is(err, vcollection.ErrJournalStoreMismatch):
 			logger.Error("this replica does not belong to that leader", "path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "error", err)
+			notify("stopped", err.Error())
 			return 1
 		case errors.Is(err, replication.ErrUnknownTenant):
 			logger.Error("leader no longer knows this tenant; not reconnecting", "path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "error", err)
+			notify("stopped", err.Error())
 			return 1
 		}
 		logger.Warn("replication stream dropped; reconnecting", "tenant", follower.Tenant, "applied_lsn", store.ReplicaCursor().LSN, "retry_in", retry, "error", err)
+		notify("reconnecting", err.Error())
 		select {
 		case <-ctx.Done():
+			notify("stopped", "")
 			return 0
 		case <-time.After(retry):
 		}

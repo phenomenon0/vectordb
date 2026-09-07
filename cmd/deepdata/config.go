@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -67,6 +68,9 @@ type serverConfig struct {
 	CORSAllowedOrigins                        string
 	Embedder                                  embedderConfig
 	ReplicationToken                          string
+	// LeaderURL is DEEPDATA_LEADER_URL: set, it makes serve follow that
+	// leader in-process (see standby.go) instead of just answering requests.
+	LeaderURL string
 
 	// mode is VECTORDB_MODE / --mode, lowercased and trimmed. "" and "local"
 	// are the only values validateServe accepts.
@@ -161,6 +165,19 @@ func loadServerConfig(args []string, getenv func(string) string) (*serverConfig,
 		}
 	}
 
+	// DEEPDATA_LEADER_URL turns serve into a standby of that leader (see
+	// standby.go); it needs the same node credential the leader's own node
+	// surface authenticates, since a standby is also this leader's client.
+	leaderURL := strings.TrimSpace(env("DEEPDATA_LEADER_URL"))
+	if leaderURL != "" {
+		if u, err := url.Parse(leaderURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Sprintf("DEEPDATA_LEADER_URL=%q is not a valid http or https URL", leaderURL))
+		}
+		if env(replicationTokenEnv) == "" {
+			errs = append(errs, fmt.Sprintf("DEEPDATA_LEADER_URL requires %s to be set to the leader's node token", replicationTokenEnv))
+		}
+	}
+
 	// DEEPDATA_EMBED_DIM only matters to the hash and onnx embedders (see
 	// embed_text.go); for every other DEEPDATA_EMBEDDER kind it is dead, so
 	// the read is kind-gated and tolerant (envIntFrom warns and falls back
@@ -216,6 +233,7 @@ func loadServerConfig(args []string, getenv func(string) string) (*serverConfig,
 			OnnxMaxLen:    posInt("ONNX_EMBED_MAX_LEN", 512),
 		},
 		ReplicationToken: env(replicationTokenEnv),
+		LeaderURL:        leaderURL,
 		mode:             strings.ToLower(strings.TrimSpace(env("VECTORDB_MODE"))),
 	}
 	cfg.DataDir = resolveDataDir(env("VECTORDB_BASE_DIR"), env("VECTORDB_DATA_DIR"))
