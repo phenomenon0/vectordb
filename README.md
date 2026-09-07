@@ -1,10 +1,65 @@
 # DeepData
 
-Tenant-aware vector search server in Go: a persistent, headless, single-node Linux binary that takes
-caller-supplied vectors — or texts, embedded server-side when `DEEPDATA_EMBEDDER` names an embedder — over an HTTP V3 contract and a matching unary gRPC service. Version `0.2.0-rc.1`
-(`internal/releaseinfo/version.txt`, checked against Python, Helm and image metadata by
+Tenant-aware vector search server in Go: one persistent, headless Linux binary that keeps every tenant in its own
+durable store, scopes each call by JWT, enforces per-tenant quotas, and answers over an HTTP V3 contract and a matching
+unary gRPC service. Callers send vectors, or texts embedded server-side when `DEEPDATA_EMBEDDER` names an embedder.
+Version `0.2.0-rc.1` (`internal/releaseinfo/version.txt`, checked against Python, Helm and image metadata by
 `scripts/check_version_contract.py` in CI). Gate status: [docs/PRE_RELEASE_STATUS.md](docs/PRE_RELEASE_STATUS.md),
 rendered from `tasks/gates.json` by `scripts/gates.py`. Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## What it does
+
+```text
+deepdata (one static binary)
+├── serve             HTTP :8080 + gRPC :50051; DEEPDATA_BIND_HOST=127.0.0.1 for loopback only; JSON logs; /healthz /livez /readyz /metrics
+├── token             mint a scoped JWT: --tenant, --permissions read,write,admin, --collections, --ttl, --server-admin
+├── replicate         follow a leader's per-tenant journal into a standby directory (experimental, see "What it does not do")
+├── migrate-tenants   move a pre-0.2 single-store data directory to per-tenant stores; verified, old files left in place
+└── routes            print the contract table (16 operations; HTTP and gRPC names are identical)
+
+deepdata-mcp          stdio MCP server, one tenant per process, six memory verbs:
+                      remember · recall · forget · get · collections · create_collection
+```
+
+| Layer | What you get |
+|---|---|
+| Tenants | A first-class lifecycle: create, list, inspect, suspend, set quota, delete (`/v3/tenants`, server-administrator only). Each tenant is its own store under `<data-dir>/index.gob.tenants` with its own journal, lifetime lock, snapshot and usage counters. A tenant whose files are unreadable answers 503 by itself while every other tenant keeps serving; `/readyz` names it under `faulted_tenants`. |
+| Isolation | A JWT carries the tenant, the permissions `read`/`write`/`admin` and an optional collection allowlist; a token minted for one tenant is refused on every other. Only the static `API_TOKEN` or a JWT carrying the `server_admin` claim can see or change the tenant list. |
+| Quotas | Per-tenant caps on documents, bytes and collections: server defaults from `MAX_TENANT_DOCUMENTS`, `MAX_TENANT_BYTES` and `MAX_TENANT_COLLECTIONS`, overridable per tenant. Over the cap is 409 `quota_exceeded`; a suspended tenant is 403 on every data call. |
+| Storage | Journal plus snapshot per tenant, fsync per acknowledged mutation, restart replays and reclaims. Dense fields index with `hnsw` or `flat`, sparse fields with `inverted` (BM25); cosine or euclidean distance. |
+| Search | Several query fields per request, hybrid fusion of two fields (weighted or RRF), a primary-then-secondary fallback ladder, metadata filters with `$and`/`$or`/`$not` plus `$geo_radius` and `$geo_bbox`, `score_floor` with `weak_match` reporting, and `usage_boost` that favours documents recalled before. |
+| Embedding | `DEEPDATA_EMBEDDER` is `none`, `ollama`, `openai`, `onnx` (build tag) or `hash` (deterministic, for tests). Text arrives as `texts`, is embedded on the fields bound to that embedder, and the MCP `memory` preset reads the embedder from `/readyz`, so an agent never names a model. |
+| Standby | `deepdata replicate --leader URL` follows every tenant the leader lists, or `--tenant` one, over HTTP with the node credential; it bootstraps tenants that appear later and reconnects after a dropped stream. The standby directory serves read-only once the follower is stopped (`read_only: true`; a write is 403 with a hint naming the leader). It does not serve while it follows. Experimental: switched on only by `DEEPDATA_REPLICATION_TOKEN`, not covered by an RC gate. |
+| Ops | Per-tenant metrics (`vectordb_tenant_requests_total`, `vectordb_tenant_request_duration_seconds`, `vectordb_tenant_documents`, `vectordb_tenant_bytes`), per-tenant rate limits (`TENANT_RPS`, `TENANT_BURST`), body, batch and dimension limits, a Dockerfile, Compose file and Helm chart under `deploy/helm`, and a Python SDK with sync and async clients, typed models and retries. |
+
+## Shape for a fleet of agents
+
+```mermaid
+flowchart LR
+    subgraph members["fleet members"]
+        A["agent · deepdata-mcp · tenant=a"] --> L
+        B["service · Python SDK or gRPC · tenant=b"] --> L
+        C["pipeline · batch insert · tenant=c"] --> L
+    end
+    L[("DeepData leader<br/>one tenant per member")]
+    L -->|deepdata replicate| S[("standby on a second machine<br/>read-only, served after the follower stops")]
+    O["operator · --server-admin token"] -->|create tenant · quota · suspend| L
+```
+
+- One server, one tenant per member: a token per member from `deepdata token`, a quota per member. A runaway member
+  fills its own quota, not everyone's, and suspending it is one PUT.
+- Agents get memory verbs, not a database API: point `deepdata-mcp` at the member's tenant and the agent has
+  remember, recall and forget with hybrid text search and filters.
+- A member's token cannot see or touch another tenant; only the server-administrator credential manages the list.
+- Each tenant is a fixed set of files under one prefix, so backup and copy are per member, not all or nothing.
+
+Wiring a member is three lines:
+
+```bash
+export JWT_SECRET='the-secret-the-server-runs-with'
+deepdata token --tenant hermes --permissions read,write --ttl 720h > hermes.jwt
+DEEPDATA_URL=http://leader.internal:8080 DEEPDATA_TENANT=hermes DEEPDATA_API_KEY="$(cat hermes.jwt)" ./deepdata-mcp
+```
 
 ## Connect an agent (MCP)
 
@@ -83,6 +138,15 @@ Non-goals of the release candidate, rendered from the block in [docs/ARCHITECTUR
 Also outside the RC: switching embedding providers at runtime, follower restore, and streaming snapshots to other
 nodes. The provider-switch handler is still registered (`cmd/deepdata/server.go:1962`) but sits outside that allowlist, so
 the RC binary answers it 404; follower restore and snapshot streaming were deleted outright under SYS-03, together with the internal/cluster tree.
+
+Limits that matter when several members share one server:
+
+- One writer. Every tenant's journal is appended by exactly one process, the leader. A standby is not promoted
+  automatically and there is no election: if the leader is lost, serve the standby directory read-only and restore
+  the leader by hand.
+- No search across tenants. Shared knowledge is a shared tenant that members hold read tokens for.
+- No sharding. A tenant lives whole on its leader.
+- Cleartext HTTP/h2c and gRPC. Terminate TLS at a proxy, and keep the node transport on a private network.
 
 ## Run from source
 
