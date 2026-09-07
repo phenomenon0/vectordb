@@ -153,18 +153,20 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 		usageLoaded := true
 		readOnly := false
 		faultedTenants := []string{}
+		replicaTenants := []string{}
 		if collectionHTTP != nil {
 			embedder = collectionHTTP.embedder
 			usageLoaded = collectionHTTP.UsageLoaded()
 			if set := collectionHTTP.Stores(); set != nil {
 				readOnly = set.IsReplica()
+				replicaTenants = set.ReplicaTenants()
 				for id := range set.FaultedTenants() {
 					faultedTenants = append(faultedTenants, id)
 				}
 				sort.Strings(faultedTenants)
 			}
 		}
-		payload, err := statusPayload(embedder, rt.limits, usageLoaded, readOnly, faultedTenants, requestIDFromContext(r.Context()))
+		payload, err := statusPayload(embedder, rt.limits, usageLoaded, readOnly, faultedTenants, replicaTenants, requestIDFromContext(r.Context()))
 		if err != nil {
 			apierror.WriteHTTP(w, apierror.New(apierror.CodeInternal, "status unavailable"))
 			return
@@ -189,21 +191,24 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 			readOnly bool
 			err      error
 			faulted  []string
+			replicas []string
 		}
 		health := make(chan canonicalHealth, 1)
 		go func() {
 			if collectionHTTP == nil {
-				health <- canonicalHealth{faulted: []string{}}
+				health <- canonicalHealth{faulted: []string{}, replicas: []string{}}
 				return
 			}
 			durable := collectionHTTP.IsDurable()
 			var err error
 			var readOnly bool
 			faulted := []string{}
+			replicas := []string{}
 			if durable {
 				err = collectionHTTP.PersistenceError()
 				set := collectionHTTP.Stores()
 				readOnly = set.IsReplica()
+				replicas = set.ReplicaTenants()
 				// A per-tenant open fault isolates that tenant, not the
 				// process: everyone else keeps serving, so this is surfaced
 				// here rather than folded into err/issues below.
@@ -212,7 +217,7 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 				}
 				sort.Strings(faulted)
 			}
-			health <- canonicalHealth{durable: durable, readOnly: readOnly, err: err, faulted: faulted}
+			health <- canonicalHealth{durable: durable, readOnly: readOnly, err: err, faulted: faulted, replicas: replicas}
 		}()
 		var state canonicalHealth
 		select {
@@ -237,8 +242,12 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 				// A read replica is ready -- it answers reads correctly --
 				// so it stays 200 and stays in the pool. read_only is how
 				// it declines writes to a load balancer that would
-				// otherwise treat every ready backend as interchangeable.
+				// otherwise treat every ready backend as interchangeable;
+				// it is true only when every open tenant is a replica, since
+				// a mixed StoreSet still accepts writes for its non-replica
+				// tenants (see replica_tenants for which ones, if any, aren't).
 				"read_only":       state.readOnly,
+				"replica_tenants": state.replicas,
 				"faulted_tenants": state.faulted,
 				"embedder":        collectionHTTP.embedder.Label(),
 				"version":         releaseinfo.Version(),

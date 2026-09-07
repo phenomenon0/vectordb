@@ -38,7 +38,7 @@ var canonicalFilterOperators = []string{
 // limits from the Max* consts and the rate-limit environment, the
 // embedding block from the process embedder — so nothing here can drift
 // from the server that answers.
-func statusPayload(embedder *serverEmbedder, limits limitConfig, usageLoaded, readOnly bool, faultedTenants []string, requestID string) (map[string]any, error) {
+func statusPayload(embedder *serverEmbedder, limits limitConfig, usageLoaded, readOnly bool, faultedTenants, replicaTenants []string, requestID string) (map[string]any, error) {
 	ops, err := contract.Operations()
 	if err != nil {
 		return nil, err
@@ -118,11 +118,11 @@ func statusPayload(embedder *serverEmbedder, limits limitConfig, usageLoaded, re
 			// The durability classes a create-collection request may ask for
 			// (ADR 0009); an ephemeral collection's documents are memory only.
 			"durability_classes": []string{vcollection.DurabilityDurable, vcollection.DurabilityEphemeral},
-			// read_only is true when this node serves a read replica
-			// directory: every operation below with a write or admin
-			// permission is refused with permission_denied here, whatever
-			// claim the caller's token carries. It is the same fact /readyz
-			// reports under the same name.
+			// read_only is true only when every tenant this node has open is
+			// a read replica directory, so the whole node refuses writes: on
+			// a mixed StoreSet some tenants can still take writes even
+			// though others can't, and signals.tenants.replicas names which.
+			// It is the same fact /readyz reports under the same name.
 			"read_only": readOnly,
 		},
 		// signals is the accreted-signal surface (durability class B).
@@ -131,10 +131,13 @@ func statusPayload(embedder *serverEmbedder, limits limitConfig, usageLoaded, re
 		// lost and searches answer by similarity alone until they accrete
 		// again (CTL-05). tenants.faulted names tenants isolated by a
 		// per-tenant open fault (see /readyz's faulted_tenants); the process
-		// itself is still ready and serves every other tenant.
+		// itself is still ready and serves every other tenant. tenants.replicas
+		// names tenants that are read replicas (see /readyz's replica_tenants)
+		// even when read_only above is false because the rest of the node is
+		// still writable.
 		"signals": map[string]any{
 			"usage":   map[string]any{"loaded": usageLoaded},
-			"tenants": map[string]any{"faulted": faultedTenants},
+			"tenants": map[string]any{"faulted": faultedTenants, "replicas": replicaTenants},
 		},
 		"request_id": requestID,
 	}, nil

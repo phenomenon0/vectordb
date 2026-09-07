@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -258,5 +259,62 @@ func TestReadinessReportsReadOnlyOnlyForAReplica(t *testing.T) {
 	}
 	if body["read_only"] != false {
 		t.Errorf("/readyz read_only = %v on a writable store, want false: %v", body["read_only"], body)
+	}
+}
+
+// A StoreSet mixing a replicated tenant with a normal one is a legitimate
+// layout (docs/distributed-architecture.md: "omitting --tenant follows every
+// tenant... each into its own subdirectory"). Node-wide read_only must not
+// flip to true just because one tenant happens to be a replica -- that would
+// tell a load balancer to stop sending writes for every tenant, including the
+// fully writable ones. Per-tenant detail still has to be somewhere, which is
+// what replica_tenants / signals.tenants.replicas are for.
+func TestReadinessOnAMixedStoreSetIsReadOnlyOnlyForItsReplicaTenant(t *testing.T) {
+	indexPath, docID := replicaDirectoryForTest(t)
+	handler := newCanonicalSurfaceTestHandlerAt(t, indexPath)
+
+	// globex was never replicated onto this directory (see
+	// replicaDirectoryForTest), so creating it here opens a brand new, normal
+	// store next to acme's replica -- a mixed StoreSet.
+	create := `{"name":"docs","fields":[{"name":"dense","type":"dense","dim":2,"index":{"type":"flat"}}]}`
+	if resp := canonicalCall(t, handler, http.MethodPost, "/v3/tenants/globex/collections", create); resp.Code != http.StatusCreated {
+		t.Fatalf("create globex collection on a mixed store = %d, want 201: %s", resp.Code, resp.Body.String())
+	}
+
+	resp := canonicalCall(t, handler, http.MethodGet, "/readyz", "")
+	var ready map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &ready); err != nil {
+		t.Fatalf("/readyz body is not JSON: %s", resp.Body.String())
+	}
+	if ready["read_only"] != false {
+		t.Errorf("/readyz read_only = %v on a mixed store, want false: acme being a replica must not block globex's writes", ready["read_only"])
+	}
+	if replicas, _ := ready["replica_tenants"].([]any); len(replicas) != 1 || replicas[0] != "acme" {
+		t.Errorf("/readyz replica_tenants = %v, want [acme]", ready["replica_tenants"])
+	}
+
+	resp = canonicalCall(t, handler, http.MethodGet, "/v3/status", "")
+	var status struct {
+		Signals struct {
+			Tenants struct {
+				Replicas []string `json:"replicas"`
+			} `json:"tenants"`
+		} `json:"signals"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &status); err != nil {
+		t.Fatalf("/v3/status body is not JSON: %s", resp.Body.String())
+	}
+	if !reflect.DeepEqual(status.Signals.Tenants.Replicas, []string{"acme"}) {
+		t.Errorf("/v3/status signals.tenants.replicas = %v, want [acme]", status.Signals.Tenants.Replicas)
+	}
+
+	// The write guard itself is already per-tenant (that part of the bug
+	// report was correct); this pins that the health signal now agrees.
+	if resp := canonicalCall(t, handler, http.MethodPut, "/v3/tenants/globex/collections/docs/docs/1", `{"vectors":{"dense":[1,0]}}`); resp.Code != http.StatusOK {
+		t.Fatalf("write to globex on a mixed store = %d, want 200: %s", resp.Code, resp.Body.String())
+	}
+	document := `{"vectors":{"dense":[1,0]}}`
+	if resp := canonicalCall(t, handler, http.MethodPut, "/v3/tenants/acme/collections/docs/docs/"+strconv.FormatUint(docID+1, 10), document); resp.Code != http.StatusForbidden {
+		t.Fatalf("write to acme's replica on a mixed store = %d, want 403", resp.Code)
 	}
 }

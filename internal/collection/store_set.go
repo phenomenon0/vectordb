@@ -539,14 +539,39 @@ func (s *StoreSet) LegacyCollectionCount() (int, error) {
 	return total, errors.Join(errs...)
 }
 
-// IsReplica reports whether any open store is a read replica.
+// IsReplica reports whether every open store is a read replica, i.e. the
+// whole node is read-only. A StoreSet can mix replica and normal tenants
+// (docs/distributed-architecture.md's per-tenant replicate layout), so OR-ing
+// across tenants here would make one replicated tenant declare every other,
+// fully writable tenant read-only too. See ReplicaTenants for which tenants,
+// if any, are replicas on a mixed set.
 func (s *StoreSet) IsReplica() bool {
-	for _, store := range s.openStores() {
-		if store.IsReplica() {
-			return true
+	stores := s.openStores()
+	if len(stores) == 0 {
+		return false
+	}
+	for _, store := range stores {
+		if !store.IsReplica() {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+// ReplicaTenants returns the sorted IDs of every open tenant whose store is a
+// read replica, mirroring FaultedTenants: the per-tenant detail IsReplica's
+// single bool can't carry on a mixed StoreSet.
+func (s *StoreSet) ReplicaTenants() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0)
+	for id, store := range s.stores {
+		if store.IsReplica() {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func (s *StoreSet) Checkpoint() error {
