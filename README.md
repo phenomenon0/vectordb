@@ -42,7 +42,7 @@ flowchart LR
         C["pipeline · batch insert · tenant=c"] --> L
     end
     L[("DeepData leader<br/>one tenant per member")]
-    L -->|deepdata replicate| S[("standby on a second machine<br/>read-only, serves reads while it follows")]
+    L -->|serve --leader DEEPDATA_LEADER_URL| S[("standby on a second machine<br/>read-only, serves reads while it follows")]
     O["operator · --server-admin token"] -->|create tenant · quota · suspend| L
 ```
 
