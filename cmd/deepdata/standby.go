@@ -151,10 +151,19 @@ func (st *standby) stop() {
 
 // promote is the online counterpart to the offline `deepdata promote`
 // command (see promote.go): it halts this standby's follow loops, then
-// fences every tenant currently bound as a replica in set into a leader of
-// its own history -- same three artifacts promote.go writes (bumped epoch
+// fences every tenant THIS STANDBY bound as a replica into a leader of its
+// own history -- same three artifacts promote.go writes (bumped epoch
 // sidecar, dropped replica marker), just against stores this process already
 // has open instead of ones it opens for the occasion.
+//
+// set.ReplicaTenants() alone is not the right source: it reports every open
+// tenant that is a replica of ANY leader, including one this standby never
+// followed (a stale marker bindReplicaReadOnly reloaded at boot from a
+// since-stopped `deepdata replicate`, or a standby session for a different
+// leader -- store_set.go's "per-tenant replicate layout"). Intersecting with
+// st.tenants, which followTenant only ever populates for tenants this
+// standby actually bound, keeps promotion scoped to what the caller asked
+// for.
 //
 // It stops at the first tenant that fails and returns what it got through:
 // promoted lists, in order, every tenant that completed all of it, and those
@@ -166,8 +175,18 @@ func (st *standby) promote(set *vcollection.StoreSet) (promoted []string, epoch 
 	defer st.promoteMu.Unlock()
 	st.stop()
 
+	st.mu.Lock()
+	bound := make(map[string]bool, len(st.tenants))
+	for id := range st.tenants {
+		bound[id] = true
+	}
+	st.mu.Unlock()
+
 	epoch = map[string]uint64{}
 	for _, id := range set.ReplicaTenants() {
+		if !bound[id] {
+			continue
+		}
 		base := set.Base(id)
 		store, ok := set.Store(id)
 		if !ok {

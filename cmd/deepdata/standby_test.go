@@ -13,6 +13,7 @@ import (
 
 	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/logging"
+	"github.com/phenomenon0/vectordb/internal/replication"
 )
 
 // standbyHandlerForTest builds a fresh, empty durable store the same way
@@ -213,4 +214,67 @@ func TestServeFollowRequiresTheNodeToken(t *testing.T) {
 		}
 	}
 	t.Fatalf("loadServerConfig errs = %v, want an error naming both DEEPDATA_LEADER_URL and DEEPDATA_REPLICATION_TOKEN", errs)
+}
+
+// promote must fence only the tenants this standby itself bound, never a
+// tenant that merely happens to carry a replica marker in the same StoreSet
+// -- e.g. one left by a since-stopped `deepdata replicate` against a
+// different leader, which set.ReplicaTenants() reports right alongside
+// tenants this standby is actually following.
+func TestStandbyPromoteOnlyFencesItsOwnTenants(t *testing.T) {
+	_, leaderURL, _ := multiTenantLeaderForTest(t)
+
+	_, collections := standbyHandlerForTest(t)
+	set := collections.Stores()
+	ctx := context.Background()
+
+	// "stale" is a replica of some OTHER leader this standby never followed
+	// (multiTenantLeaderForTest's leader only lists acme and globex) --
+	// exactly what a stale marker reloaded at boot looks like.
+	if _, err := set.CreateCollection(ctx, "stale", tenantDocsSchema); err != nil {
+		t.Fatalf("create stale tenant: %v", err)
+	}
+	staleStore, ok := set.Store("stale")
+	if !ok {
+		t.Fatalf("stale tenant vanished after create")
+	}
+	staleBase := set.Base("stale")
+	otherLeader := [16]byte{1}
+	if err := staleStore.MakeReplica(otherLeader); err != nil {
+		t.Fatalf("mark stale tenant as a replica: %v", err)
+	}
+	if err := replication.MarkReplica(staleBase, otherLeader); err != nil {
+		t.Fatalf("write stale replica marker: %v", err)
+	}
+
+	st := startStandby(ctx, leaderURL, "node-token", 30*time.Millisecond, set, logging.Default())
+	waitForStandbyState(t, st, "acme", "streaming")
+	waitForStandbyState(t, st, "globex", "streaming")
+
+	promoted, epoch, err := st.promote(set)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if len(promoted) != 2 || promoted[0] != "acme" || promoted[1] != "globex" {
+		t.Fatalf("promoted = %v, want exactly [acme globex]", promoted)
+	}
+	if _, ok := epoch["stale"]; ok {
+		t.Errorf("epoch map fenced the unrelated stale tenant: %v", epoch)
+	}
+
+	// stale must come out of promote completely untouched: still a replica,
+	// no epoch sidecar written, marker still on disk.
+	if !staleStore.IsReplica() {
+		t.Error("promote flipped the unrelated stale tenant writable")
+	}
+	if e, err := replication.ReadEpoch(staleBase); err != nil || e.Number != 0 {
+		t.Errorf("stale epoch sidecar = %+v (err %v), want untouched (number 0)", e, err)
+	}
+	if _, isReplica, err := replication.ReplicaLeaderID(staleBase); err != nil || !isReplica {
+		t.Errorf("stale replica marker = isReplica %v (err %v), want still present", isReplica, err)
+	}
+
+	if err := set.Close(); err != nil {
+		t.Errorf("close standby store set: %v", err)
+	}
 }
