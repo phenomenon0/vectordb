@@ -278,3 +278,42 @@ func TestStandbyPromoteOnlyFencesItsOwnTenants(t *testing.T) {
 		t.Errorf("close standby store set: %v", err)
 	}
 }
+
+// A tenant whose replica marker is already gone when promote() reaches it --
+// exactly what a prior attempt that failed after removing the marker but
+// before returning would leave behind -- must still promote cleanly instead
+// of erroring out on a marker that is not there to remove.
+func TestStandbyPromoteToleratesAnAlreadyRemovedMarker(t *testing.T) {
+	_, leaderURL, _ := multiTenantLeaderForTest(t)
+
+	_, collections := standbyHandlerForTest(t)
+	set := collections.Stores()
+	ctx := context.Background()
+
+	st := startStandby(ctx, leaderURL, "node-token", 30*time.Millisecond, set, logging.Default())
+	waitForStandbyState(t, st, "acme", "streaming")
+	waitForStandbyState(t, st, "globex", "streaming")
+
+	if err := os.Remove(set.Base("acme") + promoteMarkerSuffix); err != nil {
+		t.Fatalf("simulate a prior partial promote by removing acme's marker: %v", err)
+	}
+
+	promoted, epoch, err := st.promote(set)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if len(promoted) != 2 || promoted[0] != "acme" || promoted[1] != "globex" {
+		t.Fatalf("promoted = %v, want exactly [acme globex]", promoted)
+	}
+	if epoch["acme"] != 1 || epoch["globex"] != 1 {
+		t.Fatalf("epoch = %v, want acme and globex both at 1", epoch)
+	}
+	acmeStore, ok := set.Store("acme")
+	if !ok || acmeStore.IsReplica() {
+		t.Fatal("acme did not come out of promote writable")
+	}
+
+	if err := set.Close(); err != nil {
+		t.Errorf("close standby store set: %v", err)
+	}
+}

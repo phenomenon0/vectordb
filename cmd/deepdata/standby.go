@@ -192,9 +192,13 @@ func (st *standby) promote(set *vcollection.StoreSet) (promoted []string, epoch 
 		if !ok {
 			return promoted, epoch, fmt.Errorf("tenant %q vanished during promotion", id)
 		}
-		if err := store.Promote(); err != nil {
-			return promoted, epoch, fmt.Errorf("tenant %q: %w", id, err)
-		}
+		// store.Promote() is the one step here with no way back -- once it
+		// flips a store off replica mode there is no un-promote to call, and
+		// it drops out of set.ReplicaTenants() for good, so a later retry of
+		// this loop can never reach it again. Every disk write that can fail
+		// and be safely retried runs first; Promote() is last, so a failure
+		// anywhere above it leaves the tenant exactly as it was -- still a
+		// replica, still picked up by the next promote() call.
 		pos, err := store.JournalStatus()
 		if err != nil {
 			return promoted, epoch, fmt.Errorf("tenant %q: %w", id, err)
@@ -207,8 +211,13 @@ func (st *standby) promote(set *vcollection.StoreSet) (promoted []string, epoch 
 		if err := replication.WriteEpoch(base, next); err != nil {
 			return promoted, epoch, fmt.Errorf("tenant %q: %w", id, err)
 		}
-		if err := os.Remove(base + promoteMarkerSuffix); err != nil {
+		// A retry after a failure below can find the marker already gone --
+		// that is success, not an error to report.
+		if err := os.Remove(base + promoteMarkerSuffix); err != nil && !os.IsNotExist(err) {
 			return promoted, epoch, fmt.Errorf("tenant %q: remove replica marker: %w", id, err)
+		}
+		if err := store.Promote(); err != nil {
+			return promoted, epoch, fmt.Errorf("tenant %q: %w", id, err)
 		}
 		promoted = append(promoted, id)
 		epoch[id] = next.Number

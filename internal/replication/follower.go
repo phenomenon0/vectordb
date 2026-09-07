@@ -242,8 +242,8 @@ func (f *Follower) Seed(ctx context.Context, basePath, storagePath string) (boot
 // abort on failure -- can be bound the same way before it starts serving.
 //
 // The caller owns store: unlike Open and Seed, Bind never calls Abort. A
-// mismatch or a failed MakeReplica leaves the store exactly as it was handed
-// in, for the caller to close or abort as it sees fit.
+// mismatch, a stale leader, or a failed MakeReplica leaves the store exactly
+// as it was handed in, for the caller to close or abort as it sees fit.
 func (f *Follower) Bind(ctx context.Context, store *vcollection.DurableStore, basePath string) error {
 	status, err := f.Status(ctx)
 	if err != nil {
@@ -262,6 +262,20 @@ func (f *Follower) Bind(ctx context.Context, store *vcollection.DurableStore, ba
 	// leader's records on top of a history they were never part of.
 	if id := store.Metadata().StoreID; id != leaderID {
 		return fmt.Errorf("%w: %q holds store %x, leader is %x", vcollection.ErrJournalStoreMismatch, basePath, id, leaderID)
+	}
+	// The same fencing Follow() applies to every record stream, checked here
+	// too: a restart can point this same directory at a leader reporting an
+	// epoch older than the sidecar already on disk -- a promotion elsewhere
+	// moved this replica's epoch ahead, or this store was itself promoted and
+	// the old leader was never told. StoreID survives promotion unchanged, so
+	// only the epoch catches this. Binding anyway would clobber the sidecar
+	// back down and silently resume following a leader that was demoted.
+	local, err := ReadEpoch(basePath)
+	if err != nil {
+		return err
+	}
+	if status.Epoch < local.Number {
+		return ErrStaleLeader
 	}
 	// MakeReplica before anything else can write: an unmarked store would
 	// accept a local write, consume the LSN the leader's next record needs, and

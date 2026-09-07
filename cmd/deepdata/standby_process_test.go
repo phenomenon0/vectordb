@@ -354,16 +354,11 @@ func TestStandbyPromotesOnline(t *testing.T) {
 
 	// Restarting the promoted node against the OLD leader (still running,
 	// still at epoch 0) must not fork it back into that leader's history.
-	// Bind() re-marks it a replica of that leader (StoreID still matches --
-	// promotion never changes it) and re-aligns the epoch sidecar to the old
-	// leader's epoch 0 before Follow ever compares epochs, so what actually
-	// catches this is the plain LSN check every reconnect goes through
-	// first: the local write this node took after promotion put its cursor
-	// past anything the old leader ever had, which is ErrResyncRequired
-	// (the same terminal, discard-and-rebootstrap error an ordinary replica
-	// gets from a leader that pruned records it still needed) rather than
-	// ErrStaleLeader. Either way the outcome the epoch exists for holds: the
-	// node stops instead of silently resyncing, and its local write survives.
+	// StoreID still matches (promotion never changes it), so Bind's own
+	// epoch check is what catches this: it reads the sidecar (epoch 1, from
+	// the earlier promotion) before touching anything, sees the old leader
+	// report epoch 0, and refuses with ErrStaleLeader instead of clobbering
+	// the sidecar back down and silently resuming as that leader's replica.
 	stale := startCanonicalTestProcess(t, standbyDir, standbyHTTP, standbyGRPC, map[string]string{
 		"DEEPDATA_LEADER_URL":        "http://" + leaderHTTP,
 		"DEEPDATA_REPLICATION_TOKEN": standbyProcessNodeToken,
@@ -371,8 +366,8 @@ func TestStandbyPromotesOnline(t *testing.T) {
 	defer stale.stopIfRunning()
 	stale.waitReady(t, standbyHTTP)
 	staleBody := waitForFollowingState(t, standbyHTTP, "acme", "stopped", 15*time.Second)
-	if errText := followingTenantError(staleBody, "acme"); !strings.Contains(errText, "must be re-bootstrapped") {
-		t.Fatalf("acme stopped error = %q, want the resync-required explanation", errText)
+	if errText := followingTenantError(staleBody, "acme"); !strings.Contains(errText, "was demoted") {
+		t.Fatalf("acme stopped error = %q, want the stale-leader explanation", errText)
 	}
 	if resp, body := canonicalJSONRequest(t, http.MethodGet, standbyProcessDocsURL(standbyHTTP, "acme", "docs")+"/4", nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("get doc 4 on restarted node = %d: %s", resp.StatusCode, body)

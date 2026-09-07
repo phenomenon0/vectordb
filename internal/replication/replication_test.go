@@ -578,6 +578,54 @@ func TestBindWritesTheEpochSidecarEvenWhenMissing(t *testing.T) {
 	}
 }
 
+// A restart can point the same replica directory at a leader reporting an
+// epoch older than what is already on the sidecar -- a promotion elsewhere
+// moved this replica ahead, or this store was itself promoted and the old
+// leader was never told. Bind must refuse rather than clobber the sidecar
+// back down: StoreID alone does not catch this, since promotion never
+// changes it.
+func TestBindRefusesALeaderReportingAnOlderEpoch(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	// The leader reports epoch 0 (no promotion ever ran against it), but the
+	// replica directory is already ahead -- simulating a promotion this
+	// store itself went through, or one that happened on another replica of
+	// the same leader.
+	follower := serveLeader(t, leader)
+	base := storePath(t, dir, "replica")
+	if _, err := follower.Seed(ctx, base, base); err != nil {
+		t.Fatal(err)
+	}
+	ahead := Epoch{Number: 2, StartLSN: 5}
+	if err := WriteEpoch(base, ahead); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := follower.Bind(ctx, store, base); !errors.Is(err, ErrStaleLeader) {
+		t.Fatalf("Bind against a leader reporting an older epoch = %v, want ErrStaleLeader", err)
+	}
+	if got, err := ReadEpoch(base); err != nil || got != ahead {
+		t.Fatalf("ReadEpoch after a refused Bind = %+v, %v; want unchanged %+v, nil", got, err, ahead)
+	}
+	if store.IsReplica() {
+		t.Fatal("a refused Bind must not mark the store a replica")
+	}
+	if _, err := store.Tenants().CreateCollection(ctx, "tenant-x", testSchema("still-usable")); err != nil {
+		t.Fatalf("store refused by Bind must still take a local write: %v", err)
+	}
+}
+
 // OnPreamble is how a standby learns the leader's LatestLSN for a lag report
 // without a second round trip: Follow already reads the preamble to check the
 // StoreID, so this only has to hand the caller what it already parsed.
