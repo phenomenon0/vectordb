@@ -52,6 +52,7 @@ func canonicalReplicationSurface(next http.Handler, collections *CollectionHTTPS
 	node, err := replication.NewTenantLeaderHandler(replication.LeaderConfig{
 		Token:    token,
 		SpoolDir: spool,
+		Epoch:    func(id string) (replication.Epoch, error) { return replication.ReadEpoch(set.Base(id)) },
 		Logger:   log.New(replicationLogWriter{logger}, "", 0),
 	}, set.Tenants, func(id string) (replication.Source, bool) { return set.Store(id) })
 	if err != nil {
@@ -310,7 +311,7 @@ func followStream(ctx context.Context, follower *replication.Follower, store *vc
 	}
 	for {
 		notify("streaming", "")
-		err := follower.Follow(ctx, store)
+		err := follower.Follow(ctx, store, base)
 		switch {
 		case ctx.Err() != nil:
 			logger.Info("replication stopped", "tenant", follower.Tenant, "applied_lsn", store.ReplicaCursor().LSN)
@@ -322,6 +323,11 @@ func followStream(ctx context.Context, follower *replication.Follower, store *vc
 			// one a read fleet is serving from.
 			logger.Error("this replica is behind the leader's retained journal; discard the replica directory and start again to re-bootstrap",
 				"path", base, "tenant", follower.Tenant, "applied_lsn", store.ReplicaCursor().LSN, "error", err)
+			notify("stopped", err.Error())
+			return 1
+		case errors.Is(err, replication.ErrStaleLeader):
+			logger.Error("leader is stale; point this standby at the current leader",
+				"path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "applied_lsn", store.ReplicaCursor().LSN, "error", err)
 			notify("stopped", err.Error())
 			return 1
 		case errors.Is(err, vcollection.ErrJournalStoreMismatch):

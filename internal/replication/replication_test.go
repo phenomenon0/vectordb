@@ -68,6 +68,28 @@ func serveLeader(t *testing.T, leader *vcollection.DurableStore) *Follower {
 	return &Follower{LeaderURL: srv.URL, Token: testToken, Tenant: "leader"}
 }
 
+// serveLeaderWithEpoch is serveLeader with a controllable epoch, so a test
+// can simulate a promotion happening on the leader mid-test by changing what
+// epoch returns between calls.
+func serveLeaderWithEpoch(t *testing.T, leader *vcollection.DurableStore, epoch func() (Epoch, error)) *Follower {
+	t.Helper()
+	handler, err := NewTenantLeaderHandler(
+		LeaderConfig{Token: testToken, SpoolDir: t.TempDir(), Epoch: func(string) (Epoch, error) { return epoch() }},
+		func() []string { return []string{"leader"} },
+		func(id string) (Source, bool) {
+			if id != "leader" {
+				return nil, false
+			}
+			return leader, true
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return &Follower{LeaderURL: srv.URL, Token: testToken, Tenant: "leader"}
+}
+
 // The whole point of the transport, over a real socket: a replica materializes
 // from nothing, reaches the leader's exact state including leader-minted
 // document IDs, and keeps reaching it as the leader writes.
@@ -125,7 +147,7 @@ func TestReplicaBootstrapsOverHTTPAndTailsItsLeader(t *testing.T) {
 	followCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	failed := make(chan error, 1)
-	go func() { failed <- follower.Follow(followCtx, replica) }()
+	go func() { failed <- follower.Follow(followCtx, replica, base) }()
 
 	tailed := testDocument(4)
 	if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &tailed); err != nil {
@@ -201,7 +223,7 @@ func TestRestartedReplicaResumesWithoutReapplying(t *testing.T) {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	failed := make(chan error, 1)
-	go func() { failed <- follower.Follow(runCtx, replica) }()
+	go func() { failed <- follower.Follow(runCtx, replica, base) }()
 	waitFor(t, runCtx, failed, func() bool {
 		_, ok := replica.Tenants().GetDocument("tenant-a", "docs", first.ID)
 		return ok
@@ -231,7 +253,7 @@ func TestRestartedReplicaResumesWithoutReapplying(t *testing.T) {
 	resumeCtx, cancelResume := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelResume()
 	resumeFailed := make(chan error, 1)
-	go func() { resumeFailed <- follower.Follow(resumeCtx, reopened) }()
+	go func() { resumeFailed <- follower.Follow(resumeCtx, reopened, base) }()
 	waitFor(t, resumeCtx, resumeFailed, func() bool {
 		_, ok := reopened.Tenants().GetDocument("tenant-a", "docs", offline.ID)
 		return ok
@@ -271,7 +293,7 @@ func TestFollowerIsToldToResyncWhenTheLeaderDiscardedItsRecords(t *testing.T) {
 
 	followCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	err = follower.Follow(followCtx, replica)
+	err = follower.Follow(followCtx, replica, base)
 	if !errors.Is(err, ErrResyncRequired) {
 		t.Fatalf("Follow = %v, want ErrResyncRequired", err)
 	}
@@ -296,7 +318,7 @@ func TestFollowerRefusesAForeignLeader(t *testing.T) {
 	t.Cleanup(func() { _ = replica.Close() })
 
 	followerB := serveLeader(t, leaderB)
-	err = followerB.Follow(ctx, replica)
+	err = followerB.Follow(ctx, replica, base)
 	if !errors.Is(err, vcollection.ErrJournalStoreMismatch) {
 		t.Fatalf("Follow against a foreign leader = %v, want ErrJournalStoreMismatch", err)
 	}
@@ -552,7 +574,7 @@ func TestFollowReportsThePreamble(t *testing.T) {
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	failed := make(chan error, 1)
-	go func() { failed <- follower.Follow(runCtx, replica) }()
+	go func() { failed <- follower.Follow(runCtx, replica, base) }()
 	waitFor(t, runCtx, failed, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -624,7 +646,7 @@ func TestWritesAfterALeaderRestartStillReachTheReplica(t *testing.T) {
 			// A resync demand is terminal for an operator -- the directory has
 			// to be discarded -- so it is terminal here too. A leader restart
 			// must never provoke one.
-			if err := follower.Follow(followCtx, replica); errors.Is(err, ErrResyncRequired) {
+			if err := follower.Follow(followCtx, replica, base); errors.Is(err, ErrResyncRequired) {
 				fatal <- err
 				return
 			}
@@ -718,7 +740,7 @@ func TestEqualDocumentCountsAreNotEnoughToCallTwoNodesInSync(t *testing.T) {
 	followCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	failed := make(chan error, 1)
-	go func() { failed <- follower.Follow(followCtx, replica) }()
+	go func() { failed <- follower.Follow(followCtx, replica, base) }()
 
 	if err := leader.Tenants().DeleteDocument(ctx, "tenant-a", "docs", seeded[0]); err != nil {
 		t.Fatal(err)
@@ -865,7 +887,7 @@ func TestTenantLeaderFollowerFollowsOnlyItsTenant(t *testing.T) {
 	followCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	failed := make(chan error, 1)
-	go func() { failed <- follower.Follow(followCtx, replica) }()
+	go func() { failed <- follower.Follow(followCtx, replica, base) }()
 
 	acmeDoc := testDocument(1)
 	if err := acme.Tenants().AddDocument(ctx, "acme", "docs", &acmeDoc); err != nil {
@@ -970,5 +992,163 @@ func TestFollowerWithoutTenantErrorsAgainstAPerTenantLeader(t *testing.T) {
 	follower := &Follower{LeaderURL: srv.URL, Token: testToken}
 	if _, err := follower.Status(context.Background()); err == nil {
 		t.Fatal("Status succeeded with no Tenant set against a per-tenant leader")
+	}
+}
+
+// The sidecar itself: absent reads back as zero, a write survives a read, and
+// a corrupt file is an error rather than a guessed zero -- the same stance
+// ReplicaLeaderID takes on marker.go, and for the same reason: the caller's
+// next move is to decide whether to honor a leader's stream.
+func TestEpochSidecarRoundTrip(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "store")
+
+	if got, err := ReadEpoch(base); err != nil || got != (Epoch{}) {
+		t.Fatalf("ReadEpoch on an absent sidecar = %+v, %v; want zero value, nil error", got, err)
+	}
+
+	want := Epoch{Number: 3, StartLSN: 41}
+	if err := WriteEpoch(base, want); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadEpoch(base); err != nil || got != want {
+		t.Fatalf("ReadEpoch after WriteEpoch = %+v, %v; want %+v, nil", got, err, want)
+	}
+
+	if err := os.WriteFile(epochPath(base), []byte("not an epoch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadEpoch(base); err == nil {
+		t.Fatal("ReadEpoch on a corrupt sidecar succeeded; a demoted leader could pass as epoch 0")
+	}
+}
+
+// A leader whose epoch is older than the replica's own was demoted: a
+// promotion elsewhere already moved the replica ahead of it, and following it
+// further would fork the tenant's history at the point the promotion started.
+func TestFollowerRefusesAStaleLeader(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+
+	follower := serveLeaderWithEpoch(t, leader, func() (Epoch, error) { return Epoch{}, nil }) // leader stuck at epoch 0
+	base := storePath(t, dir, "replica")
+	replica, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = replica.Close() })
+
+	// This replica already adopted epoch 1 from elsewhere; this leader never
+	// advanced past 0.
+	if err := WriteEpoch(base, Epoch{Number: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	after := testDocument(9)
+	if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &after); err != nil {
+		t.Fatal(err)
+	}
+
+	followCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := follower.Follow(followCtx, replica, base); !errors.Is(err, ErrStaleLeader) {
+		t.Fatalf("Follow against a stale leader = %v, want ErrStaleLeader", err)
+	}
+	if _, ok := replica.Tenants().GetDocument("tenant-a", "docs", after.ID); ok {
+		t.Fatal("a stale leader's record was applied")
+	}
+}
+
+// A leader whose epoch just increased is the current one after a promotion.
+// A replica that has not synced past the LSN the promotion started at has
+// nothing at risk of forking, so it adopts the new epoch and keeps going.
+func TestFollowerAdoptsAHigherEpochWhenNotPastItsStart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	first := testDocument(1)
+	if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &first); err != nil {
+		t.Fatal(err)
+	}
+
+	epoch := Epoch{} // matches what bootstrap will seed the replica's sidecar with
+	follower := serveLeaderWithEpoch(t, leader, func() (Epoch, error) { return epoch, nil })
+	base := storePath(t, dir, "replica")
+	replica, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = replica.Close() })
+	startLSN := replica.ReplicaCursor().LSN
+
+	// Promotion: the leader's epoch advances, starting exactly where this
+	// replica already is -- nothing of the new history is missing to it.
+	epoch = Epoch{Number: 1, StartLSN: startLSN}
+	promoted := testDocument(2)
+	if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &promoted); err != nil {
+		t.Fatal(err)
+	}
+
+	followCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	failed := make(chan error, 1)
+	go func() { failed <- follower.Follow(followCtx, replica, base) }()
+	waitFor(t, followCtx, failed, func() bool {
+		_, ok := replica.Tenants().GetDocument("tenant-a", "docs", promoted.ID)
+		return ok
+	}, "record under the new epoch never reached the replica")
+	cancel()
+	<-failed
+
+	if got, err := ReadEpoch(base); err != nil || got != epoch {
+		t.Fatalf("replica's epoch sidecar = %+v, %v; want %+v, nil", got, err, epoch)
+	}
+}
+
+// A replica that already synced past the LSN a promotion started at has
+// records from a history the new epoch does not extend: adopting the new
+// epoch here would silently fork, so it must resync from scratch instead.
+func TestFollowerPastThePromotionPointMustResync(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	doc := testDocument(1)
+	if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	epoch := Epoch{}
+	follower := serveLeaderWithEpoch(t, leader, func() (Epoch, error) { return epoch, nil })
+	base := storePath(t, dir, "replica")
+	replica, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = replica.Close() })
+	pastLSN := replica.ReplicaCursor().LSN
+	if pastLSN == 0 {
+		t.Fatal("test needs a replica that has already applied at least one record")
+	}
+
+	// Promotion started one LSN before this replica's own cursor: it has a
+	// record the new epoch's leader never had a chance to include.
+	epoch = Epoch{Number: 1, StartLSN: pastLSN - 1}
+
+	followCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := follower.Follow(followCtx, replica, base); !errors.Is(err, ErrResyncRequired) {
+		t.Fatalf("Follow past the promotion point = %v, want ErrResyncRequired", err)
 	}
 }

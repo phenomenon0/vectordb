@@ -151,3 +151,23 @@ func TestOversizedLengthIsRefusedWithoutAllocating(t *testing.T) {
 		t.Fatalf("allocated %d bytes from an untrusted length field", cap(buf))
 	}
 }
+
+// Version 2 added Epoch and EpochStartLSN to the preamble; a follower on this
+// build must see both survive the wire, not just the fields version 1 had.
+func TestPreambleV2RoundTrip(t *testing.T) {
+	var out bytes.Buffer
+	want := Preamble{Version: Version, StoreID: leaderID(), LatestLSN: 9, Epoch: 3, EpochStartLSN: 7}
+	if err := WritePreamble(&out, want); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.Len(); got != 45 {
+		t.Fatalf("preamble is %d bytes, want 45", got)
+	}
+	got, err := ReadPreamble(bytes.NewReader(out.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("preamble round trip = %+v, want %+v", got, want)
+	}
+}

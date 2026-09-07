@@ -84,6 +84,19 @@ discarding a replica directory is an operator decision, not a retry policy; and
 it does not make the leader highly available. A dropped stream is retried from
 the replica's own durable cursor. Nothing else is automatic.
 
+Every tenant's journal carries an epoch (`internal/replication/epoch.go`): a
+number that only moves forward, plus the journal position it moved forward
+at. A standby checks the epoch a leader claims against the one it last
+adopted before applying anything new: a claimed epoch below its own means
+that leader was demoted, and the standby applies nothing from it; a claimed
+epoch above its own is adopted and followed only if the standby has not
+itself gone past the position that epoch started at -- past it, the standby
+holds history the new epoch does not extend, and only a fresh seed
+reconciles that, not a retry; an unchanged epoch changes nothing. This is
+node protocol version 2: every member, leader and standby alike, must run
+the same build, since an older build has no field to hold an epoch in and its
+version check refuses the mismatch outright.
+
 ### The node credential is not the API token
 
 `DEEPDATA_REPLICATION_TOKEN` authenticates a peer server, not a tenant. One

@@ -22,7 +22,12 @@ import (
 
 // Version is the node protocol version. Bump it only for a framing change a
 // previous follower cannot parse.
-const Version = 1
+//
+// Version 2 added Epoch and EpochStartLSN to the preamble: every member --
+// leader and standby alike -- must run the same build, since an older
+// follower has no field to decode them into and ReadPreamble's version check
+// refuses the mismatch outright rather than guess.
+const Version = 2
 
 // magic makes a follower pointed at the wrong URL fail on the first five bytes
 // instead of trying to parse a proxy error page as journal records.
@@ -77,11 +82,15 @@ func (e *ControlError) Error() string {
 }
 
 // Preamble identifies the leader and how far its journal had been written when
-// the stream opened. A follower checks StoreID before applying a single record.
+// the stream opened. A follower checks StoreID before applying a single
+// record, and Epoch/EpochStartLSN before applying a single new one -- see
+// epoch.go.
 type Preamble struct {
-	Version   byte
-	StoreID   [16]byte
-	LatestLSN uint64
+	Version       byte
+	StoreID       [16]byte
+	LatestLSN     uint64
+	Epoch         uint64
+	EpochStartLSN uint64
 }
 
 // crcTable is Castagnoli. It is deliberately NOT the journal's own check --
@@ -96,11 +105,13 @@ var crcTable = crc32.MakeTable(crc32.Castagnoli)
 
 // WritePreamble emits the stream header.
 func WritePreamble(w io.Writer, p Preamble) error {
-	var buf [4 + 1 + 16 + 8]byte
+	var buf [4 + 1 + 16 + 8 + 8 + 8]byte
 	copy(buf[0:4], magic[:])
 	buf[4] = p.Version
 	copy(buf[5:21], p.StoreID[:])
 	binary.BigEndian.PutUint64(buf[21:29], p.LatestLSN)
+	binary.BigEndian.PutUint64(buf[29:37], p.Epoch)
+	binary.BigEndian.PutUint64(buf[37:45], p.EpochStartLSN)
 	_, err := w.Write(buf[:])
 	return err
 }
@@ -108,7 +119,7 @@ func WritePreamble(w io.Writer, p Preamble) error {
 // ReadPreamble parses the stream header and rejects anything that is not this
 // protocol at this version.
 func ReadPreamble(r io.Reader) (Preamble, error) {
-	var buf [4 + 1 + 16 + 8]byte
+	var buf [4 + 1 + 16 + 8 + 8 + 8]byte
 	if _, err := io.ReadFull(r, buf[:]); err != nil {
 		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
 			return Preamble{}, fmt.Errorf("%w: stream ended inside the header", ErrBadStream)
@@ -118,7 +129,12 @@ func ReadPreamble(r io.Reader) (Preamble, error) {
 	if [4]byte(buf[0:4]) != magic {
 		return Preamble{}, fmt.Errorf("%w: got magic %q", ErrBadStream, buf[0:4])
 	}
-	p := Preamble{Version: buf[4], LatestLSN: binary.BigEndian.Uint64(buf[21:29])}
+	p := Preamble{
+		Version:       buf[4],
+		LatestLSN:     binary.BigEndian.Uint64(buf[21:29]),
+		Epoch:         binary.BigEndian.Uint64(buf[29:37]),
+		EpochStartLSN: binary.BigEndian.Uint64(buf[37:45]),
+	}
 	copy(p.StoreID[:], buf[5:21])
 	if p.Version != Version {
 		return Preamble{}, fmt.Errorf("%w: peer speaks version %d, this build speaks %d", ErrVersionMismatch, p.Version, Version)

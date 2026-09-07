@@ -33,6 +33,12 @@ var ErrResyncRequired = errors.New("replica is behind the leader's retained jour
 // deleted. Terminal like ErrResyncRequired -- reconnecting will not help.
 var ErrUnknownTenant = errors.New("leader does not know this tenant")
 
+// ErrStaleLeader means the leader's preamble reported an epoch older than
+// this replica's own: it was demoted. Terminal like ErrResyncRequired --
+// reconnecting to the same URL will not help, since that URL is not the
+// current leader.
+var ErrStaleLeader = errors.New("leader epoch is older than this replica's; it was demoted")
+
 // Follower pulls a leader's journal into a local read replica.
 type Follower struct {
 	// LeaderURL is the leader's base URL, e.g. https://leader.internal:8080.
@@ -58,6 +64,8 @@ type LeaderStatus struct {
 	ProtocolVersion int    `json:"protocol_version"`
 	StoreID         string `json:"store_id"`
 	LatestLSN       uint64 `json:"latest_lsn"`
+	Epoch           uint64 `json:"epoch"`
+	EpochStartLSN   uint64 `json:"epoch_start_lsn"`
 }
 
 // ID decodes the leader's store ID.
@@ -216,6 +224,12 @@ func (f *Follower) Seed(ctx context.Context, basePath, storagePath string) (boot
 	if err != nil {
 		return false, err
 	}
+	// Seeded from the leader's own status, so a fresh replica starts aligned
+	// with whatever epoch the leader is currently on -- Follow's first call
+	// then sees its own epoch echoed back instead of a spurious jump.
+	if err := WriteEpoch(basePath, Epoch{Number: status.Epoch, StartLSN: status.EpochStartLSN}); err != nil {
+		return false, errors.Join(err, store.Abort())
+	}
 	if err := markOrAbort(store, basePath, leaderID); err != nil {
 		return false, err
 	}
@@ -302,9 +316,14 @@ func (f *Follower) bootstrap(ctx context.Context, basePath, storagePath string, 
 //
 // It resumes from the store's own durable cursor, so a restarted replica picks
 // up exactly where it stopped. A returned ErrResyncRequired means the leader
-// has discarded the records this replica still needs; every other error is the
-// stream failing and is safe to retry from the same cursor.
-func (f *Follower) Follow(ctx context.Context, store *vcollection.DurableStore) error {
+// has discarded the records this replica still needs; a returned
+// ErrStaleLeader means the leader was demoted and nothing was applied; every
+// other error is the stream failing and is safe to retry from the same
+// cursor.
+//
+// basePath is where the replica's own epoch sidecar lives (see epoch.go) --
+// the same path Seed and Bind were given for this store.
+func (f *Follower) Follow(ctx context.Context, store *vcollection.DurableStore, basePath string) error {
 	if store == nil {
 		return errors.New("replication follower needs a replica store")
 	}
@@ -335,6 +354,25 @@ func (f *Follower) Follow(ctx context.Context, store *vcollection.DurableStore) 
 	}
 	if pre.StoreID != cursor.StoreID {
 		return fmt.Errorf("%w: stream is from store %x, replica follows %x", vcollection.ErrJournalStoreMismatch, pre.StoreID, cursor.StoreID)
+	}
+	local, err := ReadEpoch(basePath)
+	if err != nil {
+		return err
+	}
+	switch {
+	case pre.Epoch < local.Number:
+		// This leader was demoted; a promotion elsewhere already moved this
+		// replica's epoch ahead of it. Nothing from this stream is applied.
+		return ErrStaleLeader
+	case pre.Epoch > local.Number:
+		if cursor.LSN > pre.EpochStartLSN {
+			// This replica already has records from a history the new epoch
+			// does not extend -- adopting it here would silently fork.
+			return fmt.Errorf("%w: replica at LSN %d is past the leader's epoch %d start at LSN %d", ErrResyncRequired, cursor.LSN, pre.Epoch, pre.EpochStartLSN)
+		}
+		if err := WriteEpoch(basePath, Epoch{Number: pre.Epoch, StartLSN: pre.EpochStartLSN}); err != nil {
+			return err
+		}
 	}
 	if f.OnPreamble != nil {
 		f.OnPreamble(pre)

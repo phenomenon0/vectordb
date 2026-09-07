@@ -49,6 +49,10 @@ type LeaderConfig struct {
 	// SpoolDir is where a snapshot is staged before it is streamed. Empty uses
 	// the OS temp dir.
 	SpoolDir string
+	// Epoch reports the epoch this leader currently claims for tenantID, so a
+	// follower can tell a demoted leader from the current one. Nil means every
+	// tenant is at Epoch{} -- no promotion has ever happened.
+	Epoch func(tenantID string) (Epoch, error)
 	// Logger receives stream-level failures. Nil discards them.
 	Logger *log.Logger
 }
@@ -122,7 +126,7 @@ func (tl *tenantLeader) route(fn func(*leader, http.ResponseWriter, *http.Reques
 			writeReplicationError(w, http.StatusNotFound, "unknown tenant")
 			return
 		}
-		fn(&leader{src: src, cfg: tl.cfg}, w, r)
+		fn(&leader{src: src, cfg: tl.cfg, tenantID: id}, w, r)
 	}
 }
 
@@ -156,8 +160,18 @@ func writeReplicationError(w http.ResponseWriter, status int, message string) {
 }
 
 type leader struct {
-	src Source
-	cfg LeaderConfig
+	src      Source
+	cfg      LeaderConfig
+	tenantID string
+}
+
+// epoch reports this tenant's current epoch. A nil cfg.Epoch means no
+// promotion has ever run against this leader, so every tenant is at Epoch{}.
+func (l *leader) epoch() (Epoch, error) {
+	if l.cfg.Epoch == nil {
+		return Epoch{}, nil
+	}
+	return l.cfg.Epoch(l.tenantID)
 }
 
 func (l *leader) logf(format string, args ...any) {
@@ -196,11 +210,19 @@ func (l *leader) status(w http.ResponseWriter, r *http.Request) {
 		l.logf("replication: status: %v", err)
 		return
 	}
+	epoch, err := l.epoch()
+	if err != nil {
+		http.Error(w, "leader epoch unavailable", http.StatusServiceUnavailable)
+		l.logf("replication: epoch: %v", err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"protocol_version": Version,
 		"store_id":         hex.EncodeToString(pos.StoreID[:]),
 		"latest_lsn":       pos.LatestLSN,
+		"epoch":            epoch.Number,
+		"epoch_start_lsn":  epoch.StartLSN,
 	})
 }
 
@@ -278,6 +300,12 @@ func (l *leader) journal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("cursor belongs to store %x; this leader is %x", cursor.StoreID, pos.StoreID), http.StatusConflict)
 		return
 	}
+	epoch, err := l.epoch()
+	if err != nil {
+		http.Error(w, "leader epoch unavailable", http.StatusServiceUnavailable)
+		l.logf("replication: epoch: %v", err)
+		return
+	}
 
 	// A tail has no length and no natural end, so the server's per-connection
 	// write deadline -- sized for a request/response API -- would cut it. The
@@ -287,7 +315,7 @@ func (l *leader) journal(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if err := WritePreamble(w, Preamble{Version: Version, StoreID: pos.StoreID, LatestLSN: pos.LatestLSN}); err != nil {
+	if err := WritePreamble(w, Preamble{Version: Version, StoreID: pos.StoreID, LatestLSN: pos.LatestLSN, Epoch: epoch.Number, EpochStartLSN: epoch.StartLSN}); err != nil {
 		l.logf("replication: preamble: %v", err)
 		return
 	}
