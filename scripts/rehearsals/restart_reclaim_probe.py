@@ -118,48 +118,55 @@ def snapshot_bytes():
     return total
 
 
-def snapshot_file():
-    matches = glob.glob(f"{STATE}/**/*.collections.snapshot", recursive=True)
-    if len(matches) != 1:
-        raise RuntimeError(f"expected exactly one canonical snapshot, found {matches}")
-    return matches[0]
+def snapshot_files():
+    # per-tenant StoreSet layout: one snapshot per tenant directory
+    # (<data-dir>/index.gob.tenants/<tenant>.snapshot), not one unified file.
+    matches = sorted(glob.glob(f"{STATE}/**/*.tenants/*.snapshot", recursive=True))
+    if not matches:
+        raise RuntimeError(
+            "expected at least one canonical tenant snapshot, found none"
+        )
+    return matches
 
 
 def persisted_documents():
-    """Count the documents the canonical snapshot actually holds.
+    """Count the documents every tenant's canonical snapshot actually holds, summed.
 
     Frame layout (internal/collection/snapshot.go): a 56-byte header whose last
     two fields are the root collection count and the tenant count, then framed
     JSON -- per manager one descriptor per collection carrying its
     document_count, each followed by that many document frames.
     """
-    with open(snapshot_file(), "rb") as f:
+    total_persisted = 0
+    for path in snapshot_files():
+        with open(path, "rb") as f:
 
-        def frame():
-            size = int.from_bytes(f.read(4), "big")
-            return json.loads(f.read(size))
+            def frame():
+                size = int.from_bytes(f.read(4), "big")
+                return json.loads(f.read(size))
 
-        def skip_frame():
-            f.seek(int.from_bytes(f.read(4), "big"), 1)
+            def skip_frame():
+                f.seek(int.from_bytes(f.read(4), "big"), 1)
 
-        def manager(collections):
-            total = 0
-            for _ in range(collections):
-                count = frame()["document_count"]
-                total += count
-                for _ in range(count):
-                    skip_frame()
-            return total
+            def manager(collections):
+                total = 0
+                for _ in range(collections):
+                    count = frame()["document_count"]
+                    total += count
+                    for _ in range(count):
+                        skip_frame()
+                return total
 
-        header = f.read(56)
-        if header[:8] != b"DDCOLSNP":
-            raise RuntimeError("state dir does not hold a v2 collection snapshot")
-        root = int.from_bytes(header[40:48], "big")
-        tenants = int.from_bytes(header[48:56], "big")
-        persisted = manager(root)
-        for _ in range(tenants):
-            persisted += manager(frame()["collection_count"])
-        return persisted
+            header = f.read(56)
+            if header[:8] != b"DDCOLSNP":
+                raise RuntimeError(f"{path} does not hold a v2 collection snapshot")
+            root = int.from_bytes(header[40:48], "big")
+            tenants = int.from_bytes(header[48:56], "big")
+            persisted = manager(root)
+            for _ in range(tenants):
+                persisted += manager(frame()["collection_count"])
+            total_persisted += persisted
+    return total_persisted
 
 
 def env_for():
@@ -323,7 +330,7 @@ finally:
 
 S_before = snapshot_bytes()
 result["snapshot_before_bytes"] = S_before
-result["snapshot_file_before_bytes"] = os.path.getsize(snapshot_file())
+result["snapshot_file_before_bytes"] = sum(os.path.getsize(p) for p in snapshot_files())
 result["persisted_docs_before"] = persisted_documents()
 log(
     f"shutdown state on disk = {S_before} bytes; snapshot holds "
@@ -404,7 +411,7 @@ finally:
 
 S_after = snapshot_bytes()
 result["snapshot_after_bytes"] = S_after
-result["snapshot_file_after_bytes"] = os.path.getsize(snapshot_file())
+result["snapshot_file_after_bytes"] = sum(os.path.getsize(p) for p in snapshot_files())
 result["persisted_docs_after"] = persisted_documents()
 
 # verdicts.

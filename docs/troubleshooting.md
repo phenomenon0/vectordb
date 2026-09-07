@@ -45,9 +45,11 @@ directory is `/data/local` on the whole `/data` state volume.
 
 ### Another process owns the state lock
 
-Only one process may open a persistent canonical store. Confirm that a previous
-process or container is not still running. Do not delete the lock file to work
-around a live owner.
+Only one process may open a given tenant's persistent store: each tenant under
+a data directory owns its own lock file at
+`<data-dir>/index.gob.tenants/<tenant>.lock` (`internal/collection/store_set.go`).
+Confirm that a previous process or container is not still running. Do not
+delete the lock file to work around a live owner.
 
 ```bash
 systemctl status deepdata --no-pager

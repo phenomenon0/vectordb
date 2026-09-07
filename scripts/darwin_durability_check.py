@@ -55,7 +55,9 @@ def brief(v):
 
 def check(label, got, want):
     ok = got == want
-    print(f"  [{'PASS' if ok else 'FAIL'}] {label}: got {brief(got)}, want {brief(want)}")
+    print(
+        f"  [{'PASS' if ok else 'FAIL'}] {label}: got {brief(got)}, want {brief(want)}"
+    )
     if not ok:
         failures.append(label)
     return ok
@@ -65,11 +67,22 @@ def check_close(label, got, want, tol=1e-6):
     """Vectors are stored as float32, so a float64 client value only round-trips
     to within float32 precision. Restart-to-restart comparisons still use exact
     equality - those are server value vs server value."""
-    ok = (isinstance(got, list) and len(got) == len(want)
-          and all(abs(a - b) <= tol for a, b in zip(got, want)))
-    worst = max((abs(a - b) for a, b in zip(got, want)), default=None) if isinstance(got, list) else None
-    print(f"  [{'PASS' if ok else 'FAIL'}] {label}: len={len(got) if isinstance(got, list) else got}, "
-          f"max abs diff={worst:.3e}" if worst is not None else f"  [FAIL] {label}: {brief(got)}")
+    ok = (
+        isinstance(got, list)
+        and len(got) == len(want)
+        and all(abs(a - b) <= tol for a, b in zip(got, want))
+    )
+    worst = (
+        max((abs(a - b) for a, b in zip(got, want)), default=None)
+        if isinstance(got, list)
+        else None
+    )
+    print(
+        f"  [{'PASS' if ok else 'FAIL'}] {label}: len={len(got) if isinstance(got, list) else got}, "
+        f"max abs diff={worst:.3e}"
+        if worst is not None
+        else f"  [FAIL] {label}: {brief(got)}"
+    )
     if not ok:
         failures.append(label)
     return ok
@@ -103,8 +116,9 @@ def vec(i):
     across restarts and looked like a durability failure when it was really
     just unspecified tie-breaking.
     """
-    return [i / float(NDOCS)] + [((i * 31 + j * 17) % 997) / 997.0
-                                 for j in range(1, DIM)]
+    return [i / float(NDOCS)] + [
+        ((i * 31 + j * 17) % 997) / 997.0 for j in range(1, DIM)
+    ]
 
 
 def start(tag):
@@ -160,12 +174,18 @@ def search(qi=7, k=5):
     docs = body.get("documents", [])
     ids = [d.get("id") for d in docs]
     top = docs[0] if docs else {}
-    return (ids, set(ids), (top.get("vectors") or {}).get("embedding"),
-            top.get("metadata"))
+    return (
+        ids,
+        set(ids),
+        (top.get("vectors") or {}).get("embedding"),
+        top.get("metadata"),
+    )
 
 
 def artifacts():
-    base = os.path.join(DATA_DIR, "index.gob.collections")
+    # per-tenant StoreSet layout: TENANT's own files under index.gob.tenants/,
+    # named after its tenant id (internal/collection/store_set.go).
+    base = os.path.join(DATA_DIR, "index.gob.tenants", TENANT)
     return {
         os.path.basename(base + s): os.path.exists(base + s)
         for s in (
@@ -250,7 +270,7 @@ print(f"  sent SIGKILL to pid {p.pid}; process rc={p.returncode} (-9 = killed)")
 check("process died via SIGKILL", p.returncode, -9)
 post_kill = artifacts()
 print(f"  artifacts after kill: {post_kill}")
-check("journal survived the crash", post_kill["index.gob.collections.journal"], True)
+check("journal survived the crash", post_kill[f"{TENANT}.journal"], True)
 
 p2 = start("after-kill")
 print(f"  restarted, pid {p2.pid} — journal replay path")
@@ -279,15 +299,15 @@ post_term = artifacts()
 print(f"  artifacts after SIGTERM: {post_term}")
 check(
     "snapshot written on graceful close",
-    post_term["index.gob.collections.snapshot"],
+    post_term[f"{TENANT}.snapshot"],
     True,
 )
 check(
     "journal cleaned after checkpoint",
-    post_term["index.gob.collections.journal"],
+    post_term[f"{TENANT}.journal"],
     False,
 )
-check("lock released on clean exit", post_term["index.gob.collections.lock"], True)
+check("lock released on clean exit", post_term[f"{TENANT}.lock"], True)
 
 p3 = start("cold")
 print(f"  cold-started from snapshot, pid {p3.pid}")
@@ -321,12 +341,26 @@ def tree_fingerprint():
     Linux one. The binary under test belongs in bin/ or outside the repo; both
     are ignored, so copying it in does not dirty the tree."""
     digest = hashlib.sha256()
-    digest.update(subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "diff", "--binary", "HEAD", "--"],
-        check=True, stdout=subprocess.PIPE).stdout)
+    digest.update(
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "diff", "--binary", "HEAD", "--"],
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+    )
     untracked = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "ls-files", "--others", "--exclude-standard", "-z"],
-        check=True, stdout=subprocess.PIPE).stdout.split(b"\0")
+        [
+            "git",
+            "-C",
+            str(REPO_ROOT),
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout.split(b"\0")
     for encoded in sorted(path for path in untracked if path):
         digest.update(encoded)
         digest.update(b"\0")
@@ -363,7 +397,10 @@ receipt = {
     "finished_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
     "git_commit": subprocess.run(
         ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
-        check=True, stdout=subprocess.PIPE, text=True).stdout.strip(),
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip(),
     "tree_fingerprint": tree_fingerprint(),
     "working_directory": str(REPO_ROOT),
     "command": " ".join([sys.executable, *sys.argv]),

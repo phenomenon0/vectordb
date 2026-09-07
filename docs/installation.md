@@ -126,6 +126,13 @@ for the complete typed sync and async contract.
 | `AUTH_FAILURE_BURST` | `5` | Failed-auth attempts allowed per peer IP before temporary throttling |
 | `MAX_RATE_LIMIT_KEYS` | `100000` | Maximum keys tracked by each rate limiter; a full failed-auth map rejects unseen peers until capacity recovers |
 
+Every tenant with an on-disk store opens two file descriptors (a lock and a
+journal) for as long as the process runs, eagerly at startup for every tenant
+that already has one (`OpenStoreSet`, `internal/collection/store_set.go`).
+Raise the process file-descriptor limit accordingly: `ulimit -n` (or
+systemd's `LimitNOFILE`) should be at least twice the number of tenants you
+expect to open, plus about 256 for HTTP/gRPC connections and everything else.
+
 Terminate TLS at a trusted proxy or ingress and use encrypted storage. Do not
 place bearer tokens in URLs or command history.
 

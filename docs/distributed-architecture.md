@@ -34,20 +34,23 @@ without one. When it is unset the routes return 404 like any other path outside
 the RC surface.
 
 What it does, and only this: a leader exposes its own journal and a snapshot of
-its own state, and `deepdata replicate` keeps a second directory in step by
-applying that journal in LSN order. Stop that sync and a plain `deepdata serve`
-against the same directory serves it read-only. Nothing tells it to: the sync
-writes a marker beside the store, so the data directory is the evidence and
-there is no flag to forget. Reads answer normally, every write is refused with
-`403` `permission_denied` before it reaches the journal, and `GET /readyz` and
-`GET /v3/status` both report `read_only` so a load balancer stops sending it
-writes.
+its own state, and `deepdata replicate` keeps a second tenant directory in step
+by applying that journal in LSN order (one tenant at a time; omitting
+`--tenant` follows every tenant the leader lists, each into its own
+subdirectory of the tenant store tree). Stop that sync and a plain `deepdata
+serve` against the same tenant directory serves it read-only. Nothing tells it
+to: the sync writes a marker beside that tenant's store, so the tenant
+directory is the evidence and there is no flag to forget. Reads answer
+normally, every write is refused with `403` `permission_denied` before it
+reaches the journal, and `GET /readyz` and `GET /v3/status` both report
+`read_only` so a load balancer stops sending it writes.
 
 Stop that sync is not a turn of phrase. The collection store takes an exclusive
-lock for the lifetime of the process holding it, so `deepdata replicate` and
-`deepdata serve` cannot share one directory: whichever starts second is refused
-with `collection store is already open`. A replica is therefore a directory kept
-current for a later read, not a live member of a read fleet, and moving it
+lock, per tenant, for the lifetime of the process holding it, so `deepdata
+replicate` and `deepdata serve` cannot both hold the tenant a sync is following:
+whichever opens that tenant's store second is refused with `collection store is
+already open`. A replica is therefore a tenant directory kept current for a
+later read, not a live member of a read fleet, and moving it
 between the two roles means stopping one process and starting the other. Serving
 reads while the sync continues would need a shared-reader open that this release
 does not have.
