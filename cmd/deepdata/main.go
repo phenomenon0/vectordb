@@ -55,6 +55,9 @@ func main() {
 	if len(args) > 0 && args[0] == "token" {
 		os.Exit(runToken(args[1:], os.Stdout, os.Stderr, os.Getenv))
 	}
+	if len(args) > 0 && args[0] == "migrate-tenants" {
+		os.Exit(runMigrateTenants(args[1:], os.Stdout, os.Stderr, logging.Default()))
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}

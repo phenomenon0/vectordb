@@ -44,6 +44,42 @@ There is no in-place rollback after canonical writes. Roll back by stopping
 the candidate and restoring the complete pre-migration root to the compatible
 legacy binary. Never mix files from the two state roots.
 
+## Migrating to per-tenant stores
+
+The canonical server keeps one durable store per tenant under
+`<data-dir>/index.gob.tenants/`. A data directory still on the earlier 0.1
+single-store layout (`<data-dir>/index.gob.collections.*`) refuses to serve
+and names this section in its error.
+
+Run, once, against the data directory (not a copy -- it never rewrites the
+old files):
+
+```
+deepdata migrate-tenants <data-dir>
+```
+
+It refuses with a one-line reason and does nothing if the directory is
+already migrated, still holds raw pre-0.1 legacy artifacts, or has no
+single-store state to migrate. Otherwise it exports every tenant into its own
+store, reopens the result to verify collection names and document counts
+match, and prints a report:
+
+```
+tenant  collections  documents
+acme    1            2
+beta    1            0            (1 ephemeral collection(s) reset to 0 docs)
+```
+
+Ephemeral collections (ADR 0009) are schema-only and always reset to zero
+documents across a restart, migration included -- the report says so per
+tenant rather than treating it as a mismatch. Per-tenant usage/quota counters
+are not migrated either; they re-accrete from zero under the new layout.
+
+Rollback is implicit: migrate-tenants never checkpoints or deletes the old
+`index.gob.collections.*` prefix, so a failed or unwanted migration leaves it
+exactly as it was. Start `deepdata serve` once you are satisfied, then delete
+the old prefix whenever you like.
+
 ## Canonical journal compatibility
 
 The candidate writes durable mutation envelope V2. It retains frozen replay
