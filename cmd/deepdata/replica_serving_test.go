@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,9 +16,11 @@ import (
 )
 
 // replicaDirectoryForTest produces a real replica directory the way an
-// operator does -- `deepdata replicate` against a running leader -- and
-// returns the index path a later `deepdata serve` would be pointed at, plus
-// the leader-minted document ID that must be readable through it.
+// operator does -- `deepdata replicate --tenant acme` against a running
+// leader with two tenants -- and returns the index path a later `deepdata
+// serve` would be pointed at, plus the leader-minted document ID that must be
+// readable through it. globex exists on the leader but is never replicated,
+// so it must come out unknown on the replica.
 //
 // It goes through the real Follower and a real socket rather than calling
 // MakeReplica by hand: the thing under test is whether a directory that was
@@ -28,14 +31,14 @@ func replicaDirectoryForTest(t *testing.T) (indexPath string, docID uint64) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	leaderBase := filepath.Join(dir, "leader.gob.collections")
-	leader, err := vcollection.OpenDurableStore(leaderBase, leaderBase)
+	leaderDir := filepath.Join(dir, "leader.gob.tenants")
+	leader, err := vcollection.OpenStoreSet(leaderDir, vcollection.StoreLimits{MaxTenants: 8, MaxCollections: 8})
 	if err != nil {
-		t.Fatalf("open leader store: %v", err)
+		t.Fatalf("open leader store set: %v", err)
 	}
 	defer func() {
 		if err := leader.Close(); err != nil {
-			t.Errorf("close leader store: %v", err)
+			t.Errorf("close leader store set: %v", err)
 		}
 	}()
 
@@ -48,18 +51,22 @@ func replicaDirectoryForTest(t *testing.T) (indexPath string, docID uint64) {
 			Index: vcollection.IndexConfig{Type: vcollection.IndexTypeFLAT},
 		}},
 	}
-	if _, err := leader.Tenants().CreateCollection(ctx, "acme", schema); err != nil {
-		t.Fatalf("create collection on leader: %v", err)
+	if _, err := leader.CreateCollection(ctx, "acme", schema); err != nil {
+		t.Fatalf("create collection for acme on leader: %v", err)
 	}
 	doc := vcollection.Document{
 		Vectors:  map[string]vcollection.Vector{"dense": vcollection.Vector{Dense: []float32{1, 0}}},
 		Metadata: map[string]interface{}{"origin": "leader"},
 	}
-	if err := leader.Tenants().AddDocument(ctx, "acme", "docs", &doc); err != nil {
+	if err := leader.AddDocument(ctx, "acme", "docs", &doc); err != nil {
 		t.Fatalf("insert on leader: %v", err)
 	}
+	if _, err := leader.CreateCollection(ctx, "globex", schema); err != nil {
+		t.Fatalf("create collection for globex on leader: %v", err)
+	}
 
-	node, err := replication.NewLeaderHandler(leader, replication.LeaderConfig{Token: "node-token", SpoolDir: dir})
+	node, err := replication.NewTenantLeaderHandler(replication.LeaderConfig{Token: "node-token", SpoolDir: dir},
+		leader.Tenants, func(id string) (replication.Source, bool) { return leader.Store(id) })
 	if err != nil {
 		t.Fatalf("build node surface: %v", err)
 	}
@@ -67,8 +74,12 @@ func replicaDirectoryForTest(t *testing.T) (indexPath string, docID uint64) {
 	defer srv.Close()
 
 	indexPath = filepath.Join(dir, "replica.gob")
-	base := indexPath + ".collections"
-	follower := &replication.Follower{LeaderURL: srv.URL, Token: "node-token"}
+	tenantDir := indexPath + ".tenants"
+	if err := os.MkdirAll(tenantDir, 0o750); err != nil {
+		t.Fatalf("create replica tenant store directory: %v", err)
+	}
+	base := filepath.Join(tenantDir, "acme")
+	follower := &replication.Follower{LeaderURL: srv.URL, Token: "node-token", Tenant: "acme"}
 	replica, err := follower.Open(ctx, base, base)
 	if err != nil {
 		t.Fatalf("sync replica directory: %v", err)
@@ -197,6 +208,12 @@ func TestServingAReplicaStillAnswersReads(t *testing.T) {
 
 	if resp := canonicalCall(t, handler, http.MethodGet, "/v3/tenants/acme/collections/docs", ""); resp.Code != http.StatusOK {
 		t.Errorf("collection info on a replica = %d: %s", resp.Code, resp.Body.String())
+	}
+
+	// globex exists on the leader but "replicate --tenant acme" only synced
+	// acme's tenant directory, so this replica never opened a store for it.
+	if resp := canonicalCall(t, handler, http.MethodGet, "/v3/tenants/globex/collections/docs", ""); resp.Code != http.StatusNotFound {
+		t.Errorf("unreplicated tenant globex on this replica = %d, want 404: %s", resp.Code, resp.Body.String())
 	}
 }
 

@@ -58,17 +58,14 @@ func storePath(t *testing.T, dir, name string) string {
 	return base
 }
 
-// serveLeader puts the node surface on a real HTTP server and returns a
-// follower pointed at it.
+// serveLeader puts the node surface on a real HTTP server, scoped to a
+// single tenant (the id is arbitrary -- NewLeaderHandler is gone, so every
+// bare-route test now speaks to a store through the per-tenant leader), and
+// returns a follower pointed at it.
 func serveLeader(t *testing.T, leader *vcollection.DurableStore) *Follower {
 	t.Helper()
-	handler, err := NewLeaderHandler(leader, LeaderConfig{Token: testToken, SpoolDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-	return &Follower{LeaderURL: srv.URL, Token: testToken}
+	srv := serveTenantLeader(t, map[string]*vcollection.DurableStore{"leader": leader})
+	return &Follower{LeaderURL: srv.URL, Token: testToken, Tenant: "leader"}
 }
 
 // The whole point of the transport, over a real socket: a replica materializes
@@ -280,58 +277,6 @@ func TestFollowerIsToldToResyncWhenTheLeaderDiscardedItsRecords(t *testing.T) {
 	}
 }
 
-// The node surface authorizes on its own credential. The snapshot route
-// exports every tenant in one request, so an unauthenticated caller -- and a
-// caller holding some other token -- must get nothing.
-func TestNodeSurfaceRefusesEveryCallerWithoutTheNodeToken(t *testing.T) {
-	dir := t.TempDir()
-	leader := openStore(t, dir, "leader")
-	t.Cleanup(func() { _ = leader.Close() })
-	handler, err := NewLeaderHandler(leader, LeaderConfig{Token: testToken, SpoolDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-
-	for _, route := range []string{"status", "snapshot", "journal"} {
-		for name, auth := range map[string]string{
-			"no header":    "",
-			"wrong token":  "Bearer some-tenant-api-token",
-			"empty bearer": "Bearer ",
-		} {
-			req, err := http.NewRequest(http.MethodGet, srv.URL+PathPrefix+route, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if auth != "" {
-				req.Header.Set("Authorization", auth)
-			}
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			if resp.StatusCode != http.StatusUnauthorized {
-				t.Errorf("%s %s = %d, want 401", route, name, resp.StatusCode)
-			}
-		}
-	}
-}
-
-// A leader with no node token configured must not build a handler at all.
-// Defaulting to "off" in the caller is one forgotten branch away from serving
-// every tenant's state to whoever can reach the port.
-func TestLeaderHandlerRefusesToBuildWithoutANodeToken(t *testing.T) {
-	dir := t.TempDir()
-	leader := openStore(t, dir, "leader")
-	t.Cleanup(func() { _ = leader.Close() })
-	if _, err := NewLeaderHandler(leader, LeaderConfig{}); err == nil {
-		t.Fatal("NewLeaderHandler succeeded with no token")
-	}
-}
-
 // A follower pointed at a leader it has not been syncing with must refuse
 // before applying a record, not interleave two histories.
 func TestFollowerRefusesAForeignLeader(t *testing.T) {
@@ -504,7 +449,7 @@ func TestWritesAfterALeaderRestartStillReachTheReplica(t *testing.T) {
 		h.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
-	follower := &Follower{LeaderURL: srv.URL, Token: testToken}
+	follower := &Follower{LeaderURL: srv.URL, Token: testToken, Tenant: "leader"}
 
 	base := storePath(t, dir, "replica")
 	replica, err := follower.Open(ctx, base, base)
@@ -675,7 +620,14 @@ func contentOf(store *vcollection.DurableStore, id uint64) string {
 
 func mustLeaderHandler(t *testing.T, store *vcollection.DurableStore) http.Handler {
 	t.Helper()
-	handler, err := NewLeaderHandler(store, LeaderConfig{Token: testToken, SpoolDir: t.TempDir()})
+	handler, err := NewTenantLeaderHandler(LeaderConfig{Token: testToken, SpoolDir: t.TempDir()},
+		func() []string { return []string{"leader"} },
+		func(id string) (Source, bool) {
+			if id != "leader" {
+				return nil, false
+			}
+			return store, true
+		})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -389,9 +389,15 @@ func restartCanonicalAfterSIGKILL(
 	return restarted
 }
 
+// tenantStoreBase is the on-disk base path one tenant's durable store owns
+// under the canonical StoreSet layout: dataDir/index.gob.tenants/<tenant>.
+func tenantStoreBase(dataDir, tenant string) string {
+	return filepath.Join(dataDir, "index.gob.tenants", tenant)
+}
+
 func canonicalSnapshotV2AppliedLSN(t *testing.T, dataDir string) uint64 {
 	t.Helper()
-	base := filepath.Join(dataDir, "index.gob.collections")
+	base := tenantStoreBase(dataDir, "acme")
 	f, err := os.Open(base + ".snapshot")
 	if err != nil {
 		t.Fatalf("open canonical snapshot: %v", err)
@@ -416,7 +422,7 @@ func canonicalSnapshotV2AppliedLSN(t *testing.T, dataDir string) uint64 {
 
 func assertCanonicalRecoveryRetainsWAL(t *testing.T, dataDir string) {
 	t.Helper()
-	base := filepath.Join(dataDir, "index.gob.collections")
+	base := tenantStoreBase(dataDir, "acme")
 	_ = canonicalSnapshotV2AppliedLSN(t, dataDir)
 	retained := false
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
@@ -445,7 +451,7 @@ func assertCanonicalSnapshotOnlyCheckpoint(t *testing.T, dataDir string, wantApp
 	if got := canonicalSnapshotV2AppliedLSN(t, dataDir); got != wantAppliedLSN {
 		t.Fatalf("canonical snapshot applied LSN = %d, want %d", got, wantAppliedLSN)
 	}
-	base := filepath.Join(dataDir, "index.gob.collections")
+	base := tenantStoreBase(dataDir, "acme")
 	for _, path := range []string{base + ".journal", base + ".journal.frozen"} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("snapshot-only checkpoint retained covered journal %s: %v", path, err)
@@ -593,7 +599,7 @@ func TestCanonicalHTTPAckSurvivesSIGKILLAndReleasesLifetimeLock(t *testing.T) {
 	process.terminate(t)
 	assertCanonicalSnapshotOnlyCheckpoint(t, dataDir, 6)
 
-	base := filepath.Join(dataDir, "index.gob.collections")
+	base := tenantStoreBase(dataDir, "acme")
 	store, err := vcollection.OpenDurableStore(base, base)
 	if err != nil {
 		t.Fatalf("graceful shutdown retained lifetime lock: %v", err)
@@ -796,7 +802,10 @@ func TestCanonicalGRPCAckSurvivesSIGKILL(t *testing.T) {
 	assertCanonicalSnapshotOnlyCheckpoint(t, dataDir, 6)
 }
 
-func TestCanonicalStartupRejectsCorruptCollectionJournalWithoutRewritingIt(t *testing.T) {
+// A corrupt journal isolates the one tenant that owns it: the StoreSet
+// records the open failure in its broken map and keeps serving every other
+// tenant, so canonical startup itself must succeed rather than exit.
+func TestCanonicalStartupIsolatesCorruptTenantJournal(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "state")
 	httpAddress := unusedLoopbackAddress(t)
 	grpcAddress := unusedLoopbackAddress(t)
@@ -804,26 +813,23 @@ func TestCanonicalStartupRejectsCorruptCollectionJournalWithoutRewritingIt(t *te
 	defer func() { process.stopIfRunning() }()
 	process.waitReady(t, httpAddress)
 
-	baseURL := "http://" + httpAddress + "/v3/tenants/acme/collections"
+	acmeURL := "http://" + httpAddress + "/v3/tenants/acme/collections"
+	globexURL := "http://" + httpAddress + "/v3/tenants/globex/collections"
 	schema := []byte(`{"name":"docs","fields":[{"name":"embedding","type":"dense","dim":2,"index":{"type":"flat"}}]}`)
-	response, body := canonicalJSONRequest(t, http.MethodPost, baseURL, schema)
-	if response.StatusCode != http.StatusCreated {
-		t.Fatalf("create returned %d: %s", response.StatusCode, body)
+	for _, baseURL := range []string{acmeURL, globexURL} {
+		response, body := canonicalJSONRequest(t, http.MethodPost, baseURL, schema)
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s returned %d: %s", baseURL, response.StatusCode, body)
+		}
 	}
 	document := []byte(`{"id":71,"vectors":{"embedding":[1,0]}}`)
-	response, body = canonicalJSONRequest(t, http.MethodPost, baseURL+"/docs/docs", document)
+	response, body := canonicalJSONRequest(t, http.MethodPost, acmeURL+"/docs/docs", document)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("insert returned %d: %s", response.StatusCode, body)
 	}
 	process.kill(t)
 
-	base := filepath.Join(dataDir, "index.gob.collections")
-	snapshotPath := base + ".snapshot"
-	snapshotBefore, err := os.ReadFile(snapshotPath)
-	if err != nil {
-		t.Fatalf("read initialized snapshot: %v", err)
-	}
-	journalPath := base + ".journal"
+	journalPath := tenantStoreBase(dataDir, "acme") + ".journal"
 	journal, err := os.ReadFile(journalPath)
 	if err != nil {
 		t.Fatal(err)
@@ -838,32 +844,40 @@ func TestCanonicalStartupRejectsCorruptCollectionJournalWithoutRewritingIt(t *te
 	}
 
 	process = startCanonicalTestProcess(t, dataDir, httpAddress, grpcAddress)
-	select {
-	case <-process.done:
-		if err := process.waitError(); err == nil {
-			t.Fatalf("corrupt-journal helper exited successfully\n%s", process.output.String())
-		}
-	case <-time.After(10 * time.Second):
-		_ = process.cmd.Process.Kill()
-		_ = process.waitError()
-		t.Fatalf("corrupt-journal helper did not fail startup\n%s", process.output.String())
+	process.waitReady(t, httpAddress)
+
+	response, body = canonicalJSONRequest(t, http.MethodGet, "http://"+httpAddress+"/readyz", nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("readyz with one isolated tenant fault = %d: %s", response.StatusCode, body)
 	}
-	if !strings.Contains(process.output.String(), "checksum mismatch") {
-		t.Fatalf("unexpected corrupt-journal startup error:\n%s", process.output.String())
+	var ready struct {
+		FaultedTenants []string `json:"faulted_tenants"`
 	}
+	if err := json.Unmarshal(body, &ready); err != nil {
+		t.Fatal(err)
+	}
+	if len(ready.FaultedTenants) != 1 || ready.FaultedTenants[0] != "acme" {
+		t.Fatalf("readyz faulted_tenants = %v, want [acme]", ready.FaultedTenants)
+	}
+
+	response, body = canonicalJSONRequest(t, http.MethodPost, acmeURL+"/docs/docs", document)
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("write to faulted tenant = %d, want 503: %s", response.StatusCode, body)
+	}
+
+	temporarySchema := []byte(`{"name":"docs2","fields":[{"name":"embedding","type":"dense","dim":2,"index":{"type":"flat"}}]}`)
+	response, body = canonicalJSONRequest(t, http.MethodPost, globexURL, temporarySchema)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create in healthy tenant = %d, want 201: %s", response.StatusCode, body)
+	}
+
+	process.terminate(t)
 	after, err := os.ReadFile(journalPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(after, corrupt) {
-		t.Fatal("canonical startup rewrote corrupt journal evidence")
-	}
-	snapshotAfter, err := os.ReadFile(snapshotPath)
-	if err != nil {
-		t.Fatalf("read snapshot after corrupt startup: %v", err)
-	}
-	if !bytes.Equal(snapshotAfter, snapshotBefore) {
-		t.Fatal("canonical startup rewrote the last valid snapshot after journal corruption")
+		t.Fatal("canonical startup rewrote the faulted tenant's corrupt journal evidence")
 	}
 }
 
@@ -903,7 +917,7 @@ func TestCanonicalStartupBindFailureReleasesLifetimeLock(t *testing.T) {
 	}
 	rebound.Close()
 
-	base := filepath.Join(dataDir, "index.gob.collections")
+	base := tenantStoreBase(dataDir, "acme")
 	store, err := vcollection.OpenDurableStore(base, base)
 	if err != nil {
 		t.Fatalf("listener startup failure retained lifetime lock: %v", err)
@@ -935,7 +949,7 @@ func TestCanonicalStartupRejectsSharedHTTPAndGRPCPort(t *testing.T) {
 		t.Fatalf("shared listener remained bound: %v", err)
 	}
 	rebound.Close()
-	base := filepath.Join(dataDir, "index.gob.collections")
+	base := tenantStoreBase(dataDir, "acme")
 	store, err := vcollection.OpenDurableStore(base, base)
 	if err != nil {
 		t.Fatalf("shared-port refusal retained lifetime lock: %v", err)
@@ -945,14 +959,21 @@ func TestCanonicalStartupRejectsSharedHTTPAndGRPCPort(t *testing.T) {
 	}
 }
 
+// A single-store layout (0.1: index.gob.collections.* directly, no
+// index.gob.tenants/ directory) is never migrated automatically -- canonical
+// startup refuses and points at the offline migration command, leaving every
+// byte of the existing store exactly as it found it.
 func TestCanonicalStartupRefusesLegacyV2StateWithoutRewritingIt(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "state")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	base := filepath.Join(dataDir, "index.gob.collections")
-	manager := vcollection.NewCollectionManager(base)
-	if _, err := manager.CreateCollection(context.Background(), vcollection.CollectionSchema{
+	store, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Tenants().CreateCollection(context.Background(), "tenant", vcollection.CollectionSchema{
 		Name: "legacy",
 		Fields: []vcollection.VectorField{{
 			Name: "embedding", Type: vcollection.VectorTypeDense, Dim: 2,
@@ -961,18 +982,17 @@ func TestCanonicalStartupRefusesLegacyV2StateWithoutRewritingIt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	metadata, err := vcollection.NewCollectionSnapshotMetadata()
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := filepath.Glob(base + ".*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := vcollection.SaveUnifiedCollectionSnapshot(
-		base, manager, vcollection.NewTenantManager(base), metadata,
-	); err != nil {
-		t.Fatal(err)
-	}
-	wantSnapshot, err := os.ReadFile(base + ".snapshot")
-	if err != nil {
-		t.Fatal(err)
+	before := make(map[string][32]byte, len(paths))
+	for _, path := range paths {
+		before[path] = testFileSHA256(t, path)
 	}
 
 	process := startCanonicalTestProcess(t, dataDir, "127.0.0.1:1", "127.0.0.1:2")
@@ -980,37 +1000,20 @@ func TestCanonicalStartupRefusesLegacyV2StateWithoutRewritingIt(t *testing.T) {
 	select {
 	case <-process.done:
 		if err := process.waitError(); err == nil {
-			t.Fatalf("legacy V2 helper exited successfully\n%s", process.output.String())
+			t.Fatalf("single-store helper exited successfully\n%s", process.output.String())
 		}
 	case <-time.After(10 * time.Second):
 		_ = process.cmd.Process.Kill()
 		_ = process.waitError()
-		t.Fatalf("legacy V2 helper did not exit\n%s", process.output.String())
+		t.Fatalf("single-store helper did not exit\n%s", process.output.String())
 	}
-	if !strings.Contains(process.output.String(), "legacy V2 collections") {
+	if !strings.Contains(process.output.String(), "migrate-tenants") {
 		t.Fatalf("helper failed for an unexpected reason:\n%s", process.output.String())
 	}
-	gotSnapshot, err := os.ReadFile(base + ".snapshot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(gotSnapshot, wantSnapshot) {
-		t.Fatal("canonical startup refusal rewrote legacy V2 snapshot")
-	}
-
-	store, err := vcollection.OpenDurableStore(base, base)
-	if err != nil {
-		t.Fatalf("legacy refusal retained lifetime lock: %v", err)
-	}
-	got, err := store.LegacyCollectionCount()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != 1 {
-		t.Fatalf("legacy snapshot collection count = %d, want 1", got)
-	}
-	if err := store.Abort(); err != nil {
-		t.Fatal(err)
+	for _, path := range paths {
+		if got := testFileSHA256(t, path); got != before[path] {
+			t.Fatalf("canonical startup refusal changed single-store artifact %s", path)
+		}
 	}
 }
 

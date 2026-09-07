@@ -33,7 +33,7 @@ const canonicalGRPCMaxReceiveBytes = 4 << 20
 // surface so a journal/apply fault cannot leave a read-only gRPC bypass alive.
 type CollectionGRPCServer struct {
 	deepdatav3.UnimplementedDeepDataServer
-	tenants           *vcollection.TenantManager
+	tenants           tenantAPI
 	persistenceHealth func() error
 	embedder          *serverEmbedder // process text embedder for `texts`; nil = none
 }
@@ -840,7 +840,7 @@ func tenantRecordFromProto(tenantID, status string, quota *deepdatav3.TenantQuot
 // server-admin-only and rare; upgrade path is a callback-based
 // TenantManager.UpdateTenant that merges under the store's own lock if that
 // ever changes.
-func mergeTenantUpdate(tenants *vcollection.TenantManager, tenantID, status string, quota *vcollection.TenantQuota) vcollection.TenantRecord {
+func mergeTenantUpdate(tenants tenantAPI, tenantID, status string, quota *vcollection.TenantQuota) vcollection.TenantRecord {
 	existing, ok := tenants.GetTenantRecord(tenantID)
 	rec := vcollection.TenantRecord{TenantID: tenantID}
 	switch {

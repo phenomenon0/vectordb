@@ -493,7 +493,7 @@ func TestCanonicalHTTPAcknowledgementSurvivesRestart(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("insert returned %d: %s", response.Code, response.Body.String())
 	}
-	journal := indexPath + ".collections.journal"
+	journal := filepath.Join(indexPath+".tenants", "acme") + ".journal"
 	if info, err := os.Stat(journal); err != nil || info.Size() == 0 {
 		t.Fatalf("acknowledged mutation not present in journal: info=%v err=%v", info, err)
 	}

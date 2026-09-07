@@ -37,8 +37,8 @@ func canonicalReplicationSurface(next http.Handler, collections *CollectionHTTPS
 	if token == "" {
 		return next, nil
 	}
-	store := collections.DurableStore()
-	if store == nil {
+	set := collections.Stores()
+	if set == nil {
 		// A memory-only process has no journal to stream. Failing here rather
 		// than serving an empty surface keeps a misconfigured leader from
 		// looking healthy to a follower that will never receive a record.
@@ -47,11 +47,11 @@ func canonicalReplicationSurface(next http.Handler, collections *CollectionHTTPS
 	// The spool sits beside the state it copies, so a snapshot transfer cannot
 	// succeed on a filesystem that has no room for the state itself.
 	spool := filepath.Dir(statePath)
-	node, err := replication.NewLeaderHandler(store, replication.LeaderConfig{
+	node, err := replication.NewTenantLeaderHandler(replication.LeaderConfig{
 		Token:    token,
 		SpoolDir: spool,
 		Logger:   log.New(replicationLogWriter{logger}, "", 0),
-	})
+	}, set.Tenants, func(id string) (replication.Source, bool) { return set.Store(id) })
 	if err != nil {
 		return nil, err
 	}
@@ -76,56 +76,72 @@ func (w replicationLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// bindReplicaReadOnly re-applies the replica binding a directory carries.
+// bindReplicaReadOnly re-applies the replica binding each tenant's directory
+// carries.
 //
 // DurableStore.IsReplica is in-memory, so a plain `deepdata serve` learns a
-// directory is a replica the only way it can: from the marker the follower
-// left beside the store. Serve calls this on every open, and there is no flag
-// to forget -- the data directory is the evidence.
+// tenant is a replica the only way it can: from the marker the follower left
+// beside its store. Serve calls this on every open, and there is no flag to
+// forget -- the data directory is the evidence.
 //
 // A marker that cannot be honored is a startup failure, never a shrug. Serving
-// the directory as an ordinary store is the one outcome that must not happen:
-// a single local write consumes the LSN the leader's next record needs and
+// a tenant as an ordinary store is the one outcome that must not happen: a
+// single local write consumes the LSN the leader's next record needs and
 // forks the two histories at the same position.
-func bindReplicaReadOnly(collections *CollectionHTTPServer, basePath string) error {
-	leaderID, isReplica, err := replication.ReplicaLeaderID(basePath)
-	if err != nil {
-		return err
-	}
-	if !isReplica {
+func bindReplicaReadOnly(collections *CollectionHTTPServer) error {
+	set := collections.Stores()
+	if set == nil {
 		return nil
 	}
-	store := collections.DurableStore()
-	if store == nil {
-		return fmt.Errorf("%q is a read replica of leader %x but this process has no durable store to serve it read-only", basePath, leaderID)
-	}
-	if err := store.MakeReplica(leaderID); err != nil {
-		return fmt.Errorf("serve %q read-only as a replica of leader %x: %w", basePath, leaderID, err)
+	for _, id := range set.Tenants() {
+		base := set.Base(id)
+		leaderID, isReplica, err := replication.ReplicaLeaderID(base)
+		if err != nil {
+			return err
+		}
+		if !isReplica {
+			continue
+		}
+		store, ok := set.Store(id)
+		if !ok {
+			return fmt.Errorf("tenant %q vanished while binding its replica marker", id)
+		}
+		if err := store.MakeReplica(leaderID); err != nil {
+			return fmt.Errorf("serve tenant %q read-only as a replica of leader %x: %w", id, leaderID, err)
+		}
 	}
 	return nil
 }
 
-// runReplicate is the `deepdata replicate` subcommand: keep a local replica
-// directory in step with a leader.
+// runReplicate is the `deepdata replicate` subcommand: keep a local tenant
+// directory in step with one tenant on a leader.
 //
-// It only syncs, and it holds the directory for as long as it does: the
-// collection store takes an exclusive lock, so a `deepdata serve` against the
-// same path is refused with "collection store is already open" while this
-// command runs. A replica directory is therefore either tailing its leader or
-// being served, never both at once, and switching between them means stopping
-// one process and starting the other. Serving it is a plain `deepdata serve`
-// against the same path: that process finds the replica marker, answers reads
-// normally, refuses every write with a 403, and reports read_only on /readyz so
-// a load balancer stops sending it writes.
+// It only syncs, and it holds the tenant directory for as long as it does:
+// the collection store takes an exclusive lock, so a `deepdata serve` against
+// the same tenant store directory is refused with "collection store is
+// already open" while this command runs. A replica directory is therefore
+// either tailing its leader or being served, never both at once, and
+// switching between them means stopping one process and starting the other.
+// Serving it is a plain `deepdata serve` against the parent tenant store
+// directory: that process finds the replica marker, answers this tenant's
+// reads normally, refuses its writes with a 403, and reports read_only on
+// /readyz so a load balancer stops sending it writes.
+//
+// --tenant is required in this step; a future step adds an all-tenants mode.
 func runReplicate(args []string, logger *logging.Logger) int {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	leaderURL := fs.String("leader", "", "leader base URL, e.g. http://leader.internal:8080")
+	tenant := fs.String("tenant", "", "tenant ID to replicate")
 	retry := fs.Duration("retry", 5*time.Second, "wait before reconnecting after the stream drops")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *leaderURL == "" {
 		fmt.Fprintln(os.Stderr, "replicate: --leader is required")
+		return 2
+	}
+	if *tenant == "" || !vcollection.ValidTenantID(*tenant) {
+		fmt.Fprintln(os.Stderr, "replicate: --tenant is required and must be a valid tenant ID")
 		return 2
 	}
 	// loadServerConfig's errs cover the serve surface (PORT, rate limits,
@@ -142,10 +158,10 @@ func runReplicate(args []string, logger *logging.Logger) int {
 		fmt.Fprintf(os.Stderr, "replicate: unknown mode: %s (valid: local)\n", cfg.mode)
 		return 2
 	}
-	// The same path the server would open, so a replica directory and the
-	// leader directory are configured identically and an operator can promote
-	// one by changing the subcommand, not the layout.
-	base := cfg.IndexPath + ".collections"
+	// The same directory layout the server would open, so a replica's tenant
+	// store directory and the leader's are configured identically and an
+	// operator can promote one by changing the subcommand, not the layout.
+	base := filepath.Join(cfg.IndexPath+".tenants", *tenant)
 	if err := os.MkdirAll(filepath.Dir(base), 0o750); err != nil {
 		logger.Error("cannot create the replica state directory", "path", filepath.Dir(base), "error", err)
 		return 1
@@ -153,45 +169,53 @@ func runReplicate(args []string, logger *logging.Logger) int {
 
 	// No whole-request timeout: a follow stream is open-ended by design, and a
 	// Client.Timeout would cut it at a fixed interval forever.
-	follower := &replication.Follower{LeaderURL: *leaderURL, Token: token, Client: &http.Client{}}
+	follower := &replication.Follower{LeaderURL: *leaderURL, Token: token, Tenant: *tenant, Client: &http.Client{}}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	return followTenant(ctx, follower, base, *retry, logger)
+}
+
+// followTenant opens base as a replica of follower's tenant and streams
+// records into it until ctx is canceled or the leader tells it to stop for
+// good, retrying transient drops every retry. Factored out so a future
+// all-tenants replicate mode can run it once per tenant.
+func followTenant(ctx context.Context, follower *replication.Follower, base string, retry time.Duration, logger *logging.Logger) int {
 	store, err := follower.Open(ctx, base, base)
 	if err != nil {
-		logger.Error("cannot open a replica of this leader", "path", base, "leader", *leaderURL, "error", err)
+		logger.Error("cannot open a replica of this leader", "path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "error", err)
 		return 1
 	}
 	defer func() {
 		if closeErr := store.Close(); closeErr != nil {
-			logger.Error("failed to close the replica store", "error", closeErr)
+			logger.Error("failed to close the replica store", "tenant", follower.Tenant, "error", closeErr)
 		}
 	}()
-	logger.Info("replica open", "path", base, "leader", *leaderURL, "applied_lsn", store.ReplicaCursor().LSN)
+	logger.Info("replica open", "path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "applied_lsn", store.ReplicaCursor().LSN)
 
 	for {
 		err := follower.Follow(ctx, store)
 		switch {
 		case ctx.Err() != nil:
-			logger.Info("replication stopped", "applied_lsn", store.ReplicaCursor().LSN)
+			logger.Info("replication stopped", "tenant", follower.Tenant, "applied_lsn", store.ReplicaCursor().LSN)
 			return 0
 		case errors.Is(err, replication.ErrResyncRequired):
 			// Deliberately terminal. Recovering means discarding this
 			// directory, and that is an operator's decision -- it may be the
 			// one a read fleet is serving from.
 			logger.Error("this replica is behind the leader's retained journal; discard the replica directory and start again to re-bootstrap",
-				"path", base, "applied_lsn", store.ReplicaCursor().LSN, "error", err)
+				"path", base, "tenant", follower.Tenant, "applied_lsn", store.ReplicaCursor().LSN, "error", err)
 			return 1
 		case errors.Is(err, vcollection.ErrJournalStoreMismatch):
-			logger.Error("this replica does not belong to that leader", "path", base, "leader", *leaderURL, "error", err)
+			logger.Error("this replica does not belong to that leader", "path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "error", err)
 			return 1
 		}
-		logger.Warn("replication stream dropped; reconnecting", "applied_lsn", store.ReplicaCursor().LSN, "retry_in", *retry, "error", err)
+		logger.Warn("replication stream dropped; reconnecting", "tenant", follower.Tenant, "applied_lsn", store.ReplicaCursor().LSN, "retry_in", retry, "error", err)
 		select {
 		case <-ctx.Done():
 			return 0
-		case <-time.After(*retry):
+		case <-time.After(retry):
 		}
 	}
 }

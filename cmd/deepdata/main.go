@@ -203,7 +203,7 @@ func openCanonicalStore(cfg *serverConfig, logger *logging.Logger) (rt *serverRu
 	// HTTP API with graceful shutdown
 	handler, collectionHTTP = newCanonicalHTTPHandler(rt, embedder, indexPath)
 	if err := collectionHTTP.PersistenceError(); err != nil {
-		logger.Error("refusing to start with unreadable collection persistence state", "path", indexPath+".collections", "error", err)
+		logger.Error("refusing to start with unreadable collection persistence state", "path", indexPath+".tenants", "error", err)
 		exitCode = 1
 		return
 	}
@@ -218,7 +218,7 @@ func openCanonicalStore(cfg *serverConfig, logger *logging.Logger) (rt *serverRu
 	}
 	if legacyCollectionCount != 0 {
 		logger.Error("refusing canonical startup with legacy V2 collections; migrate them into tenant-aware V3 collections first",
-			"path", indexPath+".collections", "legacy_collections", legacyCollectionCount)
+			"path", indexPath+".tenants", "legacy_collections", legacyCollectionCount)
 		if abortErr := collectionHTTP.Abort(); abortErr != nil {
 			logger.Error("failed to release collection store after migration refusal", "error", abortErr)
 		}

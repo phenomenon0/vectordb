@@ -53,22 +53,6 @@ type LeaderConfig struct {
 	Logger *log.Logger
 }
 
-// NewLeaderHandler builds the node surface over src.
-func NewLeaderHandler(src Source, cfg LeaderConfig) (http.Handler, error) {
-	if src == nil {
-		return nil, errors.New("replication leader needs a store")
-	}
-	if err := validateLeaderConfig(cfg); err != nil {
-		return nil, err
-	}
-	l := &leader{src: src, cfg: cfg}
-	mux := http.NewServeMux()
-	mux.HandleFunc(PathPrefix+"status", authed(cfg, l.status))
-	mux.HandleFunc(PathPrefix+"snapshot", authed(cfg, l.snapshot))
-	mux.HandleFunc(PathPrefix+"journal", authed(cfg, l.journal))
-	return mux, nil
-}
-
 // NewTenantLeaderHandler builds the node surface over one store per tenant.
 // tenants lists the currently known tenant IDs; source resolves one of them
 // to its Source, or reports it unknown. Both are called per request, so a

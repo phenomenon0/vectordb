@@ -438,9 +438,24 @@ func TestStatusDescribesTheServerFromTheContract(t *testing.T) {
 // ranking hint, not data — while telling an operator, through the contract
 // surface and not just a log line, that the hints are gone (CTL-05).
 func TestStatusReportsDiscardedUsageSidecar(t *testing.T) {
-	indexPath := filepath.Join(t.TempDir(), "index.gob")
-	sidecar := indexPath + ".collections.usage.json"
-	if err := os.WriteFile(sidecar, []byte("{not json"), 0o600); err != nil {
+	dataDir := t.TempDir()
+	indexPath := filepath.Join(dataDir, "index.gob")
+	// acme must already be a known tenant (an .initialized marker) before the
+	// server boots: OpenStoreSet only eagerly opens tenants it already knows
+	// about, and only an eager open discovers and discards a corrupt sidecar
+	// at startup.
+	base := tenantStoreBase(dataDir, "acme")
+	if err := os.MkdirAll(filepath.Dir(base), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(base+".usage.json", []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	handler := newCanonicalSurfaceTestHandlerAt(t, indexPath)

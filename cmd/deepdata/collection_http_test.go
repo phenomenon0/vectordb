@@ -21,9 +21,10 @@ func testFileSHA256(t *testing.T, path string) [sha256.Size]byte {
 	return sha256.Sum256(data)
 }
 
-func TestCollectionHTTPServerLoadDurableRefusesRawLegacyV2WithoutMutation(t *testing.T) {
+func TestDetectStoreLayoutRefusesRawLegacyV2WithoutMutation(t *testing.T) {
 	dir := t.TempDir()
-	basePath := filepath.Join(dir, "index.gob.collections")
+	indexPath := filepath.Join(dir, "index.gob")
+	basePath := indexPath + ".collections"
 	manager := vcollection.NewCollectionManager(basePath)
 	if _, err := manager.CreateCollection(context.Background(), vcollection.CollectionSchema{
 		Name: "legacy",
@@ -57,12 +58,8 @@ func TestCollectionHTTPServerLoadDurableRefusesRawLegacyV2WithoutMutation(t *tes
 		before[path] = testFileSHA256(t, path)
 	}
 
-	server := NewCollectionHTTPServer(basePath)
-	if err := server.LoadDurable(basePath); err == nil || !strings.Contains(err.Error(), "explicit offline migration") {
-		t.Fatalf("raw legacy durable load error = %v", err)
-	}
-	if server.durableStore != nil {
-		t.Fatal("raw legacy refusal opened a durable store")
+	if err := detectStoreLayout(indexPath); err == nil || !strings.Contains(err.Error(), "explicit offline migration") {
+		t.Fatalf("raw legacy layout detection error = %v", err)
 	}
 	for _, path := range rawPaths {
 		if got := testFileSHA256(t, path); got != before[path] {
@@ -119,7 +116,11 @@ func TestCollectionHTTPServerLoadIsAllOrNothing(t *testing.T) {
 	if !live.manager.HasCollection("keep") || live.manager.CollectionCount() != 1 {
 		t.Fatalf("failed aggregate load changed V2 manager: %v", live.manager.ListCollections())
 	}
-	if got := live.tenantManager.ListTenants(); len(got) != 1 || got[0] != "keep-tenant" {
+	liveTenants, ok := live.tenantManager.(*vcollection.TenantManager)
+	if !ok {
+		t.Fatalf("expected an in-memory tenant manager, got %T", live.tenantManager)
+	}
+	if got := liveTenants.ListTenants(); len(got) != 1 || got[0] != "keep-tenant" {
 		t.Fatalf("failed aggregate load changed V3 tenants: %v", got)
 	}
 }

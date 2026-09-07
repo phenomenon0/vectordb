@@ -38,7 +38,7 @@ var canonicalFilterOperators = []string{
 // limits from the Max* consts and the rate-limit environment, the
 // embedding block from the process embedder — so nothing here can drift
 // from the server that answers.
-func statusPayload(embedder *serverEmbedder, limits limitConfig, usageLoaded, readOnly bool, requestID string) (map[string]any, error) {
+func statusPayload(embedder *serverEmbedder, limits limitConfig, usageLoaded, readOnly bool, faultedTenants []string, requestID string) (map[string]any, error) {
 	ops, err := contract.Operations()
 	if err != nil {
 		return nil, err
@@ -129,9 +129,12 @@ func statusPayload(embedder *serverEmbedder, limits limitConfig, usageLoaded, re
 		// usage.loaded is false only when a usage sidecar existed and was
 		// discarded, so an operator reading false knows ranking hints were
 		// lost and searches answer by similarity alone until they accrete
-		// again (CTL-05).
+		// again (CTL-05). tenants.faulted names tenants isolated by a
+		// per-tenant open fault (see /readyz's faulted_tenants); the process
+		// itself is still ready and serves every other tenant.
 		"signals": map[string]any{
-			"usage": map[string]any{"loaded": usageLoaded},
+			"usage":   map[string]any{"loaded": usageLoaded},
+			"tenants": map[string]any{"faulted": faultedTenants},
 		},
 		"request_id": requestID,
 	}, nil

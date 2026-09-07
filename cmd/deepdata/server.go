@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -151,14 +152,19 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 		var embedder *serverEmbedder
 		usageLoaded := true
 		readOnly := false
+		faultedTenants := []string{}
 		if collectionHTTP != nil {
 			embedder = collectionHTTP.embedder
 			usageLoaded = collectionHTTP.UsageLoaded()
-			if store := collectionHTTP.DurableStore(); store != nil {
-				readOnly = store.IsReplica()
+			if set := collectionHTTP.Stores(); set != nil {
+				readOnly = set.IsReplica()
+				for id := range set.FaultedTenants() {
+					faultedTenants = append(faultedTenants, id)
+				}
+				sort.Strings(faultedTenants)
 			}
 		}
-		payload, err := statusPayload(embedder, rt.limits, usageLoaded, readOnly, requestIDFromContext(r.Context()))
+		payload, err := statusPayload(embedder, rt.limits, usageLoaded, readOnly, faultedTenants, requestIDFromContext(r.Context()))
 		if err != nil {
 			apierror.WriteHTTP(w, apierror.New(apierror.CodeInternal, "status unavailable"))
 			return
@@ -182,21 +188,31 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 			durable  bool
 			readOnly bool
 			err      error
+			faulted  []string
 		}
 		health := make(chan canonicalHealth, 1)
 		go func() {
 			if collectionHTTP == nil {
-				health <- canonicalHealth{}
+				health <- canonicalHealth{faulted: []string{}}
 				return
 			}
 			durable := collectionHTTP.IsDurable()
 			var err error
 			var readOnly bool
+			faulted := []string{}
 			if durable {
 				err = collectionHTTP.PersistenceError()
-				readOnly = collectionHTTP.DurableStore().IsReplica()
+				set := collectionHTTP.Stores()
+				readOnly = set.IsReplica()
+				// A per-tenant open fault isolates that tenant, not the
+				// process: everyone else keeps serving, so this is surfaced
+				// here rather than folded into err/issues below.
+				for id := range set.FaultedTenants() {
+					faulted = append(faulted, id)
+				}
+				sort.Strings(faulted)
 			}
-			health <- canonicalHealth{durable: durable, readOnly: readOnly, err: err}
+			health <- canonicalHealth{durable: durable, readOnly: readOnly, err: err, faulted: faulted}
 		}()
 		var state canonicalHealth
 		select {
@@ -222,9 +238,10 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 				// so it stays 200 and stays in the pool. read_only is how
 				// it declines writes to a load balancer that would
 				// otherwise treat every ready backend as interchangeable.
-				"read_only": state.readOnly,
-				"embedder":  collectionHTTP.embedder.Label(),
-				"version":   releaseinfo.Version(),
+				"read_only":       state.readOnly,
+				"faulted_tenants": state.faulted,
+				"embedder":        collectionHTTP.embedder.Label(),
+				"version":         releaseinfo.Version(),
 			})
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -233,28 +250,32 @@ func newCanonicalHTTPHandler(rt *serverRuntime, embedder Embedder, indexPath str
 	})
 
 	// Multi-vector collection API (v2) - hybrid search with dense + sparse vectors.
-	collectionBasePath := ""
+	collectionDir := ""
 	if indexPath != "" {
-		collectionBasePath = indexPath + ".collections"
+		collectionDir = indexPath + ".tenants"
 	}
-	collectionHTTP = NewCollectionHTTPServer(collectionBasePath)
+	collectionHTTP = NewCollectionHTTPServer(collectionDir)
 	collectionHTTP.embedder, _ = embedder.(*serverEmbedder)
-	if collectionBasePath != "" {
-		err := collectionHTTP.LoadDurableWithLimits(collectionBasePath, vcollection.StoreLimits{
-			MaxTenants:           rt.limits.MaxTenants,
-			MaxCollections:       rt.limits.MaxCollections,
-			MaxTenantDocuments:   rt.limits.MaxTenantDocuments,
-			MaxTenantBytes:       rt.limits.MaxTenantBytes,
-			MaxTenantCollections: rt.limits.MaxTenantCollections,
-		})
-		if err != nil {
-			collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
+	if collectionDir != "" {
+		if err := detectStoreLayout(indexPath); err != nil {
+			collectionHTTP.setPersistenceError(err)
 		} else {
-			// Before a single route is registered: a replica directory that
-			// came up unbound would take one local write and fork its history
-			// from the leader's at the same LSN.
-			if err := bindReplicaReadOnly(collectionHTTP, collectionBasePath); err != nil {
-				collectionHTTP.setPersistenceError(err)
+			err := collectionHTTP.LoadStoreSet(collectionDir, vcollection.StoreLimits{
+				MaxTenants:           rt.limits.MaxTenants,
+				MaxCollections:       rt.limits.MaxCollections,
+				MaxTenantDocuments:   rt.limits.MaxTenantDocuments,
+				MaxTenantBytes:       rt.limits.MaxTenantBytes,
+				MaxTenantCollections: rt.limits.MaxTenantCollections,
+			})
+			if err != nil {
+				collectionHTTP.setPersistenceError(fmt.Errorf("load collection state: %w", err))
+			} else {
+				// Before a single route is registered: a replica tenant that
+				// came up unbound would take one local write and fork its
+				// history from the leader's at the same LSN.
+				if err := bindReplicaReadOnly(collectionHTTP); err != nil {
+					collectionHTTP.setPersistenceError(err)
+				}
 			}
 		}
 	}

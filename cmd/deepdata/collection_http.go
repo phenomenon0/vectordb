@@ -2,13 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,16 +107,43 @@ type searchRequestRaw struct {
 	GraphWeight    float32                         `json:"graph_weight,omitempty"`
 }
 
+// tenantAPI is exactly the surface both a *vcollection.TenantManager
+// (memory-only runs) and a *vcollection.StoreSet (canonical, one durable
+// store per tenant) provide. Every tenant handler in this file is written
+// against it so it does not care which one backs the running server.
+type tenantAPI interface {
+	GetTenantStats(tenantID string) (*vcollection.TenantStats, error)
+	GetTenantInfo(tenantID string) (vcollection.TenantInfo, error)
+	ListTenantInfos() ([]vcollection.TenantInfo, error)
+	CreateTenant(ctx context.Context, rec vcollection.TenantRecord) error
+	UpdateTenant(ctx context.Context, rec vcollection.TenantRecord) error
+	DeleteTenant(ctx context.Context, tenantID string) error
+	GetTenantRecord(tenantID string) (vcollection.TenantRecord, bool)
+	CreateCollection(ctx context.Context, tenantID string, schema vcollection.CollectionSchema) (*vcollection.Collection, error)
+	ListCollectionInfosChecked(tenantID string) ([]vcollection.CollectionInfo, error)
+	GetCollectionInfo(tenantID, collectionName string) (*vcollection.CollectionInfo, error)
+	DeleteCollection(ctx context.Context, tenantID, collectionName string) error
+	AddDocument(ctx context.Context, tenantID, collectionName string, doc *vcollection.Document) error
+	DeleteDocument(ctx context.Context, tenantID, collectionName string, docID uint64) error
+	UpsertDocument(ctx context.Context, tenantID, collectionName string, doc *vcollection.Document) error
+	GetDocument(tenantID, collectionName string, docID uint64) (*vcollection.Document, bool)
+	GetDocumentChecked(tenantID, collectionName string, docID uint64) (*vcollection.Document, error)
+	BatchAddDocuments(ctx context.Context, tenantID, collectionName string, docs []vcollection.Document) error
+	SearchCollection(ctx context.Context, tenantID string, req vcollection.SearchRequest) (*vcollection.SearchResponse, error)
+}
+
+var _ tenantAPI = (*vcollection.StoreSet)(nil)
+var _ tenantAPI = (*vcollection.TenantManager)(nil)
+
 // CollectionHTTPServer wraps CollectionManager for HTTP API access
 type CollectionHTTPServer struct {
 	manager       *vcollection.CollectionManager
-	tenantManager *vcollection.TenantManager // Multi-tenant collection manager
-	graphIndex    *graph.GraphIndex          // Optional GraphRAG index for graph-boosted search
-	durableStore  *vcollection.DurableStore  // canonical Linux persistence boundary
-	embedder      *serverEmbedder            // process text embedder for `texts`; nil = none
+	tenantManager tenantAPI             // Multi-tenant collection manager
+	graphIndex    *graph.GraphIndex     // Optional GraphRAG index for graph-boosted search
+	stores        *vcollection.StoreSet // canonical Linux persistence boundary: one durable store per tenant
+	embedder      *serverEmbedder       // process text embedder for `texts`; nil = none
 
 	persistenceMu       sync.Mutex
-	snapshotMetadata    vcollection.CollectionSnapshotMetadata
 	persistenceErr      error
 	collectionStorePath string
 }
@@ -135,87 +162,45 @@ func NewCollectionHTTPServer(storagePath string) *CollectionHTTPServer {
 func (s *CollectionHTTPServer) Load(basePath string) error {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
-	if s.durableStore != nil {
+	if s.stores != nil {
 		return errors.New("cannot legacy-load over an open durable collection store")
 	}
 	if basePath == "" {
 		return nil
 	}
-	manager, tenants, metadata, err := vcollection.OpenUnifiedCollectionSnapshot(basePath, s.collectionStorePath)
+	manager, tenants, _, err := vcollection.OpenUnifiedCollectionSnapshot(basePath, s.collectionStorePath)
 	if err != nil {
 		s.persistenceErr = err
 		return err
 	}
 	s.manager = manager
 	s.tenantManager = tenants
-	s.snapshotMetadata = metadata
 	s.collectionStorePath = basePath
 	s.persistenceErr = nil
 	return nil
 }
 
-// LoadDurable opens the canonical Linux-only journaled store. Retained for
-// collection_http_test.go coverage.
-func (s *CollectionHTTPServer) LoadDurable(basePath string) error {
-	return s.loadDurable(basePath, nil)
-}
-
-// LoadDurableWithLimits opens the canonical store with shared HTTP/gRPC
-// admission limits for new tenants and collections.
-func (s *CollectionHTTPServer) LoadDurableWithLimits(basePath string, limits vcollection.StoreLimits) error {
-	return s.loadDurable(basePath, &limits)
-}
-
-func (s *CollectionHTTPServer) loadDurable(basePath string, limits *vcollection.StoreLimits) error {
+// LoadStoreSet opens dir as a StoreSet: one durable, journaled store per
+// tenant. dir is the tenant store directory (indexPath+".tenants"), not a
+// base-path-with-suffixes like the single-store layout it replaces.
+func (s *CollectionHTTPServer) LoadStoreSet(dir string, limits vcollection.StoreLimits) error {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
-	if basePath == "" {
+	if dir == "" {
 		return errors.New("durable collection store path cannot be empty")
 	}
-	if s.durableStore != nil {
+	if s.stores != nil {
 		return errors.New("durable collection store is already open")
 	}
-	legacyArtifacts, err := existingLegacyV2CollectionArtifacts(basePath)
+	set, err := vcollection.OpenStoreSet(dir, limits)
 	if err != nil {
 		s.persistenceErr = err
 		return err
 	}
-	if len(legacyArtifacts) > 0 {
-		err := fmt.Errorf(
-			"legacy V2 collection persistence requires an explicit offline migration before canonical startup: %v",
-			legacyArtifacts,
-		)
-		s.persistenceErr = err
-		return err
-	}
-	var store *vcollection.DurableStore
-	if limits == nil {
-		store, err = vcollection.OpenDurableStore(basePath, s.collectionStorePath)
-	} else {
-		store, err = vcollection.OpenDurableStoreWithLimits(basePath, s.collectionStorePath, *limits)
-	}
-	if err != nil {
-		s.persistenceErr = err
-		return err
-	}
-	s.durableStore = store
-	s.tenantManager = store.Tenants()
-	s.snapshotMetadata = store.Metadata()
-	s.collectionStorePath = basePath
+	s.stores = set
+	s.tenantManager = set
 	s.persistenceErr = nil
 	return nil
-}
-
-func existingLegacyV2CollectionArtifacts(basePath string) ([]string, error) {
-	artifacts := make([]string, 0, 2)
-	for _, path := range []string{basePath + ".manager", basePath + ".tenants"} {
-		if _, err := os.Lstat(path); err == nil {
-			artifacts = append(artifacts, path)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("inspect legacy V2 collection artifact %q: %w", path, err)
-		}
-	}
-	return artifacts, nil
 }
 
 func (s *CollectionHTTPServer) setPersistenceError(err error) {
@@ -229,26 +214,26 @@ func (s *CollectionHTTPServer) setPersistenceError(err error) {
 func (s *CollectionHTTPServer) PersistenceError() error {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
-	if s.persistenceErr == nil && s.durableStore != nil {
-		return s.durableStore.Err()
+	if s.persistenceErr == nil && s.stores != nil {
+		return s.stores.Err()
 	}
 	return s.persistenceErr
 }
 
-// DurableStore is the canonical store, or nil for a memory-only run. It is the
-// replication leader's source; nothing else outside this file should reach past
-// the accessors above for it.
-func (s *CollectionHTTPServer) DurableStore() *vcollection.DurableStore {
+// Stores is the canonical per-tenant store set, or nil for a memory-only run.
+// It is the replication leader's source; nothing else outside this file
+// should reach past the accessors above for it.
+func (s *CollectionHTTPServer) Stores() *vcollection.StoreSet {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
-	return s.durableStore
+	return s.stores
 }
 
 // IsDurable reports whether the canonical journal and lifetime lock opened.
 func (s *CollectionHTTPServer) IsDurable() bool {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
-	return s.durableStore != nil
+	return s.stores != nil
 }
 
 // UsageLoaded reports whether the class B usage records this server opened
@@ -258,10 +243,10 @@ func (s *CollectionHTTPServer) IsDurable() bool {
 func (s *CollectionHTTPServer) UsageLoaded() bool {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
-	if s.durableStore == nil {
+	if s.stores == nil {
 		return true
 	}
-	return s.durableStore.UsageLoaded()
+	return s.stores.UsageLoaded()
 }
 
 // Close checkpoints and releases the lifetime lock for a durable store. It is
@@ -269,10 +254,10 @@ func (s *CollectionHTTPServer) UsageLoaded() bool {
 func (s *CollectionHTTPServer) Close() error {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
-	if s.durableStore == nil {
+	if s.stores == nil {
 		return nil
 	}
-	if err := s.durableStore.Close(); err != nil {
+	if err := s.stores.Close(); err != nil {
 		s.persistenceErr = err
 		return err
 	}
@@ -285,10 +270,10 @@ func (s *CollectionHTTPServer) Close() error {
 func (s *CollectionHTTPServer) Abort() error {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
-	if s.durableStore == nil {
+	if s.stores == nil {
 		return nil
 	}
-	if err := s.durableStore.Abort(); err != nil {
+	if err := s.stores.Abort(); err != nil {
 		s.persistenceErr = err
 		return err
 	}
@@ -302,15 +287,15 @@ func (s *CollectionHTTPServer) Abort() error {
 func (s *CollectionHTTPServer) LegacyCollectionCount() (int, error) {
 	s.persistenceMu.Lock()
 	defer s.persistenceMu.Unlock()
-	if s.durableStore != nil {
-		return s.durableStore.LegacyCollectionCount()
+	if s.stores != nil {
+		return s.stores.LegacyCollectionCount()
 	}
 	return s.manager.CollectionCount(), nil
 }
 
-// TenantManager returns the canonical tenant-aware manager shared by V3 HTTP
+// TenantManager returns the canonical tenant-aware surface shared by V3 HTTP
 // and gRPC in the production RC.
-func (s *CollectionHTTPServer) TenantManager() *vcollection.TenantManager {
+func (s *CollectionHTTPServer) TenantManager() tenantAPI {
 	return s.tenantManager
 }
 

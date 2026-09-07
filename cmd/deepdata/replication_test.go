@@ -108,7 +108,7 @@ func TestClientCredentialsCannotReachTheNodeSurface(t *testing.T) {
 // surface would look healthy to a follower that will never receive a record,
 // so the configuration is refused at startup instead.
 func TestReplicationRefusesToStartWithoutADurableStore(t *testing.T) {
-	collections := NewCollectionHTTPServer(filepath.Join(t.TempDir(), "index.gob.collections"))
+	collections := NewCollectionHTTPServer(filepath.Join(t.TempDir(), "index.gob.tenants"))
 	if _, err := canonicalReplicationSurface(http.NotFoundHandler(), collections, "index.gob", "node-token-distinct-from-the-client-one", logging.Default()); err == nil {
 		t.Fatal("replication mounted on a process with no durable store")
 	}
@@ -125,7 +125,7 @@ func TestRunReplicateValidatesOnlyWhatItReads(t *testing.T) {
 		t.Setenv("VECTORDB_MODE", "bogus")
 		var rc int
 		stderr := captureStderr(t, func() {
-			rc = runReplicate([]string{"--leader", "http://leader.example"}, logging.Default())
+			rc = runReplicate([]string{"--leader", "http://leader.example", "--tenant", "acme"}, logging.Default())
 		})
 		if rc != 2 {
 			t.Fatalf("rc = %d, want 2", rc)
@@ -140,7 +140,7 @@ func TestRunReplicateValidatesOnlyWhatItReads(t *testing.T) {
 		t.Setenv("DEEPDATA_EMBED_DIM", "not-a-number")
 		var rc int
 		stderr := captureStderr(t, func() {
-			rc = runReplicate([]string{"--leader", "http://leader.example"}, logging.Default())
+			rc = runReplicate([]string{"--leader", "http://leader.example", "--tenant", "acme"}, logging.Default())
 		})
 		if rc != 2 {
 			t.Fatalf("rc = %d, want 2 (missing replication token, not a config rejection)", rc)
