@@ -265,17 +265,12 @@ func (f *Follower) Bind(ctx context.Context, store *vcollection.DurableStore, ba
 	}
 	// The same fencing Follow() applies to every record stream, checked here
 	// too: a restart can point this same directory at a leader reporting an
-	// epoch older than the sidecar already on disk -- a promotion elsewhere
-	// moved this replica's epoch ahead, or this store was itself promoted and
-	// the old leader was never told. StoreID survives promotion unchanged, so
-	// only the epoch catches this. Binding anyway would clobber the sidecar
-	// back down and silently resume following a leader that was demoted.
-	local, err := ReadEpoch(basePath)
-	if err != nil {
+	// epoch older than the sidecar already on disk (this store or another
+	// replica was promoted and the old leader was never told), or at a leader
+	// whose new epoch started before records this store already holds.
+	// StoreID survives promotion unchanged, so only the epoch catches either.
+	if err := fenceEpoch(basePath, store.Metadata().AppliedLSN, status.Epoch, status.EpochStartLSN); err != nil {
 		return err
-	}
-	if status.Epoch < local.Number {
-		return ErrStaleLeader
 	}
 	// MakeReplica before anything else can write: an unmarked store would
 	// accept a local write, consume the LSN the leader's next record needs, and
@@ -283,15 +278,34 @@ func (f *Follower) Bind(ctx context.Context, store *vcollection.DurableStore, ba
 	if err := store.MakeReplica(leaderID); err != nil {
 		return fmt.Errorf("bind replica to leader %x: %w", leaderID, err)
 	}
-	// Keeps the sidecar aligned on every Bind, not just a fresh Seed -- a
-	// directory that got store artifacts without ever writing an epoch
-	// sidecar (crash between bootstrap and WriteEpoch) would otherwise stay
-	// permanently unfenced, since MarkReplica already self-heals here but
-	// nothing else ever revisits the sidecar.
-	if err := WriteEpoch(basePath, Epoch{Number: status.Epoch, StartLSN: status.EpochStartLSN}); err != nil {
+	return MarkReplica(basePath, leaderID)
+}
+
+// fenceEpoch applies the epoch rules to one leader report -- Bind's /status
+// answer or Follow's stream preamble -- against the sidecar on disk:
+//
+//   - the leader's epoch is older: it was demoted; ErrStaleLeader, nothing adopted;
+//   - the leader's epoch is newer and this replica holds records past the LSN
+//     that epoch started at: those records belong to a history the new epoch
+//     does not extend; ErrResyncRequired, nothing adopted;
+//   - the leader's epoch is newer and every local record is at or before the
+//     start: the sidecar adopts it and the stream continues;
+//   - equal: nothing to do (an absent sidecar reads as epoch 0).
+func fenceEpoch(basePath string, cursorLSN, leaderEpoch, leaderStart uint64) error {
+	local, err := ReadEpoch(basePath)
+	if err != nil {
 		return err
 	}
-	return MarkReplica(basePath, leaderID)
+	switch {
+	case leaderEpoch < local.Number:
+		return ErrStaleLeader
+	case leaderEpoch > local.Number:
+		if cursorLSN > leaderStart {
+			return fmt.Errorf("%w: replica at LSN %d is past the leader's epoch %d start at LSN %d", ErrResyncRequired, cursorLSN, leaderEpoch, leaderStart)
+		}
+		return WriteEpoch(basePath, Epoch{Number: leaderEpoch, StartLSN: leaderStart})
+	}
+	return nil
 }
 
 // markOrAbort persists the replica binding, or gives the directory up. It is
@@ -377,24 +391,10 @@ func (f *Follower) Follow(ctx context.Context, store *vcollection.DurableStore, 
 	if pre.StoreID != cursor.StoreID {
 		return fmt.Errorf("%w: stream is from store %x, replica follows %x", vcollection.ErrJournalStoreMismatch, pre.StoreID, cursor.StoreID)
 	}
-	local, err := ReadEpoch(basePath)
-	if err != nil {
+	// Checked again on every stream, not only at Bind: a promotion can happen
+	// while this replica is between streams.
+	if err := fenceEpoch(basePath, cursor.LSN, pre.Epoch, pre.EpochStartLSN); err != nil {
 		return err
-	}
-	switch {
-	case pre.Epoch < local.Number:
-		// This leader was demoted; a promotion elsewhere already moved this
-		// replica's epoch ahead of it. Nothing from this stream is applied.
-		return ErrStaleLeader
-	case pre.Epoch > local.Number:
-		if cursor.LSN > pre.EpochStartLSN {
-			// This replica already has records from a history the new epoch
-			// does not extend -- adopting it here would silently fork.
-			return fmt.Errorf("%w: replica at LSN %d is past the leader's epoch %d start at LSN %d", ErrResyncRequired, cursor.LSN, pre.Epoch, pre.EpochStartLSN)
-		}
-		if err := WriteEpoch(basePath, Epoch{Number: pre.Epoch, StartLSN: pre.EpochStartLSN}); err != nil {
-			return err
-		}
 	}
 	if f.OnPreamble != nil {
 		f.OnPreamble(pre)

@@ -345,14 +345,14 @@ func TestPromoteFencesTheOldLeaderButNotAReplicaThatNeverPassedTheLSN(t *testing
 		t.Fatalf("reopen old leader's acme store: %v", err)
 	}
 	defer func() { _ = oldStore.Abort() }()
+	// Bind is the first place the epoch is compared, so the refusal lands
+	// before the store is even marked a replica; Follow never runs.
 	oldFollowing := &replication.Follower{LeaderURL: newSrv.URL, Token: "new-token", Tenant: "acme"}
-	if err := oldFollowing.Bind(ctx, oldStore, oldBase); err != nil {
-		t.Fatalf("bind demoted leader to the new one: %v", err)
+	if err := oldFollowing.Bind(ctx, oldStore, oldBase); !errors.Is(err, replication.ErrResyncRequired) {
+		t.Fatalf("demoted leader past the promotion point Bind = %v, want ErrResyncRequired", err)
 	}
-	bindCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := oldFollowing.Follow(bindCtx, oldStore, oldBase); !errors.Is(err, replication.ErrResyncRequired) {
-		t.Fatalf("demoted leader past the promotion point Follow = %v, want ErrResyncRequired", err)
+	if oldStore.IsReplica() {
+		t.Fatal("a refused Bind must leave the demoted leader's store unmarked")
 	}
 
 	// The lagging replica never wrote past the promotion LSN, so it adopts

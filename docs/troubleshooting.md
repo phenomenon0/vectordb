@@ -200,8 +200,13 @@ again, no operator action needed. `stopped` is terminal and is an operator
 decision: check the tenant's `error` field. A resync-required or
 store-mismatch error means this tenant's local copy can never catch up as
 it stands -- stop the standby, remove that tenant's files under the tenants
-directory, and start the standby again to re-seed it from the leader. Every
-other tenant keeps following normally while one is stopped.
+directory, and start the standby again to re-seed it from the leader. A
+stale-leader error means this directory's epoch is already ahead of the
+leader it was pointed at: that leader was demoted, or this directory was
+promoted and is being run as a standby by mistake. Do not remove anything;
+point `DEEPDATA_LEADER_URL` at the current leader, or serve the directory
+without it if it is the leader. Every other tenant keeps following normally
+while one is stopped.
 
 ### Promote a standby by hand
 

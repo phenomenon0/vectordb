@@ -626,6 +626,62 @@ func TestBindRefusesALeaderReportingAnOlderEpoch(t *testing.T) {
 	}
 }
 
+// The other half of the fence at Bind: a leader whose new epoch started
+// before records this store already holds. Bind used to adopt the epoch here
+// and leave Follow to compare equal epochs and stream on top of a history
+// the new leader never had -- a silent fork on every restart of a standby
+// that ran past the promotion point.
+func TestBindRefusesAHigherEpochPastItsStart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	leader := openStore(t, dir, "leader")
+	t.Cleanup(func() { _ = leader.Close() })
+	if _, err := leader.Tenants().CreateCollection(ctx, "tenant-a", testSchema("docs")); err != nil {
+		t.Fatal(err)
+	}
+	doc := testDocument(1)
+	if err := leader.Tenants().AddDocument(ctx, "tenant-a", "docs", &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	epoch := Epoch{}
+	follower := serveLeaderWithEpoch(t, leader, func() (Epoch, error) { return epoch, nil })
+	base := storePath(t, dir, "replica")
+	replica, err := follower.Open(ctx, base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pastLSN := replica.ReplicaCursor().LSN
+	if pastLSN == 0 {
+		t.Fatal("test needs a replica that has already applied at least one record")
+	}
+	if err := replica.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := ReadEpoch(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Promotion started one LSN before this replica's own cursor.
+	epoch = Epoch{Number: 1, StartLSN: pastLSN - 1}
+
+	store, err := vcollection.OpenDurableStore(base, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := follower.Bind(ctx, store, base); !errors.Is(err, ErrResyncRequired) {
+		t.Fatalf("Bind past the promotion point = %v, want ErrResyncRequired", err)
+	}
+	if got, err := ReadEpoch(base); err != nil || got != before {
+		t.Fatalf("ReadEpoch after a refused Bind = %+v, %v; want unchanged %+v, nil", got, err, before)
+	}
+	if store.IsReplica() {
+		t.Fatal("a refused Bind must not mark the store a replica")
+	}
+}
+
 // OnPreamble is how a standby learns the leader's LatestLSN for a lag report
 // without a second round trip: Follow already reads the preamble to check the
 // StoreID, so this only has to hand the caller what it already parsed.
