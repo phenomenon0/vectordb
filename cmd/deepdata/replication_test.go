@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	vcollection "github.com/phenomenon0/vectordb/internal/collection"
 	"github.com/phenomenon0/vectordb/internal/logging"
 	"github.com/phenomenon0/vectordb/internal/replication"
 )
@@ -152,4 +156,132 @@ func TestRunReplicateValidatesOnlyWhatItReads(t *testing.T) {
 			t.Fatalf("stderr = %q, want the missing-token message", stderr)
 		}
 	})
+}
+
+// tenantDocsSchema is the one-collection schema every tenant in the
+// replicateAll test gets.
+var tenantDocsSchema = vcollection.CollectionSchema{
+	Name: "docs",
+	Fields: []vcollection.VectorField{{
+		Name:  "dense",
+		Type:  vcollection.VectorTypeDense,
+		Dim:   2,
+		Index: vcollection.IndexConfig{Type: vcollection.IndexTypeFLAT},
+	}},
+}
+
+// seedTenantDoc creates tenant's "docs" collection on leader and inserts one
+// document tagged with tenant's own name, so a later read can tell which
+// tenant's data came back.
+func seedTenantDoc(t *testing.T, leader *vcollection.StoreSet, tenant string) uint64 {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := leader.CreateCollection(ctx, tenant, tenantDocsSchema); err != nil {
+		t.Fatalf("create collection for %s on leader: %v", tenant, err)
+	}
+	doc := vcollection.Document{
+		Vectors:  map[string]vcollection.Vector{"dense": vcollection.Vector{Dense: []float32{1, 0}}},
+		Metadata: map[string]interface{}{"origin": tenant},
+	}
+	if err := leader.AddDocument(ctx, tenant, "docs", &doc); err != nil {
+		t.Fatalf("insert on leader tenant %s: %v", tenant, err)
+	}
+	return doc.ID
+}
+
+// multiTenantLeaderForTest builds a real leader -- the same StoreSet `serve`
+// opens -- seeded with acme and globex, each holding one document, and a
+// per-tenant node surface over it.
+func multiTenantLeaderForTest(t *testing.T) (leader *vcollection.StoreSet, leaderURL string, docIDs map[string]uint64) {
+	t.Helper()
+	dir := t.TempDir()
+	leader, err := vcollection.OpenStoreSet(filepath.Join(dir, "leader.gob.tenants"), vcollection.StoreLimits{MaxTenants: 8, MaxCollections: 8})
+	if err != nil {
+		t.Fatalf("open leader store set: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := leader.Close(); err != nil {
+			t.Errorf("close leader store set: %v", err)
+		}
+	})
+
+	docIDs = map[string]uint64{
+		"acme":   seedTenantDoc(t, leader, "acme"),
+		"globex": seedTenantDoc(t, leader, "globex"),
+	}
+
+	node, err := replication.NewTenantLeaderHandler(replication.LeaderConfig{Token: "node-token", SpoolDir: dir},
+		leader.Tenants, func(id string) (replication.Source, bool) { return leader.Store(id) })
+	if err != nil {
+		t.Fatalf("build node surface: %v", err)
+	}
+	srv := httptest.NewServer(node)
+	t.Cleanup(srv.Close)
+	return leader, srv.URL, docIDs
+}
+
+// waitForReplicaMarker polls until base carries a replica marker -- meaning
+// a followTenant loop finished bootstrapping there -- or fails the test.
+func waitForReplicaMarker(t *testing.T, base string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, isReplica, err := replication.ReplicaLeaderID(base); err == nil && isReplica {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no replica marker appeared at %s within the deadline", base)
+}
+
+// TestReplicateAllFollowsEveryTenantTheLeaderLists is the B4 contract:
+// `deepdata replicate` without --tenant follows every tenant the leader
+// lists, into its own subdirectory, and picks up a tenant created after it
+// started on the next re-list.
+func TestReplicateAllFollowsEveryTenantTheLeaderLists(t *testing.T) {
+	orig := relistInterval
+	relistInterval = 30 * time.Millisecond
+	t.Cleanup(func() { relistInterval = orig })
+
+	leader, leaderURL, docIDs := multiTenantLeaderForTest(t)
+
+	indexPath := filepath.Join(t.TempDir(), "replica.gob")
+	tenantsDir := indexPath + ".tenants"
+	if err := os.MkdirAll(tenantsDir, 0o750); err != nil {
+		t.Fatalf("create replica tenant store directory: %v", err)
+	}
+	template := replication.Follower{LeaderURL: leaderURL, Token: "node-token", Client: &http.Client{}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rcCh := make(chan int, 1)
+	go func() { rcCh <- replicateAll(ctx, template, tenantsDir, 50*time.Millisecond, logging.Default()) }()
+
+	waitForReplicaMarker(t, filepath.Join(tenantsDir, "acme"))
+	waitForReplicaMarker(t, filepath.Join(tenantsDir, "globex"))
+
+	docIDs["initech"] = seedTenantDoc(t, leader, "initech")
+	waitForReplicaMarker(t, filepath.Join(tenantsDir, "initech"))
+
+	cancel()
+	select {
+	case rc := <-rcCh:
+		if rc != 0 {
+			t.Fatalf("replicateAll rc = %d, want 0", rc)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("replicateAll did not stop after ctx was canceled")
+	}
+
+	handler := newCanonicalSurfaceTestHandlerAt(t, indexPath)
+	for _, tenant := range []string{"acme", "globex", "initech"} {
+		path := "/v3/tenants/" + tenant + "/collections/docs/docs/" + strconv.FormatUint(docIDs[tenant], 10)
+		resp := canonicalCall(t, handler, http.MethodGet, path, "")
+		if resp.Code != http.StatusOK {
+			t.Errorf("tenant %s: get leader document from replica = %d: %s", tenant, resp.Code, resp.Body.String())
+			continue
+		}
+		if !strings.Contains(resp.Body.String(), `"`+tenant+`"`) {
+			t.Errorf("tenant %s: replica returned a document that is not the leader's: %s", tenant, resp.Body.String())
+		}
+	}
 }

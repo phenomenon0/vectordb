@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -127,11 +129,13 @@ func bindReplicaReadOnly(collections *CollectionHTTPServer) error {
 // reads normally, refuses its writes with a 403, and reports read_only on
 // /readyz so a load balancer stops sending it writes.
 //
-// --tenant is required in this step; a future step adds an all-tenants mode.
+// --tenant selects one tenant; omitting it follows every tenant the leader
+// lists (replicateAll), each into its own subdirectory of the tenant store
+// tree.
 func runReplicate(args []string, logger *logging.Logger) int {
 	fs := flag.NewFlagSet("replicate", flag.ExitOnError)
 	leaderURL := fs.String("leader", "", "leader base URL, e.g. http://leader.internal:8080")
-	tenant := fs.String("tenant", "", "tenant ID to replicate")
+	tenant := fs.String("tenant", "", "tenant ID to replicate; omit to follow every tenant the leader lists")
 	retry := fs.Duration("retry", 5*time.Second, "wait before reconnecting after the stream drops")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -140,8 +144,8 @@ func runReplicate(args []string, logger *logging.Logger) int {
 		fmt.Fprintln(os.Stderr, "replicate: --leader is required")
 		return 2
 	}
-	if *tenant == "" || !vcollection.ValidTenantID(*tenant) {
-		fmt.Fprintln(os.Stderr, "replicate: --tenant is required and must be a valid tenant ID")
+	if *tenant != "" && !vcollection.ValidTenantID(*tenant) {
+		fmt.Fprintln(os.Stderr, "replicate: --tenant must be a valid tenant ID")
 		return 2
 	}
 	// loadServerConfig's errs cover the serve surface (PORT, rate limits,
@@ -161,20 +165,92 @@ func runReplicate(args []string, logger *logging.Logger) int {
 	// The same directory layout the server would open, so a replica's tenant
 	// store directory and the leader's are configured identically and an
 	// operator can promote one by changing the subcommand, not the layout.
-	base := filepath.Join(cfg.IndexPath+".tenants", *tenant)
-	if err := os.MkdirAll(filepath.Dir(base), 0o750); err != nil {
-		logger.Error("cannot create the replica state directory", "path", filepath.Dir(base), "error", err)
+	tenantsDir := cfg.IndexPath + ".tenants"
+	if err := os.MkdirAll(tenantsDir, 0o750); err != nil {
+		logger.Error("cannot create the replica state directory", "path", tenantsDir, "error", err)
 		return 1
 	}
 
 	// No whole-request timeout: a follow stream is open-ended by design, and a
 	// Client.Timeout would cut it at a fixed interval forever.
-	follower := &replication.Follower{LeaderURL: *leaderURL, Token: token, Tenant: *tenant, Client: &http.Client{}}
+	follower := replication.Follower{LeaderURL: *leaderURL, Token: token, Client: &http.Client{}}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return followTenant(ctx, follower, base, *retry, logger)
+	if *tenant == "" {
+		return replicateAll(ctx, follower, tenantsDir, *retry, logger)
+	}
+	follower.Tenant = *tenant
+	return followTenant(ctx, &follower, filepath.Join(tenantsDir, *tenant), *retry, logger)
+}
+
+// relistInterval is how often replicateAll asks the leader for its current
+// tenant list.
+//
+// ponytail: fixed re-list interval, no shared backoff, no worker pool.
+var relistInterval = 30 * time.Second
+
+// replicateAll follows every tenant template.Tenants lists into its own
+// subdirectory of dir, re-listing every relistInterval to pick up tenants
+// created after it started. A tenant is started once and never restarted: if
+// its followTenant loop ends (ctx canceled, or one of the terminal errors
+// followTenant already refuses to retry -- resync required, store mismatch,
+// or the leader has since deleted the tenant), that is an operator decision
+// exactly as it is for a single-tenant `deepdata replicate`, not something
+// this loop second-guesses by starting it again next re-list.
+//
+// Returns 0 if ctx was canceled and every tenant loop it started exited 0,
+// else 1.
+func replicateAll(ctx context.Context, template replication.Follower, dir string, retry time.Duration, logger *logging.Logger) int {
+	var (
+		mu      sync.Mutex
+		started = make(map[string]bool)
+		wg      sync.WaitGroup
+		failed  atomic.Bool
+	)
+
+	list := func() {
+		tenants, err := template.Tenants(ctx)
+		if err != nil {
+			logger.Warn("cannot list tenants from the leader; retrying next interval", "leader", template.LeaderURL, "error", err)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, tenant := range tenants {
+			if started[tenant] {
+				continue
+			}
+			started[tenant] = true
+			follower := template
+			follower.Tenant = tenant
+			base := filepath.Join(dir, tenant)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if rc := followTenant(ctx, &follower, base, retry, logger); rc != 0 {
+					failed.Store(true)
+				}
+			}()
+		}
+	}
+
+	list()
+	ticker := time.NewTicker(relistInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			if failed.Load() {
+				return 1
+			}
+			return 0
+		case <-ticker.C:
+			list()
+		}
+	}
 }
 
 // followTenant opens base as a replica of follower's tenant and streams
