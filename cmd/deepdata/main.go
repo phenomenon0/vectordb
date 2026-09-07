@@ -64,6 +64,9 @@ func main() {
 	if len(args) > 0 && args[0] == "import-tenant" {
 		os.Exit(runImportTenant(args[1:], os.Stdout, os.Stderr, logging.Default()))
 	}
+	if len(args) > 0 && args[0] == "promote" {
+		os.Exit(runPromote(args[1:], os.Stdout, os.Stderr, logging.Default()))
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}

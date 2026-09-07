@@ -78,11 +78,12 @@ directory afterward, without `DEEPDATA_LEADER_URL`, still opens that tenant
 read-only. `deepdata replicate` is unchanged and remains the sync-only mode:
 it never serves.
 
-What it does not do: it never elects, promotes, fences, or fails over; it has no
-membership list; it does not resync itself when it falls too far behind, because
-discarding a replica directory is an operator decision, not a retry policy; and
-it does not make the leader highly available. A dropped stream is retried from
-the replica's own durable cursor. Nothing else is automatic.
+What it does not do: it never elects; promotion is an operator command and the
+epoch is the fence; it has no membership list; it does not resync itself when
+it falls too far behind, because discarding a replica directory is an operator
+decision, not a retry policy; and it does not make the leader highly available.
+A dropped stream is retried from the replica's own durable cursor. Nothing
+else is automatic.
 
 Every tenant's journal carries an epoch (`internal/replication/epoch.go`): a
 number that only moves forward, plus the journal position it moved forward

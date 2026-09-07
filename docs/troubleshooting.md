@@ -203,6 +203,19 @@ it stands -- stop the standby, remove that tenant's files under the tenants
 directory, and start the standby again to re-seed it from the leader. Every
 other tenant keeps following normally while one is stopped.
 
+### Promote a standby by hand
+
+There is no election and no automatic promotion, only an offline operator
+command. Stop the old leader first, or cut it off the network, so it cannot
+keep accepting writes; then stop the standby you are promoting and run
+`deepdata promote <data-dir>` (or `--tenant <id>` for one tenant) against its
+data directory. Start `deepdata serve` on that directory, then point the
+other standbys and the members' `DEEPDATA_URL` at it. If the old leader is
+later restarted as a standby of the new one, it either keeps following, when
+it never wrote past the LSN promotion happened at, or its tenant reports a
+resync-required error in `following` -- stop it, remove that tenant's files
+under the tenants directory, and let it re-seed from the new leader.
+
 ## Docker and Compose
 
 ### Container exits immediately
