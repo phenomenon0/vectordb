@@ -84,6 +84,12 @@ func (st *standby) followTenant(ctx context.Context, f *replication.Follower, se
 	base := set.Base(id)
 	st.setState(id, "bootstrapping", "")
 	if _, err := f.Seed(ctx, base, base); err != nil {
+		if ctx.Err() != nil {
+			// Told to stop mid-seed: the same clean exit the stream loop
+			// takes, not a failed tenant.
+			st.setState(id, "stopped", "")
+			return 0
+		}
 		logger.Error("cannot seed standby tenant from the leader", "tenant", id, "leader", f.LeaderURL, "error", err)
 		st.setState(id, "stopped", err.Error())
 		return 1
@@ -95,6 +101,10 @@ func (st *standby) followTenant(ctx context.Context, f *replication.Follower, se
 		return 1
 	}
 	if err := f.Bind(ctx, store, base); err != nil {
+		if ctx.Err() != nil {
+			st.setState(id, "stopped", "")
+			return 0
+		}
 		// A tenant already on disk under a different StoreID (someone's local
 		// tenant of the same name, not this leader's) lands here: bind never
 		// touches the store on a mismatch, so it keeps serving as ordinary

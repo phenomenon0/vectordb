@@ -206,6 +206,30 @@ func TestServeFollowKeepsAForeignTenantLocal(t *testing.T) {
 // old leader, still at epoch 0 -- is a fork. It keeps answering reads, but
 // it must refuse writes: nothing would ever replicate them, and the old
 // leader's clients would keep landing on a node that looks writable.
+// TestStandbyFollowTenantStopsCleanlyWhenCanceledMidOpen pins what a
+// shutdown that lands while a tenant is still seeding or binding reports:
+// the tenant ends "stopped" with no error and the follow returns 0, the same
+// as a cancel during the stream, not a failed tenant.
+func TestStandbyFollowTenantStopsCleanlyWhenCanceledMidOpen(t *testing.T) {
+	_, leaderURL, _ := multiTenantLeaderForTest(t)
+	_, collections := standbyHandlerForTest(t)
+	set := collections.Stores()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	st := &standby{leader: leaderURL, tenants: make(map[string]*standbyTenant), cancel: cancel}
+	f := &replication.Follower{LeaderURL: leaderURL, Token: "node-token", Tenant: "acme", Client: &http.Client{}}
+	if rc := st.followTenant(ctx, f, set, 30*time.Millisecond, logging.Default()); rc != 0 {
+		t.Fatalf("followTenant rc = %d when canceled during open, want 0", rc)
+	}
+	if tenant := st.snapshot()["acme"]; tenant.state != "stopped" || tenant.err != "" {
+		t.Fatalf("acme after a cancel during open = %q/%q, want stopped with no error", tenant.state, tenant.err)
+	}
+	if err := set.Close(); err != nil {
+		t.Fatalf("close store set: %v", err)
+	}
+}
+
 func TestServeFollowFencesAForkedTenantReadOnly(t *testing.T) {
 	_, leaderURL, _ := multiTenantLeaderForTest(t)
 
