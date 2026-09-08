@@ -334,6 +334,12 @@ func replicateAll(ctx context.Context, template replication.Follower, dir string
 func followTenant(ctx context.Context, follower *replication.Follower, base string, retry time.Duration, logger *logging.Logger) int {
 	store, err := follower.Open(ctx, base, base)
 	if err != nil {
+		if ctx.Err() != nil {
+			// Told to stop while still seeding or binding: the same clean
+			// exit the stream loop takes, not a failed tenant.
+			logger.Info("replication stopped before the replica opened", "tenant", follower.Tenant)
+			return 0
+		}
 		logger.Error("cannot open a replica of this leader", "path", base, "tenant", follower.Tenant, "leader", follower.LeaderURL, "error", err)
 		return 1
 	}

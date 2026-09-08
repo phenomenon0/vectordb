@@ -234,6 +234,20 @@ func waitForReplicaMarker(t *testing.T, base string) {
 	t.Fatalf("no replica marker appeared at %s within the deadline", base)
 }
 
+// TestFollowTenantStopsCleanlyWhenCanceledMidOpen pins the rc a follower
+// returns when it is told to stop before its replica finished seeding and
+// binding: replicateAll folds every tenant's rc into the process exit code,
+// so a shutdown that lands mid-open must not read as a failed tenant.
+func TestFollowTenantStopsCleanlyWhenCanceledMidOpen(t *testing.T) {
+	_, leaderURL, _ := multiTenantLeaderForTest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f := &replication.Follower{LeaderURL: leaderURL, Token: "node-token", Tenant: "acme", Client: &http.Client{}}
+	if rc := followTenant(ctx, f, filepath.Join(t.TempDir(), "acme"), 50*time.Millisecond, logging.Default()); rc != 0 {
+		t.Fatalf("followTenant rc = %d when canceled during open, want 0", rc)
+	}
+}
+
 // TestReplicateAllFollowsEveryTenantTheLeaderLists is the B4 contract:
 // `deepdata replicate` without --tenant follows every tenant the leader
 // lists, into its own subdirectory, and picks up a tenant created after it
